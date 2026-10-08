@@ -22,6 +22,8 @@ ADAPTIVE_WORK_STATE_PREFIX = "AWorld verified continuation state"
 # atomic groups retained by compaction.  Keep its dynamic tail small enough not
 # to dominate provider attention on long-running tasks.
 ADAPTIVE_WORK_STATE_MAX_TOKENS = 2048
+_SANDBOX_OBSERVATION_SCHEMA = "aworld.sandbox-tool-observation/v1"
+_MAX_WORKSPACE_GENERATION = 1_000_000_000
 _SENSITIVE_KEYS = frozenset(
     {
         "api_key",
@@ -124,6 +126,43 @@ def _sandbox_observation_ref(value: Any) -> dict[str, Any] | None:
     return projected or None
 
 
+def _trusted_sandbox_observation(
+    value: Any,
+    *,
+    action: Mapping[str, Any] | None,
+    result: Mapping[str, Any],
+) -> Mapping[str, Any] | None:
+    """Validate a Sandbox receipt against its exact action/result boundary."""
+
+    if not isinstance(value, Mapping) or not isinstance(action, Mapping):
+        return None
+    action_call_id = str(action.get("tool_call_id") or "")
+    result_call_id = str(result.get("tool_call_id") or "")
+    generation = value.get("workspace_generation")
+    if (
+        value.get("schema_version") != _SANDBOX_OBSERVATION_SCHEMA
+        or not action_call_id
+        or result_call_id != action_call_id
+        or value.get("tool_call_id") != action_call_id
+        or isinstance(generation, bool)
+        or not isinstance(generation, int)
+        or not 0 <= generation <= _MAX_WORKSPACE_GENERATION
+    ):
+        return None
+    from aworld.sandbox.tool_observation import classify_tool_effect
+
+    try:
+        effect = classify_tool_effect(action)
+    except (TypeError, ValueError):
+        return None
+    if (
+        value.get("canonical_tool") != effect.identity
+        or value.get("operation_hash") != effect.operation_hash
+    ):
+        return None
+    return value
+
+
 def build_adaptive_work_state_entry(
     *,
     tool_name: str,
@@ -148,12 +187,21 @@ def build_adaptive_work_state_entry(
         )
 
     projected_results = []
+    progress = dict(semantic_progress or {})
+    progress_generation = progress.get("workspace_generation")
+    if (
+        not isinstance(progress_generation, int)
+        or isinstance(progress_generation, bool)
+        or not 0 <= progress_generation <= _MAX_WORKSPACE_GENERATION
+    ):
+        progress_generation = 0
     available_artifacts: list[dict[str, Any]] = []
     artifact_changed = rollback_performed = implicit_artifact_loss = False
     artifact_fingerprint = None
     workspace_generation = None
+    mutation_workspace_generation = None
     sandbox_observations: list[dict[str, Any]] = []
-    for result in result_values:
+    for result_index, result in enumerate(result_values):
         if not isinstance(result, Mapping):
             continue
         metadata = result.get("metadata")
@@ -162,24 +210,28 @@ def build_adaptive_work_state_entry(
             if isinstance(metadata, Mapping)
             else None
         )
-        if isinstance(context_management, Mapping):
-            artifact_changed = artifact_changed or (
-                context_management.get("artifact_changed") is True
-            )
-            rollback_performed = rollback_performed or (
-                context_management.get("rollback_performed") is True
-            )
-            implicit_artifact_loss = implicit_artifact_loss or (
-                context_management.get("implicit_artifact_loss_detected") is True
-            )
-            candidate_fingerprint = context_management.get("artifact_fingerprint_after")
-            if isinstance(candidate_fingerprint, str):
-                artifact_fingerprint = candidate_fingerprint
-        sandbox_observation = (
+        raw_sandbox_observation = (
             metadata.get("sandbox_observation")
             if isinstance(metadata, Mapping)
             else None
         )
+        action = (
+            actions[result_index]
+            if result_index < len(actions)
+            and isinstance(actions[result_index], Mapping)
+            else None
+        )
+        sandbox_observation = _trusted_sandbox_observation(
+            raw_sandbox_observation,
+            action=action,
+            result=result,
+        )
+        if (
+            sandbox_observation is not None
+            and sandbox_observation["workspace_generation"]
+            < progress_generation
+        ):
+            sandbox_observation = None
         observation_ref = _sandbox_observation_ref(sandbox_observation)
         if isinstance(sandbox_observation, Mapping):
             artifact_changed = artifact_changed or (
@@ -197,6 +249,35 @@ def build_adaptive_work_state_entry(
                     workspace_generation or 0,
                     candidate_generation,
                 )
+                if sandbox_observation.get("workspace_mutated") is True:
+                    mutation_workspace_generation = max(
+                        mutation_workspace_generation or 0,
+                        candidate_generation,
+                    )
+            if (
+                isinstance(context_management, Mapping)
+                and context_management.get("schema_version")
+                == "aworld.sandbox-artifact-progress/v1"
+            ):
+                artifact_changed = artifact_changed or (
+                    context_management.get("artifact_changed") is True
+                )
+                if context_management.get("artifact_changed") is True:
+                    mutation_workspace_generation = max(
+                        mutation_workspace_generation or 0,
+                        candidate_generation,
+                    )
+                rollback_performed = rollback_performed or (
+                    context_management.get("rollback_performed") is True
+                )
+                implicit_artifact_loss = implicit_artifact_loss or (
+                    context_management.get("implicit_artifact_loss_detected") is True
+                )
+                candidate_fingerprint = context_management.get(
+                    "artifact_fingerprint_after"
+                )
+                if isinstance(candidate_fingerprint, str):
+                    artifact_fingerprint = candidate_fingerprint
         if observation_ref is not None:
             sandbox_observations.append(observation_ref)
         output_policy = (
@@ -253,7 +334,10 @@ def build_adaptive_work_state_entry(
             projected_result["sandbox_observation"] = observation_ref
         projected_results.append(projected_result)
 
-    progress = dict(semantic_progress or {})
+    workspace_generation = max(
+        workspace_generation or 0,
+        progress_generation,
+    )
     return {
         "operation_hash": progress.get("operation_hash")
         or semantic_fingerprint(projected_actions),
@@ -265,6 +349,7 @@ def build_adaptive_work_state_entry(
         "artifact_changed": artifact_changed,
         "artifact_fingerprint": artifact_fingerprint,
         "workspace_generation": workspace_generation,
+        "mutation_workspace_generation": mutation_workspace_generation,
         "sandbox_observations": sandbox_observations[-8:],
         "rollback_performed": rollback_performed,
         "implicit_artifact_loss": implicit_artifact_loss,
@@ -326,21 +411,68 @@ def advance_adaptive_work_state(
     failed = [item for item in state.get("failed_operations", []) if isinstance(item, Mapping)]
     if any(result.get("success") is False for result in value.get("results", [])):
         failed.append(value)
-    latest_sandbox_observations = [
+    previous_sandbox_observations = [
+        dict(item)
+        for item in (state.get("latest_sandbox_observations") or [])
+        if isinstance(item, Mapping)
+    ]
+    current_sandbox_observations = [
         dict(item)
         for item in (value.get("sandbox_observations") or [])
         if isinstance(item, Mapping)
-    ][-8:]
-    if not latest_sandbox_observations:
-        latest_sandbox_observations = [
-            dict(item)
-            for item in (state.get("latest_sandbox_observations") or [])
-            if isinstance(item, Mapping)
-        ][-8:]
+    ]
+    latest_sandbox_observations = []
+    seen_sandbox_observations: set[str] = set()
+    for item in [*previous_sandbox_observations, *current_sandbox_observations]:
+        identity = semantic_fingerprint(item)
+        if identity in seen_sandbox_observations:
+            continue
+        seen_sandbox_observations.add(identity)
+        latest_sandbox_observations.append(item)
+    latest_sandbox_observations = latest_sandbox_observations[-8:]
+    generations = [
+        candidate
+        for candidate in (
+            state.get("workspace_generation"),
+            value.get("workspace_generation"),
+        )
+        if (
+            isinstance(candidate, int)
+            and not isinstance(candidate, bool)
+            and 0 <= candidate <= _MAX_WORKSPACE_GENERATION
+        )
+    ]
+    workspace_generation = max(generations) if generations else None
+    latest_workspace_mutation = state.get("latest_workspace_mutation")
+    retained_mutation_generation = (
+        latest_workspace_mutation.get("mutation_workspace_generation")
+        if isinstance(latest_workspace_mutation, Mapping)
+        else None
+    )
+    value_generation = value.get("mutation_workspace_generation")
+    if (
+        value.get("artifact_changed") is True
+        and isinstance(value_generation, int)
+        and not isinstance(value_generation, bool)
+        and 0 <= value_generation <= _MAX_WORKSPACE_GENERATION
+        and (
+            not isinstance(retained_mutation_generation, int)
+            or isinstance(retained_mutation_generation, bool)
+            or value_generation >= retained_mutation_generation
+        )
+    ):
+        # This is execution evidence, not a claim that the mutation advanced
+        # the user's goal.  Keep it separate from verified milestones so
+        # compaction cannot turn an unverified helper or placeholder write into
+        # delivery progress, while still preventing a later failed/no-receipt
+        # action from erasing the fact that a write happened.
+        latest_workspace_mutation = _minimal_work_entry(value)
     # A successful repeated read is not proof of progress. A write or changed
     # artifact resets the comparison window so deliberate readback is allowed.
     read_window = []
     for item in reversed(recent):
+        if item.get("historical") is True:
+            break
         if not item.get("read_only") or item.get("artifact_changed") or item.get("goal_progress"):
             break
         read_window.append(item)
@@ -360,12 +492,9 @@ def advance_adaptive_work_state(
         "observation_count": int(state.get("observation_count", 0) or 0) + 1,
         "artifact_fingerprint": value.get("artifact_fingerprint")
         or state.get("artifact_fingerprint"),
-        "workspace_generation": (
-            value.get("workspace_generation")
-            if value.get("workspace_generation") is not None
-            else state.get("workspace_generation")
-        ),
+        "workspace_generation": workspace_generation,
         "latest_sandbox_observations": latest_sandbox_observations,
+        "latest_workspace_mutation": latest_workspace_mutation,
         "recent_operations": recent[-8:],
         "milestones": milestones[-4:],
         "attempted_operation_hashes": hashes[-24:],
@@ -406,6 +535,7 @@ def _compact_work_entry(entry: Mapping[str, Any]) -> dict[str, Any]:
     ]
     return {
         "sequence": entry.get("sequence"),
+        "historical": entry.get("historical") is True,
         "operation_hash": _stable_identifier(entry.get("operation_hash")),
         "result_hash": _stable_identifier(entry.get("result_hash")),
         "action_count": len(actions),
@@ -436,6 +566,9 @@ def _compact_work_entry(entry: Mapping[str, Any]) -> dict[str, Any]:
         "artifact_changed": entry.get("artifact_changed") is True,
         "artifact_fingerprint": _stable_identifier(entry.get("artifact_fingerprint")),
         "workspace_generation": entry.get("workspace_generation"),
+        "mutation_workspace_generation": entry.get(
+            "mutation_workspace_generation"
+        ),
         "sandbox_observations": sandbox_observations[-3:],
         "rollback_performed": entry.get("rollback_performed") is True,
         "implicit_artifact_loss": entry.get("implicit_artifact_loss") is True,
@@ -448,6 +581,7 @@ def _minimal_work_entry(entry: Mapping[str, Any]) -> dict[str, Any]:
     """Last-resort summary used only when one atomic group exceeds the budget."""
     return {
         "sequence": entry.get("sequence"),
+        "historical": entry.get("historical") is True,
         "operation_hash": _stable_identifier(entry.get("operation_hash")),
         "result_hash": _stable_identifier(entry.get("result_hash")),
         "action_count": len(entry.get("actions") or []),
@@ -455,6 +589,9 @@ def _minimal_work_entry(entry: Mapping[str, Any]) -> dict[str, Any]:
         "artifact_changed": entry.get("artifact_changed") is True,
         "artifact_fingerprint": _stable_identifier(entry.get("artifact_fingerprint")),
         "workspace_generation": entry.get("workspace_generation"),
+        "mutation_workspace_generation": entry.get(
+            "mutation_workspace_generation"
+        ),
         "sandbox_observations": [
             dict(item)
             for item in (entry.get("sandbox_observations") or [])
@@ -599,6 +736,9 @@ def _fit_work_state_payload(
             "latest_sandbox_observations": list(
                 payload.get("latest_sandbox_observations") or []
             )[-1:],
+            "latest_workspace_mutation": _bounded_projection(
+                payload.get("latest_workspace_mutation") or {}, depth=1
+            ),
             "attempted_operation_hashes": payload.get("attempted_operation_hashes", [])[
                 -1:
             ],
@@ -651,6 +791,9 @@ def adaptive_work_state_message(state: Any) -> dict[str, Any] | None:
         "latest_sandbox_observations": list(
             state.get("latest_sandbox_observations") or []
         )[-8:],
+        "latest_workspace_mutation": _bounded_projection(
+            state.get("latest_workspace_mutation") or {}, depth=1
+        ),
         "attempted_operation_hashes": list(
             state.get("attempted_operation_hashes") or []
         )[-12:],

@@ -30,7 +30,7 @@ TERMINAL_EXECUTION_RECEIPT_KEY = "terminal_execution_receipt"
 # with this same analyzer; they are never assumed reusable by default. Provider
 # replay is authenticated by ``cache_hit=true`` plus ``executed=false``, a
 # content/observation identity, representation, and checkpoint revision.
-TERMINAL_EXECUTION_ANALYZER_VERSION = 8
+TERMINAL_EXECUTION_ANALYZER_VERSION = 9
 TERMINAL_LANGUAGE_CONTRACT_VERSION = 1
 TERMINAL_LANGUAGES = frozenset({"shell", "python"})
 TERMINAL_EFFECTS = frozenset({"read_only", "mutating", "unknown"})
@@ -112,6 +112,7 @@ _SHELL_MUTATION_COMMANDS = frozenset(
     }
 )
 _PYTHON_EXECUTABLES = frozenset({"python", "python3", "py"})
+_VERSIONED_PYTHON_EXECUTABLE = re.compile(r"python3(?:\.\d+)+\Z")
 _NON_FILE_REDIRECT_TARGETS = frozenset(
     {"/dev/null", "/dev/stdout", "/dev/stderr", "/dev/tty"}
 )
@@ -185,6 +186,28 @@ _SAFE_PYTHON_CALL_NAMES = frozenset(
         "zip",
     }
 )
+_SAFE_PYTHON_CALLBACK_NAMES = frozenset(
+    {
+        "abs",
+        "bool",
+        "bytes",
+        "float",
+        "format",
+        "frozenset",
+        "hex",
+        "int",
+        "len",
+        "list",
+        "oct",
+        "ord",
+        "repr",
+        "reversed",
+        "round",
+        "set",
+        "str",
+        "tuple",
+    }
+)
 _UNSAFE_PYTHON_CALL_NAMES = frozenset(
     {"__import__", "breakpoint", "compile", "eval", "exec", "input"}
 )
@@ -208,6 +231,35 @@ _SAFE_PYTHON_FROM_IMPORTS = {
         }
     ),
     "pathlib": frozenset({"Path", "PurePath", "PurePosixPath"}),
+}
+_SAFE_PYTHON_MODULE_CALLS = {
+    # These entries apply only when the receiver is bound by an exact import
+    # (including ``import math as geometry``).  Keeping them module-qualified
+    # avoids treating an arbitrary object's equally named method as pure.
+    "math": frozenset(
+        {
+            "atan2",
+            "cos",
+            "degrees",
+            "hypot",
+            "sin",
+            "sqrt",
+        }
+    ),
+    "re": frozenset(
+        {
+            "compile",
+            "escape",
+            "findall",
+            "finditer",
+            "fullmatch",
+            "match",
+            "search",
+            "split",
+            "sub",
+            "subn",
+        }
+    ),
 }
 _SAFE_PYTHON_METHOD_NAMES = frozenset(
     {
@@ -437,6 +489,14 @@ def python_is_provably_read_only(source: str) -> bool:
         for node in tree.body
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
     }
+    imported_modules = _python_imported_modules(tree)
+    imported_bindings = _python_imported_bindings(tree)
+    if not _python_trusted_bindings_are_immutable(tree, imported_bindings):
+        return False
+    if not _python_higher_order_callbacks_are_safe(
+        tree, imported_modules, imported_bindings
+    ):
+        return False
     imported_names: set[str] = set()
     for node in tree.body:
         if isinstance(node, ast.Import):
@@ -478,6 +538,19 @@ def python_is_provably_read_only(source: str) -> bool:
                 if function.id == "open" and not _python_open_is_read_only(node):
                     return False
             elif isinstance(function, ast.Attribute):
+                receiver_name = (
+                    function.value.id
+                    if isinstance(function.value, ast.Name)
+                    else None
+                )
+                receiver_module = imported_modules.get(receiver_name or "")
+                module_calls = _SAFE_PYTHON_MODULE_CALLS.get(
+                    receiver_module or ""
+                )
+                if module_calls is not None:
+                    if function.attr not in module_calls:
+                        return False
+                    continue
                 if function.attr == "open":
                     if not _python_open_is_read_only(node):
                         return False
@@ -590,13 +663,315 @@ def _python_file_open_is_read_only(
 
 def _python_imported_modules(tree: ast.Module) -> dict[str, str]:
     modules: dict[str, str] = {}
-    for node in tree.body:
+    for node in ast.walk(tree):
         if not isinstance(node, ast.Import):
             continue
         for alias in node.names:
             root = alias.name.split(".", 1)[0]
             modules[alias.asname or root] = root
     return modules
+
+
+def _python_imported_bindings(tree: ast.Module) -> dict[str, str]:
+    bindings = dict(_python_imported_modules(tree))
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ImportFrom) or not node.module:
+            continue
+        root = node.module.split(".", 1)[0]
+        for alias in node.names:
+            if alias.name != "*":
+                bindings[alias.asname or alias.name] = root
+    return bindings
+
+
+def _python_expression_root_name(node: ast.AST) -> str | None:
+    while isinstance(node, (ast.Attribute, ast.Subscript)):
+        node = node.value
+    return node.id if isinstance(node, ast.Name) else None
+
+
+def _python_trusted_bindings_are_immutable(
+    tree: ast.Module,
+    imported_bindings: Mapping[str, str],
+) -> bool:
+    """Prove names treated as pure cannot be rebound or monkeypatched.
+
+    Module and builtin purity is sound only while each receiver still denotes
+    the value the analyzer modeled.  Python permits rebinding names and
+    attributes at runtime, including from a nested function, so every trusted
+    binding/shadow and every attribute store is rejected.  Ordinary container
+    item assignment remains available for data-processing scripts, while
+    imported or dunder-rooted subscript stores fail closed.
+    """
+
+    imported_aliases = frozenset(imported_bindings)
+    trusted_builtin_names = _SAFE_PYTHON_CALL_NAMES
+    if imported_aliases & trusted_builtin_names:
+        return False
+    local_function_names = frozenset(
+        node.name
+        for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    )
+    trusted_names = (
+        imported_aliases | trusted_builtin_names | local_function_names
+    )
+    import_binding_counts = {name: 0 for name in imported_aliases}
+    local_function_counts = {name: 0 for name in local_function_names}
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                root = alias.name.split(".", 1)[0]
+                binding = alias.asname or root
+                if binding in trusted_builtin_names or binding in local_function_names:
+                    return False
+                if binding not in imported_aliases:
+                    continue
+                if imported_bindings.get(binding) != root:
+                    return False
+                import_binding_counts[binding] += 1
+            continue
+        if isinstance(node, ast.ImportFrom):
+            root = node.module.split(".", 1)[0] if node.module else ""
+            for alias in node.names:
+                binding = alias.asname or alias.name
+                if binding in trusted_builtin_names or binding in local_function_names:
+                    return False
+                if binding not in imported_aliases:
+                    continue
+                if imported_bindings.get(binding) != root:
+                    return False
+                import_binding_counts[binding] += 1
+            continue
+        if isinstance(node, ast.Name):
+            if node.id.startswith("__") and node.id.endswith("__"):
+                return False
+            if isinstance(node.ctx, (ast.Store, ast.Del)) and node.id in trusted_names:
+                return False
+            continue
+        if isinstance(node, ast.arg) and node.arg in trusted_names:
+            return False
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            if node.name in imported_aliases or node.name in trusted_builtin_names:
+                return False
+            if node.name in local_function_counts:
+                local_function_counts[node.name] += 1
+        if isinstance(node, ast.ClassDef) and node.name in trusted_names:
+            return False
+        if isinstance(node, ast.ExceptHandler):
+            if isinstance(node.name, str) and node.name in trusted_names:
+                return False
+        if isinstance(node, ast.MatchAs):
+            if isinstance(node.name, str) and node.name in trusted_names:
+                return False
+        if isinstance(node, ast.MatchStar):
+            if isinstance(node.name, str) and node.name in trusted_names:
+                return False
+        if isinstance(node, ast.MatchMapping):
+            if isinstance(node.rest, str) and node.rest in trusted_names:
+                return False
+        if isinstance(node, ast.Attribute):
+            if isinstance(node.ctx, (ast.Store, ast.Del)):
+                return False
+            if node.attr.startswith("__") and node.attr.endswith("__"):
+                return False
+        if (
+            isinstance(node, ast.Subscript)
+            and isinstance(node.ctx, (ast.Store, ast.Del))
+            and (
+                _python_expression_root_name(node) in imported_aliases
+                or str(_python_expression_root_name(node) or "").startswith("__")
+            )
+        ):
+            return False
+
+    return bool(
+        all(count == 1 for count in import_binding_counts.values())
+        and all(count == 1 for count in local_function_counts.values())
+    )
+
+
+def _python_callback_reference_is_safe(
+    node: ast.AST,
+    imported_bindings: Mapping[str, str],
+) -> bool:
+    if isinstance(node, ast.Constant) and node.value is None:
+        return True
+    if isinstance(node, ast.Name):
+        return bool(
+            node.id in _SAFE_PYTHON_CALLBACK_NAMES
+            and node.id not in imported_bindings
+        )
+    if not isinstance(node, ast.Lambda):
+        return False
+    parameter_names = {argument.arg for argument in ast.walk(node.args) if isinstance(argument, ast.arg)}
+    rejected_nodes = (
+        ast.Attribute,
+        ast.Await,
+        ast.Call,
+        ast.DictComp,
+        ast.GeneratorExp,
+        ast.ListComp,
+        ast.NamedExpr,
+        ast.SetComp,
+        ast.Yield,
+        ast.YieldFrom,
+    )
+    for child in ast.walk(node.body):
+        if isinstance(child, rejected_nodes):
+            return False
+        if (
+            isinstance(child, ast.Name)
+            and isinstance(child.ctx, ast.Load)
+            and child.id not in parameter_names
+        ):
+            return False
+    return True
+
+
+def _python_higher_order_callbacks_are_safe(
+    tree: ast.Module,
+    imported_modules: Mapping[str, str],
+    imported_bindings: Mapping[str, str],
+) -> bool:
+    """Fail closed when executable values cross a callback boundary."""
+
+    def positional(call: ast.Call, index: int) -> ast.AST | None:
+        return call.args[index] if index < len(call.args) else None
+
+    def keyword(call: ast.Call, name: str) -> ast.AST | None:
+        return next(
+            (value.value for value in call.keywords if value.arg == name),
+            None,
+        )
+
+    for call in (node for node in ast.walk(tree) if isinstance(node, ast.Call)):
+        callbacks: list[ast.AST] = []
+        callback_sink = False
+        function = call.func
+        if isinstance(function, ast.Name):
+            if function.id in {"filter", "map", "reduce", "starmap", "takewhile"}:
+                callback_sink = True
+                callback = positional(call, 0)
+                if callback is not None:
+                    callbacks.append(callback)
+            elif function.id == "iter":
+                if len(call.args) >= 2 or any(
+                    isinstance(argument, ast.Starred) for argument in call.args
+                ):
+                    callback_sink = True
+                    callback = positional(call, 0)
+                    if callback is not None:
+                        callbacks.append(callback)
+            elif function.id == "groupby":
+                callback_sink = True
+                callback = keyword(call, "key") or positional(call, 1)
+                if callback is not None:
+                    callbacks.append(callback)
+            elif function.id in {"max", "min", "sorted"}:
+                callback_sink = True
+                callback = keyword(call, "key")
+                if callback is not None:
+                    callbacks.append(callback)
+            elif function.id == "defaultdict":
+                callback_sink = True
+                callback = positional(call, 0)
+                if callback is not None:
+                    callbacks.append(callback)
+            elif function.id == "open":
+                callback_sink = True
+                callback = keyword(call, "opener")
+                if callback is not None:
+                    callbacks.append(callback)
+        elif isinstance(function, ast.Attribute):
+            receiver_name = (
+                function.value.id if isinstance(function.value, ast.Name) else None
+            )
+            receiver_module = imported_modules.get(receiver_name or "")
+            if receiver_module == "re" and function.attr in {"sub", "subn"}:
+                callback_sink = True
+                callback = positional(call, 1)
+                if callback is not None and not isinstance(callback, ast.Constant):
+                    callbacks.append(callback)
+            elif receiver_module == "functools" and function.attr == "reduce":
+                callback_sink = True
+                callback = positional(call, 0)
+                if callback is not None:
+                    callbacks.append(callback)
+            elif receiver_module == "itertools" and function.attr in {
+                "starmap",
+                "takewhile",
+            }:
+                callback_sink = True
+                callback = positional(call, 0)
+                if callback is not None:
+                    callbacks.append(callback)
+            elif receiver_module == "itertools" and function.attr == "groupby":
+                callback_sink = True
+                callback = keyword(call, "key") or positional(call, 1)
+                if callback is not None:
+                    callbacks.append(callback)
+            elif function.attr == "sort":
+                callback_sink = True
+                callback = keyword(call, "key")
+                if callback is not None:
+                    callbacks.append(callback)
+            elif receiver_module == "json" and function.attr in {
+                "dump",
+                "dumps",
+                "load",
+                "loads",
+            }:
+                callback_sink = True
+                callback_names = {"cls"}
+                if function.attr in {"dump", "dumps"}:
+                    callback_names.add("default")
+                else:
+                    callback_names.update(
+                        {
+                            "object_hook",
+                            "object_pairs_hook",
+                            "parse_constant",
+                            "parse_float",
+                            "parse_int",
+                        }
+                    )
+                callbacks.extend(
+                    value.value
+                    for value in call.keywords
+                    if value.arg in callback_names
+                )
+            elif receiver_module == "shutil" and function.attr == "copytree":
+                callback_sink = True
+                callbacks.extend(
+                    value.value
+                    for value in call.keywords
+                    if value.arg in {"copy_function", "ignore"}
+                )
+            elif receiver_module == "shutil" and function.attr == "rmtree":
+                callback_sink = True
+                callbacks.extend(
+                    value.value
+                    for value in call.keywords
+                    if value.arg in {"onerror", "onexc"}
+                )
+            elif receiver_module == "toml" and function.attr in {"load", "loads"}:
+                callback_sink = True
+                callback = keyword(call, "decoder")
+                if callback is not None:
+                    callbacks.append(callback)
+        if callback_sink and (
+            any(isinstance(argument, ast.Starred) for argument in call.args)
+            or any(value.arg is None for value in call.keywords)
+        ):
+            return False
+        if any(
+            not _python_callback_reference_is_safe(callback, imported_bindings)
+            for callback in callbacks
+        ):
+            return False
+    return True
 
 
 def _python_call_argument(
@@ -742,6 +1117,13 @@ def _python_effects_are_fully_modeled(tree: ast.Module) -> bool:
     read_handles, write_handles = _python_open_handle_names(tree)
     path_bindings = _python_path_bindings(tree)
     imported_modules = _python_imported_modules(tree)
+    imported_bindings = _python_imported_bindings(tree)
+    if not _python_trusted_bindings_are_immutable(tree, imported_bindings):
+        return False
+    if not _python_higher_order_callbacks_are_safe(
+        tree, imported_modules, imported_bindings
+    ):
+        return False
     csv_writer_names = _python_csv_writer_names(
         tree,
         imported_modules=imported_modules,
@@ -798,6 +1180,15 @@ def _python_effects_are_fully_modeled(tree: ast.Module) -> bool:
             function.value.id if isinstance(function.value, ast.Name) else None
         )
         receiver_module = imported_modules.get(receiver_name or "")
+        module_calls = _SAFE_PYTHON_MODULE_CALLS.get(receiver_module or "")
+        if module_calls is not None:
+            if function.attr in module_calls:
+                continue
+            # A recognized pure-module receiver must not fall through to the
+            # broad container/string method allowlist below.  Unknown module
+            # calls remain unknown even when their attribute name happens to
+            # match a safe method on a different receiver type.
+            return False
         if receiver_name in read_handles and function.attr in {
             "close",
             "read",
@@ -2848,14 +3239,39 @@ _PYTHON_HEREDOC = re.compile(
     r"\A[ \t]*(?P<executable>(?:/[^\s]+/)?(?:python(?:3(?:\.\d+)*)?|py))"
     r"(?:[ \t]+-)?[ \t]+<<(?P<strip>-?)[ \t]*"
     r"(?P<quote>['\"]?)(?P<delimiter>[A-Za-z_][A-Za-z0-9_]*)"
-    r"(?P=quote)[ \t]*\r?\n"
+    r"(?P=quote)(?P<header_suffix>[^\r\n]*)\r?\n"
     r"(?P<body>.*?)"
-    r"(?:\r?\n)(?P<closing_tabs>\t*)(?P=delimiter)[ \t]*(?:\r?\n)?\Z",
+    r"(?:\r?\n)(?P<closing_tabs>\t*)(?P=delimiter)[ \t]*"
+    r"(?P<trailer>(?:\r?\n.*)?)\Z",
     re.DOTALL,
+)
+_PYTHON_HEREDOC_STDOUT_REDIRECT = re.compile(
+    r"\A[ \t]*(?:1)?(?P<operator>>{1,2}|>\|)[ \t]+(?P<target>.+?)[ \t]*\Z"
 )
 
 
-def _python_heredoc_source(source: str) -> tuple[str, bool, str] | None:
+def _literal_heredoc_path(raw: str) -> str | None:
+    try:
+        values = shlex.split(raw, comments=False, posix=True)
+    except ValueError:
+        return None
+    if len(values) != 1:
+        return None
+    value = values[0]
+    if (
+        not value
+        or value in _NON_FILE_REDIRECT_TARGETS
+        or value.startswith("/dev/fd/")
+        or _has_dynamic_path(value)
+        or len(value) > _MAX_RECEIPT_PATH_CHARS
+    ):
+        return None
+    return value
+
+
+def _python_heredoc_source(
+    source: str,
+) -> tuple[str, bool, str, str | None, str | None] | None:
     """Return one Python heredoc body and whether its bytes are static.
 
     Quoted delimiters are byte-stable.  An unquoted delimiter is accepted only
@@ -2868,12 +3284,46 @@ def _python_heredoc_source(source: str) -> tuple[str, bool, str] | None:
     match = _PYTHON_HEREDOC.fullmatch(source)
     if match is None:
         return None
+    header_suffix = match.group("header_suffix").strip()
+    stdout_path = None
+    if header_suffix:
+        redirect = _PYTHON_HEREDOC_STDOUT_REDIRECT.fullmatch(header_suffix)
+        if redirect is None:
+            return None
+        stdout_path = _literal_heredoc_path(redirect.group("target"))
+        if stdout_path is None:
+            return None
+    trailing_read_path = None
+    trailer = match.group("trailer").strip()
+    if trailer:
+        if stdout_path is None or "\n" in trailer or "\r" in trailer:
+            return None
+        try:
+            trailer_words = shlex.split(trailer, comments=False, posix=True)
+        except ValueError:
+            return None
+        if trailer_words[:1] != ["cat"]:
+            return None
+        trailer_paths = (
+            trailer_words[2:]
+            if trailer_words[1:2] == ["--"]
+            else trailer_words[1:]
+        )
+        if len(trailer_paths) != 1 or trailer_paths[0] != stdout_path:
+            return None
+        trailing_read_path = stdout_path
     body = match.group("body")
     literal = match.group("strip") != "-" and not (
         match.group("quote") == ""
         and any(marker in body for marker in ("$", "`", "\\"))
     )
-    return body, literal, match.group("executable")
+    return (
+        body,
+        literal,
+        match.group("executable"),
+        stdout_path,
+        trailing_read_path,
+    )
 
 
 def plan_terminal_execution(
@@ -2920,7 +3370,13 @@ def plan_terminal_execution(
         )
     nested_heredoc = _python_heredoc_source(code)
     if nested_heredoc is not None:
-        nested_python, literal, nested_executable = nested_heredoc
+        (
+            nested_python,
+            literal,
+            nested_executable,
+            stdout_path,
+            trailing_read_path,
+        ) = nested_heredoc
         if literal:
             (
                 effect,
@@ -2944,6 +3400,14 @@ def plan_terminal_execution(
             effect = "unknown"
         else:
             parsed = True
+        if stdout_path is not None:
+            writes = (*writes, stdout_path)
+            if effect != "unknown":
+                effect = "mutating"
+            else:
+                write_set_complete = False
+        if trailing_read_path is not None:
+            reads = (*reads, trailing_read_path)
         read_paths, read_ranges, entries_complete = _bounded_read_entries(
             (path, _FULL_READ) for path in reads
         )
@@ -2959,7 +3423,11 @@ def plan_terminal_execution(
             ("python",),
             (terminal_command_sha256(nested_python),),
             read_ranges=read_ranges,
-            executable_tokens=(nested_executable,),
+            executable_tokens=(
+                (nested_executable, "cat")
+                if trailing_read_path is not None
+                else (nested_executable,)
+            ),
             write_set_complete=write_set_complete,
         )
     if _looks_like_bare_python(code):
@@ -3104,7 +3572,10 @@ def plan_terminal_execution(
                 write_set_complete and mutation.write_set_complete
             )
             continue
-        if executable in _PYTHON_EXECUTABLES:
+        if (
+            executable in _PYTHON_EXECUTABLES
+            or _VERSIONED_PYTHON_EXECUTABLE.fullmatch(executable) is not None
+        ):
             python_source = _python_source_from_shell_command(node, code)
             if python_source is None:
                 unknown = True

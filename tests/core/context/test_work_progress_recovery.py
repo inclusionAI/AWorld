@@ -1,13 +1,10 @@
 from copy import deepcopy
-import json
 from types import SimpleNamespace
 
 import pytest
 
 from aworld.core.context.base import Context
 from aworld.core.task import Task
-from aworld.core.context.compiler import (ArtifactRequirement, CompletionContract,
-    CompletionMode, SelfCheckEvidence, ArtifactEvidence)
 from aworld.core.context.compiler.work_state import (advance_adaptive_work_state,
     build_adaptive_work_state_entry, adaptive_work_state_message)
 from aworld.core.context.execution_state import record_execution_state, get_execution_state
@@ -241,6 +238,101 @@ def test_goal_carry_excludes_historical_and_unscoped_ledgers():
     assert new.context_info["adaptive_work_state:current-agent"]["carried_from"] == current["scope"]
     assert not any(f"adaptive_work_state:{agent}" in new.context_info
                    for agent in ("unrelated-agent", "old-epoch-agent", "unscoped-agent"))
+
+
+def test_goal_carry_resets_segment_local_workspace_generation() -> None:
+    from aworld.core.context.work_progress import carry_goal_work_state
+
+    old = Context(task_id="segment-old", task_epoch=1)
+    old.context_info["adaptive_work_state:agent"] = {
+        "scope": {"task_id": "segment-old", "task_epoch": 1},
+        "revision": 4,
+        "workspace_generation": 5,
+        "artifact_fingerprint": "old-fingerprint",
+        "latest_sandbox_observations": [{"workspace_generation": 5}],
+        "latest_workspace_mutation": {
+            "operation_hash": "old-write",
+            "workspace_generation": 5,
+            "mutation_workspace_generation": 5,
+        },
+        "available_artifacts": [{"ref": "old-task-capability"}],
+        "public_probe_receipt_count": 1,
+        "public_probe_receipts": [{"receipt_id": "old-probe"}],
+        "recent_operations": [
+            {
+                "sequence": sequence,
+                "operation_hash": "same-read",
+                "result_hash": "same-result",
+                "read_only": True,
+                "available_artifacts": [{"ref": "nested-old-capability"}],
+                "sandbox_observations": [{"observation_id": "old-observation"}],
+            }
+            for sequence in (2, 3, 4)
+        ],
+    }
+    new = Context(task_id="segment-new", task_epoch=0)
+
+    assert carry_goal_work_state(old, new) == 1
+    carried = new.context_info["adaptive_work_state:agent"]
+    assert carried["workspace_generation"] == 0
+    assert carried["artifact_fingerprint"] is None
+    assert carried["latest_sandbox_observations"] == []
+    assert carried["latest_workspace_mutation"] is None
+    assert carried["available_artifacts"] == []
+    assert carried["public_probe_receipt_count"] == 0
+    assert carried["public_probe_receipts"][0]["historical"] is True
+    assert all(item["historical"] is True for item in carried["recent_operations"])
+    assert all(
+        item["available_artifacts"] == []
+        and item["sandbox_observations"] == []
+        for item in carried["recent_operations"]
+    )
+    carried_message = adaptive_work_state_message(carried)
+    assert carried_message is not None
+    assert "old-task-capability" not in carried_message["content"]
+    assert "nested-old-capability" not in carried_message["content"]
+
+    first_current_read = advance_adaptive_work_state(
+        carried,
+        {
+            "operation_hash": "same-read",
+            "result_hash": "same-result",
+            "actions": [],
+            "results": [],
+            "read_only": True,
+            "artifact_changed": False,
+            "artifact_fingerprint": None,
+            "workspace_generation": 0,
+            "sandbox_observations": [],
+            "goal_progress": False,
+            "rollback_performed": False,
+            "implicit_artifact_loss": False,
+            "available_artifacts": [],
+        },
+    )
+    assert first_current_read["repeated_read_evidence"] is None
+
+    advanced = advance_adaptive_work_state(
+        first_current_read,
+        {
+            "operation_hash": "new-write",
+            "result_hash": "new-result",
+            "actions": [],
+            "results": [],
+            "artifact_changed": True,
+            "artifact_fingerprint": "new-fingerprint",
+            "workspace_generation": 1,
+            "mutation_workspace_generation": 1,
+            "sandbox_observations": [{"workspace_generation": 1}],
+            "goal_progress": False,
+            "rollback_performed": False,
+            "implicit_artifact_loss": False,
+            "available_artifacts": [],
+        },
+    )
+
+    assert advanced["workspace_generation"] == 1
+    assert advanced["latest_workspace_mutation"]["operation_hash"] == "new-write"
 
 
 @pytest.mark.parametrize("source_epoch", [None, 4])

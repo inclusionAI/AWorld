@@ -17,6 +17,34 @@ _MAX_OBJECTIVE_CHARS = 8_192
 _MAX_OBLIGATIONS = 32
 
 
+def _reset_segment_local_work_state(state: dict) -> None:
+    """Remove Sandbox identities that are scoped to the prior task epoch."""
+
+    state["workspace_generation"] = 0
+    state["latest_sandbox_observations"] = []
+    state["latest_workspace_mutation"] = None
+    state["artifact_fingerprint"] = None
+    # Capability refs and cache observations are valid only in their creating
+    # task registry. Historical actions remain useful evidence but must not be
+    # mistaken for current-segment observations.
+    state["available_artifacts"] = []
+    for key in ("recent_operations", "milestones", "failed_operations"):
+        values = []
+        for item in state.get(key) or ():
+            if not isinstance(item, dict):
+                continue
+            historical = deepcopy(item)
+            historical["historical"] = True
+            historical["available_artifacts"] = []
+            historical["sandbox_observations"] = []
+            for result in historical.get("results") or ():
+                if isinstance(result, dict):
+                    result.pop("sandbox_observation", None)
+            values.append(historical)
+        if values or key in state:
+            state[key] = values
+
+
 def _bounded_text(value, *, maximum: int):
     if not isinstance(value, str) or not value.strip():
         return None
@@ -263,10 +291,15 @@ def carry_goal_work_state(old_context, new_context, *, agent_id_mapping=None) ->
         state["carried_from"] = state.get("scope") or {"task_id": getattr(old, "task_id", None)}
         state["scope"] = {"task_id": getattr(new, "task_id", None), "task_epoch": getattr(new, "task_epoch", None)}
         state["repeated_read_evidence"] = None
+        _reset_segment_local_work_state(state)
         for evidence in state.get("validation_evidence", []):
             evidence["historical"] = True
         for candidate in state.get("candidate_submission", []):
             candidate["historical"] = True
+        for receipt in state.get("public_probe_receipts", []):
+            if isinstance(receipt, dict):
+                receipt["historical"] = True
+        state["public_probe_receipt_count"] = 0
         observed = (state.get("model_work_checkpoint") or {}).get(
             "observed_candidate_evidence"
         )

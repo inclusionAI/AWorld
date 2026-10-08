@@ -101,6 +101,24 @@ def tool_action_batch_id(actions: Sequence[Any]) -> str:
     return "sha256:" + hashlib.sha256(_canonical_bytes(identity)).hexdigest()
 
 
+def tool_action_request_fingerprint(actions: Sequence[Any]) -> str:
+    """Bind one pre-execution receipt to exact Tool identities and arguments."""
+
+    identity = {
+        "actions": [
+            {
+                "tool_name": _action_value(action, "tool_name"),
+                "action_name": _action_value(action, "action_name"),
+                "tool_call_id": _action_value(action, "tool_call_id"),
+                "agent_name": _action_value(action, "agent_name"),
+                "params": _action_value(action, "params") or {},
+            }
+            for action in actions
+        ]
+    }
+    return _checksum(_json_value(identity))
+
+
 def _context_stream_id(context: Any) -> str:
     value = getattr(context, "_tool_action_journal_stream_id", None)
     if not isinstance(value, str) or not value:
@@ -320,4 +338,5 @@ __all__ = [
     "configured_journal_path",
     "read_tool_action_journal",
     "tool_action_batch_id",
+    "tool_action_request_fingerprint",
 ]

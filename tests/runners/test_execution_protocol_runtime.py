@@ -20,19 +20,23 @@ from aworld.core.context.compiler import (
 )
 from aworld.core.execution_protocol import (
     action_signature,
+    ControllerDecision,
     ControllerAction,
     DecisionReason,
+    EventKind,
     ExecutionProtocolPolicy,
     ExecutionProtocolState,
     ExecutionProtocolStore,
     ProtocolMode,
     ProtocolPhase,
+    ProtocolTransition,
 )
 from aworld.core.task import Task
 from aworld.runners.execution_protocol import (
     bind_pending_next_action_call,
     build_execution_protocol_telemetry,
     configure_execution_protocol,
+    constrain_candidate_convergence_tool_catalog,
     consume_execution_protocol_guidance,
     execution_protocol_accepts_model_profile,
     execution_protocol_model_decision_boundary,
@@ -68,7 +72,22 @@ from aworld.sandbox.terminal_receipt import (
     build_terminal_execution_receipt,
     plan_terminal_execution,
 )
-from aworld.sandbox.tool_observation import SandboxToolObservationRuntime
+from aworld.sandbox.tool_observation import (
+    SandboxToolObservationRuntime,
+    classify_tool_effect,
+)
+
+
+def _sandbox_receipt(action: ActionModel, generation: int, **values):
+    effect = classify_tool_effect(action)
+    return {
+        "schema_version": "aworld.sandbox-tool-observation/v1",
+        "tool_call_id": action.tool_call_id,
+        "canonical_tool": effect.identity,
+        "operation_hash": effect.operation_hash,
+        "workspace_generation": generation,
+        **values,
+    }
 
 
 @pytest.fixture(autouse=True)
@@ -1569,13 +1588,14 @@ async def test_post_candidate_read_only_loop_converges_to_validate_repair_or_sub
                     content="{}",
                     success=True,
                     metadata={
-                        "sandbox_observation": {
-                            "effect": "read_only",
-                            "workspace_mutated": False,
-                            "workspace_generation": 1,
-                            "cache_hit": False,
-                            "action_semantic_receipt": validation_receipt,
-                        }
+                        "sandbox_observation": _sandbox_receipt(
+                            validation,
+                            1,
+                            effect="read_only",
+                            workspace_mutated=False,
+                            cache_hit=False,
+                            action_semantic_receipt=validation_receipt,
+                        )
                     },
                 )
             ],
@@ -2724,11 +2744,14 @@ async def test_validate_convergence_admits_bounded_declared_revision_and_validat
             content="{}",
             success=True,
             metadata={
-                "sandbox_observation": {
-                    "cache_hit": cache_hit,
-                    "workspace_generation": workspace_generation,
-                    "action_semantic_receipt": semantic_receipt,
-                }
+                "sandbox_observation": _sandbox_receipt(
+                    action,
+                    workspace_generation,
+                    cache_hit=cache_hit,
+                    effect="read_only",
+                    workspace_mutated=False,
+                    action_semantic_receipt=semantic_receipt,
+                )
             },
         )
 
@@ -3053,6 +3076,826 @@ def test_candidate_allows_three_diagnostic_reads_then_repair(
     )
     assert repaired_gate["repair_authorization"] is None
     assert repaired_gate["candidate_diagnostic_read_count"] == 3
+
+
+def _exhaust_candidate_diagnostics(context: Context) -> str:
+    candidate_fingerprint = _activate_validate_repair_convergence(context)
+    for index in range(3):
+        assert mutation_gate_interception(
+            context,
+            [
+                ActionModel(
+                    tool_name="terminal",
+                    action_name="run_code",
+                    params={"code": f"cat diagnostic-{index}.log"},
+                    tool_call_id=f"diagnostic-{index}",
+                    agent_name="agent",
+                )
+            ],
+        ) is None
+    return candidate_fingerprint
+
+
+def test_exhausted_candidate_hides_exploration_and_latches_after_two_rejections():
+    from aworld.core.context.compiler import semantic_fingerprint
+
+    context = _context("exhausted-candidate-catalog")
+    candidate_fingerprint = _exhaust_candidate_diagnostics(context)
+    tools = [
+        {
+            "type": "function",
+            "function": {"name": "run_code", "parameters": {"type": "object"}},
+        },
+        {
+            "type": "function",
+            "function": {"name": "read_file", "parameters": {"type": "object"}},
+        },
+        {
+            "type": "function",
+            "function": {"name": "write_file", "parameters": {"type": "object"}},
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "CONTEXT_TOOL__list_sessions",
+                "parameters": {"type": "object"},
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "AWORLD_ADVISORY_VERIFIER__review_candidate",
+                "parameters": {"type": "object"},
+            },
+        },
+    ]
+    mapping = {
+        "run_code": "terminal__run_code",
+        "read_file": "filesystem__read_file",
+        "write_file": "filesystem__write_file",
+    }
+
+    constrained = constrain_candidate_convergence_tool_catalog(
+        context,
+        "agent",
+        tools,
+        tool_identity_mapping=mapping,
+    )
+
+    # Schema names alone cannot prove whether a custom Tool is a registered
+    # validation. Exact pre-Tool semantics remain authoritative until the
+    # persistent latch enters FINALIZE.
+    assert constrained == tools
+    assert not execution_protocol_requires_tool_free_finalization(context, "agent")
+
+    assert (
+        constrain_candidate_convergence_tool_catalog(
+            context,
+            "agent",
+            None,
+            tool_identity_mapping=mapping,
+        )
+        is None
+    )
+
+    for index in range(2):
+        blocked = mutation_gate_interception(
+            context,
+            [
+                ActionModel(
+                    tool_name="terminal",
+                    action_name="run_code",
+                    params={"code": f"unmodeled_command_{index}"},
+                    tool_call_id=f"rejected-after-quota-{index}",
+                    agent_name="agent",
+                )
+            ],
+        )
+        assert blocked is not None
+        gate = context.read_task_runtime_state(
+            "agent", "execution_protocol_mutation_gate"
+        )
+        assert gate["candidate_exhausted_rejection_fingerprint"] == (
+            candidate_fingerprint
+        )
+        assert gate["candidate_exhausted_rejection_count"] == index + 1
+        assert gate["candidate_tool_free_latched"] is (index == 1)
+
+    assert execution_protocol_requires_tool_free_finalization(context, "agent")
+    state = load_execution_protocol_state(context, "agent")
+    assert state.phase is ProtocolPhase.FINALIZE
+    assert state.finalization_entered is True
+    assert (
+        constrain_candidate_convergence_tool_catalog(
+            context,
+            "agent",
+            tools,
+            tool_identity_mapping=mapping,
+        )
+        == []
+    )
+    submitted = record_candidate_final(context, "agent")
+    assert submitted is not None
+    assert submitted.decision.action is ControllerAction.STOP_INCOMPLETE
+    assert submitted.state.phase is ProtocolPhase.REVIEW
+    assert submitted.state.review_pending is False
+    assert submitted.state.terminal_incomplete is True
+
+    # Simulate a legitimate new candidate epoch from a fresh execution state;
+    # the latch binding must not survive the fingerprint change.
+    store = ExecutionProtocolStore(
+        context,
+        "agent",
+        execution_protocol_policy(context, "agent"),
+    )
+    store.save(
+        replace(
+            store.load(),
+            phase=ProtocolPhase.EXECUTE,
+            terminal_incomplete=False,
+            finalization_entered=False,
+        )
+    )
+    new_fingerprint = semantic_fingerprint("diagnostic-candidate-revised")
+    record_tool_protocol_event(
+        context,
+        "agent",
+        _semantic_state(
+            current_agent_step=7,
+            candidate_present=True,
+            candidate_advanced=True,
+            delivery_progress_advanced=True,
+            public_candidate_mutated=True,
+            public_delivery_fingerprint=new_fingerprint,
+        ),
+    )
+    refreshed = context.read_task_runtime_state(
+        "agent", "execution_protocol_mutation_gate"
+    )
+    assert refreshed["candidate_exhausted_rejection_count"] == 0
+    assert refreshed["candidate_tool_free_latched"] is False
+    assert not execution_protocol_requires_tool_free_finalization(context, "agent")
+
+
+def test_late_catalog_observes_but_never_transitions_new_latch() -> None:
+    context = _context("late-catalog-latch-race")
+    _exhaust_candidate_diagnostics(context)
+    tools = [
+        {
+            "type": "function",
+            "function": {"name": "run_code", "parameters": {"type": "object"}},
+        }
+    ]
+
+    for index in range(2):
+        blocked = mutation_gate_interception(
+            context,
+            [
+                ActionModel(
+                    tool_name="terminal",
+                    action_name="run_code",
+                    params={"code": f"unmodeled_late_catalog_{index}"},
+                    tool_call_id=f"late-catalog-rejection-{index}",
+                    agent_name="agent",
+                )
+            ],
+        )
+        assert blocked is not None
+        assert constrain_candidate_convergence_tool_catalog(
+            context, "agent", tools
+        ) == tools
+        assert load_execution_protocol_state(context, "agent").phase is not (
+            ProtocolPhase.FINALIZE
+        )
+
+    gate = context.read_task_runtime_state(
+        "agent", "execution_protocol_mutation_gate"
+    )
+    assert gate["candidate_tool_free_latched"] is True
+    assert execution_protocol_requires_tool_free_finalization(context, "agent")
+    assert constrain_candidate_convergence_tool_catalog(
+        context, "agent", tools
+    ) == []
+
+
+def test_legal_declared_revision_only_resets_after_candidate_changes(tmp_path):
+    context = _context("declared-revision-resets-rejection-latch")
+    target = tmp_path / "candidate.txt"
+    context.configure_completion_contract(
+        CompletionContract(
+            required_artifacts=(ArtifactRequirement("candidate", str(target)),),
+            immutable_inputs=(),
+            validation_commands=(),
+            max_evidence_age_seconds=None,
+            required_final_evidence=(),
+        ),
+        mode=CompletionMode.ENFORCE,
+    )
+    _exhaust_candidate_diagnostics(context)
+    blocked = mutation_gate_interception(
+        context,
+        [
+            ActionModel(
+                tool_name="terminal",
+                action_name="run_code",
+                params={"code": "unmodeled_first_attempt"},
+                tool_call_id="first-rejected-attempt",
+                agent_name="agent",
+            )
+        ],
+    )
+    assert blocked is not None
+    assert blocked["candidate_exhausted_rejection_count"] == 1
+
+    revision = ActionModel(
+        tool_name="filesystem",
+        action_name="write_file",
+        params={"path": str(target), "content": "revised"},
+        tool_call_id="declared-revision",
+        agent_name="agent",
+    )
+    assert mutation_gate_interception(context, [revision]) is None
+    gate = context.read_task_runtime_state(
+        "agent", "execution_protocol_mutation_gate"
+    )
+    # Preflight admission is not proof that the Tool ran or changed the
+    # candidate, so it cannot erase the existing strike.
+    assert gate["candidate_exhausted_rejection_count"] == 1
+    assert gate["candidate_tool_free_latched"] is False
+
+    current_fingerprint = gate["candidate_fingerprint"]
+    record_tool_protocol_event(
+        context,
+        "agent",
+        _semantic_state(
+            current_agent_step=8,
+            candidate_present=True,
+            public_candidate_mutated=True,
+            public_delivery_fingerprint=current_fingerprint,
+            workspace_mutated=False,
+        ),
+    )
+    unchanged = context.read_task_runtime_state(
+        "agent", "execution_protocol_mutation_gate"
+    )
+    assert unchanged["candidate_exhausted_rejection_count"] == 1
+
+    from aworld.core.context.compiler import semantic_fingerprint
+
+    record_tool_protocol_event(
+        context,
+        "agent",
+        _semantic_state(
+            current_agent_step=9,
+            candidate_present=True,
+            candidate_advanced=True,
+            delivery_progress_advanced=True,
+            public_candidate_mutated=True,
+            public_delivery_fingerprint=semantic_fingerprint(
+                "declared-revision-candidate"
+            ),
+            workspace_mutated=True,
+        ),
+    )
+    gate = context.read_task_runtime_state(
+        "agent", "execution_protocol_mutation_gate"
+    )
+    assert gate["candidate_exhausted_rejection_count"] == 0
+    assert gate["candidate_tool_free_latched"] is False
+    assert not execution_protocol_requires_tool_free_finalization(context, "agent")
+
+
+def test_registered_validation_does_not_erase_exhausted_rejection_strike():
+    context = _context("validation-preserves-rejection-strike")
+    validation_code = "cat candidate.txt"
+    context.configure_completion_contract(
+        CompletionContract(
+            required_artifacts=(),
+            immutable_inputs=(),
+            validation_commands=(
+                ValidationCommand(
+                    command_id="validate-candidate",
+                    argv=("sh", "-c", validation_code),
+                ),
+            ),
+            max_evidence_age_seconds=None,
+            required_final_evidence=(),
+        ),
+        mode=CompletionMode.ENFORCE,
+    )
+    _exhaust_candidate_diagnostics(context)
+
+    def rejected(call_id: str):
+        return mutation_gate_interception(
+            context,
+            [
+                ActionModel(
+                    tool_name="terminal",
+                    action_name="run_code",
+                    params={"code": "unmodeled_after_quota"},
+                    tool_call_id=call_id,
+                    agent_name="agent",
+                )
+            ],
+        )
+
+    assert rejected("first-rejection") is not None
+    validation = ActionModel(
+        tool_name="terminal",
+        action_name="run_code",
+        params={"code": validation_code},
+        tool_call_id="registered-validation",
+        agent_name="agent",
+    )
+    assert mutation_gate_interception(context, [validation]) is None
+    gate = context.read_task_runtime_state(
+        "agent", "execution_protocol_mutation_gate"
+    )
+    assert gate["candidate_exhausted_rejection_count"] == 1
+    assert gate["candidate_tool_free_latched"] is False
+
+    assert rejected("second-rejection") is not None
+    assert execution_protocol_requires_tool_free_finalization(context, "agent")
+    assert load_execution_protocol_state(context, "agent").phase is (
+        ProtocolPhase.FINALIZE
+    )
+
+
+def test_mixed_registered_validation_and_blocked_read_converges_after_two_batches():
+    context = _context("mixed-validation-and-blocked-read-converges")
+    validation_code = "cat candidate.txt"
+    context.configure_completion_contract(
+        CompletionContract(
+            required_artifacts=(),
+            immutable_inputs=(),
+            validation_commands=(
+                ValidationCommand(
+                    command_id="validate-candidate",
+                    argv=("sh", "-c", validation_code),
+                ),
+            ),
+            max_evidence_age_seconds=None,
+            required_final_evidence=(),
+        ),
+        mode=CompletionMode.ENFORCE,
+    )
+    _exhaust_candidate_diagnostics(context)
+
+    for index in range(2):
+        validation_call_id = f"registered-validation-{index}"
+        blocked_call_id = f"blocked-read-{index}"
+        interception = mutation_gate_interception(
+            context,
+            [
+                ActionModel(
+                    tool_name="terminal",
+                    action_name="run_code",
+                    params={"code": validation_code},
+                    tool_call_id=validation_call_id,
+                    agent_name="agent",
+                ),
+                ActionModel(
+                    tool_name="terminal",
+                    action_name="run_code",
+                    params={"code": "cat unrelated-after-quota.log"},
+                    tool_call_id=blocked_call_id,
+                    agent_name="agent",
+                ),
+            ],
+        )
+        assert interception is not None
+        assert interception["block_all"] is False
+        assert interception["tool_call_ids"] == [blocked_call_id]
+        assert interception["candidate_exhausted_rejection_count"] == index + 1
+        assert interception["candidate_tool_free_latched"] is (index == 1)
+
+    # A mixed batch still has an admitted validation that may project fresh
+    # candidate evidence after execution, so preflight records the latch but
+    # defers the typed transition until the next pre-generation boundary.
+    assert load_execution_protocol_state(context, "agent").phase is not (
+        ProtocolPhase.FINALIZE
+    )
+    assert execution_protocol_requires_tool_free_finalization(context, "agent")
+    assert load_execution_protocol_state(context, "agent").phase is (
+        ProtocolPhase.FINALIZE
+    )
+
+
+@pytest.mark.parametrize("candidate_advances", (False, True))
+def test_mixed_declared_revision_resolves_latch_after_execution(
+    tmp_path,
+    candidate_advances: bool,
+) -> None:
+    from aworld.core.context.compiler import semantic_fingerprint
+
+    context = _context(f"mixed-revision-advance-{candidate_advances}")
+    target = tmp_path / "candidate.txt"
+    context.configure_completion_contract(
+        CompletionContract(
+            required_artifacts=(ArtifactRequirement("candidate", str(target)),),
+            immutable_inputs=(),
+            validation_commands=(),
+            max_evidence_age_seconds=None,
+            required_final_evidence=(),
+        ),
+        mode=CompletionMode.ENFORCE,
+    )
+    _exhaust_candidate_diagnostics(context)
+
+    first = mutation_gate_interception(
+        context,
+        [
+            ActionModel(
+                tool_name="terminal",
+                action_name="run_code",
+                params={"code": "unmodeled_first_attempt"},
+                tool_call_id="first-rejection",
+                agent_name="agent",
+            )
+        ],
+    )
+    assert first is not None
+    current = context.read_task_runtime_state(
+        "agent", "execution_protocol_mutation_gate"
+    )
+    old_fingerprint = current["candidate_fingerprint"]
+
+    blocked_call_id = "blocked-helper-read"
+    mixed = mutation_gate_interception(
+        context,
+        [
+            ActionModel(
+                tool_name="filesystem",
+                action_name="write_file",
+                params={"path": str(target), "content": "revised"},
+                tool_call_id="declared-revision",
+                agent_name="agent",
+            ),
+            ActionModel(
+                tool_name="terminal",
+                action_name="run_code",
+                params={"code": "cat unrelated-helper.log"},
+                tool_call_id=blocked_call_id,
+                agent_name="agent",
+            ),
+        ],
+    )
+    assert mixed is not None
+    assert mixed["block_all"] is False
+    assert mixed["tool_call_ids"] == [blocked_call_id]
+    assert mixed["candidate_tool_free_latched"] is True
+    assert load_execution_protocol_state(context, "agent").phase is not (
+        ProtocolPhase.FINALIZE
+    )
+
+    projected_fingerprint = (
+        semantic_fingerprint("advanced-declared-revision")
+        if candidate_advances
+        else old_fingerprint
+    )
+    record_tool_protocol_event(
+        context,
+        "agent",
+        _semantic_state(
+            current_agent_step=9,
+            candidate_present=True,
+            candidate_advanced=candidate_advances,
+            delivery_progress_advanced=candidate_advances,
+            public_candidate_mutated=candidate_advances,
+            public_delivery_fingerprint=projected_fingerprint,
+            workspace_mutated=candidate_advances,
+        ),
+    )
+
+    if candidate_advances:
+        gate = context.read_task_runtime_state(
+            "agent", "execution_protocol_mutation_gate"
+        )
+        assert gate["candidate_fingerprint"] == projected_fingerprint
+        assert gate["candidate_exhausted_rejection_count"] == 0
+        assert gate["candidate_tool_free_latched"] is False
+        assert not execution_protocol_requires_tool_free_finalization(
+            context, "agent"
+        )
+        assert load_execution_protocol_state(context, "agent").phase is not (
+            ProtocolPhase.FINALIZE
+        )
+    else:
+        assert execution_protocol_requires_tool_free_finalization(context, "agent")
+        assert load_execution_protocol_state(context, "agent").phase is (
+            ProtocolPhase.FINALIZE
+        )
+
+
+def test_malformed_latch_requires_durable_typed_finalization(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = _context("malformed-latch-finalization")
+    _exhaust_candidate_diagnostics(context)
+    gate = context.read_task_runtime_state(
+        "agent", "execution_protocol_mutation_gate"
+    )
+    gate["candidate_exhausted_rejection_count"] = "corrupt"
+    execution_protocol_module._write_runtime_value(
+        context,
+        "agent",
+        execution_protocol_module.MUTATION_GATE_STATE_KEY,
+        gate,
+    )
+    tools = [
+        {
+            "type": "function",
+            "function": {"name": "run_code", "parameters": {"type": "object"}},
+        }
+    ]
+    original_apply_event = execution_protocol_module._apply_event
+
+    def fail_finalization(context_arg, agent_id, event):
+        assert event.kind is EventKind.CONVERGENCE_EXHAUSTED
+        return ProtocolTransition(
+            state=load_execution_protocol_state(context_arg, agent_id),
+            decision=ControllerDecision(
+                action=ControllerAction.CONTINUE,
+                reason=DecisionReason.PERSISTENCE_ERROR,
+            ),
+        )
+
+    monkeypatch.setattr(
+        execution_protocol_module,
+        "_apply_event",
+        fail_finalization,
+    )
+    assert not execution_protocol_requires_tool_free_finalization(context, "agent")
+    assert constrain_candidate_convergence_tool_catalog(
+        context, "agent", tools
+    ) == tools
+    assert load_execution_protocol_state(context, "agent").phase is not (
+        ProtocolPhase.FINALIZE
+    )
+
+    monkeypatch.setattr(
+        execution_protocol_module,
+        "_apply_event",
+        original_apply_event,
+    )
+    assert execution_protocol_requires_tool_free_finalization(context, "agent")
+    assert load_execution_protocol_state(context, "agent").phase is (
+        ProtocolPhase.FINALIZE
+    )
+    submitted = record_candidate_final(context, "agent")
+    assert submitted is not None
+    assert submitted.decision.action is ControllerAction.STOP_INCOMPLETE
+    assert submitted.state.review_pending is False
+    assert submitted.state.terminal_incomplete is True
+
+
+def test_convergence_latch_persistence_failure_preserves_pending_latch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = _context("convergence-latch-persistence-failure")
+    _exhaust_candidate_diagnostics(context)
+
+    def reject(call_id: str):
+        return mutation_gate_interception(
+            context,
+            [
+                ActionModel(
+                    tool_name="terminal",
+                    action_name="run_code",
+                    params={"code": "unmodeled_after_quota"},
+                    tool_call_id=call_id,
+                    agent_name="agent",
+                )
+            ],
+        )
+
+    assert reject("first-rejection") is not None
+    before = context.read_task_runtime_state(
+        "agent", "execution_protocol_mutation_gate"
+    )
+    assert before["candidate_exhausted_rejection_count"] == 1
+
+    second = reject("second-rejection")
+    assert second is not None
+    pending = context.read_task_runtime_state(
+        "agent", "execution_protocol_mutation_gate"
+    )
+    assert pending["candidate_exhausted_rejection_count"] == 2
+    assert pending["candidate_tool_free_latched"] is True
+    assert load_execution_protocol_state(context, "agent").phase is not (
+        ProtocolPhase.FINALIZE
+    )
+
+    original_apply_event = execution_protocol_module._apply_event
+
+    def fail_finalization(context_arg, agent_id, event):
+        if event.kind is EventKind.CONVERGENCE_EXHAUSTED:
+            return ProtocolTransition(
+                state=load_execution_protocol_state(context_arg, agent_id),
+                decision=ControllerDecision(
+                    action=ControllerAction.CONTINUE,
+                    reason=DecisionReason.PERSISTENCE_ERROR,
+                ),
+            )
+        return original_apply_event(context_arg, agent_id, event)
+
+    monkeypatch.setattr(
+        execution_protocol_module,
+        "_apply_event",
+        fail_finalization,
+    )
+    assert not execution_protocol_requires_tool_free_finalization(context, "agent")
+    after = context.read_task_runtime_state(
+        "agent", "execution_protocol_mutation_gate"
+    )
+    assert after["candidate_exhausted_rejection_count"] == 2
+    assert after["candidate_rejection_high_water"] != before[
+        "candidate_rejection_high_water"
+    ]
+    assert after["candidate_tool_free_latched"] is True
+    assert load_execution_protocol_state(context, "agent").phase is not (
+        ProtocolPhase.FINALIZE
+    )
+
+    monkeypatch.setattr(
+        execution_protocol_module,
+        "_apply_event",
+        original_apply_event,
+    )
+    assert execution_protocol_requires_tool_free_finalization(context, "agent")
+    assert load_execution_protocol_state(context, "agent").phase is (
+        ProtocolPhase.FINALIZE
+    )
+
+
+def test_candidate_advance_wins_cross_provider_rejection_race(tmp_path) -> None:
+    from aworld.core.context.compiler import semantic_fingerprint
+
+    context = _context("candidate-advance-rejection-race")
+    target = tmp_path / "candidate.txt"
+    context.configure_completion_contract(
+        CompletionContract(
+            required_artifacts=(ArtifactRequirement("candidate", str(target)),),
+            immutable_inputs=(),
+            validation_commands=(),
+            max_evidence_age_seconds=None,
+            required_final_evidence=(),
+        ),
+        mode=CompletionMode.ENFORCE,
+    )
+    _exhaust_candidate_diagnostics(context)
+    assert mutation_gate_interception(
+        context,
+        [
+            ActionModel(
+                tool_name="terminal",
+                action_name="run_code",
+                params={"code": "unmodeled_first_attempt"},
+                tool_call_id="first-rejection",
+                agent_name="agent",
+            )
+        ],
+    ) is not None
+    # Provider A has an admitted declared revision in flight. Providers B/C
+    # may concurrently consume the remaining rejected-batch runway, but no
+    # pre-Tool path is allowed to enter FINALIZE before A projects its result.
+    assert mutation_gate_interception(
+        context,
+        [
+            ActionModel(
+                tool_name="filesystem",
+                action_name="write_file",
+                params={"path": str(target), "content": "revised"},
+                tool_call_id="in-flight-declared-revision",
+                agent_name="agent",
+            )
+        ],
+    ) is None
+
+    barrier = Barrier(2)
+    new_fingerprint = semantic_fingerprint("cross-provider-revision")
+
+    def project_revision_result():
+        barrier.wait(timeout=5)
+        return record_tool_protocol_event(
+            context,
+            "agent",
+            _semantic_state(
+                current_agent_step=12,
+                candidate_present=True,
+                candidate_advanced=True,
+                delivery_progress_advanced=True,
+                public_candidate_mutated=True,
+                public_delivery_fingerprint=new_fingerprint,
+                workspace_mutated=True,
+            ),
+        )
+
+    def intercept_other_provider():
+        barrier.wait(timeout=5)
+        return mutation_gate_interception(
+            context,
+            [
+                ActionModel(
+                    tool_name="terminal",
+                    action_name="run_code",
+                    params={"code": "cat unrelated-helper.log"},
+                    tool_call_id="cross-provider-rejection",
+                    agent_name="agent",
+                )
+            ],
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        projection = executor.submit(project_revision_result)
+        interception = executor.submit(intercept_other_provider)
+        projection.result(timeout=10)
+        interception.result(timeout=10)
+
+    gate = context.read_task_runtime_state(
+        "agent", "execution_protocol_mutation_gate"
+    )
+    assert gate["candidate_fingerprint"] == new_fingerprint
+    assert gate["candidate_exhausted_rejection_count"] == 0
+    assert gate["candidate_tool_free_latched"] is False
+    assert not execution_protocol_requires_tool_free_finalization(context, "agent")
+    assert load_execution_protocol_state(context, "agent").phase is not (
+        ProtocolPhase.FINALIZE
+    )
+
+
+def test_candidate_rejection_high_water_prevents_aba_refill() -> None:
+    from aworld.core.context.compiler import semantic_fingerprint
+
+    context = _context("candidate-rejection-aba")
+    candidate_a = _exhaust_candidate_diagnostics(context)
+
+    def reject(call_id: str):
+        return mutation_gate_interception(
+            context,
+            [
+                ActionModel(
+                    tool_name="terminal",
+                    action_name="run_code",
+                    params={"code": "unmodeled_after_quota"},
+                    tool_call_id=call_id,
+                    agent_name="agent",
+                )
+            ],
+        )
+
+    assert reject("candidate-a-first-rejection") is not None
+    gate_a = context.read_task_runtime_state(
+        "agent", "execution_protocol_mutation_gate"
+    )
+    assert gate_a["candidate_exhausted_rejection_count"] == 1
+    rejection_high_water = gate_a["candidate_rejection_high_water"]
+
+    candidate_b = semantic_fingerprint("candidate-b")
+    record_tool_protocol_event(
+        context,
+        "agent",
+        _semantic_state(
+            current_agent_step=10,
+            candidate_present=True,
+            candidate_advanced=True,
+            delivery_progress_advanced=True,
+            public_candidate_mutated=True,
+            public_delivery_fingerprint=candidate_b,
+        ),
+    )
+    gate_b = context.read_task_runtime_state(
+        "agent", "execution_protocol_mutation_gate"
+    )
+    assert gate_b["candidate_exhausted_rejection_count"] == 0
+    assert gate_b["candidate_rejection_high_water"] == rejection_high_water
+
+    record_tool_protocol_event(
+        context,
+        "agent",
+        _semantic_state(
+            current_agent_step=11,
+            candidate_present=True,
+            candidate_advanced=True,
+            delivery_progress_advanced=True,
+            public_candidate_mutated=True,
+            public_delivery_fingerprint=candidate_a,
+        ),
+    )
+    returned_a = context.read_task_runtime_state(
+        "agent", "execution_protocol_mutation_gate"
+    )
+    assert returned_a["candidate_diagnostic_read_count"] == 3
+    assert returned_a["candidate_exhausted_rejection_count"] == 1
+    assert returned_a["candidate_tool_free_latched"] is False
+
+    assert reject("candidate-a-second-rejection") is not None
+    assert execution_protocol_requires_tool_free_finalization(context, "agent")
+    final_gate = context.read_task_runtime_state(
+        "agent", "execution_protocol_mutation_gate"
+    )
+    assert final_gate["candidate_exhausted_rejection_count"] == 2
+    assert final_gate["candidate_tool_free_latched"] is True
 
 
 def test_candidate_change_resets_diagnostic_reads_via_gate_projection() -> None:
@@ -4756,11 +5599,12 @@ async def test_mutation_gate_public_probe_executes_through_hook_and_records_rece
                     content="{}",
                     success=True,
                     metadata={
-                        "sandbox_observation": {
-                            "effect": "read_only",
-                            "workspace_mutated": False,
-                            "workspace_generation": 0,
-                        }
+                        "sandbox_observation": _sandbox_receipt(
+                            validation,
+                            0,
+                            effect="read_only",
+                            workspace_mutated=False,
+                        )
                     },
                 )
             ],

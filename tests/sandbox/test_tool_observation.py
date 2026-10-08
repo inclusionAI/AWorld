@@ -702,6 +702,183 @@ with open('/app/out.txt', 'w') as output:
     assert plan.write_set_complete is True
 
 
+@pytest.mark.parametrize("shell_wrapped", (False, True))
+def test_module_qualified_gcode_geometry_keeps_complete_declared_output(
+    shell_wrapped: bool,
+) -> None:
+    source = """
+import math as geometry
+import re as pattern
+
+rows = open('/app/text.gcode', errors='replace').read().splitlines()
+segments = []
+for row in rows:
+    match = pattern.match(r'G1\\s+(.*)', row)
+    if not match:
+        continue
+    values = {
+        item.group(1): float(item.group(2))
+        for item in pattern.finditer(r'([XY])(-?[\\d.]+)', match.group(1))
+    }
+    if 'X' in values and 'Y' in values:
+        radius = geometry.hypot(values['X'], values['Y'])
+        angle = geometry.atan2(values['Y'], values['X'])
+        segments.append(
+            geometry.sqrt(radius)
+            + geometry.cos(angle)
+            + geometry.sin(angle)
+            + geometry.degrees(angle)
+        )
+open('/app/out.txt', 'w').write('\\n'.join(map(str, segments)))
+"""
+    if shell_wrapped:
+        plan = plan_terminal_execution(f"python3 -c {shlex.quote(source)}")
+    else:
+        plan = plan_terminal_execution(source, language="python")
+
+    assert plan.effect == "mutating"
+    assert plan.read_paths == ("/app/text.gcode",)
+    assert plan.write_paths == ("/app/out.txt",)
+    assert plan.read_set_complete is True
+    assert plan.write_set_complete is True
+
+
+def test_pure_module_allowlist_does_not_cross_module_boundaries() -> None:
+    source = """
+import math
+from pathlib import Path
+
+math.finditer('not-a-math-call')
+Path('/app/out.txt').write_text('must remain unknown')
+"""
+
+    plan = plan_terminal_execution(source, language="python")
+
+    assert plan.effect == "unknown"
+    assert plan.write_paths == ("/app/out.txt",)
+    assert plan.write_set_complete is False
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        """
+import math
+from pathlib import Path
+math.sin = Path('/tmp/aworld-purity-bypass').write_text
+math.sin('written')
+""",
+        """
+import math
+from pathlib import Path
+math = Path('/tmp/aworld-purity-bypass').write_text
+math('written')
+""",
+        """
+import math
+from pathlib import Path
+math.__dict__['sin'] = Path('/tmp/aworld-purity-bypass').write_text
+math.sin('written')
+""",
+        """
+import math
+from pathlib import Path
+def poison(module):
+    module.sin = Path('/tmp/aworld-purity-bypass').write_text
+poison(math)
+math.sin('written')
+""",
+    ),
+)
+def test_module_purity_rejects_rebinding_and_indirect_monkeypatch(source: str) -> None:
+    plan = plan_terminal_execution(source, language="python")
+
+    assert plan.effect == "unknown"
+    assert plan.cacheable is False
+    assert plan.write_paths == ()
+    assert plan.write_set_complete is False
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        """
+len = open
+len('/tmp/aworld-builtin-bypass', 'w')
+""",
+        """
+str = open
+list(map(str, ['/tmp/aworld-builtin-bypass']))
+""",
+        """
+__builtins__.len = open
+len('/tmp/aworld-builtin-bypass', 'w')
+""",
+        """
+__builtins__.__dict__['len'] = open
+len('/tmp/aworld-builtin-bypass', 'w')
+""",
+    ),
+)
+def test_trusted_builtin_rebinding_never_inherits_pure_authority(source: str) -> None:
+    plan = plan_terminal_execution(source, language="python")
+
+    assert plan.effect == "unknown"
+    assert plan.cacheable is False
+    assert plan.write_paths == ()
+    assert plan.write_set_complete is False
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        """
+from pathlib import Path
+list(map(Path('/tmp/aworld-callback-bypass').unlink, [True]))
+""",
+        """
+from pathlib import Path
+list(filter(Path('/tmp/aworld-callback-bypass').unlink, [True]))
+""",
+        """
+from pathlib import Path
+sorted([True], key=Path('/tmp/aworld-callback-bypass').unlink)
+""",
+        """
+from pathlib import Path
+list(iter(Path('/tmp/aworld-callback-bypass').unlink, None))
+""",
+        """
+from pathlib import Path
+def remove(missing_ok):
+    return Path('/tmp/aworld-callback-bypass').unlink(missing_ok)
+list(map(remove, [True]))
+""",
+    ),
+)
+def test_higher_order_callbacks_cannot_hide_path_mutations(source: str) -> None:
+    plan = plan_terminal_execution(source, language="python")
+
+    assert plan.effect == "unknown"
+    assert plan.cacheable is False
+    assert plan.write_set_complete is False
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "values = list(map(str, [1, 2, 3]))",
+        "values = sorted([(2, 'b'), (1, 'a')], key=lambda item: item[0])",
+    ),
+)
+def test_bounded_pure_higher_order_callbacks_remain_read_only(source: str) -> None:
+    plan = plan_terminal_execution(source, language="python")
+
+    assert plan.effect == "read_only"
+    assert plan.cacheable is True
+    assert plan.write_set_complete is True
+
+
 def test_shell_classifier_types_quoted_python_heredoc_read_and_write() -> None:
     read_source = """python3 <<'PY'\nfrom pathlib import Path\nprint(Path('/app/input.txt').read_text())\nPY\n"""
     write_source = """python <<'PY'\nfrom pathlib import Path\nPath('/app/result.txt').write_text('done')\nPY\n"""
@@ -731,6 +908,43 @@ def test_shell_classifier_types_quoted_python_heredoc_read_and_write() -> None:
         }
     ]
     assert write_source not in str(receipt)
+
+
+def test_shell_classifier_types_bounded_python_heredoc_stdout_revision() -> None:
+    source = """python3 << 'PYEOF' > /app/out.txt
+import re
+rows = open('/app/text.gcode', errors='replace').read().splitlines()
+values = [match.group(0) for row in rows for match in re.finditer(r'G1', row)]
+print('\\n'.join(values))
+PYEOF
+cat /app/out.txt
+"""
+
+    plan = plan_terminal_execution(source)
+
+    assert plan.effect == "mutating"
+    assert plan.parsed is True
+    assert plan.read_paths == ("/app/text.gcode", "/app/out.txt")
+    assert plan.write_paths == ("/app/out.txt",)
+    assert plan.read_set_complete is True
+    assert plan.write_set_complete is True
+    assert plan.nested_languages == ("python",)
+    assert plan.executable_tokens == ("python3", "cat")
+
+
+def test_python_heredoc_rejects_unmodeled_trailing_shell_command() -> None:
+    source = """python3 <<'PYEOF' > /app/out.txt
+print('candidate')
+PYEOF
+cat /app/out.txt; uname -a
+"""
+
+    plan = plan_terminal_execution(source)
+
+    assert plan.effect == "unknown"
+    assert plan.parsed is False
+    assert plan.read_paths == ()
+    assert plan.write_paths == ()
 
 
 def test_shell_classifier_keeps_dynamic_python_heredoc_unknown() -> None:
@@ -1868,13 +2082,60 @@ def test_scope_lru_evicts_generation_volatile_and_related_cache_state() -> None:
         scopes.append(next(reversed(runtime._scope_lru)))
 
     retained_scopes = set(runtime._scope_lru)
+    retained_generation_scopes = {scope[:2] for scope in retained_scopes}
     assert len(retained_scopes) == 2
     assert scopes[0] not in retained_scopes
-    assert set(runtime._generation).issubset(retained_scopes)
+    assert set(runtime._generation).issubset(retained_generation_scopes)
     assert runtime._volatile_scopes.issubset(retained_scopes)
     assert all(key[0] in retained_scopes for key in runtime._cache)
     assert all(key[0] in retained_scopes for key in runtime._authoritative_effects)
     assert all(key[0] in retained_scopes for key in runtime._retained_read_facts)
+
+
+def test_workspace_generation_remains_monotonic_across_checkpoint_revision() -> None:
+    runtime = SandboxToolObservationRuntime()
+    context = _context()
+    code = "printf value > result.txt"
+    action = {
+        "tool_name": "terminal",
+        "action_name": "run_code",
+        "tool_call_id": "checkpoint-write",
+        "params": {"code": code},
+    }
+    receipt = build_terminal_execution_receipt(
+        code=code,
+        plan=plan_terminal_execution(code),
+        executed=True,
+        exit_code=0,
+        timed_out=False,
+        mutation_observed=True,
+    )
+
+    for expected in (1, 2):
+        result = ActionResult(
+            success=True,
+            tool_call_id=action["tool_call_id"],
+            content="",
+            parameter=action["params"],
+            metadata={TERMINAL_EXECUTION_RECEIPT_KEY: receipt},
+        )
+        runtime.record(action, result, context=context)
+        assert result.metadata["sandbox_observation"]["workspace_generation"] == (
+            expected
+        )
+
+    context.context_lifecycle_state = _lifecycle(checkpoint_revision=1)
+    result = ActionResult(
+        success=True,
+        tool_call_id=action["tool_call_id"],
+        content="",
+        parameter=action["params"],
+        metadata={TERMINAL_EXECUTION_RECEIPT_KEY: receipt},
+    )
+    runtime.record(action, result, context=context)
+
+    assert runtime.current_generation(context) == 3
+    assert result.metadata["sandbox_observation"]["workspace_generation"] == 3
 
 
 def test_terminal_receipt_language_must_match_requested_execution_mode() -> None:

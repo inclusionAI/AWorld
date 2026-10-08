@@ -43,6 +43,19 @@ from aworld.core.memory import MemoryConfig
 from aworld.core.task import Task
 from aworld.memory.main import MemoryFactory
 from aworld.memory.models import MemoryAIMessage, MemoryHumanMessage, MessageMetadata
+from aworld.sandbox.tool_observation import classify_tool_effect
+
+
+def _sandbox_receipt(action: ActionModel, generation: int, **values):
+    effect = classify_tool_effect(action)
+    return {
+        "schema_version": "aworld.sandbox-tool-observation/v1",
+        "tool_call_id": action.tool_call_id,
+        "canonical_tool": effect.identity,
+        "operation_hash": effect.operation_hash,
+        "workspace_generation": generation,
+        **values,
+    }
 
 
 @pytest.fixture(autouse=True)
@@ -208,21 +221,35 @@ def test_unverified_artifact_advance_does_not_reset_recent_pair_window():
         )
     assert state["progress_guard_required"] is True
 
+    mutation_action = ActionModel(
+        tool_name="terminal",
+        action_name="run_code",
+        tool_call_id="mutated",
+        params={"code": "printf same > artifact"},
+    )
     advanced = record_semantic_tool_progress(
         context,
         tool_name="terminal",
         agent_id="agent",
-        actions=[action.model_copy(update={"tool_call_id": "mutated"})],
+        actions=[mutation_action],
         observation=Observation(
             action_result=[
                 ActionResult(
+                    tool_call_id=mutation_action.tool_call_id,
                     content="same",
                     success=True,
                     metadata={
                         "context_management": {
+                            "schema_version": "aworld.sandbox-artifact-progress/v1",
                             "artifact_changed": True,
                             "artifact_fingerprint_after": "artifact-v2",
-                        }
+                        },
+                        "sandbox_observation": _sandbox_receipt(
+                            mutation_action,
+                            1,
+                            effect="mutating",
+                            workspace_mutated=True,
+                        ),
                     },
                 )
             ]
@@ -363,9 +390,16 @@ def test_semantic_progress_records_bounded_work_state_for_checkpoint_resume():
                     success=True,
                     metadata={
                         "context_management": {
+                            "schema_version": "aworld.sandbox-artifact-progress/v1",
                             "artifact_changed": True,
                             "artifact_fingerprint_after": "artifact-v2",
-                        }
+                        },
+                        "sandbox_observation": _sandbox_receipt(
+                            action,
+                            1,
+                            effect="unknown",
+                            workspace_mutated=True,
+                        ),
                     },
                 )
             ]
@@ -612,16 +646,30 @@ def test_adaptive_work_state_uses_amni_working_state_checkpoint_surface():
 
 def test_semantic_progress_distinguishes_work_artifact_from_goal_progress():
     context = Context(task_id="artifact-progress")
+    action = ActionModel(
+        tool_name="terminal",
+        action_name="run_code",
+        tool_call_id="make-call",
+        params={"code": "make"},
+    )
     unchanged = Observation(
         action_result=[
             ActionResult(
+                tool_call_id=action.tool_call_id,
                 content="same",
                 success=True,
                 metadata={
                     "context_management": {
+                        "schema_version": "aworld.sandbox-artifact-progress/v1",
                         "artifact_changed": False,
                         "artifact_fingerprint_after": "before",
-                    }
+                    },
+                    "sandbox_observation": _sandbox_receipt(
+                        action,
+                        0,
+                        effect="unknown",
+                        workspace_mutated=False,
+                    ),
                 },
             )
         ]
@@ -629,19 +677,24 @@ def test_semantic_progress_distinguishes_work_artifact_from_goal_progress():
     changed = Observation(
         action_result=[
             ActionResult(
+                tool_call_id=action.tool_call_id,
                 content="same",
                 success=True,
                 metadata={
                     "context_management": {
+                        "schema_version": "aworld.sandbox-artifact-progress/v1",
                         "artifact_changed": True,
                         "artifact_fingerprint_after": "after",
-                    }
+                    },
+                    "sandbox_observation": _sandbox_receipt(
+                        action,
+                        1,
+                        effect="unknown",
+                        workspace_mutated=True,
+                    ),
                 },
             )
         ]
-    )
-    action = ActionModel(
-        tool_name="terminal", action_name="run_code", params={"code": "make"}
     )
     record_semantic_tool_progress(
         context,

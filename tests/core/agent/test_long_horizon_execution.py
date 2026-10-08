@@ -54,6 +54,7 @@ from aworld.runners.execution_protocol import (
     record_candidate_final,
     load_model_plan_update,
     load_public_probe_receipts,
+    mutation_gate_interception,
     record_model_execution_profile,
     record_model_decision_attempt_failure,
     record_model_decision_unavailable,
@@ -2085,6 +2086,208 @@ async def test_no_user_tools_do_not_force_unreachable_profile_or_review() -> Non
     assert state.final_review_count == 0
     assert state.history[-1].kind is EventKind.CANDIDATE_FINAL
     assert state.history[-1].review_boundary_available is False
+
+
+@pytest.mark.asyncio
+async def test_late_catalog_latch_finalizes_only_at_next_generation_boundary() -> None:
+    requests = []
+
+    class LateLatchAgent(Agent):
+        filter_calls = 0
+
+        async def _add_message_to_memory(self, *args, **kwargs):
+            return None
+
+        async def build_llm_input(self, observation, info=None, message=None, **kwargs):
+            return [{"role": "user", "content": str(observation.content or "")}]
+
+        def _with_long_horizon_execution_profile(self, tools, context):
+            return tools, llm_agent_module._LongHorizonControlOffer()
+
+        async def _filter_tools(self, context=None):
+            self.filter_calls += 1
+            if self.filter_calls == 1:
+                blocked = mutation_gate_interception(
+                    context,
+                    [
+                        ActionModel(
+                            tool_name="terminal",
+                            action_name="run_code",
+                            params={"code": "unmodeled_late_catalog"},
+                            tool_call_id="late-catalog-second-rejection",
+                            agent_name=self.id(),
+                        )
+                    ],
+                )
+                assert blocked is not None
+                assert blocked["candidate_tool_free_latched"] is True
+            return [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "run_code",
+                        "description": "run one command",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {"code": {"type": "string"}},
+                            "required": ["code"],
+                        },
+                    },
+                }
+            ]
+
+        async def invoke_model(self, messages=None, message=None, **kwargs):
+            prepared_tools = kwargs.get("prepared_tools")
+            requests.append((messages, prepared_tools))
+            if prepared_tools is not None:
+                tool_calls = [
+                    ToolCall(
+                        id="late-catalog-tool",
+                        function=Function(
+                            name="run_code",
+                            arguments='{"code":"cat still-blocked.log"}',
+                        ),
+                    )
+                ]
+                return ModelResponse(
+                    id="late-catalog-tool-response",
+                    model="offline",
+                    content="",
+                    message={
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": tool_calls,
+                    },
+                    tool_calls=tool_calls,
+                    finish_reason="tool_calls",
+                    usage={"prompt_tokens": 1, "completion_tokens": 1},
+                )
+            return ModelResponse(
+                id="late-catalog-final",
+                model="offline",
+                content="bounded final",
+                message={"role": "assistant", "content": "bounded final"},
+                finish_reason="stop",
+                usage={"prompt_tokens": 1, "completion_tokens": 1},
+            )
+
+    context = Context(task_id="late-catalog-agent-race")
+    context.set_task(
+        Task(id="late-catalog-agent-race", input="finish the task", timeout=600)
+    )
+    policy = ExecutionProtocolPolicy(
+        mode=ProtocolMode.GUIDE,
+        post_candidate_read_only_threshold=1,
+        repetition_threshold=99,
+        low_information_gain_threshold=99,
+        no_goal_progress_threshold=99,
+        stagnation_event_threshold=99,
+        independent_acceptance_enabled=False,
+    )
+    agent = LateLatchAgent(
+        name="Aworld",
+        conf=AgentConfig(
+            llm_provider="openai",
+            llm_model_name="offline",
+            llm_api_key="offline",
+        ),
+        execution_protocol_policy=policy,
+        max_loop_steps=0,
+    )
+    configure_execution_protocol(context, agent.id(), policy)
+    _declare_long_horizon(context, agent.id())
+
+    from aworld.core.context.compiler import semantic_fingerprint
+
+    candidate_fingerprint = semantic_fingerprint("late-catalog-candidate")
+
+    def semantic(step: int, **overrides):
+        value = {
+            "repetition_count": 0,
+            "low_information_gain_count": 0,
+            "no_goal_progress_count": 0,
+            "goal_progress_observable": False,
+            "goal_progress": False,
+            "validation_evidence_advanced": False,
+            "completion_advanced": False,
+            "current_agent_step": step,
+            "operation_hash": f"sha256:late-operation-{step}",
+            "result_hash": f"sha256:late-result-{step}",
+        }
+        value.update(overrides)
+        return value
+
+    record_tool_protocol_event(
+        context,
+        agent.id(),
+        semantic(
+            1,
+            candidate_present=True,
+            candidate_advanced=True,
+            delivery_progress_advanced=True,
+            public_candidate_mutated=True,
+            public_delivery_fingerprint=candidate_fingerprint,
+        ),
+    )
+    record_tool_protocol_event(
+        context,
+        agent.id(),
+        semantic(
+            2,
+            candidate_present=True,
+            public_candidate_mutated=True,
+            public_delivery_fingerprint=candidate_fingerprint,
+        ),
+    )
+    for index in range(3):
+        assert mutation_gate_interception(
+            context,
+            [
+                ActionModel(
+                    tool_name="terminal",
+                    action_name="run_code",
+                    params={"code": f"cat diagnostic-{index}.log"},
+                    tool_call_id=f"diagnostic-{index}",
+                    agent_name=agent.id(),
+                )
+            ],
+        ) is None
+    assert mutation_gate_interception(
+        context,
+        [
+            ActionModel(
+                tool_name="terminal",
+                action_name="run_code",
+                params={"code": "unmodeled_first_rejection"},
+                tool_call_id="late-catalog-first-rejection",
+                agent_name=agent.id(),
+            )
+        ],
+    ) is not None
+
+    message = Message(category=Constants.AGENT, headers={"context": context})
+    first = await agent.async_policy(Observation(content="continue"), message=message)
+
+    assert first[0].tool_name == "run_code"
+    assert requests[0][1] is not None
+    assert load_execution_protocol_state(context, agent.id()).phase is not (
+        ProtocolPhase.FINALIZE
+    )
+
+    second = await agent.async_policy(
+        Observation(content="blocked tool result"), message=message
+    )
+
+    assert second[0].policy_info == "bounded final"
+    assert requests[1][1] is None
+    assert any(
+        "reserved this bounded final turn" in str(item.get("content", ""))
+        for item in requests[1][0]
+    )
+    final_state = load_execution_protocol_state(context, agent.id())
+    assert final_state.phase is ProtocolPhase.REVIEW
+    assert final_state.review_pending is False
+    assert final_state.terminal_incomplete is True
 
 
 def test_strict_critic_uses_required_probe_control_not_review_marker(

@@ -9,6 +9,19 @@ from aworld.core.task import Task
 from aworld.core.tool.base import ensure_action_results
 from aworld.runners.event_runner import TaskEventRunner
 from aworld.runners.post_tool_progress import arm_post_tool_progress_watchdog
+from aworld.sandbox.tool_observation import classify_tool_effect
+
+
+def _sandbox_receipt(action: ActionModel, generation: int, **values):
+    effect = classify_tool_effect(action)
+    return {
+        "schema_version": "aworld.sandbox-tool-observation/v1",
+        "tool_call_id": action.tool_call_id,
+        "canonical_tool": effect.identity,
+        "operation_hash": effect.operation_hash,
+        "workspace_generation": generation,
+        **values,
+    }
 
 
 def _build_runner() -> TaskEventRunner:
@@ -221,13 +234,15 @@ def test_sandbox_receipts_track_consecutive_reads_until_real_mutation():
                 ActionResult(
                     content=f"result-{index}",
                     success=effect != "blocked_read_only",
+                    tool_call_id=action.tool_call_id,
                     metadata={
-                        "sandbox_observation": {
-                            "effect": effect,
-                            "workspace_mutated": workspace_mutated,
-                            "workspace_generation": int(bool(workspace_mutated)),
-                            "terminal_execution_receipt": terminal_receipt,
-                        }
+                        "sandbox_observation": _sandbox_receipt(
+                            action,
+                            int(bool(workspace_mutated)),
+                            effect=effect,
+                            workspace_mutated=workspace_mutated,
+                            terminal_execution_receipt=terminal_receipt,
+                        )
                     },
                 )
             ],
@@ -335,13 +350,15 @@ async def test_successful_mutation_receipt_opens_one_real_hook_validation_window
                 ActionResult(
                     content=f"receipt-{index}",
                     success=True,
+                    tool_call_id=action.tool_call_id,
                     metadata={
-                        "sandbox_observation": {
-                            "effect": effect,
-                            "workspace_mutated": None,
-                            "workspace_generation": index,
-                            "terminal_execution_receipt": terminal_receipt,
-                        }
+                        "sandbox_observation": _sandbox_receipt(
+                            action,
+                            index,
+                            effect=effect,
+                            workspace_mutated=None,
+                            terminal_execution_receipt=terminal_receipt,
+                        )
                     },
                 )
             ],

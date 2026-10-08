@@ -17,6 +17,7 @@ from aworld.sandbox.runtime import SandboxManager
 from aworld.core.tool_action_journal import (
     append_tool_action_event,
     tool_action_batch_id,
+    tool_action_request_fingerprint,
 )
 from aworld.core.common import ActionResult
 from aworld.sandbox.tool_observation import (
@@ -231,6 +232,36 @@ class BaseSandbox(SandboxSetup):
                 and interception.get("kind") == "block"
                 and interception.get("block_all") is True
             )
+            current_call_ids = {
+                str(
+                    (action if isinstance(action, dict) else vars(action)).get(
+                        "tool_call_id"
+                    )
+                    or ""
+                )
+                for action in actions
+            }
+            current_call_ids.discard("")
+            expected_fingerprint = (
+                interception.get("action_request_fingerprint")
+                if isinstance(interception, dict)
+                else None
+            )
+            if (
+                isinstance(interception, dict)
+                and not block_all
+                and (
+                    not blocked_call_ids
+                    or len(current_call_ids) != len(actions)
+                    or not blocked_call_ids.issubset(current_call_ids)
+                    or (
+                        expected_fingerprint is not None
+                        and expected_fingerprint
+                        != tool_action_request_fingerprint(actions)
+                    )
+                )
+            ):
+                block_all = True
             # Preserve one canonical execution boundary for every capability.
             # Existing MCP/local/docker details remain private transports below
             # this method. Sequential execution also makes workspace generation
@@ -254,6 +285,7 @@ class BaseSandbox(SandboxSetup):
                     )
                     receipt = {
                         "schema_version": "aworld.sandbox-tool-observation/v1",
+                        "tool_call_id": tool_call_id or None,
                         "canonical_tool": effect.identity,
                         "effect": (
                             "blocked_read_only"

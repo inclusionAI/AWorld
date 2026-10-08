@@ -419,7 +419,7 @@ async def test_run_code_emits_compact_terminal_execution_receipt() -> None:
     assert payload["success"] is True
     assert receipt == {
         "schema_version": "aworld.terminal-execution-receipt/v2",
-        "parser_version": 8,
+        "parser_version": 9,
         "language_contract_version": 1,
         "command_sha256": terminal_command_sha256(command),
         "requested_language": "shell",

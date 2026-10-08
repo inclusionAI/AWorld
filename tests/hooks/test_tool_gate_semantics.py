@@ -8,9 +8,7 @@ Test Coverage:
 """
 
 import asyncio
-import tempfile
 import yaml
-from pathlib import Path
 from typing import Tuple, Any, Dict
 
 import pytest
@@ -21,6 +19,7 @@ from aworld.core.context.amni import AmniContext
 from aworld.core.event.base import Message
 from aworld.core.tool.base import AsyncTool, Tool, ToolExecutionDenied
 from aworld.runners.hook.hook_factory import HookManager
+from aworld.core.tool_action_journal import tool_action_request_fingerprint
 
 
 class MockAsyncTool(AsyncTool):
@@ -316,7 +315,7 @@ EOF
 
         # Execute tool
         initial_count = mock_tool.execution_count
-        result = await mock_tool.step(message)
+        await mock_tool.step(message)
 
         # Verify tool WAS executed
         assert mock_tool.execution_count == initial_count + 1, "Tool should have been executed"
@@ -390,7 +389,7 @@ EOF
 
         # Execute tool
         initial_count = mock_tool.execution_count
-        result = await mock_tool.step(message)
+        await mock_tool.step(message)
 
         # Verify tool WAS executed (observe-only hook doesn't block)
         assert mock_tool.execution_count == initial_count + 1, "Tool should execute with observe-only hook"
@@ -732,3 +731,180 @@ EOF
                 await second_result
 
         assert tool.execution_count == 1
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("tool_fixture_name", "tool_name"),
+        [
+            ("mock_tool", "mock_tool"),
+            ("mock_sync_tool", "mock_sync_tool"),
+        ],
+    )
+    async def test_tool_interception_blocks_sync_and_async_provider_execution(
+        self,
+        request,
+        tool_fixture_name,
+        tool_name,
+        mock_context,
+        monkeypatch,
+    ):
+        """A hook block is execution authority for every Tool provider."""
+
+        tool = request.getfixturevalue(tool_fixture_name)
+        action = ActionModel(
+            tool_name=tool_name,
+            action_name="run",
+            params={"candidate": "untrusted"},
+            agent_name="test_agent",
+            tool_call_id="blocked-call",
+        )
+        message = Message(
+            category="test",
+            payload=[action],
+            sender="test_agent",
+            session_id="test_session",
+        )
+        message.context = mock_context
+        hook_event = Message(
+            category="agent_hook",
+            payload=None,
+            sender="mutation_gate",
+            headers={
+                "tool_interception": {
+                    "schema_version": "aworld.tool-interception/v1",
+                    "kind": "block",
+                    "tool_call_ids": ["blocked-call"],
+                    "block_all": True,
+                    "error_code": "candidate_convergence_required",
+                    "content_type": "candidate_convergence_required",
+                    "message": "submit or revise the declared candidate",
+                }
+            },
+        )
+
+        if isinstance(tool, AsyncTool):
+            async def async_hooks(*, hook_point, **_kwargs):
+                return [hook_event] if hook_point == "before_tool_call" else []
+
+            monkeypatch.setattr(tool, "run_hooks", async_hooks)
+        else:
+            def sync_hooks(*, hook_point, **_kwargs):
+                return [hook_event] if hook_point == "before_tool_call" else []
+
+            monkeypatch.setattr(tool, "run_hooks", sync_hooks)
+
+        step_result = tool.step(message)
+        result = await step_result if asyncio.iscoroutine(step_result) else step_result
+
+        assert tool.execution_count == 0
+        action_result = result.payload[0].action_result[0]
+        assert action_result.success is False
+        assert action_result.error == "candidate_convergence_required"
+        assert action_result.metadata["provider_executed"] is False
+        assert "candidate_convergence_required" in action_result.content
+
+        next_action = ActionModel(
+            tool_name=tool_name,
+            action_name="run",
+            params={"candidate": "current"},
+            agent_name="test_agent",
+            tool_call_id="allowed-next-call",
+        )
+        next_message = Message(
+            category="test",
+            payload=[next_action],
+            sender="test_agent",
+            session_id="test_session",
+            # Model the normal continuation-header copy. The old interception
+            # must not become execution authority for this new batch.
+            headers=dict(result.headers),
+        )
+        next_message.context = mock_context
+        if isinstance(tool, AsyncTool):
+            async def no_async_hooks(**_kwargs):
+                return []
+
+            monkeypatch.setattr(tool, "run_hooks", no_async_hooks)
+        else:
+            def no_sync_hooks(**_kwargs):
+                return []
+
+            monkeypatch.setattr(tool, "run_hooks", no_sync_hooks)
+
+        next_step_result = tool.step(next_message)
+        if asyncio.iscoroutine(next_step_result):
+            await next_step_result
+
+        assert tool.execution_count == 1
+        assert tool.last_action[0].tool_call_id == "allowed-next-call"
+
+    @pytest.mark.asyncio
+    async def test_interception_fails_whole_batch_closed_after_input_rewrite(
+        self,
+        mock_tool,
+        mock_context,
+        monkeypatch,
+    ):
+        original = [
+            ActionModel(
+                tool_name="mock_tool",
+                action_name="run",
+                params={"value": value},
+                agent_name="test_agent",
+                tool_call_id=call_id,
+            )
+            for call_id, value in (("call-a", "a"), ("call-b", "b"))
+        ]
+        rewritten = [
+            original[0],
+            ActionModel(
+                tool_name="mock_tool",
+                action_name="run",
+                params={"value": "rewritten"},
+                agent_name="test_agent",
+                tool_call_id="call-c",
+            ),
+        ]
+        hook_event = Message(
+            category="agent_hook",
+            payload=None,
+            sender="mutation_gate",
+            headers={
+                "updated_input": [item.model_dump() for item in rewritten],
+                "tool_interception": {
+                    "schema_version": "aworld.tool-interception/v1",
+                    "kind": "block",
+                    "tool_call_ids": ["call-a", "call-b"],
+                    "block_all": False,
+                    "action_request_fingerprint": (
+                        tool_action_request_fingerprint(original)
+                    ),
+                    "error_code": "candidate_convergence_required",
+                    "content_type": "candidate_convergence_required",
+                    "message": "submit or revise the candidate",
+                },
+            },
+        )
+
+        async def hooks(*, hook_point, **_kwargs):
+            return [hook_event] if hook_point == "before_tool_call" else []
+
+        monkeypatch.setattr(mock_tool, "run_hooks", hooks)
+        message = Message(
+            category="tool_call",
+            payload=original,
+            sender="test_agent",
+            session_id="test_session",
+        )
+        message.context = mock_context
+
+        result = await mock_tool.step(message)
+
+        assert mock_tool.execution_count == 0
+        action_results = result.payload[0].action_result
+        assert len(action_results) == 2
+        assert all(item.success is False for item in action_results)
+        assert all(
+            item.metadata["provider_executed"] is False
+            for item in action_results
+        )

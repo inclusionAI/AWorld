@@ -268,6 +268,7 @@ class EventKind(str, Enum):
     DELIVERY_STATUS = "delivery_status"
     REPLAN_APPLIED = "replan_applied"
     REPLAN_UNACKNOWLEDGED = "replan_unacknowledged"
+    CONVERGENCE_EXHAUSTED = "convergence_exhausted"
     CANDIDATE_FINAL = "candidate_final"
     REVIEW_RESULT = "review_result"
 
@@ -320,6 +321,7 @@ class DecisionReason(str, Enum):
     REPLAN_LIMIT_REACHED = "replan_limit_reached"
     REPLAN_APPLIED = "replan_applied"
     FINALIZATION_RESERVE = "finalization_reserve"
+    CONVERGENCE_REJECTION_LIMIT = "convergence_rejection_limit"
     FINAL_REVIEW_REQUIRED = "final_review_required"
     FINAL_REVIEW_ALREADY_USED = "final_review_already_used"
     SHORT_TASK_BYPASS = "short_task_bypass"

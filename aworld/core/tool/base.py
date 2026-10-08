@@ -3,9 +3,9 @@
 
 import abc
 import inspect
+import json
 import os
 import threading
-import time
 import traceback
 from typing import Dict, Tuple, Any, TypeVar, Generic, List, Union, Callable
 
@@ -51,6 +51,7 @@ from aworld.runners.post_tool_progress import arm_post_tool_progress_watchdog
 from aworld.core.tool_action_journal import (
     append_tool_action_event,
     tool_action_batch_id,
+    tool_action_request_fingerprint,
 )
 from aworld.utils.common import convert_to_snake, sync_exec
 
@@ -289,6 +290,190 @@ def _apply_hook_headers_to_message(target_message: Message, hook_events: List[Me
         tool_interception = headers.get('tool_interception')
         if isinstance(tool_interception, dict):
             target_message.headers['tool_interception'] = tool_interception
+
+
+def _intercepted_tool_step_result(
+    message: Message,
+    actions: List[ActionModel],
+) -> Tuple[Observation, float, bool, bool, Dict[str, Any]] | None:
+    """Materialize a whole-batch interception without invoking the provider."""
+
+    admitted, blocked_indices, interception = _partition_tool_interception(
+        message, actions
+    )
+    if interception is None or admitted:
+        return None
+    results = [
+        _intercepted_action_result(action, interception)
+        for action in actions
+    ]
+    observation = Observation(
+        content=results[-1].content if results else None,
+        action_result=results,
+    )
+    source_error = str(
+        interception.get("error_code") or "tool_call_intercepted"
+    )
+    return (
+        observation,
+        0.0,
+        False,
+        False,
+        {
+            "error": source_error,
+            "tool_interception": dict(interception),
+            "provider_executed": False,
+            "blocked_action_count": len(blocked_indices),
+        },
+    )
+
+
+def _partition_tool_interception(
+    message: Message,
+    actions: List[ActionModel],
+) -> tuple[List[ActionModel], set[int], Dict[str, Any] | None]:
+    """Split a current, typed interception before provider execution.
+
+    The framework owns this split for every Tool provider.  A valid partial
+    receipt executes only admitted actions; blocked actions never cross the
+    provider boundary and are merged back positionally afterward.  A receipt
+    whose IDs do not bind the rewritten current batch fails the whole batch
+    closed rather than becoming stale observational metadata.
+    """
+
+    interception = (
+        message.headers.get("tool_interception")
+        if isinstance(getattr(message, "headers", None), dict)
+        else None
+    )
+    if (
+        not isinstance(interception, dict)
+        or interception.get("schema_version") != "aworld.tool-interception/v1"
+        or interception.get("kind") != "block"
+    ):
+        return list(actions), set(), None
+    blocked_call_ids = {
+        value
+        for value in (interception.get("tool_call_ids") or ())
+        if isinstance(value, str) and value
+    }
+    block_all = interception.get("block_all") is True
+    current_call_ids = [
+        str(action.tool_call_id or "") for action in actions
+    ]
+    current_call_id_set = {value for value in current_call_ids if value}
+    expected_fingerprint = interception.get("action_request_fingerprint")
+    if (
+        not block_all
+        and (
+            not blocked_call_ids
+            or len(current_call_id_set) != len(actions)
+            or not blocked_call_ids.issubset(current_call_id_set)
+            or (
+                expected_fingerprint is not None
+                and expected_fingerprint
+                != tool_action_request_fingerprint(actions)
+            )
+        )
+    ):
+        block_all = True
+    blocked_indices = {
+        index
+        for index, action in enumerate(actions)
+        if action.tool_call_id
+        and str(action.tool_call_id) in blocked_call_ids
+    }
+    if block_all:
+        blocked_indices = set(range(len(actions)))
+    admitted = [
+        action for index, action in enumerate(actions) if index not in blocked_indices
+    ]
+    return admitted, blocked_indices, dict(interception)
+
+
+def _intercepted_action_result(
+    action: ActionModel,
+    interception: Dict[str, Any],
+) -> ActionResult:
+    source_error = str(
+        interception.get("error_code") or "tool_call_intercepted"
+    )
+    content_type = str(
+        interception.get("content_type") or "tool_call_intercepted"
+    )
+    explanation = str(
+        interception.get("message") or "Tool call intercepted by Hook"
+    )
+    return ActionResult(
+        success=False,
+        tool_call_id=str(action.tool_call_id or "") or None,
+        tool_name=action.tool_name,
+        action_name=action.action_name,
+        content=json.dumps(
+            {"type": content_type, "message": explanation},
+            ensure_ascii=False,
+        ),
+        error=source_error,
+        keep=True,
+        metadata={
+            "tool_interception": dict(interception),
+            "provider_executed": False,
+        },
+        parameter=action.params or {},
+    )
+
+
+def _merge_intercepted_tool_step_result(
+    provider_result: Tuple[Observation, float, bool, bool, Dict[str, Any]],
+    actions: List[ActionModel],
+    admitted_actions: List[ActionModel],
+    blocked_indices: set[int],
+    interception: Dict[str, Any] | None,
+) -> Tuple[Observation, float, bool, bool, Dict[str, Any]]:
+    """Restore the model batch order after executing only admitted actions."""
+
+    if interception is None or not blocked_indices:
+        return provider_result
+    observation, reward, done, truncated, info = provider_result
+    ensure_action_results(
+        observation,
+        admitted_actions,
+        success=reward > 0,
+        default_content=observation.content,
+        error=(info.get("error") if isinstance(info, dict) else None),
+    )
+    provider_results = iter(list(observation.action_result or ()))
+    merged_results = []
+    for index, action in enumerate(actions):
+        if index in blocked_indices:
+            merged_results.append(_intercepted_action_result(action, interception))
+            continue
+        try:
+            result = next(provider_results)
+        except StopIteration:
+            result = ActionResult(
+                success=False,
+                tool_call_id=action.tool_call_id,
+                tool_name=action.tool_name,
+                action_name=action.action_name,
+                content="Tool provider returned no result for an admitted call",
+                error="provider_result_missing",
+                keep=True,
+                metadata={"provider_executed": True},
+                parameter=action.params or {},
+            )
+        merged_results.append(result)
+    observation.action_result = merged_results
+    if merged_results:
+        observation.content = merged_results[-1].content
+    merged_info = dict(info or {})
+    merged_info.update(
+        {
+            "tool_interception": dict(interception),
+            "blocked_action_count": len(blocked_indices),
+        }
+    )
+    return observation, reward, done, truncated, merged_info
 
 
 def _coerce_updated_input(updated_input: Any) -> List[ActionModel] | None:
@@ -670,6 +855,12 @@ class Tool(BaseTool[Observation, List[ActionModel]]):
         final_res = None
         try:
             action = message.payload
+            # Interception is a one-batch execution receipt. Agent continuation
+            # headers are copied forward for context, so retaining a prior
+            # ``block_all`` value here would reject an unrelated later batch
+            # even when no current PRE_TOOL_CALL hook emitted a block.
+            if isinstance(message.headers, dict):
+                message.headers.pop("tool_interception", None)
             tool_id_mapping = {}
             for act in action:
                 tool_id = act.tool_call_id
@@ -688,12 +879,6 @@ class Tool(BaseTool[Observation, List[ActionModel]]):
             )
 
             _apply_hook_headers_to_message(message, pre_hook_events)
-
-            _enforce_replay_evidence_runtime_policy(self.name(), action, message)
-            _enforce_runtime_tool_call_budget(self.name(), action, message)
-            enforce_pipeline_failure_semantics(action)
-
-            self.pre_step(action, **kwargs)
             tool_output_plans = prepare_tool_output_plans(message.context, action)
             from aworld.core.context.execution_state import (
                 execution_resolution_observation,
@@ -702,7 +887,43 @@ class Tool(BaseTool[Observation, List[ActionModel]]):
             execution_state_observation = execution_resolution_observation(
                 message.context, action[0].agent_name
             )
-            res = self.do_step(action, message=message, **kwargs)
+            provider_actions, blocked_indices, interception = (
+                _partition_tool_interception(message, action)
+            )
+            if not provider_actions:
+                res = _intercepted_tool_step_result(message, action)
+                if res is None:
+                    raise ToolExecutionDenied(
+                        self.name(), "invalid empty Tool execution batch"
+                    )
+            else:
+                _enforce_replay_evidence_runtime_policy(
+                    self.name(), provider_actions, message
+                )
+                _enforce_runtime_tool_call_budget(
+                    self.name(), provider_actions, message
+                )
+                enforce_pipeline_failure_semantics(provider_actions)
+                original_payload = message.payload
+                if interception is not None:
+                    message.headers.pop("tool_interception", None)
+                message.payload = provider_actions
+                try:
+                    self.pre_step(provider_actions, **kwargs)
+                    provider_res = self.do_step(
+                        provider_actions, message=message, **kwargs
+                    )
+                finally:
+                    message.payload = original_payload
+                    if interception is not None:
+                        message.headers["tool_interception"] = interception
+                res = _merge_intercepted_tool_step_result(
+                    provider_res,
+                    action,
+                    provider_actions,
+                    blocked_indices,
+                    interception,
+                )
 
             # Execute POST_TOOL_CALL hooks and check for updated_output
             post_hook_events = self.run_hooks(message=message, hook_point=HookPoint.POST_TOOL_CALL, hook_from=message.sender, payload=res)
@@ -1000,6 +1221,10 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
         final_res = None
         action = message.payload
         try:
+            # See the synchronous path: hook interception is ephemeral and
+            # must be rebound to the current action batch on every step.
+            if isinstance(message.headers, dict):
+                message.headers.pop("tool_interception", None)
             tool_id_mapping = {}
             for act in action:
                 tool_id = act.tool_call_id
@@ -1017,12 +1242,6 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
             )
 
             _apply_hook_headers_to_message(message, pre_hook_events)
-
-            _enforce_replay_evidence_runtime_policy(self.name(), action, message)
-            _enforce_runtime_tool_call_budget(self.name(), action, message)
-            enforce_pipeline_failure_semantics(action)
-
-            await self.pre_step(action, message=message,**kwargs)
             tool_output_plans = prepare_tool_output_plans(message.context, action)
             from aworld.core.context.execution_state import (
                 execution_resolution_observation,
@@ -1031,7 +1250,45 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
             execution_state_observation = execution_resolution_observation(
                 message.context, action[0].agent_name
             )
-            res = await self.do_step(action, message=message, **kwargs)
+            provider_actions, blocked_indices, interception = (
+                _partition_tool_interception(message, action)
+            )
+            if not provider_actions:
+                res = _intercepted_tool_step_result(message, action)
+                if res is None:
+                    raise ToolExecutionDenied(
+                        self.name(), "invalid empty Tool execution batch"
+                    )
+            else:
+                _enforce_replay_evidence_runtime_policy(
+                    self.name(), provider_actions, message
+                )
+                _enforce_runtime_tool_call_budget(
+                    self.name(), provider_actions, message
+                )
+                enforce_pipeline_failure_semantics(provider_actions)
+                original_payload = message.payload
+                if interception is not None:
+                    message.headers.pop("tool_interception", None)
+                message.payload = provider_actions
+                try:
+                    await self.pre_step(
+                        provider_actions, message=message, **kwargs
+                    )
+                    provider_res = await self.do_step(
+                        provider_actions, message=message, **kwargs
+                    )
+                finally:
+                    message.payload = original_payload
+                    if interception is not None:
+                        message.headers["tool_interception"] = interception
+                res = _merge_intercepted_tool_step_result(
+                    provider_res,
+                    action,
+                    provider_actions,
+                    blocked_indices,
+                    interception,
+                )
 
             # Execute POST_TOOL_CALL hooks and check for updated_output
             post_hook_events = await self.run_hooks(message=message, hook_point=HookPoint.POST_TOOL_CALL, hook_from=message.sender,

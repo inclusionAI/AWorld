@@ -60,6 +60,7 @@ class MutationGatePreToolHook(PreToolCallHook):
 
     async def exec(self, message: Message, context: Context = None) -> Message | None:
         from aworld.runners.execution_protocol import mutation_gate_interception
+        from aworld.core.tool_action_journal import tool_action_request_fingerprint
 
         actions = message.payload if isinstance(message.payload, list) else []
         gate_receipt = mutation_gate_interception(context, actions)
@@ -109,6 +110,9 @@ class MutationGatePreToolHook(PreToolCallHook):
                 "tool_interception": {
                     "schema_version": "aworld.tool-interception/v1",
                     "kind": "block",
+                    "action_request_fingerprint": (
+                        tool_action_request_fingerprint(actions)
+                    ),
                     "tool_call_ids": gate_receipt["tool_call_ids"],
                     "block_all": gate_receipt.get("block_all") is True,
                     "error_code": error_code,

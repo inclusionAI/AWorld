@@ -744,6 +744,16 @@ def _scope_is_complete(scope: tuple[str, ...]) -> bool:
     return all(isinstance(value, str) and bool(value) for value in scope)
 
 
+def _generation_scope_from_scope(scope: tuple[str, ...]) -> tuple[str, str]:
+    """Return the task/epoch authority shared with semantic work state."""
+
+    return scope[0], scope[1]
+
+
+def _generation_scope(context: Any) -> tuple[str, str]:
+    return _generation_scope_from_scope(_scope(context))
+
+
 def _result_success(result: Any) -> bool:
     value = _value(result, "success")
     return value is True
@@ -1604,7 +1614,7 @@ class SandboxToolObservationRuntime:
         self._scope_lru: "OrderedDict[tuple[str, ...], None]" = OrderedDict()
 
     def _current_generation(self, context: Any) -> int:
-        return self._generation.get(_scope(context), 0)
+        return self._generation.get(_generation_scope(context), 0)
 
     def _touch_scope(self, scope: tuple[str, ...]) -> None:
         if not _scope_is_complete(scope):
@@ -1613,7 +1623,13 @@ class SandboxToolObservationRuntime:
         self._scope_lru.move_to_end(scope)
         while len(self._scope_lru) > self._max_cache_entries:
             stale_scope, _ = self._scope_lru.popitem(last=False)
-            self._generation.pop(stale_scope, None)
+            stale_generation_scope = _generation_scope_from_scope(stale_scope)
+            if not any(
+                _generation_scope_from_scope(retained_scope)
+                == stale_generation_scope
+                for retained_scope in self._scope_lru
+            ):
+                self._generation.pop(stale_generation_scope, None)
             self._volatile_scopes.discard(stale_scope)
             for key in list(self._cache):
                 if key[0] == stale_scope:
@@ -1673,7 +1689,9 @@ class SandboxToolObservationRuntime:
             break
         if stale_path:
             self._invalidate_read_path(scope, requested_path)
-            self._generation[scope] = self._current_generation(context) + 1
+            self._generation[_generation_scope(context)] = (
+                self._current_generation(context) + 1
+            )
             return None
         if selected is None or selected_key is None:
             return None
@@ -1681,6 +1699,7 @@ class SandboxToolObservationRuntime:
         generation = self._current_generation(context)
         receipt = {
             "schema_version": OBSERVATION_SCHEMA,
+            "tool_call_id": _value(action, "tool_call_id"),
             "canonical_tool": effect.identity,
             "effect": "read_only",
             "cache_hit": True,
@@ -1842,7 +1861,7 @@ class SandboxToolObservationRuntime:
                     self._invalidate_read_path(scope, path)
             self._cache.pop(key, None)
             generation += 1
-            self._generation[scope] = generation
+            self._generation[_generation_scope(context)] = generation
             return None
         if epoch_revalidated:
             self._cache.pop(key, None)
@@ -1861,6 +1880,7 @@ class SandboxToolObservationRuntime:
             cached["evidence_checkpoint_revision"] = checkpoint_revision
         receipt = {
             "schema_version": OBSERVATION_SCHEMA,
+            "tool_call_id": _value(action, "tool_call_id"),
             "canonical_tool": effect.identity,
             "effect": "read_only",
             "cache_hit": True,
@@ -2078,7 +2098,7 @@ class SandboxToolObservationRuntime:
         if generation_delta:
             generation += generation_delta
             if _scope_is_complete(scope):
-                self._generation[scope] = generation
+                self._generation[_generation_scope(context)] = generation
         if terminal_receipt is not None:
             observed_mutation = terminal_receipt.get("mutation_observed")
             if effect.effect == "read_only":
@@ -2166,6 +2186,7 @@ class SandboxToolObservationRuntime:
         replay_stored = replay_candidate and replay_bypass_reason is None
         receipt = {
             "schema_version": OBSERVATION_SCHEMA,
+            "tool_call_id": _value(action, "tool_call_id"),
             "canonical_tool": effect.identity,
             "effect": effective_effect,
             "cache_hit": provider_cache_hit,

@@ -6037,6 +6037,16 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             tools = None
         else:
             tools = await self._filter_tools(message.context)
+            from aworld.runners.execution_protocol import (
+                constrain_candidate_convergence_tool_catalog,
+            )
+
+            tools = constrain_candidate_convergence_tool_catalog(
+                message.context,
+                self.id(),
+                tools,
+                tool_identity_mapping=(getattr(self, "tool_mapping", {}) or {}),
+            )
             tools, execution_control_offer = self._with_long_horizon_execution_profile(
                 tools,
                 message.context,

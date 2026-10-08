@@ -120,6 +120,30 @@ class McpTool(AsyncTool):
                     black_tool_actions=getattr(agent, "black_tool_actions", None),
                 )
             else:
+                # The common Tool boundary may have delegated a partial
+                # interception after observing an Agent Sandbox. If the Agent
+                # binding changes before execution, never fall through to the
+                # direct MCP transport with that receipt unenforced.
+                from aworld.core.tool.base import (
+                    _intercepted_tool_step_result,
+                    _partition_tool_interception,
+                )
+
+                _admitted, _blocked, interception = _partition_tool_interception(
+                    message, actions
+                )
+                if interception is not None:
+                    original_interception = message.headers.get("tool_interception")
+                    message.headers["tool_interception"] = {
+                        **interception,
+                        "block_all": True,
+                    }
+                    try:
+                        intercepted = _intercepted_tool_step_result(message, actions)
+                    finally:
+                        message.headers["tool_interception"] = original_interception
+                    if intercepted is not None:
+                        return intercepted
                 action_results, ignore = await self.action_executor.async_execute_action(mcp_actions)
             reward = 1
         except Exception as e:

@@ -86,6 +86,106 @@ async def test_builtin_terminal_discovers_and_executes_in_workspace(
 
 @pytest.mark.asyncio
 @pytest.mark.integration
+async def test_builtin_terminal_module_monkeypatch_never_claims_write_authority(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "purity-bypass.txt"
+    source = f"""
+import math
+from pathlib import Path
+math.sin = Path({str(target)!r}).write_text
+math.sin('written')
+"""
+    sandbox = Sandbox(
+        builtin_tools=["terminal"],
+        workspaces=[str(tmp_path)],
+        reuse=False,
+    )
+    try:
+        result = await asyncio.wait_for(
+            sandbox.terminal.run_code(source, language="python"),
+            timeout=30,
+        )
+        receipt = result["data"]["metadata"]["terminal_execution_receipt"]
+
+        assert result["success"] is True
+        assert target.read_text(encoding="utf-8") == "written"
+        assert receipt["effect"] == "unknown"
+        assert receipt["cacheable"] is False
+        assert receipt["write_paths"] == []
+        assert receipt["write_set_complete"] is False
+        assert receipt["workspace_generation_delta"] == 1
+
+        callback_target = tmp_path / "callback-bypass.txt"
+        callback_target.write_text("delete-me", encoding="utf-8")
+        callback_source = f"""
+from pathlib import Path
+list(map(Path({str(callback_target)!r}).unlink, [True]))
+"""
+        callback_result = await asyncio.wait_for(
+            sandbox.terminal.run_code(callback_source, language="python"),
+            timeout=30,
+        )
+        callback_receipt = callback_result["data"]["metadata"][
+            "terminal_execution_receipt"
+        ]
+
+        assert callback_result["success"] is True
+        assert callback_target.exists() is False
+        assert callback_receipt["effect"] == "unknown"
+        assert callback_receipt["cacheable"] is False
+        assert callback_receipt["write_paths"] == []
+        assert callback_receipt["write_set_complete"] is False
+        assert callback_receipt["workspace_generation_delta"] == 1
+
+        iter_target = tmp_path / "iter-callback-bypass.txt"
+        iter_target.write_text("delete-me", encoding="utf-8")
+        iter_source = f"""
+from pathlib import Path
+list(iter(Path({str(iter_target)!r}).unlink, None))
+"""
+        iter_result = await asyncio.wait_for(
+            sandbox.terminal.run_code(iter_source, language="python"),
+            timeout=30,
+        )
+        iter_receipt = iter_result["data"]["metadata"][
+            "terminal_execution_receipt"
+        ]
+
+        assert iter_result["success"] is True
+        assert iter_target.exists() is False
+        assert iter_receipt["effect"] == "unknown"
+        assert iter_receipt["cacheable"] is False
+        assert iter_receipt["write_paths"] == []
+        assert iter_receipt["write_set_complete"] is False
+        assert iter_receipt["workspace_generation_delta"] == 1
+
+        builtin_target = tmp_path / "builtin-rebind-bypass.txt"
+        builtin_source = f"""
+len = open
+len({str(builtin_target)!r}, 'w')
+"""
+        builtin_result = await asyncio.wait_for(
+            sandbox.terminal.run_code(builtin_source, language="python"),
+            timeout=30,
+        )
+        builtin_receipt = builtin_result["data"]["metadata"][
+            "terminal_execution_receipt"
+        ]
+
+        assert builtin_result["success"] is True
+        assert builtin_target.exists() is True
+        assert builtin_receipt["effect"] == "unknown"
+        assert builtin_receipt["cacheable"] is False
+        assert builtin_receipt["write_paths"] == []
+        assert builtin_receipt["write_set_complete"] is False
+        assert builtin_receipt["workspace_generation_delta"] == 1
+    finally:
+        await sandbox.cleanup()
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
 async def test_builtin_terminal_artifact_survives_non_reuse_stdio_calls(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

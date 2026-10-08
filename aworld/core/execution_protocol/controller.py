@@ -378,6 +378,40 @@ def transition_execution_protocol(
             _decision(ControllerAction.CONTINUE, DecisionReason.OBSERVATION_RECORDED),
         )
 
+    if event.kind is EventKind.CONVERGENCE_EXHAUSTED:
+        if (
+            state.phase not in {ProtocolPhase.EXECUTE, ProtocolPhase.REPAIR}
+            or not state.convergence_constraint_active
+            or state.convergence_stage
+            is not ConvergenceStage.VALIDATE_REPAIR_OR_SUBMIT
+        ):
+            return ProtocolTransition(
+                next_state,
+                _decision(ControllerAction.CONTINUE, DecisionReason.INVALID_EVENT),
+            )
+        next_state = replace(
+            next_state,
+            phase=ProtocolPhase.FINALIZE,
+            finalization_entered=True,
+            review_pending=False,
+            terminal_incomplete=False,
+            decision_checkpoint_pending=False,
+            decision_checkpoint_reason=None,
+            decision_checkpoint_candidate_present=None,
+            next_action_alignment_pending=False,
+            pending_next_action_plan_sequence=None,
+            pending_next_action_call_id=None,
+        )
+        action = _observed_action(
+            policy.mode,
+            guide=ControllerAction.ENTER_FINALIZATION,
+            observe=ControllerAction.WOULD_ENTER_FINALIZATION,
+        )
+        return ProtocolTransition(
+            next_state,
+            _decision(action, DecisionReason.CONVERGENCE_REJECTION_LIMIT),
+        )
+
     if event.kind in {EventKind.TOOL_OBSERVATION, EventKind.DELIVERY_STATUS}:
         latest_horizon = _model_horizon(next_state)
         profile = next_state.model_execution_profile

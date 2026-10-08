@@ -51,6 +51,19 @@ from aworld.runners.post_tool_progress import (
     record_semantic_tool_progress,
     semantic_progress_for_agent,
 )
+from aworld.sandbox.tool_observation import classify_tool_effect
+
+
+def _sandbox_receipt(action: ActionModel, generation: int, **values):
+    effect = classify_tool_effect(action)
+    return {
+        "schema_version": "aworld.sandbox-tool-observation/v1",
+        "tool_call_id": action.tool_call_id,
+        "canonical_tool": effect.identity,
+        "operation_hash": effect.operation_hash,
+        "workspace_generation": generation,
+        **values,
+    }
 
 
 def _record_failure(
@@ -449,11 +462,12 @@ def test_public_candidate_resolution_uses_tool_start_watermark(tmp_path):
                     content="candidate",
                     success=True,
                     metadata={
-                        "sandbox_observation": {
-                            "effect": "mutating",
-                            "workspace_mutated": True,
-                            "workspace_generation": 1,
-                            "action_semantic_receipt": {
+                        "sandbox_observation": _sandbox_receipt(
+                            stale_action,
+                            1,
+                            effect="mutating",
+                            workspace_mutated=True,
+                            action_semantic_receipt={
                                 "schema_version": "aworld.action-semantic-receipt/v1",
                                 "capability_aliases": ["workspace.mutate"],
                                 "effect": "mutating",
@@ -467,7 +481,7 @@ def test_public_candidate_resolution_uses_tool_start_watermark(tmp_path):
                                 "declared_deliverable_targeted": True,
                                 "tool_call_id": "stale-candidate-write",
                             },
-                        }
+                        )
                     },
                 )
             ]
@@ -496,11 +510,12 @@ def test_public_candidate_resolution_uses_tool_start_watermark(tmp_path):
                     content="candidate updated",
                     success=True,
                     metadata={
-                        "sandbox_observation": {
-                            "effect": "mutating",
-                            "workspace_mutated": True,
-                            "workspace_generation": 2,
-                            "action_semantic_receipt": {
+                        "sandbox_observation": _sandbox_receipt(
+                            fresh_action,
+                            2,
+                            effect="mutating",
+                            workspace_mutated=True,
+                            action_semantic_receipt={
                                 "schema_version": "aworld.action-semantic-receipt/v1",
                                 "capability_aliases": ["workspace.mutate"],
                                 "effect": "mutating",
@@ -514,7 +529,7 @@ def test_public_candidate_resolution_uses_tool_start_watermark(tmp_path):
                                 "declared_deliverable_targeted": True,
                                 "tool_call_id": "fresh-candidate-write",
                             },
-                        }
+                        )
                     },
                 )
             ]
@@ -562,11 +577,12 @@ def test_successful_typed_declared_mutation_advances_public_candidate(tmp_path):
                     tool_call_id="typed-write",
                     success=True,
                     metadata={
-                        "sandbox_observation": {
-                            "effect": "mutating",
-                            "workspace_mutated": True,
-                            "workspace_generation": 1,
-                            "action_semantic_receipt": {
+                        "sandbox_observation": _sandbox_receipt(
+                            action,
+                            1,
+                            effect="mutating",
+                            workspace_mutated=True,
+                            action_semantic_receipt={
                                 "schema_version": "aworld.action-semantic-receipt/v1",
                                 "capability_aliases": ["workspace.mutate"],
                                 "effect": "mutating",
@@ -578,7 +594,7 @@ def test_successful_typed_declared_mutation_advances_public_candidate(tmp_path):
                                 "declared_deliverable_targeted": True,
                                 "tool_call_id": "typed-write",
                             },
-                        }
+                        )
                     },
                 )
             ]
@@ -657,11 +673,12 @@ def test_failed_declared_mutations_do_not_reset_candidate_convergence(tmp_path):
                         success=success,
                         error=None if success else "command_failed",
                         metadata={
-                            "sandbox_observation": {
-                                "effect": "mutating",
-                                "workspace_mutated": True,
-                                "workspace_generation": index,
-                                "action_semantic_receipt": {
+                            "sandbox_observation": _sandbox_receipt(
+                                action,
+                                index,
+                                effect="mutating",
+                                workspace_mutated=True,
+                                action_semantic_receipt={
                                     "schema_version": "aworld.action-semantic-receipt/v1",
                                     "capability_aliases": ["workspace.mutate"],
                                     "effect": "mutating",
@@ -675,7 +692,7 @@ def test_failed_declared_mutations_do_not_reset_candidate_convergence(tmp_path):
                                     "declared_deliverable_targeted": True,
                                     "tool_call_id": call_id,
                                 },
-                            }
+                            )
                         },
                     )
                 ]
@@ -862,18 +879,17 @@ def test_failure_resolution_advances_only_one_novel_unresolved_occurrence():
 
     def observe(*, success: bool, index: int):
         call_id = f"retry-{index}"
+        action = ActionModel(
+            tool_name="terminal",
+            action_name="run_code",
+            tool_call_id=call_id,
+            params={"code": "python check.py"},
+        )
         return record_semantic_tool_progress(
             context,
             tool_name="terminal",
             agent_id="agent",
-            actions=[
-                ActionModel(
-                    tool_name="terminal",
-                    action_name="run_code",
-                    tool_call_id=call_id,
-                    params={"code": "python check.py"},
-                )
-            ],
+            actions=[action],
             observation=Observation(
                 action_result=[
                     ActionResult(
@@ -881,11 +897,12 @@ def test_failure_resolution_advances_only_one_novel_unresolved_occurrence():
                         success=success,
                         error=None if success else "AssertionError: stable failure",
                         metadata={
-                            "sandbox_observation": {
-                                "effect": "read_only",
-                                "workspace_mutated": False,
-                                "workspace_generation": 0,
-                                "action_semantic_receipt": {
+                            "sandbox_observation": _sandbox_receipt(
+                                action,
+                                0,
+                                effect="read_only",
+                                workspace_mutated=False,
+                                action_semantic_receipt={
                                     "schema_version": "aworld.action-semantic-receipt/v1",
                                     "capability_aliases": ["workspace.read"],
                                     "effect": "read_only",
@@ -897,7 +914,7 @@ def test_failure_resolution_advances_only_one_novel_unresolved_occurrence():
                                     "declared_deliverable_targeted": False,
                                     "tool_call_id": call_id,
                                 },
-                            }
+                            )
                         },
                     )
                 ]
@@ -1128,28 +1145,35 @@ def test_unverified_artifact_advance_does_not_reset_durable_stagnation():
     assert state["durable_stagnation_count"] == 5
     assert load_execution_protocol_state(context, "agent").replan_count == 0
 
+    write_action = ActionModel(
+        tool_name="filesystem",
+        action_name="write_file",
+        tool_call_id="write-candidate",
+        params={"path": "candidate.txt", "content": "candidate"},
+    )
     advanced = record_semantic_tool_progress(
         context,
         tool_name="terminal",
         agent_id="agent",
-        actions=[
-            ActionModel(
-                tool_name="filesystem",
-                action_name="write_file",
-                tool_call_id="write-candidate",
-                params={"path": "candidate.txt", "content": "candidate"},
-            )
-        ],
+        actions=[write_action],
         observation=Observation(
             action_result=[
                 ActionResult(
+                    tool_call_id=write_action.tool_call_id,
                     content="candidate written",
                     success=True,
                     metadata={
                         "context_management": {
+                            "schema_version": "aworld.sandbox-artifact-progress/v1",
                             "artifact_changed": True,
                             "artifact_fingerprint_after": "artifact-v2",
-                        }
+                        },
+                        "sandbox_observation": _sandbox_receipt(
+                            write_action,
+                            1,
+                            effect="mutating",
+                            workspace_mutated=True,
+                        ),
                     },
                 )
             ]
@@ -1531,28 +1555,35 @@ def test_opaque_workspace_churn_does_not_suppress_advisory_replan():
     )
 
     for index in range(6):
+        action = ActionModel(
+            tool_name="terminal",
+            action_name="run_code",
+            tool_call_id=f"opaque-{index}",
+            params={"code": f"download-or-install-stage-{index}"},
+        )
         state = record_semantic_tool_progress(
             context,
             tool_name="terminal",
             agent_id="agent",
-            actions=[
-                ActionModel(
-                    tool_name="terminal",
-                    action_name="run_code",
-                    tool_call_id=f"opaque-{index}",
-                    params={"code": f"download-or-install-stage-{index}"},
-                )
-            ],
+            actions=[action],
             observation=Observation(
                 action_result=[
                     ActionResult(
+                        tool_call_id=action.tool_call_id,
                         content=f"novel diagnostic {index}",
                         success=True,
                         metadata={
                             "context_management": {
+                                "schema_version": "aworld.sandbox-artifact-progress/v1",
                                 "artifact_changed": True,
                                 "artifact_fingerprint_after": f"workspace-{index}",
-                            }
+                            },
+                            "sandbox_observation": _sandbox_receipt(
+                                action,
+                                index + 1,
+                                effect="unknown",
+                                workspace_mutated=True,
+                            ),
                         },
                     )
                 ]
@@ -1586,22 +1617,22 @@ def test_r5_shaped_failure_and_workspace_churn_requests_replan():
     states = []
     for index in range(10):
         failed = index in {1, 4, 7}
+        action = ActionModel(
+            tool_name="terminal",
+            action_name="run_code",
+            tool_call_id=f"r5-{index}",
+            params={"code": f"explore-prerequisite-{index}"},
+        )
         states.append(
             record_semantic_tool_progress(
                 context,
                 tool_name="terminal",
                 agent_id="agent",
-                actions=[
-                    ActionModel(
-                        tool_name="terminal",
-                        action_name="run_code",
-                        tool_call_id=f"r5-{index}",
-                        params={"code": f"explore-prerequisite-{index}"},
-                    )
-                ],
+                actions=[action],
                 observation=Observation(
                     action_result=[
                         ActionResult(
+                            tool_call_id=action.tool_call_id,
                             content=f"diagnostic {index}",
                             success=not failed,
                             error=(
@@ -1611,9 +1642,16 @@ def test_r5_shaped_failure_and_workspace_churn_requests_replan():
                             ),
                             metadata={
                                 "context_management": {
+                                    "schema_version": "aworld.sandbox-artifact-progress/v1",
                                     "artifact_changed": index in {2, 5, 8},
                                     "artifact_fingerprint_after": f"workspace-{index}",
-                                }
+                                },
+                                "sandbox_observation": _sandbox_receipt(
+                                    action,
+                                    index + 1,
+                                    effect="unknown",
+                                    workspace_mutated=index in {2, 5, 8},
+                                ),
                             },
                         )
                     ]

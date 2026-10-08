@@ -7,6 +7,7 @@ from aworld.core.agent.base import AgentFactory
 from aworld.core.common import ActionModel, ActionResult
 from aworld.core.context.base import Context
 from aworld.core.event.base import Message
+from aworld.core.task import Task
 from aworld.sandbox.errors import SandboxInfrastructureError
 from aworld.tools.mcp_tool.async_mcp_tool import McpTool
 
@@ -39,6 +40,31 @@ class _FailingInfrastructureSandbox:
             "docker_checkpoint_create_failed",
             "Docker checkpoint backend unavailable",
         )
+
+
+class _PartialInterceptionSandbox:
+    def __init__(self):
+        self.executed_call_ids = []
+
+    async def call_tool(self, *, action_list, event_message, **_kwargs):
+        # The common Tool boundary removes blocked actions and its ephemeral
+        # receipt before provider dispatch. The Sandbox receives only admitted
+        # calls; direct BaseSandbox callers retain their own enforcement path.
+        assert "tool_interception" not in event_message.headers
+        results = []
+        for action in action_list:
+            self.executed_call_ids.append(action.tool_call_id)
+            results.append(
+                ActionResult(
+                    is_done=False,
+                    success=True,
+                    tool_call_id=action.tool_call_id,
+                    tool_name=action.tool_name,
+                    action_name=action.action_name,
+                    content="executed",
+                )
+            )
+        return results
 
 
 @pytest.mark.asyncio
@@ -106,3 +132,207 @@ async def test_mcp_tool_preserves_typed_sandbox_infrastructure_failure(monkeypat
         "failure_category": "infrastructure",
         "failure_code": "docker_checkpoint_create_failed",
     }
+
+
+@pytest.mark.asyncio
+async def test_mcp_tool_defers_partial_interception_to_sandbox(monkeypatch):
+    sandbox = _PartialInterceptionSandbox()
+    monkeypatch.setattr(
+        AgentFactory,
+        "agent_instance",
+        lambda name: SimpleNamespace(sandbox=sandbox),
+    )
+    context = Context(task_id="task-partial", session_id="session-partial")
+    context.set_task(Task(id="task-partial", input="test", context=context))
+    actions = [
+        ActionModel(
+            tool_name="mcp",
+            action_name="terminal__run_code",
+            tool_call_id="admitted-call",
+            agent_name="agent-partial",
+            params={"code": "true"},
+        ),
+        ActionModel(
+            tool_name="mcp",
+            action_name="terminal__run_code",
+            tool_call_id="blocked-call",
+            agent_name="agent-partial",
+            params={"code": "cat stale.log"},
+        ),
+    ]
+    message = Message(
+        category="tool_call",
+        payload=actions,
+        sender="agent-partial",
+        session_id="session-partial",
+        headers={"context": context},
+    )
+    hook_event = Message(
+        category="agent_hook",
+        payload=None,
+        sender="mutation_gate",
+        headers={
+            "tool_interception": {
+                "schema_version": "aworld.tool-interception/v1",
+                "kind": "block",
+                "tool_call_ids": ["blocked-call"],
+                "block_all": False,
+                "error_code": "candidate_convergence_required",
+                "content_type": "candidate_convergence_required",
+                "message": "submit or revise the candidate",
+            }
+        },
+    )
+    tool = McpTool(ConfigDict({}))
+
+    async def hooks(*, hook_point, **_kwargs):
+        return [hook_event] if hook_point == "before_tool_call" else []
+
+    monkeypatch.setattr(tool, "run_hooks", hooks)
+
+    result = await tool.step(message)
+
+    assert sandbox.executed_call_ids == ["admitted-call"]
+    action_results = result.payload[0].action_result
+    assert [item.success for item in action_results] == [True, False]
+    assert action_results[1].error == "candidate_convergence_required"
+
+
+@pytest.mark.asyncio
+async def test_mcp_direct_fallback_receives_only_admitted_actions(monkeypatch):
+    monkeypatch.setattr(AgentFactory, "agent_instance", lambda _name: None)
+    context = Context(task_id="task-race", session_id="session-race")
+    context.set_task(Task(id="task-race", input="test", context=context))
+    actions = [
+        ActionModel(
+            tool_name="mcp",
+            action_name="terminal__run_code",
+            tool_call_id="admitted-race",
+            agent_name="agent-race",
+            params={"code": "true"},
+        ),
+        ActionModel(
+            tool_name="mcp",
+            action_name="terminal__run_code",
+            tool_call_id="blocked-race",
+            agent_name="agent-race",
+            params={"code": "cat stale.log"},
+        ),
+    ]
+    message = Message(
+        category="tool_call",
+        payload=actions,
+        sender="agent-race",
+        session_id="session-race",
+        headers={"context": context},
+    )
+    hook_event = Message(
+        category="agent_hook",
+        payload=None,
+        sender="mutation_gate",
+        headers={
+            "tool_interception": {
+                "schema_version": "aworld.tool-interception/v1",
+                "kind": "block",
+                "tool_call_ids": ["blocked-race"],
+                "block_all": False,
+                "error_code": "candidate_convergence_required",
+                "content_type": "candidate_convergence_required",
+                "message": "submit or revise the candidate",
+            }
+        },
+    )
+    tool = McpTool(ConfigDict({}))
+    executed_call_ids = []
+
+    async def direct_execute(provider_actions):
+        executed_call_ids.extend(
+            action.tool_call_id for action in provider_actions
+        )
+        return (
+            [
+                ActionResult(
+                    success=True,
+                    tool_call_id=action.tool_call_id,
+                    tool_name=action.tool_name,
+                    action_name=action.action_name,
+                    content="direct-executed",
+                )
+                for action in provider_actions
+            ],
+            None,
+        )
+
+    monkeypatch.setattr(
+        tool.action_executor,
+        "async_execute_action",
+        direct_execute,
+    )
+
+    async def hooks(*, hook_point, **_kwargs):
+        return [hook_event] if hook_point == "before_tool_call" else []
+
+    monkeypatch.setattr(tool, "run_hooks", hooks)
+
+    result = await tool.step(message)
+
+    assert executed_call_ids == ["admitted-race"]
+    action_results = result.payload[0].action_result
+    assert [item.success for item in action_results] == [True, False]
+    assert action_results[1].error == "candidate_convergence_required"
+    assert action_results[1].metadata["provider_executed"] is False
+
+
+@pytest.mark.asyncio
+async def test_direct_mcp_do_step_fails_partial_v1_interception_closed(
+    monkeypatch,
+):
+    monkeypatch.setattr(AgentFactory, "agent_instance", lambda _name: None)
+    context = Context(task_id="task-direct", session_id="session-direct")
+    context.set_task(Task(id="task-direct", input="test", context=context))
+    actions = [
+        ActionModel(
+            tool_name="mcp",
+            action_name="terminal__run_code",
+            tool_call_id=call_id,
+            agent_name="agent-direct",
+            params={"code": code},
+        )
+        for call_id, code in (
+            ("direct-admitted", "true"),
+            ("direct-blocked", "cat stale.log"),
+        )
+    ]
+    message = Message(
+        category="tool_call",
+        payload=actions,
+        sender="agent-direct",
+        session_id="session-direct",
+        headers={
+            "context": context,
+            "tool_interception": {
+                "schema_version": "aworld.tool-interception/v1",
+                "kind": "block",
+                "tool_call_ids": ["direct-blocked"],
+                "block_all": False,
+                "error_code": "candidate_convergence_required",
+                "content_type": "candidate_convergence_required",
+                "message": "submit or revise the candidate",
+            },
+        },
+    )
+    tool = McpTool(ConfigDict({}))
+
+    async def forbidden(_actions):
+        raise AssertionError("intercepted direct MCP batch reached transport")
+
+    monkeypatch.setattr(tool.action_executor, "async_execute_action", forbidden)
+
+    observation, reward, *_ = await tool.do_step(actions, message)
+
+    assert reward == 0
+    assert [item.success for item in observation.action_result] == [False, False]
+    assert all(
+        item.error == "candidate_convergence_required"
+        for item in observation.action_result
+    )

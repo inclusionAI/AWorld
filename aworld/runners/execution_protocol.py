@@ -15,7 +15,7 @@ import os
 import re
 import secrets
 import shlex
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 from aworld.core.context.execution_state import state_context
 from aworld.core.execution_protocol import (
@@ -85,6 +85,7 @@ _MUTATION_GATE_READ_ONLY_THRESHOLD = 8
 _MUTATION_GATE_DEADLINE_MIN_READS = 3
 _MUTATION_GATE_DEADLINE_FRACTION = 0.20
 _MAX_CANDIDATE_DIAGNOSTIC_READS = 3
+_MAX_EXHAUSTED_REJECTED_BATCHES = 2
 _REPAIR_AUTHORIZATION_SCHEMA = "aworld.repair-authorization/v2"
 _REPAIR_SOURCE_VALIDATION_FAILURE = "validation_failure"
 _REPAIR_SOURCE_MODEL_REVIEW = "model_review_repair"
@@ -302,6 +303,141 @@ def _normalized_candidate_diagnostic_state(
     if candidate_binding_is_canonical:
         mask = _candidate_diagnostic_fail_closed(mask, candidate_fingerprint)
     return mask, _MAX_CANDIDATE_DIAGNOSTIC_READS, False
+
+
+def _normalized_exhausted_rejection_state(
+    gate: Mapping[str, Any],
+    candidate_fingerprint: Any,
+) -> tuple[int, int, bool, bool]:
+    """Return candidate-bound rejected-batch state without minting runway."""
+
+    if not _is_canonical_semantic_fingerprint(candidate_fingerprint):
+        raw_high_water = gate.get("candidate_rejection_high_water")
+        high_water, canonical = _candidate_diagnostic_high_water(raw_high_water)
+        if raw_high_water is None:
+            high_water, canonical = 0, True
+        elif not canonical:
+            high_water = _CANDIDATE_DIAGNOSTIC_HIGH_WATER_FULL
+        return (
+            high_water,
+            _MAX_EXHAUSTED_REJECTED_BATCHES,
+            True,
+            False,
+        )
+    raw_high_water = gate.get("candidate_rejection_high_water")
+    high_water, high_water_is_canonical = _candidate_diagnostic_high_water(
+        raw_high_water
+    )
+    binding = gate.get("candidate_exhausted_rejection_fingerprint")
+    count = gate.get("candidate_exhausted_rejection_count")
+    latched = gate.get("candidate_tool_free_latched")
+    if (
+        raw_high_water is None
+        and binding is None
+        and count is None
+        and latched is None
+    ):
+        # Additive migration from the first v4 release.  This grants no Tool
+        # execution authority; it only preserves the intended two rejected
+        # attempts before bounded Tool-free convergence.
+        return 0, 0, False, True
+    if not high_water_is_canonical:
+        return (
+            _CANDIDATE_DIAGNOSTIC_HIGH_WATER_FULL,
+            _MAX_EXHAUSTED_REJECTED_BATCHES,
+            True,
+            False,
+        )
+    expected_count = _candidate_rejection_count(
+        high_water,
+        candidate_fingerprint,
+    )
+    if binding != candidate_fingerprint:
+        return (
+            high_water,
+            expected_count,
+            expected_count >= _MAX_EXHAUSTED_REJECTED_BATCHES,
+            True,
+        )
+    if (
+        isinstance(count, bool)
+        or not isinstance(count, int)
+        or not 0 <= count <= _MAX_EXHAUSTED_REJECTED_BATCHES
+        or not isinstance(latched, bool)
+        or count != expected_count
+        or latched != (count >= _MAX_EXHAUSTED_REJECTED_BATCHES)
+    ):
+        high_water = _candidate_rejection_fail_closed(
+            high_water,
+            candidate_fingerprint,
+        )
+        return high_water, _MAX_EXHAUSTED_REJECTED_BATCHES, True, False
+    return high_water, count, latched, True
+
+
+def _candidate_rejection_slot_fingerprint(
+    candidate_fingerprint: str,
+    slot: int,
+) -> str:
+    from aworld.core.context.compiler import semantic_fingerprint
+
+    return semantic_fingerprint(
+        {
+            "candidate_fingerprint": candidate_fingerprint,
+            "kind": "candidate_exhausted_rejection",
+            "slot": slot,
+        }
+    )
+
+
+def _candidate_rejection_count(mask: int, candidate_fingerprint: str) -> int:
+    return sum(
+        _repair_evidence_seen(
+            mask,
+            _candidate_rejection_slot_fingerprint(candidate_fingerprint, slot),
+        )
+        for slot in range(_MAX_EXHAUSTED_REJECTED_BATCHES)
+    )
+
+
+def _candidate_rejection_fail_closed(
+    mask: int,
+    candidate_fingerprint: str,
+) -> int:
+    for slot in range(_MAX_EXHAUSTED_REJECTED_BATCHES):
+        mask = _repair_evidence_add(
+            mask,
+            _candidate_rejection_slot_fingerprint(candidate_fingerprint, slot),
+        )
+    return mask
+
+
+def constrain_candidate_convergence_tool_catalog(
+    context,
+    agent_id: str,
+    tools: Sequence[Mapping[str, Any]] | None,
+    *,
+    tool_identity_mapping: Mapping[str, str] | None = None,
+) -> list[Mapping[str, Any]] | None:
+    """Read durable protocol state without creating a late finalization race.
+
+    The sole latch-to-FINALIZE transition runs at the earlier pre-generation
+    boundary.  Tool discovery may execute arbitrary framework code and race
+    with another provider's gate projection, so this late catalog pass never
+    mutates protocol state or trusts a gate latch by itself.
+    """
+
+    del tool_identity_mapping
+    if tools is None:
+        return None
+    original = list(tools)
+    policy = execution_protocol_policy(context, agent_id)
+    if policy.mode is not ProtocolMode.GUIDE:
+        return original
+    from aworld.core.execution_protocol import ProtocolPhase
+
+    state = ExecutionProtocolStore(context, agent_id, policy).load()
+    return [] if state.phase is ProtocolPhase.FINALIZE else original
 
 
 def _normalized_repair_authorization(
@@ -2491,6 +2627,22 @@ def _update_mutation_gate_locked(
         )
     else:
         candidate_diagnostic_read_count = 0
+    rejection_latch_applicable = bool(
+        convergence_stage is ConvergenceStage.VALIDATE_REPAIR_OR_SUBMIT
+        and _is_canonical_semantic_fingerprint(candidate_fingerprint)
+        and candidate_diagnostic_read_count >= _MAX_CANDIDATE_DIAGNOSTIC_READS
+    )
+    (
+        candidate_rejection_high_water,
+        candidate_exhausted_rejection_count,
+        candidate_tool_free_latched,
+        _rejection_state_is_canonical,
+    ) = _normalized_exhausted_rejection_state(
+        previous,
+        candidate_fingerprint,
+    )
+    if not rejection_latch_applicable:
+        candidate_tool_free_latched = False
 
     repair_authorization = None
     if candidate_binding_unchanged:
@@ -2593,6 +2745,18 @@ def _update_mutation_gate_locked(
         "candidate_diagnostic_high_water": format(
             candidate_diagnostic_high_water, "0128x"
         ),
+        "candidate_exhausted_rejection_fingerprint": (
+            candidate_fingerprint
+            if _is_canonical_semantic_fingerprint(candidate_fingerprint)
+            else None
+        ),
+        "candidate_exhausted_rejection_count": (
+            candidate_exhausted_rejection_count
+        ),
+        "candidate_rejection_high_water": format(
+            candidate_rejection_high_water, "0128x"
+        ),
+        "candidate_tool_free_latched": candidate_tool_free_latched,
         "repair_failure_evidence_high_water": format(
             repair_evidence_high_water, "0128x"
         ),
@@ -2856,6 +3020,20 @@ def _mutation_gate_interception_locked(
     candidate_binding_is_canonical = _is_canonical_semantic_fingerprint(
         candidate_fingerprint
     )
+    (
+        candidate_rejection_high_water,
+        candidate_exhausted_rejection_count,
+        candidate_tool_free_latched,
+        _rejection_state_is_canonical,
+    ) = _normalized_exhausted_rejection_state(gate, candidate_fingerprint)
+    rejection_latch_applicable = bool(
+        stage is ConvergenceStage.VALIDATE_REPAIR_OR_SUBMIT
+        and candidate_binding_is_canonical
+        and candidate_diagnostic_read_count >= _MAX_CANDIDATE_DIAGNOSTIC_READS
+    )
+    if not rejection_latch_applicable:
+        candidate_exhausted_rejection_count = 0
+        candidate_tool_free_latched = False
     repair_authorization = _normalized_repair_authorization(
         gate.get("repair_authorization"),
         scope_hash=gate.get("scope_hash"),
@@ -2871,7 +3049,9 @@ def _mutation_gate_interception_locked(
         gate.get("declared_mutation_attempt_high_water")
     )
     initial_declared_mutation_attempts = declared_mutation_attempts
-    block_all = invalid_call_ids
+    block_all = invalid_call_ids or candidate_tool_free_latched
+    if candidate_tool_free_latched and not invalid_call_ids:
+        blocked_call_ids = list(unique_call_ids)
     for action, call_id in (
         zip(actions, action_call_ids) if not block_all else ()
     ):
@@ -3000,6 +3180,44 @@ def _mutation_gate_interception_locked(
         )
         admitted_diagnostic_read = False
         admitted_declared_mutation = False
+    rejected_batch = bool(block_all or blocked_call_ids)
+    diagnostics_exhausted = bool(
+        stage is ConvergenceStage.VALIDATE_REPAIR_OR_SUBMIT
+        and candidate_binding_is_canonical
+        and initial_candidate_diagnostic_read_count
+        >= _MAX_CANDIDATE_DIAGNOSTIC_READS
+    )
+    if diagnostics_exhausted:
+        if candidate_tool_free_latched:
+            candidate_exhausted_rejection_count = (
+                _MAX_EXHAUSTED_REJECTED_BATCHES
+            )
+        elif rejected_batch:
+            for slot in range(_MAX_EXHAUSTED_REJECTED_BATCHES):
+                slot_fingerprint = _candidate_rejection_slot_fingerprint(
+                    candidate_fingerprint,
+                    slot,
+                )
+                if not _repair_evidence_seen(
+                    candidate_rejection_high_water,
+                    slot_fingerprint,
+                ):
+                    candidate_rejection_high_water = _repair_evidence_add(
+                        candidate_rejection_high_water,
+                        slot_fingerprint,
+                    )
+                    break
+            candidate_exhausted_rejection_count = _candidate_rejection_count(
+                candidate_rejection_high_water,
+                candidate_fingerprint,
+            )
+        candidate_tool_free_latched = bool(
+            candidate_exhausted_rejection_count
+            >= _MAX_EXHAUSTED_REJECTED_BATCHES
+        )
+    else:
+        candidate_exhausted_rejection_count = 0
+        candidate_tool_free_latched = False
     owner = state_context(context)
     updated = dict(gate)
     updated["blocked_call_count"] = min(
@@ -3021,21 +3239,25 @@ def _mutation_gate_interception_locked(
     updated["candidate_diagnostic_high_water"] = format(
         candidate_diagnostic_high_water, "0128x"
     )
+    updated["candidate_exhausted_rejection_fingerprint"] = (
+        candidate_fingerprint if candidate_binding_is_canonical else None
+    )
+    updated["candidate_exhausted_rejection_count"] = (
+        candidate_exhausted_rejection_count
+    )
+    updated["candidate_rejection_high_water"] = format(
+        candidate_rejection_high_water, "0128x"
+    )
+    updated["candidate_tool_free_latched"] = candidate_tool_free_latched
     updated["repair_authorization"] = repair_authorization
     updated["validation_window_open"] = repair_authorization is not None
     if consumed_repair:
         updated["repair_authorization"] = None
         updated["validation_window_open"] = False
     if not blocked_call_ids and not block_all:
-        if (
-            consumed_repair
-            or admitted_diagnostic_read
-            or admitted_declared_mutation
-            or not diagnostic_state_is_canonical
-        ):
-            if owner is not None:
-                owner.context_info[MUTATION_GATE_STATE_KEY] = updated
-            _write_runtime_value(context, agent_id, MUTATION_GATE_STATE_KEY, updated)
+        if owner is not None:
+            owner.context_info[MUTATION_GATE_STATE_KEY] = updated
+        _write_runtime_value(context, agent_id, MUTATION_GATE_STATE_KEY, updated)
         return None
     interception_kind = (
         "candidate_convergence_required"
@@ -3073,6 +3295,12 @@ def _mutation_gate_interception_locked(
         "convergence_stage": updated.get("convergence_stage"),
         "candidate_diagnostic_read_count": updated[
             "candidate_diagnostic_read_count"
+        ],
+        "candidate_exhausted_rejection_count": updated[
+            "candidate_exhausted_rejection_count"
+        ],
+        "candidate_tool_free_latched": updated[
+            "candidate_tool_free_latched"
         ],
         "blocked_read_only_call_count": updated[
             "blocked_read_only_call_count"
@@ -4137,6 +4365,13 @@ def consume_execution_protocol_guidance(context, agent_id: str) -> str | None:
             _MAX_CANDIDATE_DIAGNOSTIC_READS
             - candidate_diagnostic_read_count,
         )
+        exhausted_suffix = (
+            " Ordinary exploration-only Tools are no longer admissible; use "
+            "a declared-deliverable revision surface, registered validation, "
+            "or submit without Tools."
+            if diagnostic_reads_remaining == 0
+            else ""
+        )
         return (
             "AWorld mutation validation window: each current candidate permits "
             "up to three bounded, mechanically read-only diagnostic Tool calls, "
@@ -4147,6 +4382,7 @@ def consume_execution_protocol_guidance(context, agent_id: str) -> str | None:
             "a declared revision, use an evidence-backed repair, or submit the "
             "current result accurately. Unknown, helper, and unrelated mutations "
             "remain blocked."
+            + exhausted_suffix
         )
     state = load_execution_protocol_state(context, agent_id)
     if state.convergence_constraint_active:
@@ -4561,20 +4797,85 @@ def clear_candidate_fallback(context, agent_id: str) -> None:
 
 
 def execution_protocol_requires_tool_free_finalization(context, agent_id: str) -> bool:
-    """Return true when the caller deadline reserved finalization.
+    """Return true when the caller deadline or convergence latch finalizes.
 
     A model-requested repair is deliberately not a finalization state.  After
     the review model attaches an explicit structured repair decision to a
     concrete Tool call, normal execution continues under the original task
-    budget until the model emits a new candidate final response.
+    budget until the model emits a new candidate final response.  Separately,
+    two batches containing rejected calls after a candidate exhausts its
+    diagnostic quota establish that the solver is not staying within the
+    remaining revision/validation surface.  That candidate-bound latch forces
+    the next turn Tool-free; a successful declared revision or new candidate
+    fingerprint resets it before this boundary is reached.
     """
+    owner = state_context(context)
+    transaction = getattr(owner, "task_runtime_state_transaction", None)
+    if callable(transaction):
+        with transaction():
+            return _execution_protocol_requires_tool_free_finalization_locked(
+                context, agent_id
+            )
+    return _execution_protocol_requires_tool_free_finalization_locked(
+        context, agent_id
+    )
+
+
+def _execution_protocol_requires_tool_free_finalization_locked(
+    context,
+    agent_id: str,
+) -> bool:
+    """Resolve a persisted latch only at the pre-generation boundary."""
+
     from aworld.core.execution_protocol import ProtocolPhase
 
     policy = execution_protocol_policy(context, agent_id)
     if policy.mode is not ProtocolMode.GUIDE:
         return False
     state = ExecutionProtocolStore(context, agent_id, policy).load()
-    return state.phase is ProtocolPhase.FINALIZE
+    if state.phase is ProtocolPhase.FINALIZE:
+        return True
+    gate = _read_runtime_value(context, agent_id, MUTATION_GATE_STATE_KEY)
+    if (
+        not isinstance(gate, Mapping)
+        or gate.get("active") is not True
+        or not _gate_matches_current_scope(context, agent_id, gate)
+        or gate.get("convergence_stage")
+        != ConvergenceStage.VALIDATE_REPAIR_OR_SUBMIT.value
+    ):
+        return False
+    _mask, diagnostic_count, _canonical = _normalized_candidate_diagnostic_state(
+        gate
+    )
+    _rejection_mask, _rejections, latched, _latch_is_canonical = (
+        _normalized_exhausted_rejection_state(
+            gate,
+            gate.get("candidate_fingerprint"),
+        )
+    )
+    if not (
+        diagnostic_count >= _MAX_CANDIDATE_DIAGNOSTIC_READS and latched
+    ):
+        return False
+    transition = _apply_event(
+        context,
+        agent_id,
+        ExecutionProtocolEvent(kind=EventKind.CONVERGENCE_EXHAUSTED),
+    )
+    if (
+        transition.decision.action is ControllerAction.ENTER_FINALIZATION
+        and transition.decision.reason is not DecisionReason.PERSISTENCE_ERROR
+        and transition.state.phase is ProtocolPhase.FINALIZE
+    ):
+        _record_pending_checkpoint(context, agent_id, transition)
+        return True
+    # A concurrent caller may have completed the idempotent transition after
+    # our initial load.  Only durable typed FINALIZE state authorizes a
+    # Tool-free model turn; a malformed gate or persistence failure cannot.
+    return (
+        ExecutionProtocolStore(context, agent_id, policy).load().phase
+        is ProtocolPhase.FINALIZE
+    )
 
 
 def final_review_guidance(
@@ -4627,6 +4928,7 @@ __all__ = [
     "EXECUTION_PROTOCOL_POLICY_KEY",
     "EXECUTION_PROTOCOL_PUBLIC_PROBES_KEY",
     "configure_execution_protocol",
+    "constrain_candidate_convergence_tool_catalog",
     "acceptance_critic_active",
     "clear_acceptance_critic_state",
     "clear_candidate_fallback",

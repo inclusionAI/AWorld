@@ -27,6 +27,53 @@ _PUBLIC_DELIVERABLE_AUTHORITY = "public_task_advisory"
 _PUBLIC_DELIVERABLE_BASELINE_KEY = "public_deliverable_baseline"
 _PUBLIC_DELIVERABLE_HASH_MAX_BYTES = 8 * 1024 * 1024
 _PUBLIC_DELIVERY_HIGH_WATER_BLOOM_BITS = 512
+_SANDBOX_OBSERVATION_SCHEMA = "aworld.sandbox-tool-observation/v1"
+_MAX_WORKSPACE_GENERATION = 1_000_000_000
+
+
+def _trusted_sandbox_receipts(
+    actions: list[ActionModel],
+    action_results: list[Mapping[str, Any]],
+) -> list[Mapping[str, Any]]:
+    """Keep only Sandbox receipts bound to the exact observed Tool call."""
+
+    from aworld.sandbox.tool_observation import classify_tool_effect
+
+    trusted = []
+    for action, result in zip(actions, action_results):
+        if not isinstance(result, Mapping):
+            continue
+        metadata = result.get("metadata")
+        receipt = (
+            metadata.get("sandbox_observation")
+            if isinstance(metadata, Mapping)
+            else None
+        )
+        action_call_id = str(action.tool_call_id or "")
+        result_call_id = str(result.get("tool_call_id") or "")
+        if (
+            not isinstance(receipt, Mapping)
+            or receipt.get("schema_version") != _SANDBOX_OBSERVATION_SCHEMA
+            or not action_call_id
+            or result_call_id != action_call_id
+            or receipt.get("tool_call_id") != action_call_id
+        ):
+            continue
+        try:
+            effect = classify_tool_effect(action)
+        except (TypeError, ValueError):
+            continue
+        generation = receipt.get("workspace_generation")
+        if (
+            receipt.get("canonical_tool") != effect.identity
+            or receipt.get("operation_hash") != effect.operation_hash
+            or isinstance(generation, bool)
+            or not isinstance(generation, int)
+            or not 0 <= generation <= _MAX_WORKSPACE_GENERATION
+        ):
+            continue
+        trusted.append(receipt)
+    return trusted
 
 
 def _delivery_high_water_positions(fingerprint: str) -> tuple[int, ...]:
@@ -276,27 +323,21 @@ def _observed_action_signatures(
 def _observed_action_semantics(
     actions: list[ActionModel],
     action_results: list[Any],
+    *,
+    minimum_workspace_generation: int = 0,
 ) -> tuple[dict[str, Any], ...]:
     """Project only Sandbox-authenticated receipts paired to their Tool call."""
 
     from aworld.core.execution_protocol import ActionSemanticReceipt
     from aworld.sandbox.tool_observation import ACTION_SEMANTIC_RECEIPT_KEY
 
-    actions_by_call_id = {
-        action.tool_call_id: action
-        for action in actions
-        if isinstance(action.tool_call_id, str) and action.tool_call_id
-    }
     receipts: list[dict[str, Any]] = []
-    for result in action_results:
-        if not isinstance(result, Mapping):
+    for sandbox_receipt in _trusted_sandbox_receipts(actions, action_results):
+        if (
+            sandbox_receipt.get("workspace_generation", 0)
+            < minimum_workspace_generation
+        ):
             continue
-        metadata = result.get("metadata")
-        sandbox_receipt = (
-            metadata.get("sandbox_observation")
-            if isinstance(metadata, Mapping)
-            else None
-        )
         candidate = (
             sandbox_receipt.get(ACTION_SEMANTIC_RECEIPT_KEY)
             if isinstance(sandbox_receipt, Mapping)
@@ -315,15 +356,9 @@ def _observed_action_semantics(
         ):
             continue
         call_id = receipt.tool_call_id
-        result_call_id = result.get("tool_call_id")
         if (
             not isinstance(call_id, str)
-            or call_id not in actions_by_call_id
-            or (
-                isinstance(result_call_id, str)
-                and result_call_id
-                and result_call_id != call_id
-            )
+            or call_id != sandbox_receipt.get("tool_call_id")
         ):
             continue
         receipts.append(receipt.to_dict())
@@ -558,41 +593,66 @@ def _record_semantic_tool_progress_locked(
         if isinstance(serialized_observation, dict)
         else []
     )
-    artifact_receipts = [
-        metadata.get("context_management")
-        for result in action_results
-        if isinstance(result, dict)
-        for metadata in (result.get("metadata"),)
-        if isinstance(metadata, dict)
-        and isinstance(metadata.get("context_management"), dict)
+    sandbox_receipts = _trusted_sandbox_receipts(actions, action_results)
+    previous_workspace_generation = previous.get("workspace_generation")
+    if (
+        not isinstance(previous_workspace_generation, int)
+        or isinstance(previous_workspace_generation, bool)
+        or not 0 <= previous_workspace_generation <= _MAX_WORKSPACE_GENERATION
+    ):
+        previous_workspace_generation = 0
+    current_sandbox_receipts = [
+        receipt
+        for receipt in sandbox_receipts
+        if receipt["workspace_generation"] >= previous_workspace_generation
     ]
-    sandbox_receipts = [
-        metadata.get("sandbox_observation")
-        for result in action_results
-        if isinstance(result, dict)
-        for metadata in (result.get("metadata"),)
-        if isinstance(metadata, dict)
-        and isinstance(metadata.get("sandbox_observation"), dict)
-    ]
-    observed_action_semantics = _observed_action_semantics(actions, action_results)
+    sandbox_receipts_by_call_id = {
+        receipt["tool_call_id"]: receipt for receipt in current_sandbox_receipts
+    }
+    artifact_evidence = []
+    for result in action_results:
+        if not isinstance(result, Mapping):
+            continue
+        metadata = result.get("metadata")
+        context_receipt = (
+            metadata.get("context_management")
+            if isinstance(metadata, Mapping)
+            else None
+        )
+        sandbox_receipt = sandbox_receipts_by_call_id.get(result.get("tool_call_id"))
+        if (
+            not isinstance(context_receipt, Mapping)
+            or context_receipt.get("schema_version")
+            != "aworld.sandbox-artifact-progress/v1"
+            or sandbox_receipt is None
+        ):
+            continue
+        artifact_evidence.append((context_receipt, sandbox_receipt))
+    artifact_receipts = [receipt for receipt, _ in artifact_evidence]
+    observed_action_semantics = _observed_action_semantics(
+        actions,
+        action_results,
+        minimum_workspace_generation=previous_workspace_generation,
+    )
     known_mutation_executed = any(
         isinstance(receipt.get("terminal_execution_receipt"), dict)
         and receipt["terminal_execution_receipt"].get("effect") == "mutating"
         and receipt["terminal_execution_receipt"].get("executed") is True
         and receipt["terminal_execution_receipt"].get("exit_code") == 0
         and receipt["terminal_execution_receipt"].get("timed_out") is False
-        for receipt in sandbox_receipts
+        for receipt in current_sandbox_receipts
     )
     sandbox_workspace_mutated = any(
         receipt.get("workspace_mutated") is True
-        for receipt in sandbox_receipts
+        for receipt in current_sandbox_receipts
     )
-    sandbox_read_only_observed = bool(sandbox_receipts) and all(
-        receipt.get("effect") == "read_only" for receipt in sandbox_receipts
+    sandbox_read_only_observed = bool(current_sandbox_receipts) and all(
+        receipt.get("effect") == "read_only"
+        for receipt in current_sandbox_receipts
     )
     sandbox_read_only_blocked = any(
         receipt.get("effect") == "blocked_read_only"
-        for receipt in sandbox_receipts
+        for receipt in current_sandbox_receipts
     )
     artifact_changed = any(
         receipt.get("artifact_changed") is True for receipt in artifact_receipts
@@ -604,22 +664,28 @@ def _record_semantic_tool_progress_locked(
         receipt.get("implicit_artifact_loss_detected") is True
         for receipt in artifact_receipts
     )
-    artifact_fingerprint = next(
-        (
-            receipt.get("artifact_fingerprint_after")
-            for receipt in reversed(artifact_receipts)
-            if isinstance(receipt.get("artifact_fingerprint_after"), str)
-        ),
-        None,
+    current_artifact_fingerprints = [
+        (sandbox_receipt["workspace_generation"], receipt["artifact_fingerprint_after"])
+        for receipt, sandbox_receipt in artifact_evidence
+        if isinstance(receipt.get("artifact_fingerprint_after"), str)
+    ]
+    artifact_fingerprint = (
+        max(current_artifact_fingerprints, key=lambda item: item[0])[1]
+        if current_artifact_fingerprints
+        else previous.get("artifact_fingerprint")
     )
+    observed_workspace_generations = [
+        receipt["workspace_generation"]
+        for receipt in sandbox_receipts
+        if isinstance(receipt.get("workspace_generation"), int)
+        and not isinstance(receipt.get("workspace_generation"), bool)
+        and receipt["workspace_generation"] >= 0
+    ]
+    # Workspace generation is a task-scoped high-water mark. A Tool that has
+    # no Sandbox receipt (for example an advisory control Tool), or a stale
+    # transported receipt, must never erase an earlier observed mutation.
     workspace_generation = max(
-        (
-            receipt.get("workspace_generation", 0)
-            for receipt in sandbox_receipts
-            if isinstance(receipt.get("workspace_generation"), int)
-            and not isinstance(receipt.get("workspace_generation"), bool)
-        ),
-        default=0,
+        [previous_workspace_generation, *observed_workspace_generations]
     )
     raw_feature = os.environ.get(SEMANTIC_PROGRESS_LEDGER_ENV)
     semantic_ledger_enabled = not (
@@ -1153,7 +1219,7 @@ def _record_semantic_tool_progress_locked(
         consecutive_read_only_observations = previous_read_only_observations + 1
     else:
         consecutive_read_only_observations = 0
-    if artifact_fingerprint:
+    if artifact_changed and artifact_fingerprint:
         recent_artifact_fingerprints.append(artifact_fingerprint)
     state = {
         "agent_id": agent_id,
