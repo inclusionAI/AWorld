@@ -1,3 +1,4 @@
+from dataclasses import replace
 import pytest
 from mcp.types import CallToolResult, TextContent
 from types import SimpleNamespace
@@ -8,6 +9,13 @@ from aworld.sandbox.run.mcp_servers import (
     _coalesce_tool_result_content,
 )
 from aworld.sandbox.errors import SandboxInfrastructureError
+from aworld.core.context.base import Context
+from aworld.core.execution_protocol import (
+    ConvergenceStage,
+    ExecutionProtocolPolicy,
+    ExecutionProtocolStore,
+)
+from aworld.core.task import Task
 
 
 def test_coalesce_tool_result_content_returns_plain_string_for_single_item():
@@ -93,6 +101,12 @@ def test_hidden_env_content_keeps_framework_task_scope_authoritative():
         "task_epoch": 37,
         "caller_only": "kept",
         "sandbox_only": "kept",
+        "task_budget": {
+            "authority": "aworld_task",
+            "schema_version": "aworld.task-budget/v1",
+            "bounded": False,
+            "stage": "execute",
+        },
     }
 
 
@@ -108,8 +122,14 @@ def test_hidden_env_content_carries_framework_owned_task_budget():
     parameter = {
         "env_content": {
             "task_budget": {
-                "authority": "caller",
+                "authority": "aworld_task",
+                "schema_version": "aworld.task-budget/v1",
+                "bounded": True,
+                "stage": "execute",
                 "deadline_epoch_seconds": 9999.0,
+                "remaining_seconds": 9999.0,
+                "completion_reserve_seconds": 0.0,
+                "captured_at_epoch_seconds": 0.0,
             }
         }
     }
@@ -125,11 +145,140 @@ def test_hidden_env_content_carries_framework_owned_task_budget():
         ),
     )
 
+    budget = parameter["env_content"]["task_budget"]
+    assert budget["authority"] == "aworld_task"
+    assert budget["schema_version"] == "aworld.task-budget/v1"
+    assert budget["bounded"] is True
+    assert budget["deadline_epoch_seconds"] <= 2000.0
+    assert budget["completion_reserve_seconds"] == 30.0
+
+
+@pytest.mark.parametrize("failure_mode", ["missing_context", "missing_getter", "getter_error"])
+def test_hidden_task_budget_is_authoritative_even_without_a_task(failure_mode):
+    servers = object.__new__(McpServers)
+    servers._env_content_param_mapping = {"terminal__run_code": "env_content"}
+    servers.sandbox = SimpleNamespace(
+        env_content={
+            "task_budget": {
+                "authority": "aworld_task",
+                "bounded": True,
+                "deadline_epoch_seconds": 999999.0,
+            },
+            "sandbox_only": "kept",
+        }
+    )
+    parameter = {
+        "env_content": {
+            "task_budget": {
+                "authority": "aworld_task",
+                "bounded": True,
+                "deadline_epoch_seconds": 888888.0,
+            },
+            "caller_only": "kept",
+        }
+    }
+    if failure_mode == "missing_context":
+        context = None
+    elif failure_mode == "missing_getter":
+        context = SimpleNamespace(task_id="task")
+    else:
+        def fail_get_task():
+            raise RuntimeError("stale context")
+
+        context = SimpleNamespace(task_id="task", get_task=fail_get_task)
+
+    servers._inject_env_content_parameter(
+        "terminal__run_code", parameter, context
+    )
+
     assert parameter["env_content"]["task_budget"] == {
         "authority": "aworld_task",
-        "deadline_epoch_seconds": 2000.0,
-        "completion_reserve_seconds": 30.0,
+        "schema_version": "aworld.task-budget/v1",
+        "bounded": False,
+        "stage": "execute",
     }
+    assert parameter["env_content"]["sandbox_only"] == "kept"
+    assert parameter["env_content"]["caller_only"] == "kept"
+
+
+def test_hidden_task_budget_uses_monotonic_tight_remaining_snapshot(monkeypatch):
+    servers = object.__new__(McpServers)
+    servers._env_content_param_mapping = {"terminal__run_code": "env_content"}
+    servers.sandbox = SimpleNamespace(env_content={})
+    task = SimpleNamespace(
+        deadline_epoch_seconds=5000.0,
+        completion_reserve_seconds=20.0,
+        bind_deadline=lambda: 5000.0,
+        remaining_seconds=lambda: 40.0,
+        parent_task=None,
+    )
+    monkeypatch.setattr("aworld.sandbox.task_budget.time.time", lambda: 1000.0)
+    parameter = {}
+
+    servers._inject_env_content_parameter(
+        "terminal__run_code",
+        parameter,
+        SimpleNamespace(get_task=lambda: task),
+    )
+
+    budget = parameter["env_content"]["task_budget"]
+    assert budget["deadline_epoch_seconds"] == 1040.0
+    assert budget["remaining_seconds"] == 40.0
+    assert budget["captured_at_epoch_seconds"] == 1000.0
+
+
+def test_hidden_task_budget_projects_typed_convergence_stage():
+    servers = object.__new__(McpServers)
+    servers._env_content_param_mapping = {"terminal__run_code": "env_content"}
+    servers.sandbox = SimpleNamespace(env_content={})
+    task = Task(timeout=300)
+    context = Context(task_id=task.id)
+    context.set_task(task)
+    context.agent_info.current_agent_id = "agent"
+    store = ExecutionProtocolStore(context, "agent", ExecutionProtocolPolicy())
+    store.save(
+        replace(
+            store.load(),
+            convergence_constraint_active=True,
+            convergence_stage=ConvergenceStage.PRODUCE_CANDIDATE,
+        )
+    )
+    parameter = {}
+
+    servers._inject_env_content_parameter(
+        "terminal__run_code", parameter, context
+    )
+
+    assert parameter["env_content"]["task_budget"]["stage"] == "convergence"
+
+
+def test_hidden_task_budget_projects_typed_deadline_stage():
+    from aworld.runners.execution_protocol import (
+        EXECUTION_PROTOCOL_DEADLINE_GUIDANCE_KEY,
+    )
+
+    servers = object.__new__(McpServers)
+    servers._env_content_param_mapping = {"terminal__run_code": "env_content"}
+    servers.sandbox = SimpleNamespace(env_content={})
+    task = Task(timeout=300)
+    context = Context(task_id=task.id)
+    context.set_task(task)
+    context.agent_info.current_agent_id = "agent"
+    context.write_task_runtime_state(
+        "agent",
+        EXECUTION_PROTOCOL_DEADLINE_GUIDANCE_KEY,
+        {
+            "schema_version": "aworld.deadline-guidance/v1",
+            "last_stage": "validation_due",
+        },
+    )
+    parameter = {}
+
+    servers._inject_env_content_parameter(
+        "terminal__run_code", parameter, context
+    )
+
+    assert parameter["env_content"]["task_budget"]["stage"] == "deadline"
 
 
 def _terminal_tool(tool_name: str, param_name: str) -> dict[str, object]:

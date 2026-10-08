@@ -7600,9 +7600,19 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         """
         from aworld.utils.run_util import exec_tool, exec_agent
 
+        get_task = getattr(message.context, "get_task", None)
+        try:
+            parent_task = get_task() if callable(get_task) else None
+        except Exception:
+            parent_task = None
         tool_results = []
         for act in actions:
             context = message.context.deep_copy()
+            if parent_task is not None:
+                # Base Context deep copies intentionally drop Task references.
+                # Rebind only the execution parent; the child Task remains the
+                # owner once its runner constructs a sub-context.
+                context.set_task(parent_task)
             context.agent_info.current_tool_call_id = act.tool_call_id
             if is_agent(act):
                 content = act.policy_info
@@ -7620,6 +7630,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                     task_group_id=message.context.get_task().group_id
                     or uuid.uuid4().hex,
                     task_conf=task_conf,
+                    parent_task=parent_task,
                 )
             else:
                 act_result = await exec_tool(
@@ -7632,6 +7643,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                     outputs=message.context.outputs,
                     task_group_id=message.context.get_task().group_id
                     or uuid.uuid4().hex,
+                    parent_task=parent_task,
                 )
 
             # tool hooks

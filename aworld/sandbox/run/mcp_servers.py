@@ -1,12 +1,10 @@
 import asyncio
-import json
 import math
 import os
 import re
 import shlex
 import threading
 import traceback
-import uuid
 from datetime import datetime
 from pathlib import Path
 
@@ -17,7 +15,6 @@ from aworld.memory.tool_call_compaction import (
     compacted_replay_execution_error,
 )
 from aworld.sandbox.namespaces.base import (
-    resolve_service_name_from_config,
     service_matches_logical_name,
 )
 from aworld.skills.execution_assets import build_skill_path_aliases
@@ -27,8 +24,8 @@ from aworld.utils.common import sync_exec
 
 from aworld.events.util import send_message
 
-from aworld.core.event.base import Message, Constants, BackgroundTaskMessage, TopicType
-from typing_extensions import Optional, List, Dict, Any
+from aworld.core.event.base import Message, Constants
+from typing_extensions import Optional, List, Dict, Any, Mapping
 from typing import TYPE_CHECKING
 
 from aworld.mcp_client.utils import (
@@ -45,9 +42,16 @@ from aworld.mcp_client.utils import (
     mcp_tool_retry_safe,
     run as mcp_run,
 )
-from aworld.core.common import ActionResult, Observation
+from aworld.core.common import ActionResult
 from aworld.output import Output
 from aworld.sandbox.runtime import SandboxManager
+from aworld.sandbox.task_budget import (
+    FrameworkTaskBudget,
+    ToolLeaseDecision,
+    ToolLeaseStage,
+    resolve_tool_lease,
+    snapshot_task_budget,
+)
 
 # Import env_channel for subscription
 # from env_channel import EnvChannelMessage, env_channel_sub
@@ -63,6 +67,155 @@ _MCP_TRANSPORT_GRACE_SECONDS = 10.0
 _MCP_TRANSPORT_MAX_TIMEOUT_SECONDS = 86410.0
 _TERMINAL_DEFAULT_TIMEOUT_SECONDS = 300.0
 _TERMINAL_MAX_TIMEOUT_SECONDS = 3600.0
+_task_lease_cancelled_calls: set[asyncio.Future[Any]] = set()
+
+
+class _TaskToolLeaseTimeout(TimeoutError):
+    def __init__(self, *, timed_out: bool) -> None:
+        super().__init__("authoritative task Tool lease elapsed")
+        self.timed_out = timed_out
+
+
+def _retain_cancelled_provider_call(task: asyncio.Future[Any]) -> None:
+    _task_lease_cancelled_calls.add(task)
+
+    def finish_cancelled_call(done: asyncio.Future[Any]) -> None:
+        _task_lease_cancelled_calls.discard(done)
+        if not done.cancelled():
+            try:
+                done.exception()
+            except Exception:
+                pass
+
+    task.add_done_callback(finish_cancelled_call)
+
+
+def _safe_context_task(context: Context | None) -> Any:
+    getter = getattr(context, "get_task", None) if context is not None else None
+    try:
+        return getter() if callable(getter) else None
+    except Exception:
+        return None
+
+
+def _tool_lease_stage(
+    context: Context | None,
+    event_message: Message | None,
+    task: Any,
+) -> ToolLeaseStage:
+    """Project only a typed, generic protocol stage into the hidden budget."""
+
+    source_context = context
+    parent_task = getattr(task, "parent_task", None)
+    if parent_task is not None and getattr(parent_task, "context", None) is not None:
+        source_context = parent_task.context
+    else:
+        root = getattr(context, "root", None) if context is not None else None
+        if root is not None:
+            source_context = root
+    agent_id = getattr(event_message, "sender", None)
+    if not isinstance(agent_id, str) or not agent_id.strip():
+        agent_info = getattr(source_context, "agent_info", None)
+        agent_id = getattr(agent_info, "current_agent_id", None)
+    if not isinstance(agent_id, str) or not agent_id.strip() or source_context is None:
+        return ToolLeaseStage.EXECUTE
+    try:
+        from aworld.runners.execution_protocol import (
+            EXECUTION_PROTOCOL_DEADLINE_GUIDANCE_KEY,
+            load_execution_protocol_state,
+        )
+
+        state = load_execution_protocol_state(source_context, agent_id.strip())
+    except Exception:
+        return ToolLeaseStage.EXECUTE
+    if getattr(state, "convergence_constraint_active", False):
+        return ToolLeaseStage.CONVERGENCE
+    deadline_guidance = None
+    reader = getattr(source_context, "read_task_runtime_state", None)
+    if callable(reader):
+        try:
+            deadline_guidance = reader(
+                agent_id.strip(), EXECUTION_PROTOCOL_DEADLINE_GUIDANCE_KEY
+            )
+        except Exception:
+            deadline_guidance = None
+    if not isinstance(deadline_guidance, Mapping):
+        context_info = getattr(source_context, "context_info", None)
+        if isinstance(context_info, Mapping):
+            deadline_guidance = context_info.get(
+                f"{EXECUTION_PROTOCOL_DEADLINE_GUIDANCE_KEY}:{agent_id.strip()}"
+            )
+    if (
+        isinstance(deadline_guidance, Mapping)
+        and deadline_guidance.get("schema_version") == "aworld.deadline-guidance/v1"
+        and deadline_guidance.get("last_stage")
+        in {"candidate_due", "validation_due", "delivery_only"}
+    ):
+        return ToolLeaseStage.DEADLINE
+    phase = getattr(getattr(state, "phase", None), "value", None)
+    if phase in {"finalize", "review", "repair", "complete"}:
+        return ToolLeaseStage.DEADLINE
+    return ToolLeaseStage.EXECUTE
+
+
+def _framework_task_budget(
+    context: Context | None,
+    event_message: Message | None = None,
+) -> FrameworkTaskBudget:
+    task = _safe_context_task(context)
+    return snapshot_task_budget(
+        task,
+        stage=_tool_lease_stage(context, event_message, task),
+    )
+
+
+def _transport_lease_decision(
+    *,
+    requested_timeout: float,
+    budget: FrameworkTaskBudget,
+    environ: Mapping[str, str] | None = None,
+) -> ToolLeaseDecision:
+    """Use the same task deadline at the provider transport boundary."""
+
+    environment = environ or {}
+    policy_override = None
+    raw_terminal_override = environment.get("TERMINAL_TIMEOUT")
+    try:
+        terminal_override = float(raw_terminal_override)
+    except (TypeError, ValueError):
+        terminal_override = math.nan
+    if math.isfinite(terminal_override) and terminal_override > 0:
+        policy_override = "terminal_timeout"
+    elif environment.get("AWORLD_TERMINAL_MAX_TIMEOUT_SECONDS") is not None:
+        policy_override = "terminal_maximum"
+    raw_fraction = environment.get("AWORLD_TERMINAL_TASK_LEASE_FRACTION")
+    try:
+        configured_fraction = float(raw_fraction)
+    except (TypeError, ValueError):
+        configured_fraction = 0.25
+        explicit_fraction = False
+    else:
+        explicit_fraction = (
+            math.isfinite(configured_fraction) and 0 < configured_fraction <= 1
+        )
+        if not explicit_fraction:
+            configured_fraction = 0.25
+    raw_floor = environment.get("AWORLD_TERMINAL_TASK_LEASE_MIN_SECONDS")
+    try:
+        configured_floor = float(raw_floor)
+    except (TypeError, ValueError):
+        configured_floor = 15.0
+    if not math.isfinite(configured_floor) or configured_floor < 0:
+        configured_floor = 15.0
+    return resolve_tool_lease(
+        requested_timeout,
+        budget=budget,
+        maximum_seconds=_MCP_TRANSPORT_MAX_TIMEOUT_SECONDS,
+        policy_override=policy_override,
+        constrained_fraction=configured_fraction,
+        constrained_floor_seconds=configured_floor,
+        explicit_fraction_policy=explicit_fraction,
+    )
 
 
 def _finite_positive_timeout(value: Any) -> float:
@@ -197,6 +350,86 @@ def _build_tool_call_failure_result(
     )
 
 
+def _requested_timeout_for_receipt(
+    parameter: Dict[str, Any], transport_timeout: float
+) -> float:
+    raw = parameter.get("timeout")
+    try:
+        value = float(raw)
+    except (TypeError, ValueError, OverflowError):
+        return float(transport_timeout)
+    if isinstance(raw, bool) or not math.isfinite(value) or value <= 0:
+        return float(transport_timeout)
+    return value
+
+
+def _build_task_lease_failure_result(
+    *,
+    server_name: str,
+    tool_name: str,
+    parameter: Dict[str, Any],
+    transport_timeout: float,
+    decision: ToolLeaseDecision,
+    budget: FrameworkTaskBudget,
+    timed_out: bool,
+) -> ActionResult:
+    failure_type = (
+        "task_tool_lease_timeout" if timed_out else "task_tool_lease_exhausted"
+    )
+    message = (
+        "Tool execution exceeded the authoritative AWorld task lease"
+        if timed_out
+        else "Task execution deadline is reserved for completion"
+    )
+    return ActionResult(
+        success=False,
+        tool_name=server_name,
+        action_name=tool_name,
+        content=message,
+        error=failure_type,
+        keep=True,
+        parameter=parameter,
+        metadata={
+            "failure_type": failure_type,
+            "requested_timeout_seconds": _requested_timeout_for_receipt(
+                parameter, transport_timeout
+            ),
+            "requested_transport_timeout_seconds": float(transport_timeout),
+            "effective_timeout_seconds": decision.effective_seconds,
+            "remaining_task_seconds": decision.remaining_task_seconds,
+            "timeout_limited_by": decision.limited_by,
+            "timeout_policy_override": decision.policy_override,
+            "task_budget_stage": budget.stage.value,
+        },
+    )
+
+
+async def _await_with_task_lease(awaitable, decision: ToolLeaseDecision):
+    if decision.effective_seconds <= 0:
+        close = getattr(awaitable, "close", None)
+        if callable(close):
+            close()
+        raise _TaskToolLeaseTimeout(timed_out=False)
+    provider_task = asyncio.ensure_future(awaitable)
+    try:
+        done, _ = await asyncio.wait(
+            {provider_task}, timeout=decision.effective_seconds
+        )
+    except asyncio.CancelledError:
+        provider_task.cancel()
+        _retain_cancelled_provider_call(provider_task)
+        raise
+    if provider_task in done:
+        return await provider_task
+    provider_task.cancel()
+    await asyncio.sleep(0)
+    # Cancellation is cooperative. Keep a strong reference and consume any
+    # eventual exception without letting a provider that suppresses
+    # cancellation hold the caller beyond the authoritative lease.
+    _retain_cancelled_provider_call(provider_task)
+    raise _TaskToolLeaseTimeout(timed_out=True)
+
+
 class McpServers:
 
     def __init__(
@@ -302,7 +535,7 @@ class McpServers:
                 f"[sandbox list_tools] done connections={len(self.server_instances)} pid={os.getpid()} tid={threading.get_ident()} at={datetime.now().isoformat(timespec='milliseconds')}"
             )
             return self.tool_list
-        except Exception as e:
+        except Exception:
             logger.warning(f"Failed to list tools: {traceback.format_exc()}")
             return []
 
@@ -1097,13 +1330,40 @@ class McpServers:
                     server_config = self.mcp_config.get("mcpServers").get(server_name, {})
                     server_type = server_config.get("type", "")
 
+                task_budget = _framework_task_budget(context, event_message)
+
                 if server_type == "function_tool":
                     try:
-                        call_result = await call_function_tool(
-                            server_name, tool_name, parameter, self.mcp_config
+                        transport_timeout = _resolve_mcp_transport_timeout(
+                            server_name=server_name,
+                            tool_name=tool_name,
+                            parameter=parameter,
+                            tool_list=self.tool_list,
+                        )
+                        lease_decision = _transport_lease_decision(
+                            requested_timeout=transport_timeout,
+                            budget=task_budget,
+                        )
+                        call_result = await _await_with_task_lease(
+                            call_function_tool(
+                                server_name, tool_name, parameter, self.mcp_config
+                            ),
+                            lease_decision,
                         )
                         results.append(call_result)
 
+                        self._update_metadata(result_key, call_result, operation_info)
+                    except _TaskToolLeaseTimeout as exc:
+                        call_result = _build_task_lease_failure_result(
+                            server_name=server_name,
+                            tool_name=tool_name,
+                            parameter=parameter,
+                            transport_timeout=transport_timeout,
+                            decision=lease_decision,
+                            budget=task_budget,
+                            timed_out=exc.timed_out,
+                        )
+                        results.append(call_result)
                         self._update_metadata(result_key, call_result, operation_info)
                     except Exception as e:
                         logger.warning(f"Error calling function_tool tool: {e}")
@@ -1121,11 +1381,36 @@ class McpServers:
                 # For API type servers, use call_api function directly
                 if server_type == "api":
                     try:
-                        call_result = await call_api(
-                            server_name, tool_name, parameter, self.mcp_config
+                        transport_timeout = _resolve_mcp_transport_timeout(
+                            server_name=server_name,
+                            tool_name=tool_name,
+                            parameter=parameter,
+                            tool_list=self.tool_list,
+                        )
+                        lease_decision = _transport_lease_decision(
+                            requested_timeout=transport_timeout,
+                            budget=task_budget,
+                        )
+                        call_result = await _await_with_task_lease(
+                            call_api(
+                                server_name, tool_name, parameter, self.mcp_config
+                            ),
+                            lease_decision,
                         )
                         results.append(call_result)
 
+                        self._update_metadata(result_key, call_result, operation_info)
+                    except _TaskToolLeaseTimeout as exc:
+                        call_result = _build_task_lease_failure_result(
+                            server_name=server_name,
+                            tool_name=tool_name,
+                            parameter=parameter,
+                            transport_timeout=transport_timeout,
+                            decision=lease_decision,
+                            budget=task_budget,
+                            timed_out=exc.timed_out,
+                        )
+                        results.append(call_result)
                         self._update_metadata(result_key, call_result, operation_info)
                     except Exception as e:
                         logger.warning(f"Error calling API tool: {e}")
@@ -1173,16 +1458,22 @@ class McpServers:
                         tool_name=tool_name,
                         parameter=parameter
                     )
+                    server_environment = (
+                        _stdio_server_environment(server_config)
+                        if server_type == "stdio" or server_config.get("command")
+                        else {}
+                    )
                     mcp_timeout = _resolve_mcp_transport_timeout(
                         server_name=server_name,
                         tool_name=tool_name,
                         parameter=parameter,
                         tool_list=self.tool_list,
-                        environ=(
-                            _stdio_server_environment(server_config)
-                            if server_type == "stdio" or server_config.get("command")
-                            else {}
-                        ),
+                        environ=server_environment,
+                    )
+                    lease_decision = _transport_lease_decision(
+                        requested_timeout=mcp_timeout,
+                        budget=task_budget,
+                        environ=server_environment,
                     )
                 except Exception as e:
                     logger.warning(f"Error checking tool parameters: {e}")
@@ -1216,7 +1507,7 @@ class McpServers:
 
                 if self._should_reuse():
                     # Reuse mode: use cached server instances (delegated to utils.py)
-                    call_result_raw = await call_mcp_tool_with_reuse(
+                    provider_call = call_mcp_tool_with_reuse(
                         server_name=server_name,
                         tool_name=tool_name,
                         parameter=parameter,
@@ -1229,12 +1520,9 @@ class McpServers:
                         timeout=mcp_timeout,
                         retry_safe=retry_safe,
                     )
-
-                    if not call_result_raw:
-                        call_mcp_e = Exception("Failed to call tool after all retry attempts")
                 else:
                     # Non-reuse mode: use AsyncExitStack (delegated to utils.py)
-                    call_result_raw = await call_mcp_tool_with_exit_stack(
+                    provider_call = call_mcp_tool_with_exit_stack(
                         server_name=server_name,
                         tool_name=tool_name,
                         parameter=parameter,
@@ -1246,9 +1534,26 @@ class McpServers:
                         timeout=mcp_timeout,
                         retry_safe=retry_safe,
                     )
+                try:
+                    call_result_raw = await _await_with_task_lease(
+                        provider_call, lease_decision
+                    )
+                except _TaskToolLeaseTimeout as exc:
+                    action_result = _build_task_lease_failure_result(
+                        server_name=server_name,
+                        tool_name=tool_name,
+                        parameter=parameter,
+                        transport_timeout=mcp_timeout,
+                        decision=lease_decision,
+                        budget=task_budget,
+                        timed_out=exc.timed_out,
+                    )
+                    results.append(action_result)
+                    self._update_metadata(result_key, action_result, operation_info)
+                    continue
 
-                    if not call_result_raw:
-                        call_mcp_e = Exception("Failed to call tool after all retry attempts")
+                if not call_result_raw:
+                    call_mcp_e = Exception("Failed to call tool after all retry attempts")
 
                 logger.debug(f"tool_name:{server_name},action_name:{tool_name} finished.")
                 logger.debug(f"tool_name:{server_name},action_name:{tool_name} call-mcp-tool-result: {call_result_raw}")
@@ -1362,7 +1667,7 @@ class McpServers:
         1. Checks if the tool needs env_content injection (based on mapping)
         2. Builds env_content value from sandbox.env_content (user-defined)
         3. Dynamically adds task_id and session_id from context
-        4. Merges into parameter (user-provided values take priority)
+        4. Merges ordinary values while keeping framework authority fields final
 
         Args:
             tool_key: Tool identifier in format "server_name__tool_name"
@@ -1382,9 +1687,18 @@ class McpServers:
         # Build env_content value
         env_content_value = {}
 
-        # 1. Copy user-defined context from sandbox.env_content
-        if hasattr(self.sandbox, 'env_content'):
-            env_content_value.update(self.sandbox.env_content)
+        # 1. Copy user-defined context from sandbox.env_content. Framework
+        # authority fields are never inherited from caller-owned dictionaries.
+        if hasattr(self.sandbox, 'env_content') and isinstance(
+            self.sandbox.env_content, dict
+        ):
+            env_content_value.update(
+                {
+                    key: value
+                    for key, value in self.sandbox.env_content.items()
+                    if key != "task_budget"
+                }
+            )
 
         # 2. Dynamically add task_id and session_id from context
         if context:
@@ -1394,37 +1708,6 @@ class McpServers:
                 env_content_value["session_id"] = context.session_id
             if hasattr(context, 'task_epoch') and context.task_epoch is not None:
                 env_content_value["task_epoch"] = context.task_epoch
-            get_task = getattr(context, "get_task", None)
-            try:
-                task = get_task() if callable(get_task) else None
-            except Exception:
-                task = None
-            if task is not None:
-                bind_deadline = getattr(task, "bind_deadline", None)
-                try:
-                    if callable(bind_deadline):
-                        bind_deadline()
-                    deadline = getattr(task, "deadline_epoch_seconds", None)
-                    reserve = getattr(task, "completion_reserve_seconds", None)
-                except Exception:
-                    deadline = reserve = None
-                budget: dict[str, Any] = {"authority": "aworld_task"}
-                if (
-                    isinstance(deadline, (int, float))
-                    and not isinstance(deadline, bool)
-                    and math.isfinite(float(deadline))
-                    and deadline >= 0
-                ):
-                    budget["deadline_epoch_seconds"] = float(deadline)
-                if (
-                    isinstance(reserve, (int, float))
-                    and not isinstance(reserve, bool)
-                    and math.isfinite(float(reserve))
-                    and reserve >= 0
-                ):
-                    budget["completion_reserve_seconds"] = float(reserve)
-                if len(budget) > 1:
-                    env_content_value["task_budget"] = budget
 
         # 3. Dynamically add additional context from event_message
         if event_message:
@@ -1432,16 +1715,30 @@ class McpServers:
                 env_content_value["agent_id"] = event_message.sender
 
         # 4. Merge into parameter
-        # If a stale caller supplied the hidden parameter, merge it while
-        # keeping framework task/session identity authoritative.
+        # If a stale caller supplied the hidden parameter, merge ordinary
+        # values while keeping framework task/session/budget state authoritative.
         if env_content_name not in parameter:
             parameter[env_content_name] = env_content_value
         else:
             user_value = parameter[env_content_name]
             if isinstance(user_value, dict):
-                parameter[env_content_name] = {**user_value, **env_content_value}
+                parameter[env_content_name] = {
+                    **{
+                        key: value
+                        for key, value in user_value.items()
+                        if key != "task_budget"
+                    },
+                    **env_content_value,
+                }
             else:
                 parameter[env_content_name] = env_content_value
+
+        # The sentinel is always present, including when no Task exists. This
+        # makes absence authoritative instead of allowing a stale model,
+        # Sandbox dictionary or process environment to fabricate a deadline.
+        parameter[env_content_name]["task_budget"] = _framework_task_budget(
+            context, event_message
+        ).to_hidden_dict()
 
         logger.debug(f"Injected env_content parameter '{env_content_name}' for tool '{tool_key}'")
 

@@ -44,6 +44,7 @@ _NARRATIVE_ESTIMATE = re.compile(
     re.IGNORECASE,
 )
 _MARKED_CURRENCY_VALUE = re.compile(r"^[~≈]\s*[$€£¥]")
+_MISSING_CHART_VALUE = re.compile(r"^(?:n/?a|—|–|-|…|\.\.)$", re.IGNORECASE)
 _SEMANTIC_HEADER = re.compile(r"[^\W\d_]", re.UNICODE)
 _HTML_TABLE_BLOCK = re.compile(r"<table\b[^>]*>.*?</table>", re.IGNORECASE | re.DOTALL)
 
@@ -73,7 +74,9 @@ printed cells remain unprefixed even in a table that also contains estimates.
 Never estimate from an unlabelled, cropped, ambiguous, or non-linear scale;
 never extrapolate beyond visible ticks, invent a value, or emit a range. Put a
 currency symbol or unit in the measure-column header, not after an estimate
-marker in a value cell. Return JSON only, without prose/commentary."""
+marker in a value cell. Preserve a visibly printed N/A or dash as an explicit
+missing cell, but every table must contain at least one numeric measure. Return
+JSON only, without prose/commentary."""
 
 
 class BlockRepairError(ValueError):
@@ -366,6 +369,7 @@ def _validate_chart_table(
     if any(index < 0 or index >= width for index in value_columns):
         raise BlockRepairError("filex_chart_repair_value_columns_invalid")
     contains_marked_estimate = False
+    contains_numeric_value = False
     for row_index, row in enumerate(rows, start=1):
         for cell in row:
             value = re.sub(r"\s+", " ", cell.text).strip()
@@ -383,8 +387,11 @@ def _validate_chart_table(
                 raise BlockRepairError(
                     "filex_chart_repair_estimated_currency_inline"
                 )
+            if _MISSING_CHART_VALUE.fullmatch(value):
+                continue
             if _NUMERIC.fullmatch(value) is None:
                 raise BlockRepairError("filex_chart_repair_numeric_value_missing")
+            contains_numeric_value = True
             if value.lstrip().startswith(("~", "≈")):
                 contains_marked_estimate = True
         category_count = sum(
@@ -399,6 +406,8 @@ def _validate_chart_table(
     # values transparent without rejecting legitimate chart-to-table extraction.
     if estimated != contains_marked_estimate:
         raise BlockRepairError("filex_chart_repair_estimated_value_unverified")
+    if not contains_numeric_value:
+        raise BlockRepairError("filex_chart_repair_numeric_value_missing")
 
     if labels:
         visible = [
@@ -551,6 +560,13 @@ def _anchored_rewrite(
                 break
             raw_start = content_spans[index][0]
             raw_end = content_spans[index + len(visible_candidate) - 1][1]
+            table_start = content.lower().rfind("<table", 0, raw_start + 1)
+            table_end_before = content.lower().rfind("</table>", 0, raw_start + 1)
+            if table_start > table_end_before:
+                table_end = content.lower().find("</table>", raw_end)
+                if table_end >= 0:
+                    raw_start = table_start
+                    raw_end = table_end + len("</table>")
             visible_positions.add((raw_start, raw_end))
             start = index + 1
     if len(visible_positions) > 1:
@@ -1338,12 +1354,6 @@ async def repair_parse_output(
                         break
                     except BlockRepairError as exc:
                         last_reason = str(exc)
-                        if last_reason == (
-                            "filex_chart_repair_estimated_value_unverified"
-                        ):
-                            # Do not let a retry launder an estimate by merely
-                            # dropping its required marker or evidence flag.
-                            break
                     except TimeoutError:
                         last_reason = "filex_block_repair_backend_timeout"
                     except Exception:

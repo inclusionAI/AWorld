@@ -41,7 +41,8 @@ unlabelled, cropped, ambiguous, or non-linear scale, and never extrapolate beyon
 Preserve exact printed footnote markers. Preserve panel titles as a table column or a short
 heading immediately before the corresponding table. Never wrap a narrative sentence in a
 one-column table and never invent a value that the chart does not visually support. Put a
-currency symbol or unit in the measure-column header, not after an estimate marker."""
+currency symbol or unit in the measure-column header, not after an estimate marker. Preserve
+a visibly printed N/A or dash as a missing cell, but every table must contain a numeric value."""
 _CHART_CORRECTION_PROMPT = """Chart Recognition:
 CORRECTION ATTEMPT {attempt}: the previous response violated the chart table contract.
 Read the chart image again; do not reformat or summarize the previous answer.
@@ -53,7 +54,8 @@ prefix that cell with ≈ and use no more precision than the ticks support. Do n
 bullets, JSON, one-column tables, ranges, commentary, unmarked estimates, extrapolations, or
 values from an unlabelled/cropped/ambiguous/non-linear scale. Preserve exact printed footnote
 markers. Never invent a value that the chart does not visually support. Put a currency symbol
-or unit in the measure-column header, not after an estimate marker.
+or unit in the measure-column header, not after an estimate marker. Preserve a visibly printed
+N/A or dash as a missing cell, but every table must contain a numeric value.
 The rejected output failed these checks: {failures}"""
 _MARKDOWN_SEPARATOR_CELL = re.compile(r"^:?-{3,}:?$")
 _NUMERIC_CHART_CELL = re.compile(
@@ -63,6 +65,7 @@ _NUMERIC_CHART_CELL = re.compile(
     re.IGNORECASE,
 )
 _MARKED_CURRENCY_VALUE = re.compile(r"^[~≈]\s*[$€£¥]")
+_MISSING_CHART_CELL = re.compile(r"^(?:n/?a|—|–|-|…|\.\.)$", re.IGNORECASE)
 _CHART_CATEGORY_HEADER = re.compile(
     r"^(?:category|country|date|day|label|month|name|panel|period|quarter|"
     r"region|series|time|week|year|x(?:[- ]?axis)?)$",
@@ -919,10 +922,15 @@ class PaddleOcrPdfProvider:
                 and not malformed
                 and all(
                     all(
-                        cls._is_numeric_chart_cell(row[column])
+                        cls._is_chart_value_cell(row[column])
                         for column in value_columns
                     )
                     for row in data_rows
+                )
+                and any(
+                    cls._is_numeric_chart_cell(row[column])
+                    for row in data_rows
+                    for column in value_columns
                 )
             ):
                 return True
@@ -957,10 +965,14 @@ class PaddleOcrPdfProvider:
             if value_columns and all(
                 len(row) >= 2
                 and all(
-                    column < len(row) and cls._is_numeric_chart_cell(row[column])
+                    column < len(row) and cls._is_chart_value_cell(row[column])
                     for column in value_columns
                 )
                 for row in data_rows
+            ) and any(
+                column < len(row) and cls._is_numeric_chart_cell(row[column])
+                for row in data_rows
+                for column in value_columns
             ):
                 return True
         return False
@@ -999,6 +1011,13 @@ class PaddleOcrPdfProvider:
         if _MARKED_CURRENCY_VALUE.match(normalized):
             return False
         return bool(_NUMERIC_CHART_CELL.fullmatch(normalized))
+
+    @classmethod
+    def _is_chart_value_cell(cls, value: str) -> bool:
+        normalized = re.sub(r"\s+", " ", value).strip()
+        return cls._is_numeric_chart_cell(normalized) or bool(
+            _MISSING_CHART_CELL.fullmatch(normalized)
+        )
 
     @staticmethod
     def _is_retryable_error(exc: Exception) -> bool:

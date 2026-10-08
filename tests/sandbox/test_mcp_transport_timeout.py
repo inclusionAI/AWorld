@@ -345,3 +345,174 @@ async def test_stdio_call_can_outlive_short_transport_floor(
     assert result.success
     assert calls == [2.0]
     assert "completed after old transport floor" in str(result.content)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reuse", [False, True])
+@pytest.mark.parametrize(
+    ("server_name", "tool_name"),
+    [("terminal", "run_code"), ("legacy", "execute")],
+)
+async def test_transport_boundary_cancels_provider_at_authoritative_task_lease(
+    runtime, monkeypatch, reuse, server_name, tool_name
+):
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    async def blocked_transport(**kwargs):
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.set()
+
+    monkeypatch.setattr(mcp_servers, "call_mcp_tool_with_exit_stack", blocked_transport)
+    monkeypatch.setattr(mcp_servers, "call_mcp_tool_with_reuse", blocked_transport)
+    monkeypatch.setattr(
+        "aworld.sandbox.task_budget.time.time", lambda: 1000.0
+    )
+    servers = runtime.Servers(_schema(server_name, tool_name))
+    servers._should_reuse = lambda: reuse
+    task = SimpleNamespace(
+        deadline_epoch_seconds=1000.05,
+        completion_reserve_seconds=0.0,
+        remaining_seconds=lambda: 0.05,
+        bind_deadline=lambda: 1000.05,
+        parent_task=None,
+    )
+    context = SimpleNamespace(
+        task_id="task",
+        get_task=lambda: task,
+        agent_info=SimpleNamespace(current_agent_id="agent"),
+    )
+    servers.sandbox = SimpleNamespace(
+        env_content={}, env_content_name=None, sandbox_id=None
+    )
+    servers._env_content_param_mapping = {}
+
+    (result,) = await servers.call(
+        action_list=[
+            {
+                "tool_name": server_name,
+                "action_name": tool_name,
+                "params": {"code": "work", "timeout": 300},
+            }
+        ],
+        context=context,
+    )
+
+    assert started.is_set()
+    assert cancelled.is_set()
+    assert result.success is False
+    assert result.metadata["failure_type"] == "task_tool_lease_timeout"
+    assert result.metadata["requested_timeout_seconds"] == 300
+    assert result.metadata["effective_timeout_seconds"] <= 0.05
+    assert result.metadata["timeout_limited_by"] == "task_deadline"
+
+
+@pytest.mark.asyncio
+async def test_normal_transport_lease_is_not_fractionally_capped(runtime, monkeypatch):
+    monkeypatch.setattr(
+        "aworld.sandbox.task_budget.time.time", lambda: 1000.0
+    )
+    servers = runtime.Servers(_schema())
+    task = SimpleNamespace(
+        deadline_epoch_seconds=1400.0,
+        completion_reserve_seconds=40.0,
+        remaining_seconds=lambda: 400.0,
+        bind_deadline=lambda: 1400.0,
+        parent_task=None,
+    )
+    context = SimpleNamespace(
+        task_id="task",
+        get_task=lambda: task,
+        agent_info=SimpleNamespace(current_agent_id="agent"),
+    )
+    servers.sandbox = SimpleNamespace(
+        env_content={}, env_content_name=None, sandbox_id=None
+    )
+    servers._env_content_param_mapping = {}
+
+    (result,) = await servers.call(
+        action_list=[
+            {
+                "tool_name": "terminal",
+                "action_name": "run_code",
+                "params": {"code": "work", "timeout": 300},
+            }
+        ],
+        context=context,
+    )
+
+    assert result.success
+    assert runtime.remote.await_args.kwargs["timeout"] == 310
+
+
+@pytest.mark.asyncio
+async def test_provider_timeout_is_not_mislabeled_as_task_lease(runtime, monkeypatch):
+    async def provider_timeout(**kwargs):
+        raise asyncio.TimeoutError("provider-owned timeout")
+
+    monkeypatch.setattr(
+        mcp_servers, "call_mcp_tool_with_exit_stack", provider_timeout
+    )
+    servers = runtime.Servers(_schema())
+
+    (result,) = await servers.call(
+        action_list=[
+            {
+                "tool_name": "terminal",
+                "action_name": "run_code",
+                "params": {"code": "work", "timeout": 300},
+            }
+        ]
+    )
+
+    assert result.success is False
+    assert result.metadata.get("failure_type") != "task_tool_lease_timeout"
+    assert "provider-owned timeout" in result.error
+
+
+@pytest.mark.asyncio
+async def test_exhausted_task_lease_does_not_start_provider(runtime, monkeypatch):
+    called = False
+
+    async def provider(**kwargs):
+        nonlocal called
+        called = True
+        return "unexpected"
+
+    monkeypatch.setattr(mcp_servers, "call_mcp_tool_with_exit_stack", provider)
+    monkeypatch.setattr(
+        "aworld.sandbox.task_budget.time.time", lambda: 1000.0
+    )
+    servers = runtime.Servers(_schema())
+    task = SimpleNamespace(
+        deadline_epoch_seconds=1000.0,
+        completion_reserve_seconds=0.0,
+        remaining_seconds=lambda: 0.0,
+        bind_deadline=lambda: 1000.0,
+        parent_task=None,
+    )
+    context = SimpleNamespace(
+        task_id="task",
+        get_task=lambda: task,
+        agent_info=SimpleNamespace(current_agent_id="agent"),
+    )
+
+    (result,) = await servers.call(
+        action_list=[
+            {
+                "tool_name": "terminal",
+                "action_name": "run_code",
+                "params": {"code": "work", "timeout": 300},
+            }
+        ],
+        context=context,
+    )
+
+    assert called is False
+    assert result.success is False
+    assert result.metadata["failure_type"] == "task_tool_lease_exhausted"
+    assert result.metadata["effective_timeout_seconds"] == 0
+    assert result.metadata["timeout_limited_by"] == "task_deadline_exhausted"

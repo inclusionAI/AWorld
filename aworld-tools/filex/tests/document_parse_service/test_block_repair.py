@@ -199,6 +199,9 @@ def test_chart_table_rejects_unscorable_or_unbounded_values(
         '{"labels":["Year","Revenue","Profit","2024"],"estimated":true,'
         '"value_columns":[1,2],"columns":["Year","Revenue","Profit"],'
         '"rows":[["2024","42","≈17"]]}',
+        '{"labels":["Year","Value","2023","2024"],"estimated":false,'
+        '"value_columns":[1],"columns":["Year","Value"],'
+        '"rows":[["2023","N/A"],["2024","42"]]}',
     ],
 )
 def test_chart_table_accepts_visible_labels_and_supported_measure_values(

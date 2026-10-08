@@ -1,7 +1,7 @@
 import asyncio
 import base64
 from collections import deque
-from dataclasses import dataclass, replace
+from dataclasses import replace
 import hashlib
 import json
 import logging
@@ -40,6 +40,13 @@ from aworld.sandbox.terminal_receipt import (
     TerminalExecutionPlan,
     build_terminal_execution_receipt,
     plan_terminal_execution,
+)
+from aworld.sandbox.task_budget import (
+    DEFAULT_COMPLETION_RESERVE_SECONDS,
+    FrameworkTaskBudget,
+    ToolLeaseDecision,
+    ToolLeaseStage,
+    resolve_tool_lease,
 )
 
 try:
@@ -80,7 +87,7 @@ _COMPLETION_RESERVE_ENV = "AWORLD_TERMINAL_COMPLETION_RESERVE_SECONDS"
 _MAX_TIMEOUT_ENV = "AWORLD_TERMINAL_MAX_TIMEOUT_SECONDS"
 _TASK_LEASE_FRACTION_ENV = "AWORLD_TERMINAL_TASK_LEASE_FRACTION"
 _TASK_LEASE_MIN_ENV = "AWORLD_TERMINAL_TASK_LEASE_MIN_SECONDS"
-_DEFAULT_COMPLETION_RESERVE_SECONDS = 15.0
+_DEFAULT_COMPLETION_RESERVE_SECONDS = DEFAULT_COMPLETION_RESERVE_SECONDS
 _DEFAULT_TASK_LEASE_FRACTION = 0.25
 _DEFAULT_TASK_LEASE_MIN_SECONDS = 15.0
 _ARTIFACT_REF_PREFIX = "aworld-terminal-output://sha256/"
@@ -145,8 +152,11 @@ class TerminalMetadata(BaseModel):
     working_directory: str
     timeout_seconds: float
     requested_timeout_seconds: float | None = None
+    timeout_policy_seconds: float | None = None
+    timeout_policy_override: str | None = None
     remaining_task_seconds: float | None = None
     timeout_limited_by: str | None = None
+    task_budget_stage: str | None = None
     execution_time: float | None = None
     return_code: int | None = None
     safety_check_passed: bool = True
@@ -167,12 +177,7 @@ class TerminalMetadata(BaseModel):
     terminal_execution_receipt: dict[str, Any] | None = None
 
 
-@dataclass(frozen=True, slots=True)
-class CommandTimeoutDecision:
-    requested_seconds: float
-    effective_seconds: float
-    remaining_task_seconds: float | None
-    limited_by: str | None
+CommandTimeoutDecision = ToolLeaseDecision
 
 
 def _get_total_capture_limit_bytes() -> int:
@@ -266,12 +271,27 @@ def _task_lease_fraction() -> float:
     return value
 
 
+def _task_lease_fraction_is_explicit() -> bool:
+    raw_value = os.environ.get(_TASK_LEASE_FRACTION_ENV)
+    if raw_value is None:
+        return False
+    try:
+        value = float(raw_value)
+    except (TypeError, ValueError):
+        return False
+    return math.isfinite(value) and 0 < value <= 1
+
+
 def _resolve_command_timeout(
     requested: float,
     *,
     now_epoch: float | None = None,
     task_deadline_epoch_seconds: float | None = None,
     completion_reserve_seconds: float | None = None,
+    task_budget_stage: str = ToolLeaseStage.EXECUTE.value,
+    task_remaining_seconds: float | None = None,
+    task_budget_captured_at_epoch_seconds: float | None = None,
+    task_budget: Mapping[str, Any] | None = None,
 ) -> CommandTimeoutDecision:
     """Clamp a Tool timeout to framework policy and an optional task deadline."""
 
@@ -281,6 +301,8 @@ def _resolve_command_timeout(
     if not math.isfinite(requested_seconds) or requested_seconds <= 0:
         raise ValueError("timeout must be a positive finite number")
 
+    policy_seconds = requested_seconds
+    policy_override = None
     env_timeout = os.environ.get("TERMINAL_TIMEOUT")
     if env_timeout is not None:
         try:
@@ -288,85 +310,83 @@ def _resolve_command_timeout(
         except (TypeError, ValueError):
             configured_timeout = requested_seconds
         if math.isfinite(configured_timeout) and configured_timeout > 0:
-            requested_seconds = configured_timeout
+            policy_seconds = configured_timeout
+            policy_override = "terminal_timeout"
 
     configured_max = _positive_env_float(
         _MAX_TIMEOUT_ENV,
         float(_MAX_COMMAND_TIMEOUT_SECONDS),
     )
     configured_max = max(1.0, min(configured_max, float(_MAX_COMMAND_TIMEOUT_SECONDS)))
-    effective = min(requested_seconds, configured_max)
-    limited_by = "terminal_maximum" if effective < requested_seconds else None
+    authoritative_budget = FrameworkTaskBudget.from_hidden_dict(task_budget)
+    if task_budget is not None and authoritative_budget is None:
+        # A malformed purported framework payload never gains authority and
+        # must not be repaired from model/process-controlled values.
+        authoritative_budget = FrameworkTaskBudget()
+    if authoritative_budget is None:
+        raw_deadline: Any = task_deadline_epoch_seconds
+        if raw_deadline is None:
+            raw_deadline = os.environ.get(_TASK_DEADLINE_ENV)
+        try:
+            deadline = float(raw_deadline) if raw_deadline is not None else None
+        except (TypeError, ValueError):
+            deadline = None
+        if deadline is not None and math.isfinite(deadline):
+            now = time.time() if now_epoch is None else float(now_epoch)
+            remaining = task_remaining_seconds
+            if (
+                isinstance(remaining, bool)
+                or not isinstance(remaining, (int, float))
+                or not math.isfinite(float(remaining))
+                or remaining < 0
+            ):
+                remaining = max(0.0, deadline - now)
+            try:
+                stage = ToolLeaseStage(task_budget_stage)
+            except (TypeError, ValueError):
+                stage = ToolLeaseStage.EXECUTE
+            authoritative_budget = FrameworkTaskBudget(
+                bounded=True,
+                stage=stage,
+                deadline_epoch_seconds=deadline,
+                remaining_seconds=float(remaining),
+                completion_reserve_seconds=(
+                    float(completion_reserve_seconds)
+                    if isinstance(completion_reserve_seconds, (int, float))
+                    and not isinstance(completion_reserve_seconds, bool)
+                    and math.isfinite(float(completion_reserve_seconds))
+                    and completion_reserve_seconds >= 0
+                    else _positive_env_float(
+                        _COMPLETION_RESERVE_ENV,
+                        _DEFAULT_COMPLETION_RESERVE_SECONDS,
+                    )
+                ),
+                captured_at_epoch_seconds=(
+                    float(task_budget_captured_at_epoch_seconds)
+                    if isinstance(task_budget_captured_at_epoch_seconds, (int, float))
+                    and not isinstance(task_budget_captured_at_epoch_seconds, bool)
+                    else now
+                ),
+            )
 
-    raw_deadline: Any = task_deadline_epoch_seconds
-    if raw_deadline is None:
-        raw_deadline = os.environ.get(_TASK_DEADLINE_ENV)
-    if raw_deadline is None:
-        return CommandTimeoutDecision(
-            requested_seconds=requested_seconds,
-            effective_seconds=effective,
-            remaining_task_seconds=None,
-            limited_by=limited_by,
-        )
-    try:
-        deadline = float(raw_deadline)
-    except (TypeError, ValueError):
-        deadline = math.nan
-    if not math.isfinite(deadline):
-        return CommandTimeoutDecision(
-            requested_seconds=requested_seconds,
-            effective_seconds=effective,
-            remaining_task_seconds=None,
-            limited_by=limited_by,
-        )
-
-    now = time.time() if now_epoch is None else float(now_epoch)
-    remaining = max(0.0, deadline - now)
-    reserve = completion_reserve_seconds
-    if (
-        isinstance(reserve, bool)
-        or not isinstance(reserve, (int, float))
-        or not math.isfinite(float(reserve))
-        or reserve < 0
-    ):
-        reserve = _positive_env_float(
-            _COMPLETION_RESERVE_ENV,
-            _DEFAULT_COMPLETION_RESERVE_SECONDS,
-        )
-    reserve = float(reserve)
-    available = max(0.0, remaining - reserve)
-    if available <= 0:
-        return CommandTimeoutDecision(
-            requested_seconds=requested_seconds,
-            effective_seconds=0.0,
-            remaining_task_seconds=remaining,
-            limited_by="task_deadline_exhausted",
-        )
-    if available < effective:
-        effective = available
-        limited_by = "task_deadline"
-    # One Tool call must not consume the entire solve window merely because the
-    # model requested a very large timeout.  Reserve finalization first, then
-    # grant a bounded fraction of the remaining executable time.  The floor
-    # avoids turning healthy short commands into sub-second leases near a long
-    # deadline, while ``min(available, ...)`` never borrows from the reserve.
     lease_floor = _positive_env_float(
         _TASK_LEASE_MIN_ENV,
         _DEFAULT_TASK_LEASE_MIN_SECONDS,
     )
-    lease_cap = min(
-        available,
-        max(lease_floor, available * _task_lease_fraction()),
+    decision = resolve_tool_lease(
+        requested_seconds,
+        budget=authoritative_budget,
+        maximum_seconds=configured_max,
+        policy_seconds=policy_seconds,
+        policy_override=policy_override,
+        now_epoch=now_epoch,
+        constrained_fraction=_task_lease_fraction(),
+        constrained_floor_seconds=lease_floor,
+        explicit_fraction_policy=_task_lease_fraction_is_explicit(),
     )
-    if lease_cap < effective:
-        effective = lease_cap
-        limited_by = "task_lease"
-    return CommandTimeoutDecision(
-        requested_seconds=requested_seconds,
-        effective_seconds=effective,
-        remaining_task_seconds=remaining,
-        limited_by=limited_by,
-    )
+    if decision.limited_by == "tool_maximum":
+        return replace(decision, limited_by="terminal_maximum")
+    return decision
 
 
 def _resolve_working_directory(cwd: str | None) -> Path:
@@ -773,17 +793,17 @@ async def run_code(
             env_content.get("task_budget")
             if isinstance(env_content, Mapping)
             and isinstance(env_content.get("task_budget"), Mapping)
-            and env_content["task_budget"].get("authority") == "aworld_task"
-            else {}
+            else None
+        )
+        decoded_task_budget = FrameworkTaskBudget.from_hidden_dict(task_budget)
+        task_budget_stage = (
+            decoded_task_budget.stage.value
+            if decoded_task_budget is not None
+            else None
         )
         timeout_decision = _resolve_command_timeout(
             timeout,
-            task_deadline_epoch_seconds=task_budget.get(
-                "deadline_epoch_seconds"
-            ),
-            completion_reserve_seconds=task_budget.get(
-                "completion_reserve_seconds"
-            ),
+            task_budget=task_budget,
         )
         working_directory = _resolve_working_directory(cwd)
         command_environment = _resolve_environment(
@@ -824,8 +844,11 @@ async def run_code(
                     working_directory=str(working_directory),
                     timeout_seconds=0,
                     requested_timeout_seconds=timeout_decision.requested_seconds,
+                    timeout_policy_seconds=timeout_decision.policy_seconds,
+                    timeout_policy_override=timeout_decision.policy_override,
                     remaining_task_seconds=timeout_decision.remaining_task_seconds,
                     timeout_limited_by=timeout_decision.limited_by,
+                    task_budget_stage=task_budget_stage,
                     safety_check_passed=True,
                     error_type="task_budget_exhausted",
                     environment_keys=environment_keys,
@@ -868,8 +891,11 @@ async def run_code(
                     working_directory=str(working_directory),
                     timeout_seconds=timeout_decision.effective_seconds,
                     requested_timeout_seconds=timeout_decision.requested_seconds,
+                    timeout_policy_seconds=timeout_decision.policy_seconds,
+                    timeout_policy_override=timeout_decision.policy_override,
                     remaining_task_seconds=timeout_decision.remaining_task_seconds,
                     timeout_limited_by=timeout_decision.limited_by,
+                    task_budget_stage=task_budget_stage,
                     safety_check_passed=False,
                     error_type="security_violation",
                     environment_keys=environment_keys,
@@ -952,8 +978,11 @@ async def run_code(
             working_directory=str(working_directory),
             timeout_seconds=timeout_decision.effective_seconds,
             requested_timeout_seconds=timeout_decision.requested_seconds,
+            timeout_policy_seconds=timeout_decision.policy_seconds,
+            timeout_policy_override=timeout_decision.policy_override,
             remaining_task_seconds=timeout_decision.remaining_task_seconds,
             timeout_limited_by=timeout_decision.limited_by,
+            task_budget_stage=task_budget_stage,
             execution_time=execution_time,
             return_code=result.return_code,
             safety_check_passed=True,

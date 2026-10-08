@@ -14,12 +14,10 @@ from aworld.core.agent.base import BaseAgent
 from aworld.core.common import ActionModel, Observation
 from aworld.core.context.amni import AmniContextConfig
 from aworld.core.context.base import Context
-from aworld.core.event.base import Message, TopicType
 from aworld.core.task import Task, TaskResponse
 from aworld.logs.util import logger
 from aworld.output.outputs import Outputs
 from aworld.runners.utils import choose_runners, execute_runner
-from aworld.utils.common import sync_exec
 
 if TYPE_CHECKING:
     from aworld.agents.swarm_composer_agent import SwarmComposerAgent
@@ -33,7 +31,8 @@ async def exec_tool(tool_name: str,
                     sub_task: bool = False,
                     outputs: Outputs = None,
                     task_group_id: str = None,
-                    run_conf: RunConfig = RunConfig(reuse_process=True)) -> TaskResponse:
+                    run_conf: RunConfig = RunConfig(reuse_process=True),
+                    parent_task: Task | None = None) -> TaskResponse:
     """Utility method for executing a tool in a task-oriented manner.
 
     Args:
@@ -46,11 +45,19 @@ async def exec_tool(tool_name: str,
         outputs: The same outputs instance, required in subtask.
         task_group_id: ID of group of task.
         run_conf: Task runtime config.
+        parent_task: Framework-owned execution parent for subtask lifetime bounds.
     """
     actions = [ActionModel(tool_name=tool_name, action_name=action_name, params=params, agent_name=agent_name)]
+    if parent_task is None:
+        get_task = getattr(context, "get_task", None)
+        try:
+            parent_task = get_task() if callable(get_task) else None
+        except Exception:
+            parent_task = None
     task = Task(input=actions,
                 context=context,
                 is_sub_task=sub_task,
+                parent_task=parent_task if sub_task else None,
                 group_id=task_group_id,
                 session_id=context.session_id)
     if outputs:
@@ -69,6 +76,7 @@ async def exec_agent(question: Any,
                      task_group_id: str = None,
                      task_conf: TaskConfig = None,
                      run_conf: RunConfig = RunConfig(reuse_process=True),
+                     parent_task: Task | None = None,
                      **kwargs) -> TaskResponse:
     """Utility method for executing an agent in a task-oriented manner.
 
@@ -81,7 +89,14 @@ async def exec_agent(question: Any,
         task_group_id: ID of group of task.
         task_conf: Task config.
         run_conf: Task runtime config.
+        parent_task: Framework-owned execution parent for subtask lifetime bounds.
     """
+    if parent_task is None:
+        get_task = getattr(context, "get_task", None)
+        try:
+            parent_task = get_task() if callable(get_task) else None
+        except Exception:
+            parent_task = None
     task_id = uuid.uuid1().hex
     info_dict = context.agent_info.get(agent.id(), {})
     use_new_agent = info_dict.get("use_new_agent")
@@ -106,6 +121,7 @@ async def exec_agent(question: Any,
                 agent=agent,
                 context=context,
                 is_sub_task=sub_task,
+                parent_task=parent_task if sub_task else None,
                 group_id=task_group_id,
                 session_id=session_id,
                 conf=task_conf)
@@ -331,6 +347,3 @@ async def run_swarm_composer_agent_for_yaml(
     # Run SwarmComposerAgent (returns AgentMessage with YAML in payload)
     agent_result = await exec_agent(agent=swarm_composer_agent, question=query, context=context)
     return agent_result.answer
-
-
-

@@ -28,6 +28,7 @@ from aworld.sandbox.tool_servers.terminal.src.terminal import (
     run_code,
 )
 from aworld.sandbox.terminal_receipt import terminal_command_sha256
+from aworld.sandbox.task_budget import FrameworkTaskBudget
 from aworld.sandbox.tool_observation import SandboxToolObservationRuntime
 
 
@@ -681,9 +682,9 @@ def test_command_timeout_is_clamped_to_trial_deadline_with_completion_reserve(
     decision = _resolve_command_timeout(300, now_epoch=1000)
 
     assert decision.requested_seconds == 300
-    assert decision.effective_seconds == 22.5
+    assert decision.effective_seconds == 90
     assert decision.remaining_task_seconds == 120
-    assert decision.limited_by == "task_lease"
+    assert decision.limited_by == "task_deadline"
 
 
 def test_command_timeout_lease_preserves_finalization_reserve(
@@ -692,12 +693,12 @@ def test_command_timeout_lease_preserves_finalization_reserve(
     monkeypatch.setenv("AWORLD_TASK_DEADLINE_EPOCH_SECONDS", "4600")
     monkeypatch.setenv("AWORLD_TERMINAL_COMPLETION_RESERVE_SECONDS", "60")
 
-    decision = _resolve_command_timeout(1800, now_epoch=1000)
+    decision = _resolve_command_timeout(3600, now_epoch=1000)
 
-    assert decision.requested_seconds == 1800
+    assert decision.requested_seconds == 3600
     assert decision.remaining_task_seconds == 3600
-    assert decision.effective_seconds == 885
-    assert decision.limited_by == "task_lease"
+    assert decision.effective_seconds == 3540
+    assert decision.limited_by == "task_deadline"
 
 
 def test_command_timeout_lease_never_lengthens_a_short_request(
@@ -723,11 +724,137 @@ def test_framework_task_budget_precedes_process_environment(
         now_epoch=1000,
         task_deadline_epoch_seconds=1120,
         completion_reserve_seconds=30,
+        task_budget_stage="convergence",
     )
 
     assert decision.remaining_task_seconds == 120
     assert decision.effective_seconds == 22.5
     assert decision.limited_by == "task_lease"
+
+
+def test_normal_execution_can_use_all_time_remaining_after_reserve() -> None:
+    decision = _resolve_command_timeout(
+        300,
+        now_epoch=1000,
+        task_deadline_epoch_seconds=1120,
+        completion_reserve_seconds=30,
+        task_budget_stage="execute",
+    )
+
+    assert decision.effective_seconds == 90
+    assert decision.limited_by == "task_deadline"
+
+
+@pytest.mark.parametrize("stage", ["convergence", "deadline"])
+def test_typed_convergence_stages_apply_fractional_tool_lease(stage) -> None:
+    decision = _resolve_command_timeout(
+        300,
+        now_epoch=1000,
+        task_deadline_epoch_seconds=1120,
+        completion_reserve_seconds=20,
+        task_budget_stage=stage,
+    )
+
+    assert decision.effective_seconds == 25
+    assert decision.limited_by == "task_lease"
+
+
+def test_valid_explicit_fraction_is_an_opt_in_deployment_policy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AWORLD_TERMINAL_TASK_LEASE_FRACTION", "0.5")
+
+    decision = _resolve_command_timeout(
+        300,
+        now_epoch=1000,
+        task_deadline_epoch_seconds=1120,
+        completion_reserve_seconds=20,
+        task_budget_stage="execute",
+    )
+
+    assert decision.effective_seconds == 50
+    assert decision.limited_by == "task_lease"
+
+
+def test_invalid_fraction_does_not_enable_pre_convergence_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AWORLD_TERMINAL_TASK_LEASE_FRACTION", "invalid")
+
+    decision = _resolve_command_timeout(
+        300,
+        now_epoch=1000,
+        task_deadline_epoch_seconds=1120,
+        completion_reserve_seconds=20,
+        task_budget_stage="execute",
+    )
+
+    assert decision.effective_seconds == 100
+    assert decision.limited_by == "task_deadline"
+
+
+def test_no_budget_sentinel_does_not_fall_back_to_spoofable_process_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AWORLD_TASK_DEADLINE_EPOCH_SECONDS", "1001")
+
+    decision = _resolve_command_timeout(
+        300,
+        now_epoch=1000,
+        task_budget={
+            "authority": "aworld_task",
+            "schema_version": "aworld.task-budget/v1",
+            "bounded": False,
+            "stage": "execute",
+        },
+    )
+
+    assert decision.remaining_task_seconds is None
+    assert decision.effective_seconds == 300
+
+
+def test_budget_snapshot_never_extends_after_wall_clock_rollback() -> None:
+    budget = FrameworkTaskBudget(
+        bounded=True,
+        deadline_epoch_seconds=1040,
+        remaining_seconds=40,
+        completion_reserve_seconds=0,
+        captured_at_epoch_seconds=1000,
+    )
+
+    assert budget.remaining_at(1010) == 30
+    assert budget.remaining_at(900) == 40
+
+
+def test_terminal_timeout_override_preserves_original_caller_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("TERMINAL_TIMEOUT", "120")
+
+    decision = _resolve_command_timeout(300)
+
+    assert decision.requested_seconds == 300
+    assert decision.policy_seconds == 120
+    assert decision.policy_override == "terminal_timeout"
+    assert decision.effective_seconds == 120
+    assert decision.limited_by == "terminal_timeout"
+
+
+@pytest.mark.asyncio
+async def test_run_code_receipt_separates_caller_timeout_from_policy_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("TERMINAL_TIMEOUT", "2")
+
+    response = await run_code(None, "true", timeout=300, output_format="text")
+    payload = json.loads(response.text)
+
+    assert payload["success"] is True
+    assert payload["metadata"]["requested_timeout_seconds"] == 300
+    assert payload["metadata"]["timeout_policy_seconds"] == 2
+    assert payload["metadata"]["timeout_policy_override"] == "terminal_timeout"
+    assert payload["metadata"]["timeout_seconds"] == 2
+    assert payload["metadata"]["timeout_limited_by"] == "terminal_timeout"
 
 
 def test_command_timeout_reports_exhausted_completion_reserve(
