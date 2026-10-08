@@ -77,11 +77,16 @@ class MutationGatePreToolHook(PreToolCallHook):
             )
             message_text = (
                 "This Tool call is outside the active candidate convergence "
-                "admission. Run one registered validation, make one bounded "
+                "admission. Run a registered validation, or, after fresh failed-"
+                "validation or typed review-repair evidence for the current "
+                "candidate, use at most two bounded mechanically read-only "
+                "diagnostic calls, one per Tool batch, before repair or submission. "
+                "Registered validation does not spend that diagnostic allowance. "
+                "Then make one bounded "
                 "revision targeting only declared deliverables with an exact "
                 "Tool-argument signature that is new for the current candidate, "
-                "use one repair authorized by fresh failed validation evidence, "
-                "or submit the current result accurately without Tools. Each "
+                "use one evidence-backed repair, or submit the current result "
+                "accurately without Tools. Each "
                 "candidate-bound declared-revision signature is admitted once. A "
                 "mixed batch does not widen admission: repeated revisions, "
                 "additional declared revisions, helper or unrelated mutations, "
@@ -116,11 +121,13 @@ class MutationGatePreToolHook(PreToolCallHook):
                     "AWorld convergence admission intercepted part of a Tool "
                     f"batch after {count} observations without delivery progress. "
                     + (
-                        "Validate, make one current-candidate-new-signature bounded "
-                        "declared-deliverable revision, repair from evidence, or "
-                        "submit; repeated, mixed, helper, unrelated, and unknown "
-                        "mutations stay blocked. Named file outputs require a "
-                        "direct write or exact-file copy primitive."
+                        "After fresh failed-validation or typed review-repair "
+                        "evidence, use at most two bounded mechanically read-only "
+                        "diagnostic calls, one per batch, then repair or submit; "
+                        "registered validation does not spend the diagnostic "
+                        "allowance. Repeated, mixed, helper, unrelated, and unknown "
+                        "mutations stay blocked. Named file outputs require a direct "
+                        "write or exact-file copy primitive."
                         if post_candidate
                         else "Create or modify the smallest relevant candidate now."
                     )

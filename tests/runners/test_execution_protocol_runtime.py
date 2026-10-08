@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 import json
+from threading import Barrier, BrokenBarrierError, Event, get_ident
 import pytest
 
 import aworld.runners.execution_protocol as execution_protocol_module
@@ -46,6 +48,7 @@ from aworld.runners.execution_protocol import (
     mutation_gate_interception,
     project_execution_protocol_telemetry,
     record_candidate_final,
+    record_acceptance_critic_decision,
     record_acceptance_probe_plan,
     record_model_execution_profile,
     record_model_decision_attempt_failure,
@@ -240,6 +243,110 @@ def _activate_produce_convergence(context: Context, agent_id: str = "agent") -> 
     state = load_execution_protocol_state(context, agent_id)
     assert state.convergence_constraint_active is True
     assert state.convergence_stage.value == "produce_candidate"
+
+
+def _activate_validate_repair_convergence(
+    context: Context,
+    agent_id: str = "agent",
+) -> str:
+    from aworld.core.context.compiler import semantic_fingerprint
+
+    configure_execution_protocol(
+        context,
+        agent_id,
+        ExecutionProtocolPolicy(
+            mode=ProtocolMode.GUIDE,
+            post_candidate_read_only_threshold=1,
+            repetition_threshold=99,
+            low_information_gain_threshold=99,
+            no_goal_progress_threshold=99,
+            stagnation_event_threshold=99,
+        ),
+    )
+    _declare_long_horizon(context, agent_id)
+    candidate_fingerprint = semantic_fingerprint("diagnostic-candidate")
+    record_tool_protocol_event(
+        context,
+        agent_id,
+        _semantic_state(
+            current_agent_step=1,
+            candidate_present=True,
+            candidate_advanced=True,
+            delivery_progress_advanced=True,
+            public_candidate_mutated=True,
+            public_delivery_fingerprint=candidate_fingerprint,
+        ),
+    )
+    record_tool_protocol_event(
+        context,
+        agent_id,
+        _semantic_state(
+            current_agent_step=2,
+            candidate_present=True,
+            public_candidate_mutated=True,
+            public_delivery_fingerprint=candidate_fingerprint,
+        ),
+    )
+    assert load_execution_protocol_state(
+        context, agent_id
+    ).convergence_stage.value == "validate_repair_or_submit"
+    return candidate_fingerprint
+
+
+def _record_failed_candidate_validation(
+    context: Context,
+    candidate_fingerprint: str,
+    *,
+    marker: str,
+    step: int,
+    agent_id: str = "agent",
+) -> None:
+    from aworld.core.context.compiler import semantic_fingerprint
+
+    failed_validation = {
+        "schema_version": "aworld.action-semantic-receipt/v1",
+        "capability_aliases": ["workspace.validate"],
+        "effect": "validation",
+        "target_ids": [],
+        "executed": True,
+        "succeeded": False,
+        "timed_out": False,
+        "validation_kind": "registered:test",
+        "declared_deliverable_targeted": False,
+        "tool_call_id": f"failed-validation-{marker}",
+    }
+    record_tool_protocol_event(
+        context,
+        agent_id,
+        _semantic_state(
+            current_agent_step=step,
+            candidate_present=True,
+            public_candidate_mutated=True,
+            public_delivery_fingerprint=candidate_fingerprint,
+            result_hash=semantic_fingerprint(f"failed-result-{marker}"),
+            failure_signature=semantic_fingerprint(f"failure-{marker}"),
+            observed_action_semantics=(failed_validation,),
+        ),
+    )
+
+
+def _activate_acceptance_repair_convergence(context: Context) -> str:
+    context.configure_completion_contract(
+        CompletionContract(
+            required_artifacts=(),
+            immutable_inputs=(),
+            validation_commands=(
+                ValidationCommand(
+                    command_id="acceptance-check",
+                    argv=("pytest", "-q", "tests/test_contract.py"),
+                ),
+            ),
+            max_evidence_age_seconds=None,
+            required_final_evidence=(),
+        ),
+        mode=CompletionMode.ENFORCE,
+    )
+    return _activate_validate_repair_convergence(context)
 
 
 @pytest.mark.parametrize(
@@ -1373,6 +1480,7 @@ async def test_post_candidate_read_only_loop_converges_to_validate_repair_or_sub
         in guidance
     )
     assert "semantically unknown mutations remain blocked" in guidance
+    assert "at most two mechanically read-only diagnostic Tool calls" in guidance
     assert "Do not return to broad" in guidance
 
     validation = ActionModel(
@@ -1424,6 +1532,9 @@ async def test_post_candidate_read_only_loop_converges_to_validate_repair_or_sub
     )
     assert intercepted is not None
     hook_message = intercepted.headers["tool_interception"]["message"]
+    assert "failed-validation or typed review-repair evidence" in hook_message
+    assert "at most two" in hook_message
+    assert "one per Tool batch" in hook_message
     assert "new for the current candidate" in hook_message
     assert "unknown mutations remain blocked" in hook_message
 
@@ -2689,6 +2800,1391 @@ async def test_validate_convergence_admits_bounded_declared_revision_and_validat
     blocked_second = mutation_gate_interception(context, [repair])
     assert blocked_second is not None
     assert blocked_second["tool_call_ids"] == ["repair-once"]
+
+
+def test_failed_validation_allows_two_diagnostic_reads_then_repair(
+    tmp_path,
+) -> None:
+    context = _context("failed-validation-diagnostic-window")
+    validation_code = "cat candidate.txt"
+    context.configure_completion_contract(
+        CompletionContract(
+            required_artifacts=(),
+            immutable_inputs=(),
+            validation_commands=(
+                ValidationCommand(
+                    command_id="validate-candidate",
+                    argv=("sh", "-c", validation_code),
+                ),
+            ),
+            max_evidence_age_seconds=None,
+            required_final_evidence=(),
+        ),
+        mode=CompletionMode.ENFORCE,
+    )
+    candidate_fingerprint = _activate_validate_repair_convergence(context)
+    _record_failed_candidate_validation(
+        context,
+        candidate_fingerprint,
+        marker="first",
+        step=3,
+    )
+    gate = context.read_task_runtime_state(
+        "agent", "execution_protocol_mutation_gate"
+    )
+    assert gate["repair_diagnostic_read_count"] == 0
+    assert gate["repair_authorization"]["source"] == "validation_failure"
+    assert gate["repair_authorization"]["diagnostic_read_count"] == 0
+    guidance = consume_execution_protocol_guidance(context, "agent")
+    assert guidance is not None
+    assert "fresh failed-validation or typed review-repair evidence" in guidance
+    assert "at most two bounded" in guidance
+    assert "2 diagnostic call(s) remain" in guidance
+    assert "Registered validation remains admitted" in guidance
+
+    first_read = ActionModel(
+        tool_name="terminal",
+        action_name="run_code",
+        params={"code": "cat diagnostic-one.log"},
+        tool_call_id="diagnostic-read-one",
+        agent_name="agent",
+    )
+    second_read = ActionModel(
+        tool_name="terminal",
+        action_name="run_code",
+        params={"code": "cat diagnostic-two.log"},
+        tool_call_id="diagnostic-read-two",
+        agent_name="agent",
+    )
+    third_read = ActionModel(
+        tool_name="terminal",
+        action_name="run_code",
+        params={"code": "cat diagnostic-three.log"},
+        tool_call_id="diagnostic-read-three",
+        agent_name="agent",
+    )
+    assert mutation_gate_interception(context, [first_read]) is None
+    gate = context.read_task_runtime_state(
+        "agent", "execution_protocol_mutation_gate"
+    )
+    assert gate["repair_diagnostic_read_count"] == 1
+    first_authorization_hash = gate["repair_authorization"][
+        "failure_evidence_hash"
+    ]
+
+    registered_validation = ActionModel(
+        tool_name="terminal",
+        action_name="run_code",
+        params={"code": validation_code},
+        tool_call_id="registered-validation-no-diagnostic-charge",
+        agent_name="agent",
+    )
+    assert framework_observable_validation_kind(
+        context, "agent", registered_validation
+    ) == "registered_completion_validation"
+    assert mutation_gate_interception(context, [registered_validation]) is None
+    assert context.read_task_runtime_state(
+        "agent", "execution_protocol_mutation_gate"
+    )["repair_diagnostic_read_count"] == 1
+
+    # Distinct failed evidence for the same candidate refreshes repair evidence,
+    # but must not refresh the candidate-bound diagnostic allowance.
+    _record_failed_candidate_validation(
+        context,
+        candidate_fingerprint,
+        marker="second",
+        step=4,
+    )
+    gate = context.read_task_runtime_state(
+        "agent", "execution_protocol_mutation_gate"
+    )
+    assert gate["repair_authorization"]["failure_evidence_hash"] != (
+        first_authorization_hash
+    )
+    assert gate["repair_diagnostic_read_count"] == 1
+    assert gate["repair_authorization"]["diagnostic_read_count"] == 1
+
+    assert mutation_gate_interception(context, [second_read]) is None
+    blocked_third = mutation_gate_interception(context, [third_read])
+    assert blocked_third is not None
+    assert blocked_third["tool_call_ids"] == ["diagnostic-read-three"]
+    assert blocked_third["repair_diagnostic_read_count"] == 2
+    gate = context.read_task_runtime_state(
+        "agent", "execution_protocol_mutation_gate"
+    )
+    assert gate["repair_diagnostic_read_count"] == 2
+    assert gate["repair_authorization"]["diagnostic_read_count"] == 2
+
+    repair = ActionModel(
+        tool_name="filesystem",
+        action_name="write_file",
+        params={"path": str(tmp_path / "candidate.txt"), "content": "repaired"},
+        tool_call_id="evidence-backed-repair",
+        agent_name="agent",
+    )
+    assert record_model_plan_update(
+        context,
+        "agent",
+        {
+            "decision": "continue",
+            "horizon": "long",
+            "milestone": "repair the current candidate",
+            "next_action": "apply the evidence-backed candidate repair",
+            "next_action_tool": "filesystem__write_file",
+            "next_action_arguments": json.dumps(repair.params),
+            "verification_plan": "run the registered validation again",
+            "completion_assessment": "candidate_ready",
+            "delivery_intent": "produce_candidate",
+            "delivery_rationale": "fresh failed validation supports this repair",
+            "assumptions": [],
+            "retired_approaches": [],
+            "evidence_refs": [],
+            "selected_candidate_id": "diagnostic-candidate",
+        },
+    ) is not None
+    assert bind_pending_next_action_call(context, "agent", [repair]) is True
+    assert mutation_gate_interception(context, [repair]) is None
+    repaired_gate = context.read_task_runtime_state(
+        "agent", "execution_protocol_mutation_gate"
+    )
+    assert repaired_gate["repair_authorization"] is None
+    assert repaired_gate["repair_diagnostic_read_count"] == 2
+
+
+def test_candidate_change_resets_diagnostic_reads_via_gate_projection() -> None:
+    from aworld.core.context.compiler import semantic_fingerprint
+
+    context = _context("candidate-change-resets-diagnostics")
+    first_candidate = _activate_validate_repair_convergence(context)
+    _record_failed_candidate_validation(
+        context,
+        first_candidate,
+        marker="candidate-a",
+        step=3,
+    )
+    first_read = ActionModel(
+        tool_name="terminal",
+        action_name="run_code",
+        params={"code": "cat candidate-a-diagnostic.log"},
+        tool_call_id="candidate-a-diagnostic",
+        agent_name="agent",
+    )
+    assert mutation_gate_interception(context, [first_read]) is None
+    assert context.read_task_runtime_state(
+        "agent", "execution_protocol_mutation_gate"
+    )["repair_diagnostic_read_count"] == 1
+
+    second_candidate = semantic_fingerprint("diagnostic-candidate-b")
+    record_tool_protocol_event(
+        context,
+        "agent",
+        _semantic_state(
+            current_agent_step=4,
+            candidate_present=True,
+            candidate_advanced=True,
+            delivery_progress_advanced=True,
+            public_candidate_mutated=True,
+            public_delivery_fingerprint=second_candidate,
+        ),
+    )
+    changed_gate = context.read_task_runtime_state(
+        "agent", "execution_protocol_mutation_gate"
+    )
+    assert changed_gate["candidate_fingerprint"] == second_candidate
+    assert changed_gate["repair_diagnostic_read_count"] == 0
+    assert changed_gate["repair_authorization"] is None
+
+    _record_failed_candidate_validation(
+        context,
+        second_candidate,
+        marker="candidate-b",
+        step=5,
+    )
+    refreshed_gate = context.read_task_runtime_state(
+        "agent", "execution_protocol_mutation_gate"
+    )
+    assert refreshed_gate["repair_diagnostic_read_count"] == 0
+    assert refreshed_gate["repair_authorization"]["diagnostic_read_count"] == 0
+
+    reads = [
+        ActionModel(
+            tool_name="terminal",
+            action_name="run_code",
+            params={"code": f"cat candidate-b-diagnostic-{index}.log"},
+            tool_call_id=f"candidate-b-diagnostic-{index}",
+            agent_name="agent",
+        )
+        for index in range(1, 4)
+    ]
+    assert mutation_gate_interception(context, [reads[0]]) is None
+    assert mutation_gate_interception(context, [reads[1]]) is None
+    blocked_third = mutation_gate_interception(context, [reads[2]])
+    assert blocked_third is not None
+    assert blocked_third["tool_call_ids"] == ["candidate-b-diagnostic-3"]
+    assert blocked_third["repair_diagnostic_read_count"] == 2
+
+
+@pytest.mark.parametrize(
+    "unresolved_fingerprint",
+    (None, "not-a-canonical-fingerprint"),
+    ids=("missing", "noncanonical"),
+)
+def test_advanced_candidate_without_fingerprint_fails_closed_then_recovers(
+    unresolved_fingerprint,
+) -> None:
+    from aworld.core.context.compiler import semantic_fingerprint
+
+    context = _context(f"unresolved-advanced-candidate-{unresolved_fingerprint}")
+    first_candidate = _activate_validate_repair_convergence(context)
+    _record_failed_candidate_validation(
+        context,
+        first_candidate,
+        marker="unresolved-candidate-a",
+        step=3,
+    )
+    first_read = ActionModel(
+        tool_name="terminal",
+        action_name="run_code",
+        params={"code": "cat unresolved-candidate-a.log"},
+        tool_call_id="unresolved-candidate-a-diagnostic",
+        agent_name="agent",
+    )
+    assert mutation_gate_interception(context, [first_read]) is None
+    assert context.read_task_runtime_state(
+        "agent", "execution_protocol_mutation_gate"
+    )["repair_diagnostic_read_count"] == 1
+
+    advanced_state = {
+        "current_agent_step": 4,
+        "candidate_present": True,
+        "candidate_advanced": True,
+        "delivery_progress_advanced": True,
+        "public_candidate_mutated": True,
+    }
+    if unresolved_fingerprint is not None:
+        advanced_state["public_delivery_fingerprint"] = unresolved_fingerprint
+    record_tool_protocol_event(
+        context,
+        "agent",
+        _semantic_state(**advanced_state),
+    )
+    unresolved_gate = context.read_task_runtime_state(
+        "agent", "execution_protocol_mutation_gate"
+    )
+    assert unresolved_gate["candidate_fingerprint"] is None
+    assert unresolved_gate["candidate_binding_unresolved"] is True
+    assert unresolved_gate["repair_authorization"] is None
+    assert unresolved_gate["repair_diagnostic_read_count"] == 2
+    blocked = mutation_gate_interception(context, [first_read])
+    assert blocked is not None
+    assert blocked["tool_call_ids"] == ["unresolved-candidate-a-diagnostic"]
+
+    record_tool_protocol_event(
+        context,
+        "agent",
+        _semantic_state(
+            current_agent_step=5,
+            candidate_present=True,
+            public_candidate_mutated=True,
+        ),
+    )
+    still_unresolved = context.read_task_runtime_state(
+        "agent", "execution_protocol_mutation_gate"
+    )
+    assert still_unresolved["candidate_fingerprint"] is None
+    assert still_unresolved["candidate_binding_unresolved"] is True
+    assert still_unresolved["repair_diagnostic_read_count"] == 2
+
+    second_candidate = semantic_fingerprint("resolved-candidate-b")
+    record_tool_protocol_event(
+        context,
+        "agent",
+        _semantic_state(
+            current_agent_step=6,
+            candidate_present=True,
+            candidate_advanced=True,
+            delivery_progress_advanced=True,
+            public_candidate_mutated=True,
+            public_delivery_fingerprint=second_candidate,
+        ),
+    )
+    resolved_gate = context.read_task_runtime_state(
+        "agent", "execution_protocol_mutation_gate"
+    )
+    assert resolved_gate["candidate_fingerprint"] == second_candidate
+    assert resolved_gate["candidate_binding_unresolved"] is False
+    assert resolved_gate["repair_diagnostic_read_count"] == 0
+    assert resolved_gate["repair_authorization"] is None
+
+    _record_failed_candidate_validation(
+        context,
+        second_candidate,
+        marker="resolved-candidate-b",
+        step=7,
+    )
+    reads = [
+        ActionModel(
+            tool_name="terminal",
+            action_name="run_code",
+            params={"code": f"cat resolved-candidate-b-{index}.log"},
+            tool_call_id=f"resolved-candidate-b-diagnostic-{index}",
+            agent_name="agent",
+        )
+        for index in (1, 2)
+    ]
+    assert mutation_gate_interception(context, [reads[0]]) is None
+    assert mutation_gate_interception(context, [reads[1]]) is None
+    final_gate = context.read_task_runtime_state(
+        "agent", "execution_protocol_mutation_gate"
+    )
+    assert final_gate["repair_diagnostic_read_count"] == 2
+
+
+@pytest.mark.asyncio
+async def test_mutation_gate_hook_enforces_failed_validation_diagnostic_budget() -> None:
+    context = _context("hook-failed-validation-diagnostics")
+    validation_code = "cat candidate.txt"
+    context.configure_completion_contract(
+        CompletionContract(
+            required_artifacts=(),
+            immutable_inputs=(),
+            validation_commands=(
+                ValidationCommand(
+                    command_id="validate-candidate",
+                    argv=("sh", "-c", validation_code),
+                ),
+            ),
+            max_evidence_age_seconds=None,
+            required_final_evidence=(),
+        ),
+        mode=CompletionMode.ENFORCE,
+    )
+    candidate_fingerprint = _activate_validate_repair_convergence(context)
+    _record_failed_candidate_validation(
+        context,
+        candidate_fingerprint,
+        marker="hook",
+        step=3,
+    )
+    diagnostics = [
+        ActionModel(
+            tool_name="terminal",
+            action_name="run_code",
+            params={"code": f"cat hook-diagnostic-{index}.log"},
+            tool_call_id=f"hook-diagnostic-{index}",
+            agent_name="agent",
+        )
+        for index in range(1, 4)
+    ]
+    registered_validation = ActionModel(
+        tool_name="terminal",
+        action_name="run_code",
+        params={"code": validation_code},
+        tool_call_id="hook-registered-validation",
+        agent_name="agent",
+    )
+    hook = MutationGatePreToolHook()
+
+    assert await hook.exec(
+        Message(category="tool_call", payload=[diagnostics[0]], sender="agent"),
+        context,
+    ) is None
+    assert await hook.exec(
+        Message(
+            category="tool_call",
+            payload=[registered_validation],
+            sender="agent",
+        ),
+        context,
+    ) is None
+    assert context.read_task_runtime_state(
+        "agent", "execution_protocol_mutation_gate"
+    )["repair_diagnostic_read_count"] == 1
+    assert await hook.exec(
+        Message(category="tool_call", payload=[diagnostics[1]], sender="agent"),
+        context,
+    ) is None
+
+    intercepted = await hook.exec(
+        Message(category="tool_call", payload=[diagnostics[2]], sender="agent"),
+        context,
+    )
+
+    assert intercepted is not None
+    interception = intercepted.headers["tool_interception"]
+    assert interception["tool_call_ids"] == ["hook-diagnostic-3"]
+    assert interception["block_all"] is False
+    assert interception["source_receipt"]["repair_diagnostic_read_count"] == 2
+
+
+def test_concurrent_diagnostic_preflights_admit_at_most_two(monkeypatch) -> None:
+    context = _context("concurrent-diagnostic-preflights")
+    candidate_fingerprint = _activate_validate_repair_convergence(context)
+    _record_failed_candidate_validation(
+        context,
+        candidate_fingerprint,
+        marker="concurrent",
+        step=3,
+    )
+    transported_contexts = [context.deep_copy() for _ in range(3)]
+    actions = [
+        ActionModel(
+            tool_name="terminal",
+            action_name="run_code",
+            params={"code": f"cat concurrent-diagnostic-{index}.log"},
+            tool_call_id=f"concurrent-diagnostic-{index}",
+            agent_name="agent",
+        )
+        for index in range(3)
+    ]
+    start_barrier = Barrier(3)
+    classification_barrier = Barrier(3)
+    original_classifier = execution_protocol_module.actions_are_provably_read_only
+
+    def synchronized_classifier(batch):
+        classified = original_classifier(batch)
+        try:
+            classification_barrier.wait(timeout=0.5)
+        except BrokenBarrierError:
+            pass
+        return classified
+
+    monkeypatch.setattr(
+        execution_protocol_module,
+        "actions_are_provably_read_only",
+        synchronized_classifier,
+    )
+
+    def preflight(index):
+        start_barrier.wait(timeout=2)
+        return mutation_gate_interception(
+            transported_contexts[index], [actions[index]]
+        )
+
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        results = list(executor.map(preflight, range(3)))
+
+    assert sum(result is None for result in results) == 2
+    blocked = [result for result in results if result is not None]
+    assert len(blocked) == 1
+    gate = context.read_task_runtime_state(
+        "agent", "execution_protocol_mutation_gate"
+    )
+    assert gate["repair_diagnostic_read_count"] == 2
+    assert gate["repair_authorization"]["diagnostic_read_count"] == 2
+
+
+def test_gate_projection_cannot_overwrite_concurrent_diagnostic_count(
+    monkeypatch,
+) -> None:
+    context = _context("projection-diagnostic-serialization")
+    candidate_fingerprint = _activate_validate_repair_convergence(context)
+    _record_failed_candidate_validation(
+        context,
+        candidate_fingerprint,
+        marker="projection-race",
+        step=3,
+    )
+    projection_read = Event()
+    release_projection = Event()
+    interception_started = Event()
+    interception_finished = Event()
+    projection_thread_ids: set[int] = set()
+    original_read = execution_protocol_module._read_runtime_value
+    paused = False
+
+    def pausing_read(runtime_context, agent_id, key):
+        nonlocal paused
+        value = original_read(runtime_context, agent_id, key)
+        if (
+            get_ident() in projection_thread_ids
+            and key == "execution_protocol_mutation_gate"
+            and not paused
+        ):
+            paused = True
+            projection_read.set()
+            assert release_projection.wait(timeout=2)
+        return value
+
+    monkeypatch.setattr(
+        execution_protocol_module,
+        "_read_runtime_value",
+        pausing_read,
+    )
+    first_read = ActionModel(
+        tool_name="terminal",
+        action_name="run_code",
+        params={"code": "cat projection-race-one.log"},
+        tool_call_id="projection-race-diagnostic-one",
+        agent_name="agent",
+    )
+
+    def project_gate():
+        projection_thread_ids.add(get_ident())
+        return record_tool_protocol_event(
+            context,
+            "agent",
+            _semantic_state(
+                current_agent_step=4,
+                candidate_present=True,
+                public_candidate_mutated=True,
+                public_delivery_fingerprint=candidate_fingerprint,
+            ),
+        )
+
+    def intercept_first_read():
+        interception_started.set()
+        result = mutation_gate_interception(context, [first_read])
+        interception_finished.set()
+        return result
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        projection_future = executor.submit(project_gate)
+        assert projection_read.wait(timeout=2)
+        interception_future = executor.submit(intercept_first_read)
+        assert interception_started.wait(timeout=2)
+        assert not interception_finished.wait(timeout=0.1)
+        release_projection.set()
+        projection_future.result(timeout=2)
+        assert interception_future.result(timeout=2) is None
+
+    gate = context.read_task_runtime_state(
+        "agent", "execution_protocol_mutation_gate"
+    )
+    assert gate["repair_diagnostic_read_count"] == 1
+    assert gate["repair_authorization"]["diagnostic_read_count"] == 1
+
+    second_read = ActionModel(
+        tool_name="terminal",
+        action_name="run_code",
+        params={"code": "cat projection-race-two.log"},
+        tool_call_id="projection-race-diagnostic-two",
+        agent_name="agent",
+    )
+    third_read = ActionModel(
+        tool_name="terminal",
+        action_name="run_code",
+        params={"code": "cat projection-race-three.log"},
+        tool_call_id="projection-race-diagnostic-three",
+        agent_name="agent",
+    )
+    assert mutation_gate_interception(context, [second_read]) is None
+    blocked_third = mutation_gate_interception(context, [third_read])
+    assert blocked_third is not None
+    assert blocked_third["tool_call_ids"] == [
+        "projection-race-diagnostic-three"
+    ]
+    final_gate = context.read_task_runtime_state(
+        "agent", "execution_protocol_mutation_gate"
+    )
+    assert final_gate["repair_diagnostic_read_count"] == 2
+    assert final_gate["repair_authorization"]["diagnostic_read_count"] == 2
+
+
+def test_candidate_change_apply_to_projection_gap_blocks_old_authorization(
+    monkeypatch,
+) -> None:
+    from aworld.core.context.compiler import semantic_fingerprint
+
+    context = _context("candidate-change-apply-projection-gap")
+    first_candidate = _activate_validate_repair_convergence(context)
+    _record_failed_candidate_validation(
+        context,
+        first_candidate,
+        marker="candidate-gap-a",
+        step=3,
+    )
+    second_candidate = semantic_fingerprint("candidate-gap-b")
+    projection_entry = Event()
+    release_projection = Event()
+    interception_started = Event()
+    interception_finished = Event()
+    original_update_gate = execution_protocol_module._update_mutation_gate
+
+    def pausing_update_gate(*args, **kwargs):
+        projection_entry.set()
+        assert release_projection.wait(timeout=2)
+        return original_update_gate(*args, **kwargs)
+
+    monkeypatch.setattr(
+        execution_protocol_module,
+        "_update_mutation_gate",
+        pausing_update_gate,
+    )
+    stale_candidate_read = ActionModel(
+        tool_name="terminal",
+        action_name="run_code",
+        params={"code": "cat stale-candidate-a-diagnostic.log"},
+        tool_call_id="stale-candidate-a-diagnostic",
+        agent_name="agent",
+    )
+
+    def project_candidate_change():
+        return record_tool_protocol_event(
+            context,
+            "agent",
+            _semantic_state(
+                current_agent_step=4,
+                candidate_present=True,
+                candidate_advanced=True,
+                delivery_progress_advanced=True,
+                public_candidate_mutated=True,
+                public_delivery_fingerprint=second_candidate,
+            ),
+        )
+
+    def intercept_stale_candidate_read():
+        interception_started.set()
+        result = mutation_gate_interception(context, [stale_candidate_read])
+        interception_finished.set()
+        return result
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        projection_future = executor.submit(project_candidate_change)
+        assert projection_entry.wait(timeout=2)
+        interception_future = executor.submit(intercept_stale_candidate_read)
+        assert interception_started.wait(timeout=2)
+        assert not interception_finished.wait(timeout=0.1)
+        release_projection.set()
+        projection_future.result(timeout=2)
+        interception = interception_future.result(timeout=2)
+
+    assert interception is not None
+    assert interception["tool_call_ids"] == ["stale-candidate-a-diagnostic"]
+    gate = context.read_task_runtime_state(
+        "agent", "execution_protocol_mutation_gate"
+    )
+    assert gate["candidate_fingerprint"] == second_candidate
+    assert gate["repair_authorization"] is None
+    assert gate["repair_diagnostic_read_count"] == 0
+
+
+def test_mutation_gate_transaction_allows_nested_registry_updates() -> None:
+    context = _context("nested-mutation-gate-transaction")
+    candidate_fingerprint = _activate_validate_repair_convergence(context)
+    _record_failed_candidate_validation(
+        context,
+        candidate_fingerprint,
+        marker="nested",
+        step=3,
+    )
+    read = ActionModel(
+        tool_name="terminal",
+        action_name="run_code",
+        params={"code": "cat nested-transaction.log"},
+        tool_call_id="nested-transaction-diagnostic",
+        agent_name="agent",
+    )
+
+    with context.task_runtime_state_transaction():
+        assert mutation_gate_interception(context, [read]) is None
+        context.update_task_runtime_state(
+            "agent",
+            "nested-transaction-proof",
+            lambda current: int(current or 0) + 1,
+        )
+
+    assert context.read_task_runtime_state(
+        "agent", "nested-transaction-proof"
+    ) == 1
+    assert context.read_task_runtime_state(
+        "agent", "execution_protocol_mutation_gate"
+    )["repair_diagnostic_read_count"] == 1
+
+
+def test_diagnostic_read_is_single_per_mixed_batch_and_block_all_rolls_back(
+    tmp_path,
+) -> None:
+    context = _context("failed-validation-diagnostic-batches")
+    candidate_fingerprint = _activate_validate_repair_convergence(context)
+    _record_failed_candidate_validation(
+        context,
+        candidate_fingerprint,
+        marker="batch",
+        step=3,
+    )
+    first_read = ActionModel(
+        tool_name="terminal",
+        action_name="run_code",
+        params={"code": "cat first.log"},
+        tool_call_id="batch-diagnostic-one",
+        agent_name="agent",
+    )
+    second_read = ActionModel(
+        tool_name="terminal",
+        action_name="run_code",
+        params={"code": "cat second.log"},
+        tool_call_id="batch-diagnostic-two",
+        agent_name="agent",
+    )
+    helper_mutation = ActionModel(
+        tool_name="filesystem",
+        action_name="write_file",
+        params={"path": str(tmp_path / "helper.txt"), "content": "helper"},
+        tool_call_id="batch-helper-mutation",
+        agent_name="agent",
+    )
+    unknown = ActionModel(
+        tool_name="custom",
+        action_name="opaque",
+        params={"value": "unknown"},
+        tool_call_id="batch-unknown",
+        agent_name="agent",
+    )
+    mixed = mutation_gate_interception(
+        context,
+        [first_read, second_read, helper_mutation, unknown],
+    )
+    assert mixed is not None
+    assert mixed["tool_call_ids"] == [
+        "batch-diagnostic-two",
+        "batch-helper-mutation",
+        "batch-unknown",
+    ]
+    gate = context.read_task_runtime_state(
+        "agent", "execution_protocol_mutation_gate"
+    )
+    assert gate["repair_diagnostic_read_count"] == 1
+    assert gate["repair_authorization"]["diagnostic_read_count"] == 1
+
+    block_all_read = ActionModel(
+        tool_name="terminal",
+        action_name="run_code",
+        params={"code": "cat block-all.log"},
+        tool_call_id="block-all-diagnostic",
+        agent_name="agent",
+    )
+    missing_call_id = ActionModel(
+        tool_name="terminal",
+        action_name="run_code",
+        params={"code": "cat missing-id.log"},
+        tool_call_id=None,
+        agent_name="agent",
+    )
+    blocked_batch = mutation_gate_interception(
+        context, [block_all_read, missing_call_id]
+    )
+    assert blocked_batch is not None
+    assert blocked_batch["block_all"] is True
+    assert blocked_batch["tool_call_ids"] == ["block-all-diagnostic"]
+    gate = context.read_task_runtime_state(
+        "agent", "execution_protocol_mutation_gate"
+    )
+    assert gate["repair_diagnostic_read_count"] == 1
+    assert gate["repair_authorization"]["diagnostic_read_count"] == 1
+
+
+def test_duplicate_call_ids_block_all_before_any_admission(tmp_path) -> None:
+    target = tmp_path / "result.txt"
+    target.write_text("candidate")
+    context = _context("duplicate-call-id-preflight")
+    context.context_info["public_deliverable_contract"] = {
+        "schema_version": "aworld.public-deliverables/v1",
+        "authority": "public_task_advisory",
+        "source": "public_task_text",
+        "artifacts": [
+            {
+                "deliverable_id": "public-output-1",
+                "path": str(target),
+                "display_path": "result.txt",
+                "kind": "file",
+                "authority": "public_task_advisory",
+            }
+        ],
+    }
+    candidate_fingerprint = _activate_validate_repair_convergence(context)
+    _record_failed_candidate_validation(
+        context,
+        candidate_fingerprint,
+        marker="duplicate-call-id",
+        step=3,
+    )
+    before = context.read_task_runtime_state(
+        "agent", "execution_protocol_mutation_gate"
+    )
+    duplicate_call_id = "duplicate-batch-call"
+    diagnostic = ActionModel(
+        tool_name="terminal",
+        action_name="run_code",
+        params={"code": "cat duplicate-diagnostic.log"},
+        tool_call_id=duplicate_call_id,
+        agent_name="agent",
+    )
+    declared_revision = ActionModel(
+        tool_name="terminal",
+        action_name="run_code",
+        params={"code": f"printf revised > {target}"},
+        tool_call_id=duplicate_call_id,
+        agent_name="agent",
+    )
+    helper_mutation = ActionModel(
+        tool_name="filesystem",
+        action_name="write_file",
+        params={"path": str(tmp_path / "helper.txt"), "content": "helper"},
+        tool_call_id=duplicate_call_id,
+        agent_name="agent",
+    )
+
+    blocked = mutation_gate_interception(
+        context,
+        [diagnostic, declared_revision, helper_mutation],
+    )
+
+    assert blocked is not None
+    assert blocked["block_all"] is True
+    assert blocked["tool_call_ids"] == [duplicate_call_id]
+    after = context.read_task_runtime_state(
+        "agent", "execution_protocol_mutation_gate"
+    )
+    assert after["repair_diagnostic_read_count"] == 0
+    assert after["repair_authorization"]["diagnostic_read_count"] == 0
+    assert after["repair_authorization"]["failure_evidence_hash"] == (
+        before["repair_authorization"]["failure_evidence_hash"]
+    )
+    assert after["declared_mutation_attempt_high_water"] == (
+        before["declared_mutation_attempt_high_water"]
+    )
+
+
+def test_diagnostic_and_repair_require_typed_repair_authorization() -> None:
+    context = _context("diagnostic-read-without-failure")
+    _activate_validate_repair_convergence(context)
+    read = ActionModel(
+        tool_name="terminal",
+        action_name="run_code",
+        params={"code": "cat candidate.txt"},
+        tool_call_id="diagnostic-without-failure",
+        agent_name="agent",
+    )
+
+    blocked = mutation_gate_interception(context, [read])
+
+    assert blocked is not None
+    assert blocked["tool_call_ids"] == ["diagnostic-without-failure"]
+    gate = context.read_task_runtime_state(
+        "agent", "execution_protocol_mutation_gate"
+    )
+    assert gate["repair_authorization"] is None
+    assert gate["repair_diagnostic_read_count"] == 0
+
+    repair = ActionModel(
+        tool_name="filesystem",
+        action_name="write_file",
+        params={"path": "candidate.txt", "content": "repair"},
+        tool_call_id="repair-without-typed-authorization",
+        agent_name="agent",
+    )
+    assert record_model_plan_update(
+        context,
+        "agent",
+        {
+            "decision": "continue",
+            "horizon": "long",
+            "milestone": "repair the candidate",
+            "next_action": "write the exact candidate repair",
+            "next_action_tool": "filesystem__write_file",
+            "next_action_arguments": json.dumps(repair.params),
+            "verification_plan": "validate after repair",
+            "completion_assessment": "candidate_ready",
+            "delivery_intent": "produce_candidate",
+            "delivery_rationale": "attempt a repair without typed evidence",
+            "assumptions": [],
+            "retired_approaches": [],
+            "evidence_refs": [],
+            "selected_candidate_id": "diagnostic-candidate",
+        },
+    ) is not None
+    assert bind_pending_next_action_call(context, "agent", [repair]) is True
+
+    blocked_repair = mutation_gate_interception(context, [repair])
+
+    assert blocked_repair is not None
+    assert blocked_repair["tool_call_ids"] == [
+        "repair-without-typed-authorization"
+    ]
+
+
+@pytest.mark.parametrize("stored_count", (None, "1", -1, True, 3))
+def test_legacy_or_malformed_diagnostic_count_fails_closed(stored_count) -> None:
+    context = _context(f"malformed-diagnostic-count-{stored_count!r}")
+    candidate_fingerprint = _activate_validate_repair_convergence(context)
+    _record_failed_candidate_validation(
+        context,
+        candidate_fingerprint,
+        marker="malformed",
+        step=3,
+    )
+    gate = context.read_task_runtime_state(
+        "agent", "execution_protocol_mutation_gate"
+    )
+    if stored_count is None:
+        gate.pop("repair_diagnostic_read_count")
+    else:
+        gate["repair_diagnostic_read_count"] = stored_count
+    gate["repair_authorization"]["diagnostic_read_count"] = 0
+    context.write_task_runtime_state(
+        "agent", "execution_protocol_mutation_gate", gate
+    )
+    read = ActionModel(
+        tool_name="terminal",
+        action_name="run_code",
+        params={"code": "cat diagnostic.log"},
+        tool_call_id="malformed-count-diagnostic",
+        agent_name="agent",
+    )
+
+    blocked = mutation_gate_interception(context, [read])
+
+    assert blocked is not None
+    assert blocked["tool_call_ids"] == ["malformed-count-diagnostic"]
+    normalized = context.read_task_runtime_state(
+        "agent", "execution_protocol_mutation_gate"
+    )
+    assert normalized["repair_diagnostic_read_count"] == 2
+    assert normalized["repair_authorization"] is None
+    assert normalized["validation_window_open"] is False
+
+
+@pytest.mark.parametrize(
+    "malformation",
+    (
+        "missing_schema",
+        "missing_source",
+        "missing_failure_hash",
+        "noncanonical_failure_hash",
+        "unknown_source",
+        "count_mismatch",
+        "boolean_auth_count",
+        "float_auth_count",
+    ),
+)
+def test_malformed_repair_authorization_cannot_diagnose_or_repair(
+    malformation,
+) -> None:
+    context = _context(f"malformed-repair-authorization-{malformation}")
+    candidate_fingerprint = _activate_validate_repair_convergence(context)
+    _record_failed_candidate_validation(
+        context,
+        candidate_fingerprint,
+        marker=malformation,
+        step=3,
+    )
+    repair = ActionModel(
+        tool_name="filesystem",
+        action_name="write_file",
+        params={"path": "candidate.txt", "content": "repair"},
+        tool_call_id=f"malformed-auth-repair-{malformation}",
+        agent_name="agent",
+    )
+    assert record_model_plan_update(
+        context,
+        "agent",
+        {
+            "decision": "continue",
+            "horizon": "long",
+            "milestone": "repair the current candidate",
+            "next_action": "apply the exact evidence-backed repair",
+            "next_action_tool": "filesystem__write_file",
+            "next_action_arguments": json.dumps(repair.params),
+            "verification_plan": "rerun validation",
+            "completion_assessment": "candidate_ready",
+            "delivery_intent": "produce_candidate",
+            "delivery_rationale": "repair the observed validation failure",
+            "assumptions": [],
+            "retired_approaches": [],
+            "evidence_refs": [],
+            "selected_candidate_id": "diagnostic-candidate",
+        },
+    ) is not None
+    assert bind_pending_next_action_call(context, "agent", [repair]) is True
+    gate = context.read_task_runtime_state(
+        "agent", "execution_protocol_mutation_gate"
+    )
+    authorization = gate["repair_authorization"]
+    if malformation == "missing_schema":
+        authorization.pop("schema_version")
+    elif malformation == "missing_source":
+        authorization.pop("source")
+    elif malformation == "missing_failure_hash":
+        authorization.pop("failure_evidence_hash")
+    elif malformation == "noncanonical_failure_hash":
+        authorization["failure_evidence_hash"] = "sha256:NOT-CANONICAL"
+    elif malformation == "unknown_source":
+        authorization["source"] = "untyped_repair"
+    elif malformation == "count_mismatch":
+        authorization["diagnostic_read_count"] = 1
+    elif malformation == "boolean_auth_count":
+        authorization["diagnostic_read_count"] = False
+    else:
+        authorization["diagnostic_read_count"] = 0.0
+    context.write_task_runtime_state(
+        "agent", "execution_protocol_mutation_gate", gate
+    )
+    diagnostic = ActionModel(
+        tool_name="terminal",
+        action_name="run_code",
+        params={"code": "cat malformed-auth-diagnostic.log"},
+        tool_call_id=f"malformed-auth-diagnostic-{malformation}",
+        agent_name="agent",
+    )
+
+    blocked = mutation_gate_interception(context, [diagnostic, repair])
+
+    assert blocked is not None
+    assert blocked["tool_call_ids"] == [
+        f"malformed-auth-diagnostic-{malformation}",
+        f"malformed-auth-repair-{malformation}",
+    ]
+    sanitized = context.read_task_runtime_state(
+        "agent", "execution_protocol_mutation_gate"
+    )
+    assert sanitized["repair_authorization"] is None
+    assert sanitized["validation_window_open"] is False
+
+
+def test_model_review_repair_mints_typed_source_and_diagnostic_window() -> None:
+    context = _context("typed-model-review-repair")
+    candidate_fingerprint = _activate_validate_repair_convergence(context)
+    review = record_candidate_final(
+        context,
+        "agent",
+        actions=[ActionModel(agent_name="agent", policy_info="candidate")],
+        review_boundary_available=True,
+    )
+    assert review is not None
+    assert load_execution_protocol_state(context, "agent").review_pending is True
+
+    repair = record_review_repair_decision(
+        context,
+        "agent",
+        {"decision": "repair", "reason": "typed review found a concrete gap"},
+    )
+
+    assert repair is not None
+    gate = context.read_task_runtime_state(
+        "agent", "execution_protocol_mutation_gate"
+    )
+    authorization = gate["repair_authorization"]
+    assert authorization["source"] == "model_review_repair"
+    assert authorization["candidate_fingerprint"] == candidate_fingerprint
+    assert authorization["diagnostic_read_count"] == 0
+    read = ActionModel(
+        tool_name="terminal",
+        action_name="run_code",
+        params={"code": "cat typed-review-diagnostic.log"},
+        tool_call_id="typed-review-diagnostic",
+        agent_name="agent",
+    )
+    assert mutation_gate_interception(context, [read]) is None
+    admitted_gate = context.read_task_runtime_state(
+        "agent", "execution_protocol_mutation_gate"
+    )
+    assert admitted_gate["repair_diagnostic_read_count"] == 1
+    assert admitted_gate["repair_authorization"]["source"] == (
+        "model_review_repair"
+    )
+
+
+def test_stale_concurrent_model_review_cannot_mint_after_submission(
+    monkeypatch,
+) -> None:
+    context = _context("stale-concurrent-model-review")
+    _activate_validate_repair_convergence(context)
+    review = record_candidate_final(
+        context,
+        "agent",
+        actions=[ActionModel(agent_name="agent", policy_info="candidate")],
+        review_boundary_available=True,
+    )
+    assert review is not None
+    assert review.decision.action is ControllerAction.REQUEST_FINAL_REVIEW
+
+    # Exercise the compatibility path without transaction support so the
+    # final REQUEST_REPAIR check is independently proven fail-closed.
+    monkeypatch.setattr(context, "task_runtime_state_transaction", None)
+    original_load = execution_protocol_module.ExecutionProtocolStore.load
+    repair_thread_ids: set[int] = set()
+    stale_precheck = Barrier(2)
+    review_consumed = Barrier(2)
+    paused = False
+
+    def pausing_load(store):
+        nonlocal paused
+        state = original_load(store)
+        if (
+            get_ident() in repair_thread_ids
+            and state.review_pending
+            and not paused
+        ):
+            paused = True
+            stale_precheck.wait(timeout=2)
+            review_consumed.wait(timeout=2)
+        return state
+
+    monkeypatch.setattr(
+        execution_protocol_module.ExecutionProtocolStore,
+        "load",
+        pausing_load,
+    )
+
+    def stale_repair_decision():
+        repair_thread_ids.add(get_ident())
+        return record_review_repair_decision(
+            context,
+            "agent",
+            {"decision": "repair", "reason": "stale concurrent repair"},
+        )
+
+    def submit_review():
+        stale_precheck.wait(timeout=2)
+        submitted = record_candidate_final(
+            context,
+            "agent",
+            actions=[ActionModel(agent_name="agent", policy_info="candidate")],
+        )
+        review_consumed.wait(timeout=2)
+        return submitted
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        stale_future = executor.submit(stale_repair_decision)
+        submit_future = executor.submit(submit_review)
+        submitted = submit_future.result(timeout=2)
+        stale = stale_future.result(timeout=2)
+
+    assert submitted is not None
+    assert submitted.decision.action is ControllerAction.SUBMIT_CURRENT_RESULT
+    assert stale is not None
+    assert stale.decision.action is not ControllerAction.REQUEST_REPAIR
+    gate = context.read_task_runtime_state(
+        "agent", "execution_protocol_mutation_gate"
+    )
+    assert gate["repair_authorization"] is None
+    diagnostic = ActionModel(
+        tool_name="terminal",
+        action_name="run_code",
+        params={"code": "cat stale-model-review.log"},
+        tool_call_id="stale-model-review-diagnostic",
+        agent_name="agent",
+    )
+    blocked = mutation_gate_interception(context, [diagnostic])
+    assert blocked is not None
+    assert blocked["tool_call_ids"] == ["stale-model-review-diagnostic"]
+
+
+def test_acceptance_critic_repair_without_pending_review_cannot_mint(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("AWORLD_INDEPENDENT_ACCEPTANCE_CRITIC", "true")
+    context = _context("acceptance-repair-without-review")
+    _activate_acceptance_repair_convergence(context)
+    decision = {
+        "decision": "repair",
+        "highest_risk_counterexample": "the contract still fails",
+        "hypothesis_id": "acceptance-repair",
+        "reason": "typed critic requests a repair",
+    }
+
+    transition, _, accepted = record_acceptance_critic_decision(
+        context, "agent", decision
+    )
+
+    assert accepted is False
+    assert transition is not None
+    assert transition.decision.action is not ControllerAction.REQUEST_REPAIR
+    gate = context.read_task_runtime_state(
+        "agent", "execution_protocol_mutation_gate"
+    )
+    assert gate["repair_authorization"] is None
+    diagnostic = ActionModel(
+        tool_name="terminal",
+        action_name="run_code",
+        params={"code": "cat no-pending-review.log"},
+        tool_call_id="no-pending-review-diagnostic",
+        agent_name="agent",
+    )
+    blocked = mutation_gate_interception(context, [diagnostic])
+    assert blocked is not None
+    assert blocked["tool_call_ids"] == ["no-pending-review-diagnostic"]
+
+
+def test_acceptance_repair_mint_is_atomic_with_candidate_change(
+    monkeypatch,
+) -> None:
+    from aworld.core.context.compiler import semantic_fingerprint
+
+    monkeypatch.setenv("AWORLD_INDEPENDENT_ACCEPTANCE_CRITIC", "true")
+    context = _context("acceptance-repair-candidate-gap")
+    _activate_acceptance_repair_convergence(context)
+    review = record_candidate_final(
+        context,
+        "agent",
+        actions=[ActionModel(agent_name="agent", policy_info="candidate-a")],
+        review_boundary_available=True,
+    )
+    assert review is not None
+    assert review.decision.action is ControllerAction.REQUEST_FINAL_REVIEW
+    decision = {
+        "decision": "repair",
+        "highest_risk_counterexample": "the contract still fails",
+        "hypothesis_id": "acceptance-repair",
+        "reason": "typed critic requests a repair",
+    }
+    mint_entry = Event()
+    release_mint = Event()
+    projection_started = Event()
+    projection_finished = Event()
+    original_mint = execution_protocol_module._mint_review_repair_authorization
+
+    def pausing_mint(*args, **kwargs):
+        mint_entry.set()
+        assert release_mint.wait(timeout=2)
+        return original_mint(*args, **kwargs)
+
+    monkeypatch.setattr(
+        execution_protocol_module,
+        "_mint_review_repair_authorization",
+        pausing_mint,
+    )
+    second_candidate = semantic_fingerprint("acceptance-candidate-b")
+
+    def decide_repair():
+        return record_acceptance_critic_decision(context, "agent", decision)
+
+    def project_candidate_change():
+        projection_started.set()
+        transition = record_tool_protocol_event(
+            context,
+            "agent",
+            _semantic_state(
+                current_agent_step=4,
+                candidate_present=True,
+                candidate_advanced=True,
+                delivery_progress_advanced=True,
+                public_candidate_mutated=True,
+                public_delivery_fingerprint=second_candidate,
+            ),
+        )
+        projection_finished.set()
+        return transition
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        decision_future = executor.submit(decide_repair)
+        assert mint_entry.wait(timeout=2)
+        projection_future = executor.submit(project_candidate_change)
+        assert projection_started.wait(timeout=2)
+        assert not projection_finished.wait(timeout=0.1)
+        release_mint.set()
+        decision_transition, _, _ = decision_future.result(timeout=2)
+        projection_future.result(timeout=2)
+
+    assert decision_transition is not None
+    assert decision_transition.decision.action is ControllerAction.REQUEST_REPAIR
+    gate = context.read_task_runtime_state(
+        "agent", "execution_protocol_mutation_gate"
+    )
+    assert gate["candidate_fingerprint"] == second_candidate
+    assert gate["repair_authorization"] is None
+    assert gate["repair_diagnostic_read_count"] == 0
+
+
+def test_consumed_acceptance_review_cannot_refill_repair_authorization(
+    monkeypatch,
+) -> None:
+    from aworld.core.context.compiler import semantic_fingerprint
+
+    monkeypatch.setenv("AWORLD_INDEPENDENT_ACCEPTANCE_CRITIC", "true")
+    context = _context("acceptance-repair-consumed-review")
+    _activate_acceptance_repair_convergence(context)
+    review = record_candidate_final(
+        context,
+        "agent",
+        actions=[ActionModel(agent_name="agent", policy_info="candidate")],
+        review_boundary_available=True,
+    )
+    assert review is not None
+    assert review.decision.action is ControllerAction.REQUEST_FINAL_REVIEW
+    decision = {
+        "decision": "repair",
+        "highest_risk_counterexample": "the contract still fails",
+        "hypothesis_id": "acceptance-repair",
+        "reason": "typed critic requests a repair",
+    }
+
+    first, _, _ = record_acceptance_critic_decision(context, "agent", decision)
+
+    assert first is not None
+    assert first.decision.action is ControllerAction.REQUEST_REPAIR
+    gate = context.read_task_runtime_state(
+        "agent", "execution_protocol_mutation_gate"
+    )
+    assert gate["repair_authorization"]["source"] == (
+        "acceptance_critic_repair"
+    )
+    diagnostic = ActionModel(
+        tool_name="terminal",
+        action_name="run_code",
+        params={"code": "cat acceptance-review-diagnostic.log"},
+        tool_call_id="acceptance-review-diagnostic",
+        agent_name="agent",
+    )
+    assert mutation_gate_interception(context, [diagnostic]) is None
+
+    repair = ActionModel(
+        tool_name="filesystem",
+        action_name="write_file",
+        params={"path": "candidate.txt", "content": "critic repair"},
+        tool_call_id="acceptance-review-repair",
+        agent_name="agent",
+    )
+    assert record_model_plan_update(
+        context,
+        "agent",
+        {
+            "decision": "continue",
+            "horizon": "long",
+            "milestone": "repair the critic finding",
+            "next_action": "apply the exact critic repair",
+            "next_action_tool": "filesystem__write_file",
+            "next_action_arguments": json.dumps(repair.params),
+            "verification_plan": "rerun the registered acceptance check",
+            "completion_assessment": "candidate_ready",
+            "delivery_intent": "produce_candidate",
+            "delivery_rationale": "typed acceptance review supports the repair",
+            "assumptions": [],
+            "retired_approaches": [],
+            "evidence_refs": [],
+            "selected_candidate_id": "diagnostic-candidate",
+        },
+    ) is not None
+    assert bind_pending_next_action_call(context, "agent", [repair]) is True
+    assert mutation_gate_interception(context, [repair]) is None
+    assert context.read_task_runtime_state(
+        "agent", "execution_protocol_mutation_gate"
+    )["repair_authorization"] is None
+
+    # Distinct critic-state evidence would produce a fresh evidence hash if the
+    # already-consumed review decision were incorrectly allowed to mint again.
+    context.write_task_runtime_state(
+        "agent",
+        execution_protocol_module.EXECUTION_PROTOCOL_CRITIC_KEY,
+        {
+            "candidate_hash": semantic_fingerprint("repeat-critic-candidate"),
+            "evidence_hash": semantic_fingerprint("repeat-critic-evidence"),
+        },
+    )
+    repeated, _, _ = record_acceptance_critic_decision(
+        context, "agent", {**decision, "reason": "repeat repair request"}
+    )
+
+    assert repeated is not None
+    assert repeated.decision.action is not ControllerAction.REQUEST_REPAIR
+    repeated_gate = context.read_task_runtime_state(
+        "agent", "execution_protocol_mutation_gate"
+    )
+    assert repeated_gate["repair_authorization"] is None
+    blocked_repeat = mutation_gate_interception(context, [diagnostic])
+    assert blocked_repeat is not None
+    assert blocked_repeat["tool_call_ids"] == ["acceptance-review-diagnostic"]
 
 
 def test_stale_repair_authorization_does_not_block_novel_declared_revision(
