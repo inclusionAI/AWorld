@@ -318,6 +318,38 @@ def test_relative_declared_target_uses_trusted_workspace_without_basename_alias(
     assert sibling_write.declared_deliverable_targeted is False
 
 
+def test_registered_validation_semantics_require_canonical_cwd(tmp_path) -> None:
+    context = _context()
+    context.workspace_path = str(tmp_path)
+    context.completion_contract = SimpleNamespace(
+        required_artifacts=(),
+        validation_commands=(
+            SimpleNamespace(
+                command_id="cwd-check",
+                argv=("sh", "-c", "cat result.json"),
+                cwd="checks",
+            ),
+        ),
+    )
+    correct = build_planned_action_semantic_receipt(
+        context=context,
+        tool_name="terminal__run_code",
+        arguments={"code": "cat result.json", "cwd": str(tmp_path / "checks")},
+        delivery_intent="validate_candidate",
+    )
+    wrong = build_planned_action_semantic_receipt(
+        context=context,
+        tool_name="terminal__run_code",
+        arguments={"code": "cat result.json", "cwd": str(tmp_path / "other")},
+        delivery_intent="validate_candidate",
+    )
+
+    assert correct.effect == "validation"
+    assert correct.validation_kind is not None
+    assert wrong.effect == "read_only"
+    assert wrong.validation_kind is None
+
+
 def test_shell_classifier_does_not_treat_fd_redirection_as_file_mutation() -> None:
     effect = classify_tool_effect(
         {

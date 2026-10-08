@@ -171,9 +171,8 @@ def _completion_contract(context: Any) -> Any:
     return getattr(owner, "completion_contract", None)
 
 
-def _declared_target_ids(context: Any) -> frozenset[str]:
-    contract = _completion_contract(context)
-    targets: set[str] = set()
+def canonical_invocation_cwd(context: Any, cwd: Any = None) -> str | None:
+    """Canonicalize a Tool invocation cwd against the trusted workspace."""
 
     owner_resolver = getattr(context, "_task_runtime_registry_owner", None)
     owner = owner_resolver() if callable(owner_resolver) else None
@@ -185,6 +184,22 @@ def _declared_target_ids(context: Any) -> frozenset[str]:
         if isinstance(workspace_root, str) and workspace_root.strip()
         else None
     )
+    selected = cwd if isinstance(cwd, str) and cwd.strip() else workspace_root
+    if not isinstance(selected, str) or not selected.strip():
+        return None
+    normalized = posixpath.normpath(selected.replace("\\", "/"))
+    if workspace_root is not None and not posixpath.isabs(normalized):
+        normalized = posixpath.normpath(posixpath.join(workspace_root, normalized))
+    return normalized
+
+
+def _declared_target_ids(context: Any) -> frozenset[str]:
+    contract = _completion_contract(context)
+    targets: set[str] = set()
+
+    owner_resolver = getattr(context, "_task_runtime_registry_owner", None)
+    owner = owner_resolver() if callable(owner_resolver) else None
+    workspace_root = canonical_invocation_cwd(context)
 
     def declared_identity(path: str) -> str:
         normalized = posixpath.normpath(path.replace("\\", "/"))
@@ -257,6 +272,7 @@ def _registered_validation_kind(
     context: Any,
     *,
     code: str | None,
+    cwd: Any = None,
 ) -> str | None:
     if not isinstance(code, str) or not code.strip():
         return None
@@ -270,7 +286,9 @@ def _registered_validation_kind(
             if len(argv) >= 2 and argv[-2] == "-c"
             else shlex.join(str(item) for item in argv)
         )
-        if code.strip() != registered.strip():
+        if code.strip() != registered.strip() or canonical_invocation_cwd(
+            context, cwd
+        ) != canonical_invocation_cwd(context, getattr(validation, "cwd", None)):
             continue
         command_id = str(getattr(validation, "command_id", "") or "")
         return "registered:" + hashlib.sha256(command_id.encode("utf-8")).hexdigest()
@@ -388,6 +406,7 @@ def build_planned_action_semantic_receipt(
     validation_kind = _registered_validation_kind(
         context,
         code=code if isinstance(code, str) else None,
+        cwd=arguments.get("cwd"),
     )
     effect = fallback.effect
     normalized_tool = tool.casefold().replace("_", "-")
@@ -454,6 +473,7 @@ def _observed_action_semantic_receipt(
     validation_kind = _registered_validation_kind(
         context,
         code=code if isinstance(code, str) else None,
+        cwd=params.get("cwd"),
     )
     semantic_effect = effect.effect
     if validation_kind is not None and (
@@ -1163,6 +1183,7 @@ __all__ = [
     "build_planned_action_semantic_receipt",
     "build_preflight_action_semantic_receipt",
     "canonical_tool_identity",
+    "canonical_invocation_cwd",
     "classify_tool_effect",
     "declared_action_target_ids",
     "semantic_target_sha256",

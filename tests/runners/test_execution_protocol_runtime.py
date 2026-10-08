@@ -1706,6 +1706,37 @@ def test_legacy_gate_migrates_only_for_exact_current_scope(stale_field) -> None:
     assert mutation_gate_interception(context, [action]) is None
 
 
+def test_stale_v3_gate_cannot_poison_new_scope_projection() -> None:
+    context = _context("fresh-gate-projection")
+    configure_execution_protocol(
+        context, "agent", ExecutionProtocolPolicy(mode=ProtocolMode.GUIDE)
+    )
+    stale = {
+        "schema_version": "aworld.mutation-gate/v3",
+        "scope_hash": "sha256:" + "a" * 64,
+        "agent_id": "agent",
+        "active": True,
+        "activation_count": 99,
+        "blocked_call_count": 99,
+        "blocked_read_only_call_count": 99,
+        "repair_failure_evidence_high_water": "f" * 128,
+        "convergence_stage": "validate_repair_or_submit",
+    }
+    context.write_task_runtime_state(
+        "agent", "execution_protocol_mutation_gate", stale
+    )
+
+    record_tool_protocol_event(context, "agent", _semantic_state())
+
+    projected = context.read_task_runtime_state(
+        "agent", "execution_protocol_mutation_gate"
+    )
+    assert projected["active"] is False
+    assert projected["activation_count"] == 0
+    assert projected["blocked_call_count"] == 0
+    assert projected["repair_failure_evidence_high_water"] == "0" * 128
+
+
 def test_contractless_produce_requires_exact_model_bound_semantics_and_call_id() -> None:
     context = _context("contractless-produce-admission")
     configure_execution_protocol(
@@ -1761,6 +1792,144 @@ def test_contractless_produce_requires_exact_model_bound_semantics_and_call_id()
     blocked = mutation_gate_interception(context, [unbound])
     assert blocked is not None
     assert blocked["tool_call_ids"] == ["unbound-helper"]
+
+
+def test_contractless_empty_targets_fall_back_to_exact_bound_signature() -> None:
+    context = _context("contractless-empty-target-admission")
+    configure_execution_protocol(
+        context,
+        "agent",
+        ExecutionProtocolPolicy(
+            mode=ProtocolMode.GUIDE,
+            activation_event_threshold=1,
+            model_activation_min_tool_actions=1,
+            repetition_threshold=1,
+            stagnation_event_threshold=1,
+        ),
+    )
+    _declare_long_horizon(context)
+    _activate_produce_convergence(context)
+    planned = ActionModel(
+        tool_name="terminal",
+        action_name="run_code",
+        params={"code": "touch $TARGET"},
+        tool_call_id="opaque-target",
+        agent_name="agent",
+    )
+    assert record_model_plan_update(
+        context,
+        "agent",
+        {
+            "decision": "continue",
+            "horizon": "long",
+            "milestone": "produce an environment-bound candidate",
+            "next_action": "touch the exact bound target",
+            "next_action_tool": "terminal__run_code",
+            "next_action_arguments": json.dumps(planned.params),
+            "verification_plan": "inspect the resulting service state",
+            "completion_assessment": "in_progress",
+            "delivery_intent": "produce_candidate",
+            "delivery_rationale": "the target is supplied by the trusted environment",
+            "assumptions": [],
+            "retired_approaches": [],
+            "evidence_refs": [],
+            "selected_candidate_id": None,
+        },
+    ) is not None
+    assert bind_pending_next_action_call(context, "agent", [planned]) is True
+    substituted = ActionModel(
+        tool_name="terminal",
+        action_name="run_code",
+        params={"code": "touch $OTHER"},
+        tool_call_id="opaque-target",
+        agent_name="agent",
+    )
+
+    blocked = mutation_gate_interception(context, [substituted])
+    assert blocked is not None
+    assert blocked["tool_call_ids"] == ["opaque-target"]
+    assert mutation_gate_interception(context, [planned]) is None
+
+
+def test_registered_validation_binds_canonical_invocation_cwd(tmp_path) -> None:
+    context = _context("validation-cwd-binding")
+    context.workspace_path = str(tmp_path)
+    context.configure_completion_contract(
+        CompletionContract(
+            required_artifacts=(),
+            immutable_inputs=(),
+            validation_commands=(
+                ValidationCommand(
+                    command_id="cwd-check",
+                    argv=("sh", "-c", "cat result.json"),
+                    cwd="checks",
+                ),
+            ),
+            max_evidence_age_seconds=None,
+            required_final_evidence=(),
+        ),
+        mode=CompletionMode.ENFORCE,
+    )
+    configure_execution_protocol(
+        context, "agent", ExecutionProtocolPolicy(mode=ProtocolMode.GUIDE)
+    )
+    correct = ActionModel(
+        tool_name="terminal",
+        action_name="run_code",
+        params={"code": "cat result.json", "cwd": str(tmp_path / "checks")},
+        tool_call_id="cwd-correct",
+        agent_name="agent",
+    )
+    wrong = ActionModel(
+        tool_name="terminal",
+        action_name="run_code",
+        params={"code": "cat result.json", "cwd": str(tmp_path / "other")},
+        tool_call_id="cwd-wrong",
+        agent_name="agent",
+    )
+
+    assert framework_observable_validation_kind(
+        context, "agent", correct
+    ) == "registered_completion_validation"
+    assert framework_observable_validation_kind(context, "agent", wrong) is None
+
+
+@pytest.mark.parametrize("ambiguous_kind", ("mixed", "missing"))
+def test_active_convergence_blocks_ambiguous_agent_batches(ambiguous_kind) -> None:
+    context = _context(f"ambiguous-agent-{ambiguous_kind}")
+    configure_execution_protocol(
+        context,
+        "agent",
+        ExecutionProtocolPolicy(
+            mode=ProtocolMode.GUIDE,
+            activation_event_threshold=1,
+            model_activation_min_tool_actions=1,
+            repetition_threshold=1,
+            stagnation_event_threshold=1,
+        ),
+    )
+    _declare_long_horizon(context)
+    _activate_produce_convergence(context)
+    first = ActionModel(
+        tool_name="terminal",
+        action_name="run_code",
+        params={"code": "cat README.md"},
+        tool_call_id="ambiguous-1",
+        agent_name="agent" if ambiguous_kind == "mixed" else None,
+    )
+    second = ActionModel(
+        tool_name="terminal",
+        action_name="run_code",
+        params={"code": "cat pyproject.toml"},
+        tool_call_id="ambiguous-2",
+        agent_name="other" if ambiguous_kind == "mixed" else None,
+    )
+
+    receipt = mutation_gate_interception(context, [first, second])
+    assert receipt is not None
+    assert receipt["kind"] == "convergence_scope_ambiguous"
+    assert receipt["block_all"] is True
+    assert receipt["tool_call_ids"] == ["ambiguous-1", "ambiguous-2"]
 
 
 @pytest.mark.asyncio

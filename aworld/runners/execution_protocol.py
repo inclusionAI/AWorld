@@ -41,6 +41,7 @@ from aworld.core.execution_protocol import (
 from aworld.sandbox.tool_observation import (
     actions_are_provably_read_only,
     build_preflight_action_semantic_receipt,
+    canonical_invocation_cwd,
     canonical_tool_identity,
     declared_action_target_ids,
 )
@@ -116,6 +117,29 @@ def _bounded_counter(value: Any) -> int:
     except (TypeError, ValueError, OverflowError):
         return 0
     return min(_MAX_TELEMETRY_COUNTER, max(0, parsed))
+
+
+def _gate_matches_current_scope(
+    context,
+    agent_id: str,
+    gate: Any,
+) -> bool:
+    if not isinstance(gate, Mapping) or gate.get("agent_id") != agent_id:
+        return False
+    schema = gate.get("schema_version")
+    if schema == MUTATION_GATE_SCHEMA:
+        from aworld.core.context.compiler import semantic_fingerprint
+
+        return gate.get("scope_hash") == semantic_fingerprint(
+            _model_decision_scope(context, agent_id)
+        )
+    if schema in _LEGACY_MUTATION_GATE_SCHEMAS:
+        owner = state_context(context)
+        return bool(
+            gate.get("task_id") == getattr(owner, "task_id", None)
+            and gate.get("task_epoch") == getattr(owner, "task_epoch", None)
+        )
+    return False
 
 
 def _model_decision_scope(context, agent_id: str) -> dict[str, Any]:
@@ -917,7 +941,14 @@ def _matching_completion_validation_id(
             else shlex.join(str(item) for item in argv)
         )
         command_id = getattr(validation, "command_id", None)
-        if command_text.strip() == registered.strip() and isinstance(command_id, str):
+        cwd_matches = canonical_invocation_cwd(
+            owner, arguments.get("cwd")
+        ) == canonical_invocation_cwd(owner, getattr(validation, "cwd", None))
+        if (
+            command_text.strip() == registered.strip()
+            and cwd_matches
+            and isinstance(command_id, str)
+        ):
             return command_id
     return None
 
@@ -1053,6 +1084,31 @@ def _action_matches_typed_candidate_plan(
         or state.pending_next_action_call_id != call_id
     ):
         return False
+    expected_targets = update.next_action_semantics.target_ids
+    observed_targets = observed.target_ids
+    if not expected_targets or not observed_targets:
+        if bool(expected_targets) != bool(observed_targets):
+            return False
+        arguments = _action_arguments(action)
+        if arguments is None or update.next_action_signature is None:
+            return False
+        tool = str(_action_value(action, "tool_name") or "").strip()
+        operation = str(_action_value(action, "action_name") or "").strip()
+        model_visible = str(
+            _action_value(action, "model_visible_tool_name") or ""
+        ).strip()
+        identities = {value for value in (model_visible, tool, operation) if value}
+        if tool and operation:
+            identities.add(f"{tool}__{operation}")
+        if update.next_action_tool not in identities:
+            return False
+        try:
+            observed_signature = action_signature(
+                update.next_action_tool, arguments
+            )
+        except ValueError:
+            return False
+        return observed_signature == update.next_action_signature
     return (
         compare_action_semantic_shape(
             update.next_action_semantics,
@@ -1841,11 +1897,10 @@ def _update_mutation_gate(
         and read_only_count >= _MUTATION_GATE_DEADLINE_MIN_READS
     )
     previous = _read_runtime_value(context, agent_id, MUTATION_GATE_STATE_KEY)
+    if not _gate_matches_current_scope(context, agent_id, previous):
+        previous = {}
     previous_active = bool(
         isinstance(previous, Mapping)
-        and previous.get("schema_version")
-        in {MUTATION_GATE_SCHEMA, *_LEGACY_MUTATION_GATE_SCHEMAS}
-        and previous.get("agent_id") == agent_id
         and previous.get("active") is True
     )
     previous_pre_candidate_latched = bool(
@@ -2086,12 +2141,85 @@ def mutation_gate_interception(
     if context is None or not actions:
         return None
 
-    agent_ids = {
-        str(_action_value(action, "agent_name") or "")
-        for action in actions
-    }
-    if len(agent_ids) != 1 or not next(iter(agent_ids)):
-        return None
+    action_agent_ids = [
+        str(_action_value(action, "agent_name") or "") for action in actions
+    ]
+    agent_ids = {value for value in action_agent_ids if value}
+    ambiguous_agent_scope = len(agent_ids) != 1 or any(
+        not value for value in action_agent_ids
+    )
+    candidate_gates: list[tuple[str, Mapping[str, Any]]] = []
+    for candidate_agent_id in sorted(agent_ids):
+        candidate_gate = _read_runtime_value(
+            context, candidate_agent_id, MUTATION_GATE_STATE_KEY
+        )
+        if (
+            isinstance(candidate_gate, Mapping)
+            and candidate_gate.get("active") is True
+            and _gate_matches_current_scope(
+                context, candidate_agent_id, candidate_gate
+            )
+            and execution_protocol_policy(context, candidate_agent_id).mode
+            is ProtocolMode.GUIDE
+        ):
+            candidate_gates.append((candidate_agent_id, candidate_gate))
+    if not agent_ids:
+        owner = state_context(context)
+        context_info = getattr(owner, "context_info", None)
+        latest_gate = (
+            context_info.get(MUTATION_GATE_STATE_KEY)
+            if hasattr(context_info, "get")
+            else None
+        )
+        latest_agent_id = (
+            latest_gate.get("agent_id")
+            if isinstance(latest_gate, Mapping)
+            else None
+        )
+        if (
+            isinstance(latest_agent_id, str)
+            and latest_agent_id
+            and latest_gate.get("active") is True
+            and _gate_matches_current_scope(context, latest_agent_id, latest_gate)
+            and execution_protocol_policy(context, latest_agent_id).mode
+            is ProtocolMode.GUIDE
+        ):
+            candidate_gates.append((latest_agent_id, latest_gate))
+    if ambiguous_agent_scope:
+        if not candidate_gates:
+            return None
+        agent_id, gate = candidate_gates[0]
+        updated = dict(gate)
+        updated["blocked_call_count"] = min(
+            _MAX_TELEMETRY_COUNTER,
+            _bounded_counter(
+                gate.get("blocked_call_count", gate.get("blocked_read_only_call_count"))
+            )
+            + len(actions),
+        )
+        updated["blocked_read_only_call_count"] = updated["blocked_call_count"]
+        updated["last_interception_kind"] = "convergence_scope_ambiguous"
+        owner = state_context(context)
+        if owner is not None:
+            owner.context_info[MUTATION_GATE_STATE_KEY] = updated
+        _write_runtime_value(context, agent_id, MUTATION_GATE_STATE_KEY, updated)
+        return {
+            "schema_version": MUTATION_GATE_SCHEMA,
+            "kind": "convergence_scope_ambiguous",
+            "agent_id": agent_id,
+            "tool_call_ids": [
+                str(_action_value(action, "tool_call_id") or "")
+                for action in actions
+                if str(_action_value(action, "tool_call_id") or "")
+            ],
+            "block_all": True,
+            "reason": "ambiguous_agent_scope",
+            "convergence_stage": updated.get("convergence_stage"),
+            "blocked_call_count": updated["blocked_call_count"],
+            "blocked_read_only_call_count": updated[
+                "blocked_read_only_call_count"
+            ],
+        }
     agent_id = next(iter(agent_ids))
     if execution_protocol_policy(context, agent_id).mode is not ProtocolMode.GUIDE:
         return None
@@ -2101,26 +2229,9 @@ def mutation_gate_interception(
         or gate.get("schema_version")
         not in {MUTATION_GATE_SCHEMA, *_LEGACY_MUTATION_GATE_SCHEMAS}
         or gate.get("active") is not True
+        or not _gate_matches_current_scope(context, agent_id, gate)
     ):
         return None
-    if gate.get("schema_version") == MUTATION_GATE_SCHEMA:
-        from aworld.core.context.compiler import semantic_fingerprint
-
-        if gate.get("scope_hash") != semantic_fingerprint(
-            _model_decision_scope(context, agent_id)
-        ):
-            # A copied gate from another task epoch has no authority here.
-            return None
-    else:
-        owner = state_context(context)
-        if (
-            gate.get("agent_id") != agent_id
-            or gate.get("task_id") != getattr(owner, "task_id", None)
-            or gate.get("task_epoch") != getattr(owner, "task_epoch", None)
-        ):
-            # v1/v2 persisted raw scope fields.  Migrate only an exact current
-            # scope; missing or stale legacy identity is fail-open.
-            return None
     stage_value = gate.get("convergence_stage")
     try:
         stage = ConvergenceStage(stage_value)
