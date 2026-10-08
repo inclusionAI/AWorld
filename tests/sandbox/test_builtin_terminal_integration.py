@@ -8,6 +8,7 @@ import pytest
 
 from aworld.mcp_client.utils import process_mcp_tools
 from aworld.sandbox import Sandbox
+from aworld.sandbox.terminal_receipt import plan_terminal_execution
 
 
 @pytest.mark.asyncio
@@ -41,7 +42,7 @@ async def test_builtin_terminal_discovers_and_executes_in_workspace(
 
         result = await asyncio.wait_for(
             sandbox.terminal.run_code(
-                'python -c "from pathlib import Path; print(Path.cwd())"'
+                'python -I -c "from pathlib import Path; print(Path.cwd())"'
             ),
             timeout=30,
         )
@@ -59,7 +60,7 @@ async def test_builtin_terminal_discovers_and_executes_in_workspace(
         assert terminal_receipt["schema_version"] == (
             "aworld.terminal-execution-receipt/v2"
         )
-        assert terminal_receipt["language_contract_version"] == 1
+        assert terminal_receipt["language_contract_version"] == 2
         assert terminal_receipt["requested_language"] == "shell"
         assert terminal_receipt["effective_language"] == "shell"
         assert terminal_receipt["language"] == "shell"
@@ -180,6 +181,135 @@ len({str(builtin_target)!r}, 'w')
         assert builtin_receipt["write_paths"] == []
         assert builtin_receipt["write_set_complete"] is False
         assert builtin_receipt["workspace_generation_delta"] == 1
+    finally:
+        await sandbox.cleanup()
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_builtin_terminal_python_import_authority_requires_isolation(
+    tmp_path: Path,
+) -> None:
+    subdirectory = tmp_path / "sub"
+    subdirectory.mkdir()
+    input_path = subdirectory / "input.txt"
+    input_path.write_text("G1 X1 Y1\n", encoding="utf-8")
+    shadow_marker = subdirectory / "shadow-import.txt"
+    (subdirectory / "statistics.py").write_text(
+        f"open({str(shadow_marker)!r}, 'w').write('shadowed')\n",
+        encoding="utf-8",
+    )
+    raw_shadow_marker = subdirectory / "raw-shadow-import.txt"
+    (subdirectory / "re.py").write_text(
+        f"open({str(raw_shadow_marker)!r}, 'w').write('shadowed')\n"
+        "def escape(value):\n"
+        "    return value\n",
+        encoding="utf-8",
+    )
+    sandbox = Sandbox(
+        builtin_tools=["terminal"],
+        workspaces=[str(tmp_path)],
+        reuse=False,
+    )
+    try:
+        nonisolated_code = """cd sub && python3 - <<'PY'
+import statistics
+print('nonisolated')
+PY
+"""
+        nonisolated_plan = plan_terminal_execution(nonisolated_code)
+        nonisolated = await asyncio.wait_for(
+            sandbox.terminal.run_code(nonisolated_code),
+            timeout=30,
+        )
+        nonisolated_receipt = nonisolated["data"]["metadata"][
+            "terminal_execution_receipt"
+        ]
+
+        assert nonisolated["success"] is True
+        assert shadow_marker.read_text(encoding="utf-8") == "shadowed"
+        assert nonisolated_plan.command_cwd == "sub"
+        assert nonisolated_receipt["effect"] == "unknown"
+        assert nonisolated_receipt["effect_source"] == "parser_contract"
+        assert nonisolated_receipt["read_path_epochs"] == []
+        assert nonisolated_receipt["write_paths"] == []
+        assert nonisolated_receipt["read_set_complete"] is False
+        assert nonisolated_receipt["write_set_complete"] is False
+
+        raw_python = await asyncio.wait_for(
+            sandbox.terminal.run_code(
+                "import re\nprint(re.escape('raw-python'))",
+                cwd="sub",
+                language="python",
+            ),
+            timeout=30,
+        )
+        raw_receipt = raw_python["data"]["metadata"][
+            "terminal_execution_receipt"
+        ]
+
+        assert raw_python["success"] is True
+        assert raw_shadow_marker.exists() is False
+        assert raw_python["data"]["message"]["stdout"] == "raw\\-python\n"
+        assert raw_receipt["effect"] == "read_only"
+        assert raw_receipt["effect_source"] == "trusted_command_contract"
+        assert raw_receipt["read_set_complete"] is True
+        assert raw_receipt["write_set_complete"] is True
+
+        isolated_read_code = """cd sub && python3 -I - <<'PY'
+import re
+print(re.escape(open('input.txt').read()))
+PY
+"""
+        isolated_read_plan = plan_terminal_execution(isolated_read_code)
+        isolated_read = await asyncio.wait_for(
+            sandbox.terminal.run_code(isolated_read_code),
+            timeout=30,
+        )
+        read_receipt = isolated_read["data"]["metadata"][
+            "terminal_execution_receipt"
+        ]
+
+        assert isolated_read["success"] is True
+        assert isolated_read_plan.command_cwd == "sub"
+        assert read_receipt["effect"] == "read_only"
+        assert read_receipt["effect_source"] == "trusted_command_contract"
+        assert read_receipt["read_paths"] == ["input.txt"]
+        assert len(read_receipt["read_path_epochs"]) == 1
+        assert Path(read_receipt["read_path_epochs"][0]["resolved_path"]) == (
+            input_path.resolve()
+        )
+        assert read_receipt["write_paths"] == []
+        assert read_receipt["read_set_complete"] is True
+        assert read_receipt["write_set_complete"] is True
+
+        output_path = subdirectory / "out.txt"
+        isolated_write_code = """cd sub && python3 -I - <<'PY'
+import re
+rows = open('input.txt').read().splitlines()
+open('out.txt', 'w').write(str(sum(bool(re.match(r'G1', row)) for row in rows)))
+PY
+"""
+        isolated_write_plan = plan_terminal_execution(isolated_write_code)
+        isolated_write = await asyncio.wait_for(
+            sandbox.terminal.run_code(isolated_write_code),
+            timeout=30,
+        )
+        write_receipt = isolated_write["data"]["metadata"][
+            "terminal_execution_receipt"
+        ]
+
+        assert isolated_write["success"] is True
+        assert output_path.read_text(encoding="utf-8") == "1"
+        assert isolated_write_plan.command_cwd == "sub"
+        assert write_receipt["effect"] == "mutating"
+        assert write_receipt["effect_source"] == "parser_contract"
+        assert write_receipt["read_paths"] == ["input.txt"]
+        assert write_receipt["read_path_epochs"] == []
+        assert write_receipt["write_paths"] == ["out.txt"]
+        assert write_receipt["read_set_complete"] is True
+        assert write_receipt["write_set_complete"] is True
+        assert write_receipt["mutation_observed"] is True
     finally:
         await sandbox.cleanup()
 

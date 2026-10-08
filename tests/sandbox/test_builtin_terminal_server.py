@@ -178,11 +178,11 @@ def test_terminal_execution_plan_marks_unresolved_read_set(command: str) -> None
         ("readlink -f /app/input.txt", "/app/input.txt"),
         ("realpath -m /app/input.txt", "/app/input.txt"),
         (
-            "python -c \"import numpy as np; print(np.load('/app/x.npy'))\"",
+            "python -I -c \"import numpy as np; print(np.load('/app/x.npy'))\"",
             "/app/x.npy",
         ),
         (
-            "python -c \"import toml; print(toml.load('/app/x.toml'))\"",
+            "python -I -c \"import toml; print(toml.load('/app/x.toml'))\"",
             "/app/x.toml",
         ),
     ),
@@ -419,8 +419,8 @@ async def test_run_code_emits_compact_terminal_execution_receipt() -> None:
     assert payload["success"] is True
     assert receipt == {
         "schema_version": "aworld.terminal-execution-receipt/v2",
-        "parser_version": 9,
-        "language_contract_version": 1,
+        "parser_version": 10,
+        "language_contract_version": 2,
         "command_sha256": terminal_command_sha256(command),
         "requested_language": "shell",
         "effective_language": "shell",
@@ -472,7 +472,7 @@ async def test_run_code_executes_explicit_raw_python_without_shell_inference() -
     assert payload["message"]["stdout"] == "6\n"
     assert receipt["requested_language"] == "python"
     assert receipt["effective_language"] == "python"
-    assert receipt["language_contract_version"] == 1
+    assert receipt["language_contract_version"] == 2
     assert receipt["effect"] == "read_only"
 
 
@@ -480,7 +480,7 @@ async def test_run_code_executes_explicit_raw_python_without_shell_inference() -
 async def test_run_code_emits_authoritative_nested_python_heredoc_receipt(
     tmp_path: Path,
 ) -> None:
-    command = """python3 <<'PY'\nfrom pathlib import Path\nPath('result.txt').write_text('done')\nPY\n"""
+    command = """python3 -I - <<'PY'\nfrom pathlib import Path\nPath('result.txt').write_text('done')\nPY\n"""
 
     response = await run_code(None, command, timeout=10, cwd=str(tmp_path))
     payload = json.loads(response.text)
@@ -502,7 +502,7 @@ async def test_run_code_keeps_static_python_heredoc_read_authoritative(
 ) -> None:
     monkeypatch.setattr(terminal_module, "workspace", tmp_path)
     (tmp_path / "input.txt").write_text("stable", encoding="utf-8")
-    command = """python3 <<'PY'\nfrom pathlib import Path\nprint(Path('input.txt').read_text())\nPY\n"""
+    command = """python3 -I - <<'PY'\nfrom pathlib import Path\nprint(Path('input.txt').read_text())\nPY\n"""
 
     response = await run_code(None, command, timeout=10, cwd=str(tmp_path))
     payload = json.loads(response.text)

@@ -1900,6 +1900,82 @@ async def test_produce_convergence_admits_only_exact_declared_target(tmp_path) -
     assert anonymous_receipt["tool_call_ids"] == []
 
 
+def test_produce_convergence_requires_isolated_python_import_authority() -> None:
+    from aworld.sandbox.tool_observation import (
+        build_preflight_action_semantic_receipt,
+    )
+
+    context = _context("isolated-python-candidate-admission")
+    context.workspace_path = "/app"
+    context.context_info["public_deliverable_contract"] = {
+        "schema_version": "aworld.public-deliverables/v1",
+        "authority": "public_task_advisory",
+        "source": "public_task_text",
+        "artifacts": [
+            {
+                "deliverable_id": "result",
+                "path": "/app/out.txt",
+                "display_path": "out.txt",
+                "kind": "file",
+                "authority": "public_task_advisory",
+            }
+        ],
+    }
+    configure_execution_protocol(
+        context,
+        "agent",
+        ExecutionProtocolPolicy(
+            mode=ProtocolMode.GUIDE,
+            activation_event_threshold=1,
+            model_activation_min_tool_actions=1,
+            repetition_threshold=1,
+            stagnation_event_threshold=1,
+        ),
+    )
+    _declare_long_horizon(context)
+    _activate_produce_convergence(context)
+    body = """import math, re
+rows = open('text.gcode', errors='replace').read().splitlines()
+values = [math.hypot(1, 1) for row in rows if re.search(r'G1', row)]
+open('/app/out.txt', 'w').write(str(len(values)))
+PY
+"""
+    nonisolated = ActionModel(
+        tool_name="terminal",
+        action_name="run_code",
+        params={"code": "cd /app && python3 - <<'PY'\n" + body},
+        tool_call_id="nonisolated-candidate",
+        agent_name="agent",
+    )
+    isolated = ActionModel(
+        tool_name="terminal",
+        action_name="run_code",
+        params={"code": "cd /app && python3 -I - <<'PY'\n" + body},
+        tool_call_id="isolated-candidate",
+        agent_name="agent",
+    )
+
+    nonisolated_semantic = build_preflight_action_semantic_receipt(
+        context=context,
+        action=nonisolated,
+        delivery_intent="produce_candidate",
+    )
+    isolated_semantic = build_preflight_action_semantic_receipt(
+        context=context,
+        action=isolated,
+        delivery_intent="produce_candidate",
+    )
+
+    assert nonisolated_semantic.effect == "unknown"
+    assert nonisolated_semantic.declared_deliverable_targeted is True
+    assert isolated_semantic.effect == "mutating"
+    assert isolated_semantic.declared_deliverable_targeted is True
+    blocked = mutation_gate_interception(context, [nonisolated])
+    assert blocked is not None
+    assert blocked["tool_call_ids"] == ["nonisolated-candidate"]
+    assert mutation_gate_interception(context, [isolated]) is None
+
+
 def test_pre_convergence_unknown_action_remains_fail_open() -> None:
     context = _context("pre-convergence-fail-open")
     configure_execution_protocol(

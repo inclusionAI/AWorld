@@ -307,6 +307,16 @@ def _registered_validation_kind(
     return None
 
 
+def _terminal_environment_override(arguments: Mapping[str, Any]) -> bool:
+    """Return true when model arguments can alter process execution semantics."""
+
+    for key in ("env", "env_content", "environment"):
+        value = arguments.get(key)
+        if value not in (None, "", {}, []):
+            return True
+    return False
+
+
 def _action_target_paths(
     action: Any,
     *,
@@ -462,6 +472,11 @@ def build_planned_action_semantic_receipt(
     effect = fallback.effect
     normalized_tool = tool.casefold().replace("_", "-")
     normalized_operation = operation.casefold().replace("-", "_")
+    environment_override = bool(
+        normalized_tool in _TERMINAL_CAPABILITY_TOOLS
+        and normalized_operation in {"execute", "run_code"}
+        and _terminal_environment_override(arguments)
+    )
     if (
         normalized_tool in _TERMINAL_CAPABILITY_TOOLS
         and normalized_operation in {"execute", "run_code"}
@@ -475,6 +490,9 @@ def build_planned_action_semantic_receipt(
             )
             if effect == "mutating" and not execution_plan.write_set_complete:
                 effect = "unknown"
+    if environment_override:
+        effect = "unknown"
+        validation_kind = None
     paths = _action_target_paths(action, effect=effect)
     target_ids = _target_ids(
         paths,
@@ -482,7 +500,7 @@ def build_planned_action_semantic_receipt(
     )
     declared_targets = _declared_target_ids(context)
     declared = bool(declared_targets.intersection(target_ids)) if target_ids else False
-    if validation_kind is not None:
+    if validation_kind is not None and not environment_override:
         effect = "validation"
     elif delivery_intent == "validate_candidate" and effect == "read_only" and declared:
         validation_kind = "declared_artifact_read"
@@ -532,6 +550,9 @@ def _observed_action_semantic_receipt(
         cwd=params.get("cwd"),
     )
     semantic_effect = effect.effect
+    if _terminal_environment_override(params):
+        validation_kind = None
+        semantic_effect = "unknown"
     if (
         terminal_receipt is not None
         and terminal_receipt.get("effect") == "mutating"
@@ -636,6 +657,9 @@ def classify_tool_effect(action: Any) -> ToolEffect:
             )
             # Terminal replay is enabled only after a provider receipt binds
             # the parser decision to the actual execution environment.
+            cacheable = False
+        if _terminal_environment_override(params):
+            effect = "unknown"
             cacheable = False
     elif (
         normalized_tool in _TERMINAL_CAPABILITY_TOOLS

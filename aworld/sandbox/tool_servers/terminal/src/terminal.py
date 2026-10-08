@@ -808,7 +808,14 @@ Execute Shell commands or explicit raw Python with safety checks and timeout con
         - `language="shell"` is the default. It can invoke Python and any other
           executable, for example `python -c "print(1)"` or `python script.py`.
         - Use `language="python"` only when `code` itself is raw Python source.
-          Bare Python is never inferred from a Shell request.
+          The framework executes this mode as isolated Python (`-I -c`); bare
+          Python is never inferred from a Shell request.
+        - For inline or heredoc Python that imports modules while creating a
+          declared artifact, prefer the exact isolated form
+          `python3 -I - <<'PY' ... PY`. Isolated mode prevents a workspace
+          `re.py`, `pathlib.py`, or similar module from running hidden import-time
+          mutations. Use a normal Python invocation only when importing workspace
+          code is intentional; its mutation target set cannot be certified.
 """
 )
 async def run_code(
@@ -840,7 +847,7 @@ async def run_code(
         default="shell",
         description=(
             "Execution language. 'shell' is backward-compatible and may invoke "
-            "Python; 'python' executes code as raw Python source."
+            "Python; 'python' executes raw Python source in isolated mode (-I -c)."
         ),
     ),
 ) -> Union[str, TextContent]:
@@ -985,7 +992,7 @@ async def run_code(
         safety_command = (
             command
             if language == "shell"
-            else f"{shlex.quote(python_executable)} -c {shlex.quote(command)}"
+            else f"{shlex.quote(python_executable)} -I -c {shlex.quote(command)}"
         )
         is_safe, safety_reason = _check_command_safety(safety_command)
         if not is_safe:
@@ -1674,10 +1681,8 @@ def _trusted_read_execution_context(
         ):
             return False
     elif plan.language == "python":
-        if any(environment.get(key) for key in _PYTHON_STARTUP_ENVIRONMENT_KEYS):
-            return False
         if any(
-            key == "AWORLD_PYTHON_EXECUTABLE" or key in _PYTHON_STARTUP_ENVIRONMENT_KEYS
+            key == "AWORLD_PYTHON_EXECUTABLE"
             for key in overrides
         ):
             return False
@@ -1725,10 +1730,10 @@ def _trusted_read_execution_context(
         )
 
     if plan.nested_languages == ("python",):
-        token_match = re.match(r"\s*(?P<token>[^\s<]+)", command)
-        token = token_match.group("token") if token_match is not None else ""
-        if not token:
+        executable_tokens = tuple(plan.executable_tokens or ())
+        if not executable_tokens:
             return False
+        token = executable_tokens[0]
         if "/" in token:
             executable = Path(token).expanduser()
             if not executable.is_absolute():
@@ -2366,6 +2371,7 @@ async def _execute_command_async(
                 process_options["start_new_session"] = True
             process = await asyncio.create_subprocess_exec(
                 python_executable or sys.executable,
+                "-I",
                 "-c",
                 command,
                 **process_options,

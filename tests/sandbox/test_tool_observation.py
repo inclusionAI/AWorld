@@ -23,6 +23,7 @@ from aworld.sandbox.terminal_receipt import (
     TerminalExecutionPlan,
     build_terminal_execution_receipt,
     plan_terminal_execution,
+    shell_command_working_directory,
     terminal_execution_context_sha256,
 )
 
@@ -231,8 +232,8 @@ def test_callback_sensitive_shell_reads_remain_semantically_unknown() -> None:
 def test_shell_classifier_accepts_provably_read_only_inline_python() -> None:
     for code in (
         "python -c 'print(1)'",
-        "cd /app && python3 -c \"from pathlib import Path; print(Path('a').read_text())\"",
-        "cd /app && python -c \"\nimport cv2, numpy as np\ncap = cv2.VideoCapture('example.mp4')\nprint(np.array([cap.get(1)]).max())\n\"",
+        "cd /app && python3 -I -c \"from pathlib import Path; print(Path('a').read_text())\"",
+        "cd /app && python -I -c \"\nimport cv2, numpy as np\ncap = cv2.VideoCapture('example.mp4')\nprint(np.array([cap.get(1)]).max())\n\"",
         'cd /app && python -c "print(1 > 0)" 2>&1 | head -20',
         'cd /app && python -c "print(1)" 2>/dev/null',
     ):
@@ -263,6 +264,80 @@ def test_shell_classifier_recognizes_inline_python_file_mutation() -> None:
         )
         assert effect.effect == "mutating"
         assert effect.cacheable is False
+
+
+@pytest.mark.parametrize(
+    "code",
+    (
+        "python3 -c 'import re; print(re.escape(\"value\"))'",
+        "python3 <<'PY'\nimport re\nprint(re.escape('value'))\nPY\n",
+    ),
+)
+def test_nonisolated_python_import_cannot_claim_read_only_authority(
+    code: str,
+) -> None:
+    plan = plan_terminal_execution(code)
+
+    assert plan.effect == "unknown"
+    assert plan.cacheable is False
+    assert plan.read_set_complete is False
+    assert plan.write_set_complete is False
+
+
+@pytest.mark.parametrize(
+    "code",
+    (
+        "python3 -I -c 'import re; print(re.escape(\"value\"))'",
+        "python3 -I - <<'PY'\nimport re\nprint(re.escape('value'))\nPY\n",
+    ),
+)
+def test_isolated_python_import_can_claim_bounded_read_only_authority(
+    code: str,
+) -> None:
+    plan = plan_terminal_execution(code)
+
+    assert plan.effect == "read_only"
+    assert plan.read_set_complete is True
+    assert plan.write_set_complete is True
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "import sys\nsys.path.append('/app')\nimport re\n",
+        "import sys as runtime\nruntime.path.sort()\nimport re\n",
+        "import sys\npaths = sys.path\npaths.append('/app')\nimport re\n",
+        "import sys\ngetattr(sys, 'path').append('/app')\nimport re\n",
+        "import sys\nsys.meta_path.append(object())\nimport re\n",
+        "import sys\nsys.path_hooks.append(lambda value: None)\nimport re\n",
+        "import sys\nsys.modules['re'] = object()\nimport re\n",
+        "from sys import path\npath.append('/app')\nimport re\n",
+        "from sys import meta_path as hooks\nhooks.append(object())\nimport re\n",
+        "from pathlib import sys as runtime\nruntime.path.append('/app')\nimport re\n",
+        "import sys\nvars(sys)['path'].append('/app')\nimport re\n",
+        "import sys\nsys.__dict__['path'].append('/app')\nimport re\n",
+        "import sys\nsetattr(sys, 'path', ['/app'])\nimport re\n",
+        "import sys\ndelattr(sys, 'meta_path')\nimport re\n",
+        "import pathlib\npathlib.sys.path.append('/app')\nimport re\n",
+        "import statistics\nstatistics.sys.path.sort()\nimport re\n",
+        "import typing\ngetattr(typing, 'sys').path.append('/app')\nimport re\n",
+        "import pathlib\nvars(pathlib)['sys'].path.append('/app')\nimport re\n",
+        "import pathlib\ngetattr(pathlib, 'os').sys.path.append('/app')\nimport re\n",
+        "import pathlib\nsystem = pathlib.os\nsystem.sys.path.append('/app')\nimport re\n",
+        "import pathlib\nsystem = pathlib\nsystem.sys.path.append('/app')\nimport re\n",
+        "import pathlib\nmodules = [pathlib]\nmodules[0].sys.path.append('/app')\nimport re\n",
+        "import pathlib\ndef poison(module):\n    module.sys.path.append('/app')\npoison(pathlib)\nimport re\n",
+    ),
+)
+def test_isolated_python_cannot_reopen_import_resolution(source: str) -> None:
+    code = f"python3 -I -c {shlex.quote(source)}"
+
+    plan = plan_terminal_execution(code)
+
+    assert plan.effect == "unknown"
+    assert plan.cacheable is False
+    assert plan.read_set_complete is False
+    assert plan.write_set_complete is False
 
 
 @pytest.mark.parametrize(
@@ -429,7 +504,7 @@ def test_python_mutation_plan_models_move_and_copy_endpoints(
     write_paths: tuple[str, ...],
     write_set_complete: bool,
 ) -> None:
-    plan = plan_terminal_execution(source, language="python")
+    plan = plan_terminal_execution(f"python3 -I -c {shlex.quote(source)}")
 
     assert plan.effect == "mutating"
     assert plan.read_paths == read_paths
@@ -492,7 +567,7 @@ def test_python_mutation_plan_models_move_and_copy_endpoints(
 def test_python_known_writer_stacks_keep_declared_output_complete(
     source: str, write_path: str
 ) -> None:
-    plan = plan_terminal_execution(source, language="python")
+    plan = plan_terminal_execution(f"python3 -I -c {shlex.quote(source)}")
 
     assert plan.effect == "mutating"
     assert plan.read_paths == ()
@@ -527,7 +602,7 @@ def test_python_known_writer_stacks_keep_declared_output_complete(
 def test_python_directory_creation_reports_implicit_parent_writes(
     source: str, write_set_complete: bool
 ) -> None:
-    plan = plan_terminal_execution(source, language="python")
+    plan = plan_terminal_execution(f"python3 -I -c {shlex.quote(source)}")
 
     assert plan.effect == "mutating"
     assert plan.write_set_complete is write_set_complete
@@ -580,11 +655,57 @@ def test_numpy_save_reports_runtime_filename_semantics(
     write_paths: tuple[str, ...],
     write_set_complete: bool,
 ) -> None:
-    plan = plan_terminal_execution(source, language="python")
+    plan = plan_terminal_execution(f"python3 -I -c {shlex.quote(source)}")
 
     assert plan.effect == "mutating"
     assert plan.write_paths == write_paths
     assert plan.write_set_complete is write_set_complete
+
+
+@pytest.mark.parametrize(
+    "load_arguments",
+    (
+        "'/app/input.npy'",
+        "'/app/input.npy', allow_pickle=False",
+        "'/app/input.npy', mmap_mode=None",
+        "'/app/input.npy', mmap_mode='r'",
+    ),
+)
+def test_isolated_numpy_load_accepts_only_nonexecuting_read_modes(
+    load_arguments: str,
+) -> None:
+    source = f"import numpy as np\nprint(np.load({load_arguments}).shape)\n"
+
+    plan = plan_terminal_execution(f"python3 -I -c {shlex.quote(source)}")
+
+    assert plan.effect == "read_only"
+    assert plan.read_paths == ("/app/input.npy",)
+    assert plan.read_set_complete is True
+    assert plan.write_set_complete is True
+
+
+@pytest.mark.parametrize(
+    "load_arguments",
+    (
+        "'/app/input.npy', allow_pickle=True",
+        "'/app/input.npy', allow_pickle=ALLOW_PICKLE",
+        "'/app/input.npy', mmap_mode='r+'",
+        "'/app/input.npy', mmap_mode='w+'",
+        "'/app/input.npy', mmap_mode=MODE",
+        "*arguments",
+        "'/app/input.npy', **options",
+    ),
+)
+def test_isolated_numpy_load_rejects_code_execution_and_writable_mmap(
+    load_arguments: str,
+) -> None:
+    source = f"import numpy as np\nprint(np.load({load_arguments}))\n"
+
+    plan = plan_terminal_execution(f"python3 -I -c {shlex.quote(source)}")
+
+    assert plan.effect == "unknown"
+    assert plan.cacheable is False
+    assert plan.write_set_complete is False
 
 
 @pytest.mark.parametrize(
@@ -702,9 +823,11 @@ with open('/app/out.txt', 'w') as output:
     assert plan.write_set_complete is True
 
 
-@pytest.mark.parametrize("shell_wrapped", (False, True))
+@pytest.mark.parametrize(
+    ("shell_wrapped", "write_set_complete"), ((False, True), (True, True))
+)
 def test_module_qualified_gcode_geometry_keeps_complete_declared_output(
-    shell_wrapped: bool,
+    shell_wrapped: bool, write_set_complete: bool
 ) -> None:
     source = """
 import math as geometry
@@ -732,15 +855,15 @@ for row in rows:
 open('/app/out.txt', 'w').write('\\n'.join(map(str, segments)))
 """
     if shell_wrapped:
-        plan = plan_terminal_execution(f"python3 -c {shlex.quote(source)}")
+        plan = plan_terminal_execution(f"python3 -I -c {shlex.quote(source)}")
     else:
         plan = plan_terminal_execution(source, language="python")
 
     assert plan.effect == "mutating"
     assert plan.read_paths == ("/app/text.gcode",)
     assert plan.write_paths == ("/app/out.txt",)
-    assert plan.read_set_complete is True
-    assert plan.write_set_complete is True
+    assert plan.read_set_complete is write_set_complete
+    assert plan.write_set_complete is write_set_complete
 
 
 def test_pure_module_allowlist_does_not_cross_module_boundaries() -> None:
@@ -880,8 +1003,8 @@ def test_bounded_pure_higher_order_callbacks_remain_read_only(source: str) -> No
 
 
 def test_shell_classifier_types_quoted_python_heredoc_read_and_write() -> None:
-    read_source = """python3 <<'PY'\nfrom pathlib import Path\nprint(Path('/app/input.txt').read_text())\nPY\n"""
-    write_source = """python <<'PY'\nfrom pathlib import Path\nPath('/app/result.txt').write_text('done')\nPY\n"""
+    read_source = """python3 -I - <<'PY'\nfrom pathlib import Path\nprint(Path('/app/input.txt').read_text())\nPY\n"""
+    write_source = """python -I - <<'PY'\nfrom pathlib import Path\nPath('/app/result.txt').write_text('done')\nPY\n"""
 
     read_plan = plan_terminal_execution(read_source)
     write_plan = plan_terminal_execution(write_source)
@@ -910,8 +1033,234 @@ def test_shell_classifier_types_quoted_python_heredoc_read_and_write() -> None:
     assert write_source not in str(receipt)
 
 
+def test_nonisolated_python_import_keeps_known_revision_but_not_authority() -> None:
+    source = """cd /app && python3 - <<'PY'
+import math, re
+rows = open('text.gcode', errors='replace').read().splitlines()
+values = [math.hypot(1, 1) for row in rows if re.search(r'G1', row)]
+open('/app/out.txt', 'w').write(str(len(values)))
+PY
+"""
+
+    plan = plan_terminal_execution(source)
+
+    assert plan.effect == "mutating"
+    assert plan.parsed is True
+    assert plan.read_paths == ("text.gcode",)
+    assert plan.write_paths == ("/app/out.txt",)
+    assert plan.read_set_complete is False
+    assert plan.write_set_complete is False
+    assert plan.command_cwd == "/app"
+    assert plan.command_cwd_safe is True
+    assert shell_command_working_directory(source) == ("/app", True)
+
+    context = _context()
+    context.workspace_path = "/app"
+    context.context_info = {
+        "public_deliverable_contract": {
+            "schema_version": "aworld.public-deliverables/v1",
+            "authority": "public_task_advisory",
+            "source": "public_task_text",
+            "artifacts": [
+                {
+                    "deliverable_id": "result",
+                    "path": "/app/out.txt",
+                    "display_path": "out.txt",
+                    "kind": "file",
+                    "authority": "public_task_advisory",
+                }
+            ],
+        }
+    }
+    semantic = build_planned_action_semantic_receipt(
+        context=context,
+        tool_name="terminal__run_code",
+        arguments={"code": source},
+        delivery_intent="produce_candidate",
+    )
+
+    assert semantic.effect == "unknown"
+    assert semantic_target_sha256("/app/out.txt") in semantic.target_ids
+    assert semantic.declared_deliverable_targeted is True
+
+
+def test_isolated_leading_cd_preserves_complete_python_revision_authority() -> None:
+    source = """cd /app && python3 -I - <<'PY'
+import math, re
+rows = open('text.gcode', errors='replace').read().splitlines()
+values = [math.hypot(1, 1) for row in rows if re.search(r'G1', row)]
+open('/app/out.txt', 'w').write(str(len(values)))
+PY
+"""
+
+    plan = plan_terminal_execution(source)
+
+    assert plan.effect == "mutating"
+    assert plan.parsed is True
+    assert plan.read_paths == ("text.gcode",)
+    assert plan.write_paths == ("/app/out.txt",)
+    assert plan.read_set_complete is True
+    assert plan.write_set_complete is True
+    assert plan.command_cwd == "/app"
+    assert plan.command_cwd_safe is True
+
+    context = _context()
+    context.workspace_path = "/app"
+    context.context_info = {
+        "public_deliverable_contract": {
+            "schema_version": "aworld.public-deliverables/v1",
+            "authority": "public_task_advisory",
+            "source": "public_task_text",
+            "artifacts": [
+                {
+                    "deliverable_id": "result",
+                    "path": "/app/out.txt",
+                    "display_path": "out.txt",
+                    "kind": "file",
+                    "authority": "public_task_advisory",
+                }
+            ],
+        }
+    }
+    semantic = build_planned_action_semantic_receipt(
+        context=context,
+        tool_name="terminal__run_code",
+        arguments={"code": source},
+        delivery_intent="produce_candidate",
+    )
+
+    assert semantic.effect == "mutating"
+    assert semantic.target_ids == (semantic_target_sha256("/app/out.txt"),)
+    assert semantic.declared_deliverable_targeted is True
+
+
+@pytest.mark.parametrize(
+    "prefix",
+    (
+        "cd /definitely-missing; ",
+        "cd /definitely-missing\n",
+        "cd /tmp/* && ",
+        "cd ~ && ",
+        "cd - && ",
+        "cd /tmp/{one,two} && ",
+        "cd <(pwd) && ",
+        'cd /ap"p" && ',
+        "cd #comment && ",
+        "cd '-' && ",
+        'cd "-P" && ',
+    ),
+)
+def test_dynamic_or_unguarded_cd_cannot_authorize_heredoc_paths(prefix: str) -> None:
+    source = prefix + """python3 - <<'PY'
+open('relative.txt', 'w').write('value')
+PY
+"""
+
+    plan = plan_terminal_execution(source)
+
+    assert plan.effect == "unknown"
+    assert plan.command_cwd_safe is False
+    assert shell_command_working_directory(source)[1] is False
+
+
+def test_missing_literal_cd_with_and_gate_remains_statically_bound() -> None:
+    source = """cd /definitely-missing && python3 - <<'PY'
+open('relative.txt', 'w').write('value')
+PY
+"""
+
+    plan = plan_terminal_execution(source)
+
+    assert plan.effect == "mutating"
+    assert plan.command_cwd == "/definitely-missing"
+    assert plan.command_cwd_safe is True
+
+
+@pytest.mark.parametrize(
+    "executable",
+    (
+        "/tmp/python3",
+        "/opt/custom/python3",
+        "/tmp/mutator;/usr/bin/python3",
+        "/tmp/mutator|/usr/bin/python3",
+    ),
+)
+def test_untrusted_heredoc_executable_cannot_inherit_python_semantics(
+    executable: str,
+) -> None:
+    source = f"""{executable} <<'PY'
+print(open('/app/input.txt').read())
+PY
+"""
+
+    plan = plan_terminal_execution(source)
+
+    assert plan.effect == "unknown"
+    assert plan.cacheable is False
+    assert plan.write_set_complete is False
+
+
+@pytest.mark.parametrize(
+    "redirect",
+    (
+        "> /app/out;/tmp/mutator",
+        "> /app/out|/tmp/mutator",
+        "> /app/out&&/tmp/mutator",
+        "> /app/out>/tmp/second",
+        "> /app/'mixed'",
+    ),
+)
+def test_heredoc_redirect_rejects_shell_control_injection(redirect: str) -> None:
+    source = f"""python3 <<'PY' {redirect}
+print('candidate')
+PY
+"""
+
+    plan = plan_terminal_execution(source)
+
+    assert plan.effect == "unknown"
+    assert plan.parsed is False
+    assert plan.write_set_complete is False
+
+
+@pytest.mark.parametrize(
+    "environment",
+    (
+        {"PATH": "/tmp/model-bin"},
+        {"BASH_ENV": "/app/init.sh"},
+        {"PYTHONPATH": "/app/hooks"},
+        {"LD_PRELOAD": "/app/inject.so"},
+    ),
+)
+def test_terminal_environment_override_revokes_read_only_preflight(
+    environment: dict[str, str],
+) -> None:
+    context = _context()
+    action = {
+        "tool_name": "terminal",
+        "action_name": "run_code",
+        "params": {
+            "code": "cat /app/input.txt",
+            "env": environment,
+        },
+    }
+
+    effect = classify_tool_effect(action)
+    semantics = build_planned_action_semantic_receipt(
+        context=context,
+        tool_name="terminal__run_code",
+        arguments=action["params"],
+        delivery_intent="continue_exploration",
+    )
+
+    assert effect.effect == "unknown"
+    assert actions_are_provably_read_only([action]) is False
+    assert semantics.effect == "unknown"
+    assert semantics.validation_kind is None
+
+
 def test_shell_classifier_types_bounded_python_heredoc_stdout_revision() -> None:
-    source = """python3 << 'PYEOF' > /app/out.txt
+    source = """python3 -I - << 'PYEOF' > /app/out.txt
 import re
 rows = open('/app/text.gcode', errors='replace').read().splitlines()
 values = [match.group(0) for row in rows for match in re.finditer(r'G1', row)]

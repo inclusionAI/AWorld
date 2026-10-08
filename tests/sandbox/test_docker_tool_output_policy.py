@@ -420,7 +420,7 @@ async def test_docker_run_code_uses_explicit_python_execution_contract(
     payload = json.loads(result.text)
     receipt = payload["metadata"]["terminal_execution_receipt"]
 
-    assert captured["command"] == ["/opt/python", "-c", "print(1 + 2)"]
+    assert captured["command"] == ["/opt/python", "-I", "-c", "print(1 + 2)"]
     assert captured["kwargs"] == {"timeout": 30, "workdir": "/workspace"}
     assert payload["success"] is True
     assert receipt["requested_language"] == "python"

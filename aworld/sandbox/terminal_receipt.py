@@ -30,8 +30,8 @@ TERMINAL_EXECUTION_RECEIPT_KEY = "terminal_execution_receipt"
 # with this same analyzer; they are never assumed reusable by default. Provider
 # replay is authenticated by ``cache_hit=true`` plus ``executed=false``, a
 # content/observation identity, representation, and checkpoint revision.
-TERMINAL_EXECUTION_ANALYZER_VERSION = 9
-TERMINAL_LANGUAGE_CONTRACT_VERSION = 1
+TERMINAL_EXECUTION_ANALYZER_VERSION = 10
+TERMINAL_LANGUAGE_CONTRACT_VERSION = 2
 TERMINAL_LANGUAGES = frozenset({"shell", "python"})
 TERMINAL_EFFECTS = frozenset({"read_only", "mutating", "unknown"})
 TERMINAL_CACHEABLE_EFFECT_SOURCES = frozenset(
@@ -261,6 +261,15 @@ _SAFE_PYTHON_MODULE_CALLS = {
         }
     ),
 }
+_PYTHON_IMPORT_MACHINERY_ATTRIBUTES = frozenset(
+    {
+        "meta_path",
+        "modules",
+        "path",
+        "path_hooks",
+        "path_importer_cache",
+    }
+)
 _SAFE_PYTHON_METHOD_NAMES = frozenset(
     {
         "Canny",
@@ -544,9 +553,19 @@ def python_is_provably_read_only(source: str) -> bool:
                     else None
                 )
                 receiver_module = imported_modules.get(receiver_name or "")
+                if (
+                    receiver_name is None
+                    and _python_expression_root_name(function.value)
+                    in imported_modules
+                ):
+                    return False
                 module_calls = _SAFE_PYTHON_MODULE_CALLS.get(
                     receiver_module or ""
                 )
+                if receiver_module == "numpy" and function.attr == "load":
+                    if not _python_numpy_load_is_read_only(node):
+                        return False
+                    continue
                 if module_calls is not None:
                     if function.attr not in module_calls:
                         return False
@@ -682,6 +701,136 @@ def _python_imported_bindings(tree: ast.Module) -> dict[str, str]:
             if alias.name != "*":
                 bindings[alias.asname or alias.name] = root
     return bindings
+
+
+def _python_import_resolution_is_stable(
+    tree: ast.Module,
+    imported_modules: Mapping[str, str],
+) -> bool:
+    """Reject source that can reopen workspace-controlled import lookup.
+
+    ``-I`` removes the working directory and Python environment overrides from
+    the interpreter's initial module search path.  The executed body can still
+    mutate ``sys.path`` or another import hook before a later import, so an
+    isolated invocation is authoritative only while those objects are not
+    accessed.  Rejecting the access itself also covers aliases such as
+    ``paths = sys.path; paths.append(...)`` without data-flow guessing.
+    """
+
+    imported_bindings = frozenset(imported_modules)
+    parents = {
+        id(child): parent
+        for parent in ast.walk(tree)
+        for child in ast.iter_child_nodes(parent)
+    }
+
+    def derives_from_imported_module(node: ast.AST | None) -> bool:
+        if isinstance(node, ast.Name):
+            return node.id in imported_bindings
+        if isinstance(node, (ast.Attribute, ast.Subscript)):
+            return derives_from_imported_module(node.value)
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id in {"getattr", "vars"}
+            and node.args
+        ):
+            return derives_from_imported_module(node.args[0])
+        return False
+
+    sys_bindings = frozenset(
+        binding
+        for binding, module in imported_modules.items()
+        if module == "sys"
+    )
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.ImportFrom)
+            and any(alias.name == "sys" for alias in node.names)
+        ):
+            return False
+        if (
+            isinstance(node, ast.Name)
+            and isinstance(node.ctx, ast.Load)
+            and node.id in imported_bindings
+        ):
+            parent = parents.get(id(node))
+            grandparent = parents.get(id(parent)) if parent is not None else None
+            if not (
+                isinstance(parent, ast.Attribute)
+                and parent.value is node
+                and isinstance(grandparent, ast.Call)
+                and grandparent.func is parent
+            ):
+                # Module bindings must remain non-escaping.  Passing, storing,
+                # returning, or indirectly dereferencing one would require
+                # open-ended data-flow analysis before later imports could be
+                # certified as isolated.
+                return False
+        if (
+            isinstance(node, ast.ImportFrom)
+            and node.level == 0
+            and node.module == "sys"
+            and any(
+                alias.name in _PYTHON_IMPORT_MACHINERY_ATTRIBUTES
+                or alias.name == "*"
+                for alias in node.names
+            )
+        ):
+            return False
+        if (
+            isinstance(node, ast.Attribute)
+            and _python_expression_root_name(node) in imported_bindings
+            and not (
+                isinstance(node.value, ast.Name)
+                and isinstance(parents.get(id(node)), ast.Call)
+                and parents[id(node)].func is node
+            )
+        ):
+            # Only a direct ``module.function(...)`` call may consume an
+            # imported module attribute; the ordinary effect checker below
+            # still validates that function against its narrow allowlist.
+            # Returning or storing module attributes would require unbounded
+            # data-flow tracking to prove they cannot reopen import lookup.
+            return False
+        if (
+            isinstance(node, ast.Attribute)
+            and node.attr
+            in {*_PYTHON_IMPORT_MACHINERY_ATTRIBUTES, "__dict__"}
+            and isinstance(node.value, ast.Name)
+            and node.value.id in sys_bindings
+        ):
+            return False
+        if (
+            isinstance(node, ast.Attribute)
+            and node.attr == "sys"
+            and _python_expression_root_name(node) in imported_bindings
+        ):
+            return False
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id in {"getattr", "hasattr", "vars"}
+            and node.args
+            and derives_from_imported_module(node.args[0])
+        ):
+            return False
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id in {"delattr", "setattr", "vars"}
+            and node.args
+            and isinstance(node.args[0], ast.Name)
+            and (
+                node.args[0].id in sys_bindings
+                or (
+                    node.func.id == "vars"
+                    and node.args[0].id in imported_bindings
+                )
+            )
+        ):
+            return False
+    return True
 
 
 def _python_expression_root_name(node: ast.AST) -> str | None:
@@ -985,6 +1134,26 @@ def _python_call_argument(
     )
 
 
+def _python_numpy_load_is_read_only(call: ast.Call) -> bool:
+    """Accept only NumPy loads that cannot execute pickle or write via mmap."""
+
+    if any(isinstance(argument, ast.Starred) for argument in call.args) or any(
+        keyword.arg is None for keyword in call.keywords
+    ):
+        return False
+    allow_pickle = _python_call_argument(call, 2, "allow_pickle")
+    if allow_pickle is not None and not (
+        isinstance(allow_pickle, ast.Constant) and allow_pickle.value is False
+    ):
+        return False
+    mmap_mode = _python_call_argument(call, 1, "mmap_mode")
+    if mmap_mode is not None and not (
+        isinstance(mmap_mode, ast.Constant) and mmap_mode.value in {None, "r"}
+    ):
+        return False
+    return True
+
+
 def _python_bool_argument(
     call: ast.Call,
     index: int,
@@ -1180,7 +1349,16 @@ def _python_effects_are_fully_modeled(tree: ast.Module) -> bool:
             function.value.id if isinstance(function.value, ast.Name) else None
         )
         receiver_module = imported_modules.get(receiver_name or "")
+        if (
+            receiver_name is None
+            and _python_expression_root_name(function.value) in imported_modules
+        ):
+            return False
         module_calls = _SAFE_PYTHON_MODULE_CALLS.get(receiver_module or "")
+        if receiver_module == "numpy" and function.attr == "load":
+            if _python_numpy_load_is_read_only(node):
+                continue
+            return False
         if module_calls is not None:
             if function.attr in module_calls:
                 continue
@@ -1286,6 +1464,8 @@ def _python_effects_are_fully_modeled(tree: ast.Module) -> bool:
 
 def _python_effect_and_paths(
     source: str,
+    *,
+    import_resolution_isolated: bool = False,
 ) -> tuple[str, tuple[str, ...], tuple[str, ...], bool, bool]:
     try:
         tree = ast.parse(source, mode="exec")
@@ -1544,6 +1724,36 @@ def _python_effect_and_paths(
     ):
         write_set_complete = False
     effects_fully_modeled = _python_effects_are_fully_modeled(tree)
+    imports_present = any(
+        isinstance(node, (ast.Import, ast.ImportFrom)) for node in ast.walk(tree)
+    )
+    imports_untrusted = imports_present and (
+        not import_resolution_isolated
+        or not _python_import_resolution_is_stable(tree, imported_modules)
+    )
+    if imports_untrusted:
+        # The same source can resolve ``re``, ``math``, ``pathlib``, or any
+        # other apparently safe root from the workspace (or another
+        # model-controlled import path).  Import-time code may then mutate
+        # arbitrary files before the modeled body executes.  Unless the
+        # concrete invocation uses Python isolated mode, retain useful known
+        # targets but never claim a read-only effect or complete dependency /
+        # mutation sets.
+        if known_mutation:
+            return (
+                "mutating" if effects_fully_modeled else "unknown",
+                _bounded_paths(reads),
+                _bounded_paths(writes),
+                False,
+                False,
+            )
+        return (
+            "unknown",
+            _bounded_paths(reads),
+            _bounded_paths(writes),
+            False,
+            False,
+        )
     if known_mutation:
         return (
             "mutating" if effects_fully_modeled else "unknown",
@@ -1715,7 +1925,9 @@ def _literal_shell_word(source: str, node: Any) -> str | None:
     return values[0] if len(values) == 1 else None
 
 
-def _python_source_from_shell_command(node: Any, source: str) -> str | None:
+def _python_source_from_shell_command(
+    node: Any, source: str
+) -> tuple[str, bool] | None:
     word_nodes = [
         part
         for part in getattr(node, "parts", ())
@@ -1728,13 +1940,19 @@ def _python_source_from_shell_command(node: Any, source: str) -> str | None:
             return None
         words.append(value)
     _executable, args = _command_words(words)
+    option_prefix: list[str] = []
     for index, value in enumerate(args):
         if value == "-c" and index + 1 < len(args):
-            return args[index + 1]
+            return args[index + 1], option_prefix == ["-I"]
         if value.startswith("-") and not value.startswith("--") and "c" in value[1:]:
-            return args[index + 1] if index + 1 < len(args) else None
+            return (
+                (args[index + 1], False)
+                if index + 1 < len(args)
+                else None
+            )
         if not value.startswith("-"):
             break
+        option_prefix.append(value)
     return None
 
 
@@ -3167,29 +3385,38 @@ def _parse_shell_nodes(source: str) -> list[Any] | None:
 
 
 _LEADING_STATIC_CD = re.compile(
-    r"\A\s*cd\s+(?P<path>'[^']*'|\"[^\"]*\"|[^\s;&|]+)\s*(?:&&|;|\n|\Z)"
+    r"\A\s*cd\s+(?P<path>'[^']*'|\"[^\"]*\"|[^\s;&|]+)\s*(?:&&|\Z)"
 )
+_UNQUOTED_DYNAMIC_CD_PATH = re.compile(r"['\"#*?\[\]{}~$`\\<>!()]|\A-")
+_UNQUOTED_SHELL_PATH_META = re.compile(r"[\s;&|<>()#*?\[\]{}~$`\\!]|\A-")
 
 
-def _leading_shell_working_directory(
+def _leading_shell_prefix(
     source: str,
-) -> tuple[str | None, bool, int]:
-    """Model only a literal ``cd`` prefix and count consumed transitions."""
+) -> tuple[str | None, bool, int, str]:
+    """Model a literal ``cd`` prefix and return the remaining command."""
 
     if not isinstance(source, str):
-        return None, False, 0
+        return None, False, 0, ""
     current: str | None = None
     remainder = source
     consumed = 0
     while True:
         match = _LEADING_STATIC_CD.match(remainder)
         if match is None:
+            if re.match(r"\A\s*cd(?:\s|[;&|]|\Z)", remainder):
+                return current, False, consumed, remainder
             break
         raw_path = match.group("path")
-        if raw_path[:1] in {"'", '"'} and raw_path[-1:] == raw_path[:1]:
+        quote = raw_path[:1] if raw_path[:1] in {"'", '"'} else ""
+        if quote and raw_path[-1:] == quote:
             raw_path = raw_path[1:-1]
-        if not raw_path or any(marker in raw_path for marker in ("$", "`", "\\")):
-            return current, False, consumed
+        dynamic = bool(
+            (quote == '"' and any(marker in raw_path for marker in ("$", "`", "\\")))
+            or (not quote and _UNQUOTED_DYNAMIC_CD_PATH.search(raw_path))
+        )
+        if not raw_path or raw_path.startswith("-") or dynamic:
+            return current, False, consumed, remainder
         normalized = posixpath.normpath(raw_path)
         current = (
             normalized
@@ -3201,7 +3428,16 @@ def _leading_shell_working_directory(
             remainder = ""
             break
         remainder = remainder[match.end() :]
-    return current, True, consumed
+    return current, True, consumed, remainder
+
+
+def _leading_shell_working_directory(
+    source: str,
+) -> tuple[str | None, bool, int]:
+    """Model only a literal ``cd`` prefix and count consumed transitions."""
+
+    current, safe, consumed, _remainder = _leading_shell_prefix(source)
+    return current, safe, consumed
 
 
 def _parsed_cd_count(roots: Sequence[Any]) -> int:
@@ -3228,15 +3464,23 @@ def _parsed_cd_count(roots: Sequence[Any]) -> int:
 def shell_command_working_directory(source: str) -> tuple[str | None, bool]:
     """Return cwd only when parsed ``cd`` transitions equal the modeled prefix."""
 
-    command_cwd, prefix_safe, consumed = _leading_shell_working_directory(source)
+    command_cwd, prefix_safe, consumed, remainder = _leading_shell_prefix(source)
     roots = _parse_shell_nodes(source)
     if roots is None:
-        return command_cwd, False
+        return (
+            command_cwd,
+            bool(
+                prefix_safe
+                and consumed
+                and _python_heredoc_source(remainder) is not None
+            ),
+        )
     return command_cwd, prefix_safe and _parsed_cd_count(roots) == consumed
 
 
 _PYTHON_HEREDOC = re.compile(
-    r"\A[ \t]*(?P<executable>(?:/[^\s]+/)?(?:python(?:3(?:\.\d+)*)?|py))"
+    r"\A[ \t]*(?P<executable>(?:(?:/usr)?/bin/)?(?:python(?:3(?:\.\d+)*)?|py))"
+    r"(?P<isolated>[ \t]+-I)?"
     r"(?:[ \t]+-)?[ \t]+<<(?P<strip>-?)[ \t]*"
     r"(?P<quote>['\"]?)(?P<delimiter>[A-Za-z_][A-Za-z0-9_]*)"
     r"(?P=quote)(?P<header_suffix>[^\r\n]*)\r?\n"
@@ -3251,18 +3495,25 @@ _PYTHON_HEREDOC_STDOUT_REDIRECT = re.compile(
 
 
 def _literal_heredoc_path(raw: str) -> str | None:
-    try:
-        values = shlex.split(raw, comments=False, posix=True)
-    except ValueError:
+    token = raw.strip()
+    if not token:
         return None
-    if len(values) != 1:
-        return None
-    value = values[0]
+    quote = token[:1] if token[:1] in {"'", '"'} else ""
+    if quote:
+        if token[-1:] != quote or quote in token[1:-1]:
+            return None
+        value = token[1:-1]
+        if quote == '"' and any(marker in value for marker in ("$", "`", "\\")):
+            return None
+    else:
+        if "'" in token or '"' in token or _UNQUOTED_SHELL_PATH_META.search(token):
+            return None
+        value = token
     if (
         not value
         or value in _NON_FILE_REDIRECT_TARGETS
         or value.startswith("/dev/fd/")
-        or _has_dynamic_path(value)
+        or (not quote and _has_dynamic_path(value))
         or len(value) > _MAX_RECEIPT_PATH_CHARS
     ):
         return None
@@ -3271,7 +3522,7 @@ def _literal_heredoc_path(raw: str) -> str | None:
 
 def _python_heredoc_source(
     source: str,
-) -> tuple[str, bool, str, str | None, str | None] | None:
+) -> tuple[str, bool, bool, str, str | None, str | None] | None:
     """Return one Python heredoc body and whether its bytes are static.
 
     Quoted delimiters are byte-stable.  An unquoted delimiter is accepted only
@@ -3320,6 +3571,7 @@ def _python_heredoc_source(
     return (
         body,
         literal,
+        match.group("isolated") is not None,
         match.group("executable"),
         stdout_path,
         trailing_read_path,
@@ -3346,7 +3598,7 @@ def plan_terminal_execution(
             writes,
             read_set_complete,
             write_set_complete,
-        ) = _python_effect_and_paths(code)
+        ) = _python_effect_and_paths(code, import_resolution_isolated=True)
         try:
             ast.parse(code, mode="exec")
         except (SyntaxError, ValueError, TypeError):
@@ -3368,11 +3620,17 @@ def plan_terminal_execution(
             read_ranges=read_ranges,
             write_set_complete=write_set_complete,
         )
-    nested_heredoc = _python_heredoc_source(code)
+    command_cwd, prefix_safe, consumed_cd, nested_source = _leading_shell_prefix(
+        code
+    )
+    nested_heredoc = _python_heredoc_source(
+        nested_source if prefix_safe and consumed_cd else code
+    )
     if nested_heredoc is not None:
         (
             nested_python,
             literal,
+            import_resolution_isolated,
             nested_executable,
             stdout_path,
             trailing_read_path,
@@ -3384,7 +3642,10 @@ def plan_terminal_execution(
                 writes,
                 read_set_complete,
                 write_set_complete,
-            ) = _python_effect_and_paths(nested_python)
+            ) = _python_effect_and_paths(
+                nested_python,
+                import_resolution_isolated=import_resolution_isolated,
+            )
         else:
             effect, reads, writes, read_set_complete, write_set_complete = (
                 "unknown",
@@ -3422,6 +3683,8 @@ def plan_terminal_execution(
             read_set_complete and entries_complete,
             ("python",),
             (terminal_command_sha256(nested_python),),
+            command_cwd=command_cwd,
+            command_cwd_safe=prefix_safe,
             read_ranges=read_ranges,
             executable_tokens=(
                 (nested_executable, "cat")
@@ -3435,11 +3698,30 @@ def plan_terminal_execution(
         # prevents comparison operators such as ``>`` from being promoted to
         # a *known* shell redirection/mutation, but deliberately does not
         # change the language that will actually execute it.
-        return TerminalExecutionPlan("shell", "unknown", False, False)
+        return TerminalExecutionPlan(
+            "shell",
+            "unknown",
+            False,
+            False,
+            read_set_complete=False,
+            command_cwd=command_cwd,
+            command_cwd_safe=prefix_safe,
+            write_set_complete=False,
+        )
 
     roots = list(shell_nodes) if shell_nodes is not None else _parse_shell_nodes(code)
     if not roots:
-        return TerminalExecutionPlan("shell", "unknown", False, False)
+        fallback_cwd, fallback_cwd_safe = shell_command_working_directory(code)
+        return TerminalExecutionPlan(
+            "shell",
+            "unknown",
+            False,
+            False,
+            read_set_complete=False,
+            command_cwd=fallback_cwd,
+            command_cwd_safe=fallback_cwd_safe,
+            write_set_complete=False,
+        )
     commands: list[Any] = []
     redirects: list[Any] = []
     background_operator = False
@@ -3576,18 +3858,22 @@ def plan_terminal_execution(
             executable in _PYTHON_EXECUTABLES
             or _VERSIONED_PYTHON_EXECUTABLE.fullmatch(executable) is not None
         ):
-            python_source = _python_source_from_shell_command(node, code)
-            if python_source is None:
+            python_command = _python_source_from_shell_command(node, code)
+            if python_command is None:
                 unknown = True
                 unknown_component = True
                 continue
+            python_source, import_resolution_isolated = python_command
             (
                 python_effect,
                 python_reads,
                 python_writes,
                 python_reads_complete,
                 python_writes_complete,
-            ) = _python_effect_and_paths(python_source)
+            ) = _python_effect_and_paths(
+                python_source,
+                import_resolution_isolated=import_resolution_isolated,
+            )
             read_entries.extend((path, _FULL_READ) for path in python_reads)
             writes.extend(python_writes)
             read_set_complete = read_set_complete and python_reads_complete

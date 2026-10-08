@@ -1389,7 +1389,11 @@ def _compact_read_fact_payload(
 @mcp.tool(
     description=(
         "Execute Shell commands, or explicit raw Python, inside the attached "
-        "Docker container. Shell remains the default and may invoke Python."
+        "Docker container. Shell remains the default and may invoke Python. "
+        "For inline or heredoc Python that imports modules while creating a "
+        "declared artifact, prefer the exact isolated form "
+        "python3 -I - <<'PY' ... PY; normal invocations that can import "
+        "workspace modules do not receive complete mutation authority."
     )
 )
 async def run_code(
@@ -1403,7 +1407,10 @@ async def run_code(
     ),
     language: Literal["shell", "python"] = Field(
         default="shell",
-        description="Use 'python' only when code itself is raw Python source",
+        description=(
+            "Use 'python' only when code itself is raw Python source; the "
+            "framework executes this mode with isolated Python (-I -c)"
+        ),
     ),
     env_content: Optional[dict[str, Any]] = Field(
         default=None,
@@ -1695,7 +1702,12 @@ async def run_code(
         )
     elif controlled_execution is None:
         return_code, stdout, stderr, timed_out = await bridge.execute(
-            [os.environ.get("AWORLD_DOCKER_PYTHON", "python3"), "-c", code],
+            [
+                os.environ.get("AWORLD_DOCKER_PYTHON", "python3"),
+                "-I",
+                "-c",
+                code,
+            ],
             timeout=timeout,
             workdir=bridge.workdir,
         )

@@ -98,7 +98,10 @@ class MutationGatePreToolHook(PreToolCallHook):
             message_text = (
                 "This Tool call is outside the active candidate-production "
                 "admission. Create or modify the exact declared deliverable, or "
-                "execute the exact model-bound contractless candidate action."
+                "execute the exact model-bound contractless candidate action. "
+                "When an inline or heredoc Python candidate imports modules, "
+                "use the exact isolated form `python3 -I - <<'PY' ... PY` so "
+                "workspace module shadowing cannot hide additional mutations."
             )
         error_code = str(gate_receipt["kind"])
         return Message(
@@ -133,7 +136,11 @@ class MutationGatePreToolHook(PreToolCallHook):
                         "stay blocked. Named file outputs require a direct write or "
                         "exact-file copy primitive."
                         if post_candidate
-                        else "Create or modify the smallest relevant candidate now."
+                        else (
+                            "Create or modify the smallest relevant candidate now. "
+                            "For Python heredocs with imports, use the exact isolated "
+                            "form `python3 -I - <<'PY' ... PY`."
+                        )
                     )
                 ),
             },
