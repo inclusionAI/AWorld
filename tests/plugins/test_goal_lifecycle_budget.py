@@ -498,6 +498,244 @@ def test_observe_mode_finalization_does_not_suppress_direct_acceptance() -> None
     assert "acceptance_continuation_suppressed" not in response.execution_protocol
 
 
+def test_direct_acceptance_never_reopens_active_protocol_convergence() -> None:
+    from dataclasses import replace
+
+    from aworld.core.context.base import Context
+    from aworld.core.execution_protocol import (
+        ConvergenceStage,
+        ExecutionProtocolPolicy,
+        ExecutionProtocolStore,
+    )
+    from aworld.core.task import Task, TaskResponse
+    from aworld.runners.execution_protocol import (
+        configure_execution_protocol,
+        project_execution_protocol_telemetry,
+    )
+
+    context = Context(task_id="converging-segment")
+    task = Task(
+        id="converging-segment",
+        input="finish the requested work",
+        context=context,
+        timeout=600,
+    )
+    context.set_task(task)
+    policy = ExecutionProtocolPolicy(mode="guide")
+    configure_execution_protocol(context, "root-agent", policy)
+    store = ExecutionProtocolStore(context, "root-agent", policy)
+    store.save(
+        replace(
+            store.load(),
+            long_horizon_armed=True,
+            event_count=3,
+            tool_observation_count=2,
+            convergence_constraint_active=True,
+            convergence_stage=ConvergenceStage.PRODUCE_CANDIDATE,
+        )
+    )
+    executor = object.__new__(LocalAgentExecutor)
+    executor._session_mode = "direct"
+    executor._base_runtime = None
+    executor.swarm = SimpleNamespace(
+        communicate_agent=SimpleNamespace(id=lambda: "root-agent")
+    )
+    response = TaskResponse(
+        success=False,
+        answer="candidate is still missing",
+        semantic_status="incomplete",
+        recoverable=True,
+    )
+    acceptance_state = new_goal_contract_state(
+        "finish the requested work",
+        max_turns=2,
+        source="direct_long_horizon",
+    )
+    acceptance_state["turn_count"] = 2
+    acceptance_state["protocol_telemetry"] = {
+        "schema_version": "aworld.execution-protocol-telemetry/v2",
+        "mode": "guide",
+        "phase": "execute",
+        "armed": True,
+        "event_count": 7,
+        "tool_observation_count": 5,
+        "initial_decision_unavailable_count": 2,
+        "action_alignment_match_count": 4,
+        "mutation_gate_activation_count": 3,
+        "consecutive_unapplied_replans": 2,
+        "implicit_acceptance_created": True,
+        "acceptance_attempt": 1,
+        "acceptance_continuation_count": 1,
+    }
+
+    continuation = executor._direct_acceptance_continuation(
+        task=task,
+        response=response,
+        answer=response.answer,
+        event={
+            "task_id": task.id,
+            "semantic_status": "incomplete",
+            "recoverable": True,
+            "final_answer": response.answer,
+        },
+        origin_user_input="finish the requested work",
+        logical_task_state=new_goal_contract_state("finish the requested work"),
+        acceptance_state=acceptance_state,
+    )
+
+    assert continuation is None
+    assert response.execution_protocol["convergence_constraint_active"] is True
+    assert response.execution_protocol["event_count"] == 10
+    assert response.execution_protocol["tool_observation_count"] == 7
+    assert response.execution_protocol["initial_decision_unavailable_count"] == 2
+    assert response.execution_protocol["action_alignment_match_count"] == 4
+    assert response.execution_protocol["mutation_gate_activation_count"] == 3
+    assert response.execution_protocol["consecutive_unapplied_replans"] == 2
+    assert response.execution_protocol["implicit_acceptance_created"] is True
+    assert response.execution_protocol["acceptance_attempt"] == 1
+    assert response.execution_protocol["acceptance_continuation_count"] == 1
+    assert response.execution_protocol["acceptance_continuation_suppressed"] == (
+        "protocol_convergence"
+    )
+    projected = project_execution_protocol_telemetry(response.execution_protocol)
+    assert projected is not None
+    assert projected["acceptance_continuation_suppressed"] == (
+        "protocol_convergence"
+    )
+    assert response.semantic_status == "incomplete"
+    assert response.recoverable is True
+
+
+def test_direct_acceptance_first_segment_convergence_is_terminal() -> None:
+    from dataclasses import replace
+
+    from aworld.core.context.base import Context
+    from aworld.core.execution_protocol import (
+        ConvergenceStage,
+        ExecutionProtocolPolicy,
+        ExecutionProtocolStore,
+    )
+    from aworld.core.task import Task, TaskResponse
+    from aworld.runners.execution_protocol import configure_execution_protocol
+
+    context = Context(task_id="first-converging-segment")
+    task = Task(
+        id="first-converging-segment",
+        input="finish the requested work",
+        context=context,
+        timeout=600,
+    )
+    context.set_task(task)
+    policy = ExecutionProtocolPolicy(mode="guide")
+    configure_execution_protocol(context, "root-agent", policy)
+    store = ExecutionProtocolStore(context, "root-agent", policy)
+    store.save(
+        replace(
+            store.load(),
+            long_horizon_armed=True,
+            convergence_constraint_active=True,
+            convergence_stage=ConvergenceStage.PRODUCE_CANDIDATE,
+        )
+    )
+    executor = object.__new__(LocalAgentExecutor)
+    executor._session_mode = "direct"
+    executor._base_runtime = None
+    executor.swarm = SimpleNamespace(
+        communicate_agent=SimpleNamespace(id=lambda: "root-agent")
+    )
+    response = TaskResponse(
+        success=False,
+        answer="candidate is still missing",
+        semantic_status="incomplete",
+        recoverable=True,
+    )
+
+    continuation = executor._direct_acceptance_continuation(
+        task=task,
+        response=response,
+        answer=response.answer,
+        event={
+            "task_id": task.id,
+            "semantic_status": "incomplete",
+            "recoverable": True,
+            "final_answer": response.answer,
+        },
+        origin_user_input="finish the requested work",
+        logical_task_state=new_goal_contract_state("finish the requested work"),
+        acceptance_state=None,
+    )
+
+    assert continuation is None
+    assert response.execution_protocol["acceptance_continuation_suppressed"] == (
+        "protocol_convergence"
+    )
+    assert "implicit_acceptance_created" not in response.execution_protocol
+
+
+def test_observe_mode_convergence_does_not_suppress_direct_acceptance() -> None:
+    from dataclasses import replace
+
+    from aworld.core.context.base import Context
+    from aworld.core.execution_protocol import (
+        ConvergenceStage,
+        ExecutionProtocolPolicy,
+        ExecutionProtocolStore,
+    )
+    from aworld.core.task import Task, TaskResponse
+    from aworld.runners.execution_protocol import configure_execution_protocol
+
+    context = Context(task_id="observed-converging-segment")
+    task = Task(
+        id="observed-converging-segment",
+        input="finish the requested work",
+        context=context,
+        timeout=600,
+    )
+    context.set_task(task)
+    policy = ExecutionProtocolPolicy(mode="observe")
+    configure_execution_protocol(context, "root-agent", policy)
+    store = ExecutionProtocolStore(context, "root-agent", policy)
+    store.save(
+        replace(
+            store.load(),
+            long_horizon_armed=True,
+            convergence_constraint_active=True,
+            convergence_stage=ConvergenceStage.PRODUCE_CANDIDATE,
+        )
+    )
+    executor = object.__new__(LocalAgentExecutor)
+    executor._session_mode = "direct"
+    executor._base_runtime = None
+    executor.swarm = SimpleNamespace(
+        communicate_agent=SimpleNamespace(id=lambda: "root-agent")
+    )
+    response = TaskResponse(
+        success=False,
+        answer="observed candidate gap",
+        semantic_status="incomplete",
+        recoverable=True,
+    )
+
+    continuation = executor._direct_acceptance_continuation(
+        task=task,
+        response=response,
+        answer=response.answer,
+        event={
+            "task_id": task.id,
+            "semantic_status": "incomplete",
+            "recoverable": True,
+            "final_answer": response.answer,
+        },
+        origin_user_input="finish the requested work",
+        logical_task_state=new_goal_contract_state("finish the requested work"),
+        acceptance_state=None,
+    )
+
+    assert isinstance(continuation, _GoalContinuation)
+    assert response.execution_protocol["acceptance_continuation_count"] == 1
+    assert "acceptance_continuation_suppressed" not in response.execution_protocol
+
+
 def test_direct_acceptance_records_repair_success_without_another_segment():
     from aworld.core.context.base import Context
     from aworld.core.execution_protocol import ExecutionProtocolPolicy

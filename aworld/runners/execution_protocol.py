@@ -2174,6 +2174,7 @@ def project_execution_protocol_telemetry(value: Any) -> dict[str, Any] | None:
         },
         "acceptance_continuation_suppressed": {
             "deadline_reserve",
+            "protocol_convergence",
             "protocol_finalization",
         },
     }

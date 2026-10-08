@@ -1395,6 +1395,71 @@ class LocalAgentExecutor(BaseAgentExecutor):
             return root[0] if len(root) == 1 else None
         return root
 
+    @staticmethod
+    def _merge_acceptance_protocol_telemetry(
+        previous: dict[str, Any], current: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Accumulate bounded segment counters without reviving stale state."""
+        merged = dict(previous)
+        merged.update(current)
+        additive_counters = (
+            "event_count",
+            "tool_observation_count",
+            "replan_count",
+            "replan_requested_count",
+            "replan_applied_count",
+            "initial_decision_attempt_count",
+            "initial_decision_unavailable_count",
+            "replan_decision_attempt_count",
+            "replan_decision_unavailable_count",
+            "suppressed_replan_boundaries",
+            "candidate_final_count",
+            "final_review_count",
+            "repair_count",
+            "delivery_checkpoint_count",
+            "candidate_decision_count",
+            "action_alignment_match_count",
+            "action_alignment_mismatch_count",
+            "acceptance_controller_error_count",
+            "mutation_gate_activation_count",
+            "mutation_gate_blocked_read_only_call_count",
+            "convergence_gate_blocked_call_count",
+            "convergence_constraint_activation_count",
+            "model_expected_tool_actions_overrun_count",
+        )
+        high_water_counters = (
+            "stagnant_observations",
+            "consecutive_unapplied_replans",
+            "delivery_debt_observations",
+            "workspace_mutation_absent_observations",
+            "acceptance_attempt",
+            "acceptance_continuation_count",
+            "consecutive_read_only_observations",
+            "post_candidate_read_only_observations",
+            "post_candidate_no_delivery_progress_observations",
+            "model_expected_tool_actions",
+        )
+        for key in additive_counters:
+            merged[key] = min(
+                1_000_000,
+                int(previous.get(key, 0) or 0)
+                + int(current.get(key, 0) or 0),
+            )
+        for key in high_water_counters:
+            merged[key] = min(
+                1_000_000,
+                max(
+                    int(previous.get(key, 0) or 0),
+                    int(current.get(key, 0) or 0),
+                ),
+            )
+        merged["armed"] = bool(previous.get("armed") or current.get("armed"))
+        merged["finalization_entered"] = bool(
+            previous.get("finalization_entered")
+            or current.get("finalization_entered")
+        )
+        return merged
+
     def _direct_acceptance_continuation(
         self,
         *,
@@ -1443,21 +1508,35 @@ class LocalAgentExecutor(BaseAgentExecutor):
         self.last_execution_protocol = current_telemetry
         if response is not None:
             response.execution_protocol = current_telemetry
-        if (
-            policy.mode is ProtocolMode.GUIDE
-            and (
-                protocol_state.finalization_entered
-                or getattr(protocol_state.phase, "value", None) == "finalize"
-            )
+        protocol_finalized = bool(
+            protocol_state.finalization_entered
+            or getattr(protocol_state.phase, "value", None) == "finalize"
+        )
+        protocol_converging = bool(
+            protocol_state.convergence_constraint_active
+        )
+        if policy.mode is ProtocolMode.GUIDE and (
+            protocol_finalized or protocol_converging
         ):
-            # The execution protocol has already made its terminal, Tool-free
-            # decision for this task scope. Starting another implicit goal
-            # segment would resurrect ordinary Tool work after finalization,
-            # duplicate elapsed time, and contradict the monotonic terminal
-            # state. Preserve the incomplete/success status produced by the
-            # finalized segment and return it to the caller unchanged.
+            # The execution protocol already owns the remaining work for this
+            # task scope. Starting another implicit goal segment would create
+            # a fresh protocol store and reopen broad Tool work after either a
+            # hard convergence decision or terminal finalization. Preserve the
+            # incomplete/success status from the bounded segment instead.
+            if (
+                isinstance(acceptance_state, dict)
+                and int(acceptance_state.get("turn_count", 1) or 1) > 1
+            ):
+                prior_telemetry = acceptance_state.get("protocol_telemetry")
+                if isinstance(prior_telemetry, dict):
+                    current_telemetry = self._merge_acceptance_protocol_telemetry(
+                        prior_telemetry,
+                        current_telemetry,
+                    )
             current_telemetry["acceptance_continuation_suppressed"] = (
                 "protocol_finalization"
+                if protocol_finalized
+                else "protocol_convergence"
             )
             self.last_execution_protocol = current_telemetry
             if response is not None:
@@ -1530,30 +1609,9 @@ class LocalAgentExecutor(BaseAgentExecutor):
         receipt = updated.get("last_attempt_receipt")
         telemetry = dict(updated.get("protocol_telemetry") or {})
         if acceptance_state.get("turn_count", 1) > 1:
-            for key in (
-                "event_count",
-                "tool_observation_count",
-                "stagnant_observations",
-                "replan_count",
-                "replan_requested_count",
-                "replan_applied_count",
-                "initial_decision_attempt_count",
-                "replan_decision_attempt_count",
-                "candidate_final_count",
-                "final_review_count",
-                "repair_count",
-            ):
-                telemetry[key] = min(
-                    1_000_000,
-                    int(telemetry.get(key, 0) or 0)
-                    + int(current_telemetry.get(key, 0) or 0),
-                )
-            telemetry["armed"] = bool(
-                telemetry.get("armed") or current_telemetry.get("armed")
-            )
-            telemetry["finalization_entered"] = bool(
-                telemetry.get("finalization_entered")
-                or current_telemetry.get("finalization_entered")
+            telemetry = self._merge_acceptance_protocol_telemetry(
+                telemetry,
+                current_telemetry,
             )
             telemetry["phase"] = current_telemetry.get(
                 "phase", telemetry.get("phase")
