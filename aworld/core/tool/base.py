@@ -695,6 +695,13 @@ class Tool(BaseTool[Observation, List[ActionModel]]):
 
             self.pre_step(action, **kwargs)
             tool_output_plans = prepare_tool_output_plans(message.context, action)
+            from aworld.core.context.execution_state import (
+                execution_resolution_observation,
+            )
+
+            execution_state_observation = execution_resolution_observation(
+                message.context, action[0].agent_name
+            )
             res = self.do_step(action, message=message, **kwargs)
 
             # Execute POST_TOOL_CALL hooks and check for updated_output
@@ -722,7 +729,13 @@ class Tool(BaseTool[Observation, List[ActionModel]]):
                 message.context, action, res[0]
             )
 
-            final_res = self.post_step(res, action,message=message, **kwargs)
+            post_step_kwargs = dict(kwargs)
+            post_step_kwargs["_execution_state_observation"] = (
+                execution_state_observation
+            )
+            final_res = self.post_step(
+                res, action, message=message, **post_step_kwargs
+            )
             record_replay_runtime_tool_result(action, res, message)
             if isinstance(final_res, Message):
                 self._update_headers(final_res, message)
@@ -794,6 +807,9 @@ class Tool(BaseTool[Observation, List[ActionModel]]):
                 actions=action,
                 followup_observation=step_res[0],
                 followup_sender=self.name(),
+                resolution_observation=kwargs.get(
+                    "_execution_state_observation"
+                ),
             )
             return AgentMessage(payload=step_res,
                                 caller=action[0].agent_name,
@@ -1008,6 +1024,13 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
 
             await self.pre_step(action, message=message,**kwargs)
             tool_output_plans = prepare_tool_output_plans(message.context, action)
+            from aworld.core.context.execution_state import (
+                execution_resolution_observation,
+            )
+
+            execution_state_observation = execution_resolution_observation(
+                message.context, action[0].agent_name
+            )
             res = await self.do_step(action, message=message, **kwargs)
 
             # Execute POST_TOOL_CALL hooks and check for updated_output
@@ -1036,7 +1059,13 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
                 message.context, action, res[0]
             )
 
-            final_res = await self.post_step(res, action, message=message,**kwargs)
+            post_step_kwargs = dict(kwargs)
+            post_step_kwargs["_execution_state_observation"] = (
+                execution_state_observation
+            )
+            final_res = await self.post_step(
+                res, action, message=message, **post_step_kwargs
+            )
             record_replay_runtime_tool_result(action, res, message)
             await self._internal_process(res, action, message, tool_id_mapping=tool_id_mapping, **kwargs)
             if isinstance(final_res, Message):
@@ -1112,6 +1141,9 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
                 actions=action,
                 followup_observation=step_res[0],
                 followup_sender=self.name(),
+                resolution_observation=kwargs.get(
+                    "_execution_state_observation"
+                ),
             )
             result = AgentMessage(payload=step_res,
                                 caller=action[0].agent_name,

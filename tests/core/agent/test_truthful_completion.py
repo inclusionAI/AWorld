@@ -122,6 +122,82 @@ async def test_stream_length_response_is_recovered_before_tool_execution(monkeyp
 
 
 @pytest.mark.asyncio
+async def test_provider_resolution_uses_request_start_blocker_watermark(monkeypatch):
+    calls = 0
+    agent = _agent(policy=GenerationBudgetPolicy(total_timeout_seconds=5), attempts=1)
+    message = _message("provider-watermark")
+
+    async def response(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            from aworld.core.context.execution_state import record_execution_state
+
+            # Simulate a newer concurrent provider boundary becoming incomplete
+            # while this older request is still in flight.
+            record_execution_state(
+                message.context,
+                agent.id(),
+                "incomplete",
+                "model_output_truncated",
+            )
+        return ModelResponse(
+            id=f"complete-{calls}",
+            model="fake",
+            tool_calls=[tool('{"path":"out.txt","text":"done"}', f"call-{calls}")],
+            finish_reason="tool_calls",
+        )
+
+    monkeypatch.setattr(module, "acall_llm_model", response)
+
+    await agent.invoke_model(
+        [{"role": "user", "content": "write"}], message=message, stream=False
+    )
+    assert get_execution_state(message.context)["status"] == "incomplete"
+
+    await agent.invoke_model(
+        [{"role": "user", "content": "continue"}], message=message, stream=False
+    )
+    assert get_execution_state(message.context)["status"] == "running"
+
+
+@pytest.mark.asyncio
+async def test_internal_control_provider_action_does_not_resolve_solver_blocker(
+    monkeypatch,
+):
+    from aworld.core.context.execution_state import record_execution_state
+
+    agent = _agent(policy=GenerationBudgetPolicy(total_timeout_seconds=5), attempts=1)
+    message = _message("internal-control-watermark")
+    record_execution_state(
+        message.context,
+        agent.id(),
+        "incomplete",
+        "model_output_truncated",
+    )
+
+    async def response(*args, **kwargs):
+        return ModelResponse(
+            id="internal-control",
+            model="fake",
+            tool_calls=[tool('{"path":"decision.json","text":"continue"}')],
+            finish_reason="tool_calls",
+        )
+
+    monkeypatch.setattr(module, "acall_llm_model", response)
+    await agent.invoke_model(
+        [{"role": "user", "content": "internal checkpoint"}],
+        message=message,
+        stream=False,
+        _execution_state_resolution_mode="control",
+    )
+
+    state = get_execution_state(message.context)
+    assert state["status"] == "incomplete"
+    assert state["reason"] == "model_output_truncated"
+
+
+@pytest.mark.asyncio
 async def test_reasoning_only_recovery_retains_a_bounded_working_tail(monkeypatch):
     calls = []
     reasoning = "discarded-prefix-" + "R" * 9000

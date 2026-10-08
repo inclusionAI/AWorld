@@ -18,7 +18,11 @@ from aworld.runners.hook.hook_factory import HookFactory
 from aworld.runners.hook.hooks import HookPoint
 from aworld.utils.serialized_util import to_serializable
 from aworld.core.context.compiler import CompletionMode, CompletionStatus
-from aworld.core.context.execution_state import get_execution_state
+from aworld.core.context.execution_state import (
+    get_execution_state,
+    project_execution_state,
+    reconcile_execution_states,
+)
 
 if TYPE_CHECKING:
     from aworld.runners.event_runner import TaskEventRunner
@@ -111,8 +115,14 @@ class DefaultTaskHandler(TaskHandler):
         else:
             expected_task_epoch = None
 
-        def scoped_execution_state(context):
-            value = get_execution_state(context)
+        event_agent_id = (
+            message.sender.strip()
+            if isinstance(message.sender, str) and message.sender.strip()
+            else None
+        )
+
+        def scoped_execution_state(context, agent_id=event_agent_id):
+            value = get_execution_state(context, agent_id=agent_id)
             if not isinstance(value, dict):
                 return None
             if value.get("task_id") != expected_task_id:
@@ -130,6 +140,40 @@ class DefaultTaskHandler(TaskHandler):
         if topic == TopicType.FINISHED:
             terminal_execution_state = scoped_execution_state(message.context)
         self.runner.context.merge_context(message.context)
+        reconciled_execution_state = None
+        if topic == TopicType.FINISHED:
+            candidates = [
+                terminal_execution_state,
+                runner_execution_state,
+                scoped_execution_state(self.runner.context),
+                scoped_execution_state(message.context),
+            ]
+            candidate_agent_ids = {
+                value.get("agent_id")
+                for value in candidates
+                if isinstance(value, dict)
+            }
+            reconciled_agent_id = (
+                event_agent_id
+                if event_agent_id in candidate_agent_ids
+                else next(iter(candidate_agent_ids))
+                if len(candidate_agent_ids) == 1
+                else None
+            )
+            reconciled_execution_state = reconcile_execution_states(
+                candidates,
+                task_id=expected_task_id,
+                task_epoch=expected_task_epoch,
+                agent_id=reconciled_agent_id,
+            )
+            if reconciled_execution_state is not None:
+                project_execution_state(
+                    self.runner.context, reconciled_execution_state
+                )
+                if message.context is not self.runner.context:
+                    project_execution_state(
+                        message.context, reconciled_execution_state
+                    )
         task_item: TaskItem = message.payload
         if topic == TopicType.SUBSCRIBE_TOOL:
             new_tools = message.payload.data
@@ -220,6 +264,42 @@ class DefaultTaskHandler(TaskHandler):
             async for event in self.run_hooks(message, HookPoint.FINISHED):
                 yield event
 
+            # FINISHED hooks may persist a final verifier/blocker fact. Re-read
+            # every scoped surface and merge by causal state facts; the event's
+            # arrival order is never promotion authority.
+            latest_candidates = [
+                reconciled_execution_state,
+                scoped_execution_state(self.runner.context),
+                scoped_execution_state(message.context),
+            ]
+            latest_agent_ids = {
+                value.get("agent_id")
+                for value in latest_candidates
+                if isinstance(value, dict)
+            }
+            latest_agent_id = (
+                event_agent_id
+                if event_agent_id in latest_agent_ids
+                else next(iter(latest_agent_ids))
+                if len(latest_agent_ids) == 1
+                else None
+            )
+            latest_execution_state = reconcile_execution_states(
+                latest_candidates,
+                task_id=expected_task_id,
+                task_epoch=expected_task_epoch,
+                agent_id=latest_agent_id,
+            )
+            if latest_execution_state is not None:
+                reconciled_execution_state = latest_execution_state
+                project_execution_state(
+                    self.runner.context, reconciled_execution_state
+                )
+                if message.context is not self.runner.context:
+                    project_execution_state(
+                        message.context, reconciled_execution_state
+                    )
+
             completion = self.runner.context.assess_completion_contract(
                 agent_claimed_finished=True
             )
@@ -231,12 +311,7 @@ class DefaultTaskHandler(TaskHandler):
                 ) is not False
                 and completion.status is not CompletionStatus.SATISFIED
             )
-            execution_state = (
-                terminal_execution_state
-                or runner_execution_state
-                or scoped_execution_state(self.runner.context)
-                or {}
-            )
+            execution_state = reconciled_execution_state or {}
             semantic_status = execution_state.get("status")
             if semantic_status == "running":
                 semantic_status = "incomplete"

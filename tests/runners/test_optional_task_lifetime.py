@@ -383,6 +383,121 @@ async def test_finished_event_cannot_promote_scoped_incomplete_work(semantic, ex
 
 
 @pytest.mark.asyncio
+async def test_regex_like_truncated_fallback_cannot_become_success_after_stale_finish():
+    from aworld.core.context.base import Context
+    from aworld.core.context.execution_state import record_execution_state
+    from aworld.core.event.base import Message, Constants, TopicType
+    from aworld.runners.handler.task import DefaultTaskHandler
+
+    task = Task(id="regex-like")
+    terminal_context = Context(task_id=task.id)
+    record_execution_state(
+        terminal_context,
+        "solver",
+        "incomplete",
+        "model_output_truncated",
+        recoverable=True,
+    )
+    record_execution_state(
+        terminal_context,
+        "solver",
+        "succeeded",
+        "agent_final_response",
+        recoverable=False,
+    )
+
+    runner_context = Context(task_id=task.id)
+    for index in range(3):
+        record_execution_state(
+            runner_context,
+            "solver",
+            "succeeded",
+            f"stale_finished_{index}",
+            recoverable=False,
+        )
+    runner = SimpleNamespace(
+        task=task,
+        context=runner_context,
+        start_time=0,
+        stop=AsyncMock(),
+    )
+    message = Message(
+        category=Constants.TASK,
+        topic=TopicType.FINISHED,
+        payload=(
+            "Work remains incomplete after bounded model-response recovery "
+            "(model_output_truncated)."
+        ),
+        sender="solver",
+        headers={"context": terminal_context},
+    )
+
+    events = [
+        event
+        async for event in DefaultTaskHandler(runner)._do_handle(message)
+    ]
+    response = events[-1].payload
+
+    assert response.success is False
+    assert response.status == TaskStatusValue.INCOMPLETE
+    assert response.semantic_status == "incomplete"
+    assert response.completion_reason == "model_output_truncated"
+
+
+@pytest.mark.asyncio
+async def test_finished_reconciles_runner_blocker_against_newer_stale_terminal_success():
+    from aworld.core.context.base import Context
+    from aworld.core.context.execution_state import (
+        get_execution_state,
+        record_execution_state,
+    )
+    from aworld.core.event.base import Message, Constants, TopicType
+    from aworld.runners.handler.task import DefaultTaskHandler
+
+    task = Task(id="fan-in-finish")
+    runner_context = Context(task_id=task.id)
+    record_execution_state(
+        runner_context,
+        "solver",
+        "incomplete",
+        "model_output_truncated",
+    )
+
+    terminal_context = Context(task_id=task.id)
+    for index in range(4):
+        record_execution_state(
+            terminal_context,
+            "solver",
+            "succeeded",
+            f"stale_finished_{index}",
+        )
+    runner = SimpleNamespace(
+        task=task,
+        context=runner_context,
+        start_time=0,
+        stop=AsyncMock(),
+    )
+    message = Message(
+        category=Constants.TASK,
+        topic=TopicType.FINISHED,
+        payload="Done",
+        sender="solver",
+        headers={"context": terminal_context},
+    )
+
+    events = [
+        event
+        async for event in DefaultTaskHandler(runner)._do_handle(message)
+    ]
+    response = events[-1].payload
+
+    assert response.success is False
+    assert response.completion_reason == "model_output_truncated"
+    assert get_execution_state(runner_context, agent_id="solver")["status"] == "incomplete"
+    assert get_execution_state(terminal_context, agent_id="solver")["status"] == "incomplete"
+
+
+@pytest.mark.asyncio
 async def test_finished_event_classifies_validator_errors_as_infrastructure():
     from aworld.core.context.compiler import CompletionMode, CompletionStatus
     from aworld.core.event.base import Message, Constants, TopicType

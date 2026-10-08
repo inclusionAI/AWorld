@@ -6268,6 +6268,13 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         critic_probe_planned = False
         critic_decision_handled = False
         review_repair_requested = False
+        from aworld.core.context.execution_state import (
+            execution_resolution_observation,
+        )
+
+        provider_resolution_observation = execution_resolution_observation(
+            message.context, self.id()
+        )
         if source_span:
             source_span.set_attribute(
                 "messages", json.dumps(serializable_messages, ensure_ascii=False)
@@ -6317,6 +6324,19 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             )
 
             kwargs[AWORLD_REASONING_SELECTION_KWARG] = reasoning_selection
+            # Only an ordinary solver response can repair an incomplete prior
+            # provider action. Internal execution checkpoints, acceptance
+            # reviews, and bounded finalization prose are control-plane turns;
+            # accepting one must not erase task blockers.
+            kwargs["_execution_state_resolution_mode"] = (
+                "ordinary"
+                if (
+                    not tool_free_finalization
+                    and not independent_acceptance_review
+                    and execution_control_offer.decision_boundary is None
+                )
+                else "control"
+            )
             if context_compiler_mode != "off":
                 try:
                     from aworld.agents.final_context_adapter import (
@@ -6697,6 +6717,18 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                         )
                         critic_decision_handled = True
                         if accepted and fallback is not None:
+                            from aworld.core.context.execution_state import (
+                                record_execution_resolution,
+                            )
+
+                            record_execution_resolution(
+                                message.context,
+                                self.id(),
+                                evidence_kind="accepted_critic",
+                                status="running",
+                                reason="independent_acceptance_accepted",
+                                observation=provider_resolution_observation,
+                            )
                             fallback_text = str(fallback[0].policy_info or "")
                             llm_response.content = fallback_text
                             if isinstance(llm_response.message, dict):
@@ -8831,6 +8863,9 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         llm_response = None
         context = message.context if message else None
         failure_output_sent = False
+        execution_state_resolution_mode = kwargs.pop(
+            "_execution_state_resolution_mode", "ordinary"
+        )
         controller = kwargs.pop("_generation_budget_controller", None)
         if not isinstance(controller, GenerationBudgetController):
             controller = GenerationBudgetController(
@@ -8866,6 +8901,18 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             stream_failed_fallback = False
 
             while attempt <= self.llm_max_attempts:
+                provider_resolution_observation = None
+                if (
+                    context is not None
+                    and execution_state_resolution_mode == "ordinary"
+                ):
+                    from aworld.core.context.execution_state import (
+                        execution_resolution_observation,
+                    )
+
+                    provider_resolution_observation = (
+                        execution_resolution_observation(context, self.id())
+                    )
                 try:
                     logger.info(
                         f"🔄 Attempt {attempt}/{self.llm_max_attempts} for LLM call"
@@ -9027,12 +9074,35 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                             llm_response, incomplete_reason
                         )
                     from aworld.core.context.execution_state import (
+                        record_execution_resolution,
                         record_execution_state,
                     )
 
-                    record_execution_state(
-                        context, self.id(), "running", "model_response_accepted"
-                    )
+                    if (
+                        context is not None
+                        and execution_state_resolution_mode == "ordinary"
+                        and llm_response
+                        and (llm_response.tool_calls or llm_response.content)
+                    ):
+                        record_execution_resolution(
+                            context,
+                            self.id(),
+                            evidence_kind=(
+                                "complete_provider_tool_action"
+                                if llm_response.tool_calls
+                                else "complete_provider_final_action"
+                            ),
+                            status="running",
+                            reason="model_response_accepted",
+                            observation=provider_resolution_observation,
+                        )
+                    else:
+                        record_execution_state(
+                            context,
+                            self.id(),
+                            "running",
+                            "model_response_accepted",
+                        )
                     # Check if we got a valid response
                     if llm_response and (
                         llm_response.content
@@ -9490,6 +9560,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                         self.context, self.id(), "incomplete", raw_reason
                     )
                 return False
+            completion_satisfied = False
             if not reason and getattr(self, "context", None) is not None:
                 from aworld.core.context.compiler import (
                     CompletionMode,
@@ -9516,6 +9587,10 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                         "completion_contract_unsatisfied",
                     )
                     return False
+                completion_satisfied = bool(
+                    assessment is not None
+                    and assessment.status is CompletionStatus.SATISFIED
+                )
             if recoverable_reason:
                 self._finished = False
                 if getattr(self, "context", None) is not None:
@@ -9528,6 +9603,18 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                     )
                 return False
             if getattr(self, "context", None) is not None:
+                if completion_satisfied and not reason:
+                    from aworld.core.context.execution_state import (
+                        record_execution_resolution,
+                    )
+
+                    record_execution_resolution(
+                        self.context,
+                        self.id(),
+                        evidence_kind="completion_contract_satisfied",
+                        status="running",
+                        reason="completion_contract_satisfied",
+                    )
                 record_execution_state(
                     self.context,
                     self.id(),

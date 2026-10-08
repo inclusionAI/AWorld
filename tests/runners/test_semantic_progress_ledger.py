@@ -18,6 +18,11 @@ from aworld.core.context.amni.state import (
     TaskWorkingState,
 )
 from aworld.core.context.base import Context
+from aworld.core.context.execution_state import (
+    execution_resolution_observation,
+    get_execution_state,
+    record_execution_state,
+)
 from aworld.core.context.compiler import (
     ADAPTIVE_WORK_STATE_KEY,
     ArtifactEvidence,
@@ -353,6 +358,12 @@ def test_public_deliverable_creation_is_one_durable_milestone(tmp_path):
             semantic_progress_enabled=True,
         ),
     )
+    record_execution_state(
+        context,
+        "agent",
+        "incomplete",
+        "delivery_candidate_missing",
+    )
 
     missing = _record_failure(context, 0)
     assert missing["goal_progress_observable"] is True
@@ -363,6 +374,7 @@ def test_public_deliverable_creation_is_one_durable_milestone(tmp_path):
     assert missing["candidate_present"] is False
     assert missing["workspace_mutated"] is False
     assert missing["new_information_observed"] is True
+    assert get_execution_state(context, agent_id="agent")["status"] == "incomplete"
 
     output.write_text("{}")
     created = _record_failure(context, 1)
@@ -374,10 +386,61 @@ def test_public_deliverable_creation_is_one_durable_milestone(tmp_path):
     assert created["durable_milestone_advanced"] is True
     assert created["goal_progress"] is True
     assert context.completion_contract is None
+    assert get_execution_state(context, agent_id="agent")["status"] == "running"
 
     repeated = _record_failure(context, 2)
     assert repeated["public_delivery_advanced"] is False
     assert repeated["durable_milestone_advanced"] is False
+
+
+def test_public_candidate_resolution_uses_tool_start_watermark(tmp_path):
+    output = tmp_path / "result.json"
+    context = Context(task_id="candidate-resolution-watermark")
+    context.context_info["public_deliverable_contract"] = {
+        "schema_version": "aworld.public-deliverables/v1",
+        "authority": "public_task_advisory",
+        "source": "public_task_text",
+        "artifacts": [
+            {
+                "deliverable_id": "public-output-1",
+                "path": str(output),
+                "display_path": "result.json",
+                "kind": "file",
+                "authority": "public_task_advisory",
+            }
+        ],
+    }
+    stale_tool_start = execution_resolution_observation(context, "agent")
+    record_execution_state(
+        context, "agent", "incomplete", "delivery_candidate_missing"
+    )
+
+    output.write_text("{}")
+    record_semantic_tool_progress(
+        context,
+        tool_name="terminal",
+        agent_id="agent",
+        actions=[ActionModel(tool_name="terminal", action_name="execute")],
+        observation=Observation(
+            action_result=[ActionResult(content="candidate", success=True)]
+        ),
+        resolution_observation=stale_tool_start,
+    )
+    assert get_execution_state(context, agent_id="agent")["status"] == "incomplete"
+
+    fresh_tool_start = execution_resolution_observation(context, "agent")
+    output.write_text('{"complete": true}')
+    record_semantic_tool_progress(
+        context,
+        tool_name="terminal",
+        agent_id="agent",
+        actions=[ActionModel(tool_name="terminal", action_name="execute")],
+        observation=Observation(
+            action_result=[ActionResult(content="candidate updated", success=True)]
+        ),
+        resolution_observation=fresh_tool_start,
+    )
+    assert get_execution_state(context, agent_id="agent")["status"] == "running"
 
 
 def test_public_deliverable_baseline_distinguishes_existing_file_from_update(
@@ -804,6 +867,12 @@ def test_contract_bound_completion_advance_resets_durable_stagnation():
             semantic_progress_enabled=True,
         ),
     )
+    record_execution_state(
+        context,
+        "agent",
+        "incomplete",
+        "completion_contract_unsatisfied",
+    )
 
     for index in range(5):
         state = record_semantic_tool_progress(
@@ -856,6 +925,7 @@ def test_contract_bound_completion_advance_resets_durable_stagnation():
     assert advanced["goal_progress"] is True
     assert advanced["durable_stagnation_count"] == 0
     assert load_execution_protocol_state(context, "agent").replan_count == 0
+    assert get_execution_state(context, agent_id="agent")["status"] == "running"
 
 
 def test_repeated_identical_completion_evidence_is_not_new_goal_progress():

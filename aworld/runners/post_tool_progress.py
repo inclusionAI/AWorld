@@ -459,6 +459,7 @@ def record_semantic_tool_progress(
     agent_id: str,
     actions: list[ActionModel],
     observation: Observation,
+    resolution_observation: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     """Serialize evidence derivation across transported Tool result groups."""
     runtime_context = _runtime_context(context)
@@ -473,6 +474,7 @@ def record_semantic_tool_progress(
                 agent_id=agent_id,
                 actions=actions,
                 observation=observation,
+                resolution_observation=resolution_observation,
             )
     return _record_semantic_tool_progress_locked(
         runtime_context,
@@ -480,6 +482,7 @@ def record_semantic_tool_progress(
         agent_id=agent_id,
         actions=actions,
         observation=observation,
+        resolution_observation=resolution_observation,
     )
 
 
@@ -490,6 +493,7 @@ def _record_semantic_tool_progress_locked(
     agent_id: str,
     actions: list[ActionModel],
     observation: Observation,
+    resolution_observation: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     """Record bounded hashes for repetition and low-information-gain signals."""
     runtime_context = _runtime_context(context)
@@ -1409,6 +1413,49 @@ def _record_semantic_tool_progress_locked(
         metrics["execution_protocol_observation_error_count"] = (
             int(metrics.get("execution_protocol_observation_error_count", 0) or 0) + 1
         )
+    # Completion state consumes only monotonic, framework-observed milestones.
+    # A changed scratch file, a repeated candidate fingerprint, or a failed
+    # validation is not resolution evidence.
+    try:
+        from aworld.core.context.compiler import CompletionStatus
+        from aworld.core.context.execution_state import record_execution_resolution
+
+        if (
+            completion_assessment is not None
+            and completion_assessment.status is CompletionStatus.SATISFIED
+        ):
+            record_execution_resolution(
+                runtime_context,
+                agent_id,
+                evidence_kind="completion_contract_satisfied",
+                status="running",
+                reason="completion_contract_satisfied",
+                observation=resolution_observation,
+            )
+        elif completion_advanced and completion_positive_evidence > 0:
+            record_execution_resolution(
+                runtime_context,
+                agent_id,
+                evidence_kind="validation_passed",
+                status="running",
+                reason="positive_completion_evidence_observed",
+                observation=resolution_observation,
+            )
+        elif public_delivery_advanced:
+            record_execution_resolution(
+                runtime_context,
+                agent_id,
+                evidence_kind="candidate_advanced",
+                status="running",
+                reason="public_candidate_advanced",
+                observation=resolution_observation,
+            )
+    except Exception:
+        # State projection must not turn an otherwise successful Tool result
+        # into an execution failure. The unresolved blocker remains fail closed.
+        metrics["execution_state_resolution_error_count"] = (
+            int(metrics.get("execution_state_resolution_error_count", 0) or 0) + 1
+        )
     return state
 
 
@@ -1623,6 +1670,7 @@ def arm_post_tool_progress_watchdog(
     actions: list[ActionModel],
     followup_observation: Observation,
     followup_sender: str | None = None,
+    resolution_observation: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     runtime_context = _runtime_context(context)
     if runtime_context is None:
@@ -1634,6 +1682,7 @@ def arm_post_tool_progress_watchdog(
         agent_id=agent_id,
         actions=actions,
         observation=followup_observation,
+        resolution_observation=resolution_observation,
     )
     from aworld.core.context.compiler import (
         ADAPTIVE_WORK_STATE_KEY,
