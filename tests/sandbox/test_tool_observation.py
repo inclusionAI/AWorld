@@ -274,6 +274,50 @@ def test_semantic_targets_resolve_explicit_cwd_and_command_local_cd() -> None:
     assert semantic_target_sha256("/app") not in local_cd.target_ids
 
 
+def test_relative_declared_target_uses_trusted_workspace_without_basename_alias(
+    tmp_path,
+) -> None:
+    context = _context()
+    context.workspace_path = str(tmp_path)
+    context.context_info = {
+        "public_deliverable_contract": {
+            "schema_version": "aworld.public-deliverables/v1",
+            "authority": "public_task_advisory",
+            "source": "public_task_text",
+            "artifacts": [
+                {
+                    "deliverable_id": "result",
+                    "path": "result.json",
+                    "display_path": "result.json",
+                    "kind": "file",
+                    "authority": "public_task_advisory",
+                }
+            ],
+        }
+    }
+    workspace_write = build_planned_action_semantic_receipt(
+        context=context,
+        tool_name="terminal__run_code",
+        arguments={"code": "printf '{}' > result.json"},
+        delivery_intent="produce_candidate",
+    )
+    sibling_write = build_planned_action_semantic_receipt(
+        context=context,
+        tool_name="terminal__run_code",
+        arguments={
+            "code": "printf '{}' > result.json",
+            "cwd": str(tmp_path / "sibling"),
+        },
+        delivery_intent="produce_candidate",
+    )
+
+    assert workspace_write.target_ids == (
+        semantic_target_sha256(str(tmp_path / "result.json")),
+    )
+    assert workspace_write.declared_deliverable_targeted is True
+    assert sibling_write.declared_deliverable_targeted is False
+
+
 def test_shell_classifier_does_not_treat_fd_redirection_as_file_mutation() -> None:
     effect = classify_tool_effect(
         {

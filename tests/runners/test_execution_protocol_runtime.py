@@ -1662,6 +1662,50 @@ def test_pre_convergence_unknown_action_remains_fail_open() -> None:
     assert mutation_gate_interception(context, [unknown]) is None
 
 
+@pytest.mark.parametrize(
+    "stale_field",
+    ("task_id", "task_epoch", "agent_id"),
+)
+def test_legacy_gate_migrates_only_for_exact_current_scope(stale_field) -> None:
+    context = _context("legacy-gate-scope")
+    configure_execution_protocol(
+        context,
+        "agent",
+        ExecutionProtocolPolicy(mode=ProtocolMode.GUIDE),
+    )
+    action = ActionModel(
+        tool_name="terminal",
+        action_name="run_code",
+        params={"code": "cat README.md"},
+        tool_call_id="legacy-read",
+        agent_name="agent",
+    )
+    current_gate = {
+        "schema_version": "aworld.mutation-gate/v2",
+        "task_id": context.task_id,
+        "task_epoch": context.task_epoch,
+        "agent_id": "agent",
+        "active": True,
+        "convergence_stage": "produce_candidate",
+        "blocked_read_only_call_count": 0,
+    }
+    context.write_task_runtime_state(
+        "agent", "execution_protocol_mutation_gate", current_gate
+    )
+    context.context_info["execution_protocol_mutation_gate:agent"] = current_gate
+    assert mutation_gate_interception(context, [action]) is not None
+
+    stale_gate = dict(current_gate)
+    stale_gate[stale_field] = (
+        "other" if stale_field != "task_epoch" else context.task_epoch + 1
+    )
+    context.write_task_runtime_state(
+        "agent", "execution_protocol_mutation_gate", stale_gate
+    )
+    context.context_info["execution_protocol_mutation_gate:agent"] = stale_gate
+    assert mutation_gate_interception(context, [action]) is None
+
+
 def test_contractless_produce_requires_exact_model_bound_semantics_and_call_id() -> None:
     context = _context("contractless-produce-admission")
     configure_execution_protocol(
@@ -1889,6 +1933,21 @@ async def test_validate_convergence_requires_typed_validation_or_one_bound_repai
         agent_name="agent",
     )
     assert mutation_gate_interception(context, [repair]) is None
+    # Replaying the identical failed validation receipt cannot replenish the
+    # already-consumed one-use repair authorization.
+    record_tool_protocol_event(
+        context,
+        "agent",
+        _semantic_state(
+            current_agent_step=4,
+            candidate_present=True,
+            public_deliverable_declared=True,
+            public_candidate_mutated=True,
+            public_delivery_fingerprint=semantic_fingerprint("candidate-a"),
+            failure_signature=semantic_fingerprint("failed-validation"),
+            observed_action_semantics=(failed_validation,),
+        ),
+    )
     blocked_second = mutation_gate_interception(context, [repair])
     assert blocked_second is not None
     assert blocked_second["tool_call_ids"] == ["repair-once"]

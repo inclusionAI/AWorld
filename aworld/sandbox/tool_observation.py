@@ -174,17 +174,33 @@ def _completion_contract(context: Any) -> Any:
 def _declared_target_ids(context: Any) -> frozenset[str]:
     contract = _completion_contract(context)
     targets: set[str] = set()
+
+    owner_resolver = getattr(context, "_task_runtime_registry_owner", None)
+    owner = owner_resolver() if callable(owner_resolver) else None
+    workspace_root = getattr(context, "workspace_path", None)
+    if (not isinstance(workspace_root, str) or not workspace_root.strip()) and owner:
+        workspace_root = getattr(owner, "workspace_path", None)
+    workspace_root = (
+        posixpath.normpath(workspace_root.replace("\\", "/"))
+        if isinstance(workspace_root, str) and workspace_root.strip()
+        else None
+    )
+
+    def declared_identity(path: str) -> str:
+        normalized = posixpath.normpath(path.replace("\\", "/"))
+        if workspace_root is not None and not posixpath.isabs(normalized):
+            normalized = posixpath.normpath(posixpath.join(workspace_root, normalized))
+        return semantic_target_sha256(normalized)
+
     for requirement in getattr(contract, "required_artifacts", ()) or ():
         path = getattr(requirement, "path", None)
         if not isinstance(path, str):
             continue
         try:
-            targets.add(semantic_target_sha256(path))
+            targets.add(declared_identity(path))
         except ValueError:
             continue
     owners = [context]
-    owner_resolver = getattr(context, "_task_runtime_registry_owner", None)
-    owner = owner_resolver() if callable(owner_resolver) else None
     if owner is not None and owner is not context:
         owners.append(owner)
     for candidate_owner in owners:
@@ -221,7 +237,7 @@ def _declared_target_ids(context: Any) -> frozenset[str]:
             if not isinstance(path, str):
                 continue
             try:
-                targets.add(semantic_target_sha256(path))
+                targets.add(declared_identity(path))
             except ValueError:
                 continue
     return frozenset(targets)

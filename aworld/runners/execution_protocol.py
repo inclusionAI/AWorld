@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import replace
+import hashlib
 import json
 import os
 import re
@@ -76,6 +77,35 @@ _DEADLINE_STAGE_THRESHOLDS = (
     ("validation_due", 0.65),
     ("delivery_only", 0.80),
 )
+_REPAIR_EVIDENCE_HIGH_WATER_BITS = 512
+
+
+def _repair_evidence_positions(fingerprint: str) -> tuple[int, ...]:
+    digest = hashlib.sha256(fingerprint.encode("utf-8")).digest()
+    return tuple(
+        int.from_bytes(digest[index : index + 2], "big")
+        % _REPAIR_EVIDENCE_HIGH_WATER_BITS
+        for index in range(0, 8, 2)
+    )
+
+
+def _repair_evidence_mask(value: Any) -> int:
+    if not isinstance(value, str) or len(value) > 128:
+        return 0
+    try:
+        return int(value, 16)
+    except ValueError:
+        return 0
+
+
+def _repair_evidence_seen(mask: int, fingerprint: str) -> bool:
+    return all(mask & (1 << bit) for bit in _repair_evidence_positions(fingerprint))
+
+
+def _repair_evidence_add(mask: int, fingerprint: str) -> int:
+    for bit in _repair_evidence_positions(fingerprint):
+        mask |= 1 << bit
+    return mask
 
 
 def _bounded_counter(value: Any) -> int:
@@ -1284,15 +1314,29 @@ def _mint_review_repair_authorization(
     if not isinstance(candidate_fingerprint, str):
         candidate_fingerprint, _ = _public_candidate_binding(context, agent_id)
     scope_hash = semantic_fingerprint(_model_decision_scope(context, agent_id))
+    failure_evidence_hash = semantic_fingerprint(
+        {
+            "scope_hash": scope_hash,
+            "candidate_fingerprint": candidate_fingerprint,
+            "review_evidence": dict(evidence),
+        }
+    )
+    high_water = _repair_evidence_mask(
+        gate.get("repair_failure_evidence_high_water")
+    )
+    if _repair_evidence_seen(high_water, failure_evidence_hash):
+        return
+    high_water = _repair_evidence_add(high_water, failure_evidence_hash)
     updated = dict(gate)
     updated["candidate_fingerprint"] = candidate_fingerprint
     updated["repair_authorization"] = {
         "schema_version": "aworld.repair-authorization/v1",
         "scope_hash": scope_hash,
         "candidate_fingerprint": candidate_fingerprint,
-        "failure_evidence_hash": semantic_fingerprint(dict(evidence)),
+        "failure_evidence_hash": failure_evidence_hash,
         "used": False,
     }
+    updated["repair_failure_evidence_high_water"] = format(high_water, "0128x")
     updated["validation_window_open"] = True
     owner = state_context(context)
     if owner is not None:
@@ -1882,6 +1926,11 @@ def _update_mutation_gate(
         or repair_authorization.get("used") is True
     ):
         repair_authorization = None
+    repair_evidence_high_water = _repair_evidence_mask(
+        previous.get("repair_failure_evidence_high_water")
+        if isinstance(previous, Mapping)
+        else None
+    )
     failed_validations = []
     for value in semantic_state.get("observed_action_semantics") or ():
         try:
@@ -1900,20 +1949,29 @@ def _update_mutation_gate(
             failed_validations.append(receipt)
     if candidate_fingerprint and failed_validations:
         receipt = failed_validations[0]
-        repair_authorization = {
-            "schema_version": "aworld.repair-authorization/v1",
-            "scope_hash": scope_hash,
-            "candidate_fingerprint": candidate_fingerprint,
-            "failure_evidence_hash": semantic_fingerprint(
-                {
-                    "validation_kind": receipt.validation_kind,
-                    "target_ids": receipt.target_ids,
-                    "result_hash": semantic_state.get("result_hash"),
-                    "failure_signature": semantic_state.get("failure_signature"),
-                }
-            ),
-            "used": False,
-        }
+        failure_evidence_hash = semantic_fingerprint(
+            {
+                "scope_hash": scope_hash,
+                "candidate_fingerprint": candidate_fingerprint,
+                "validation_kind": receipt.validation_kind,
+                "target_ids": receipt.target_ids,
+                "result_hash": semantic_state.get("result_hash"),
+                "failure_signature": semantic_state.get("failure_signature"),
+            }
+        )
+        if not _repair_evidence_seen(
+            repair_evidence_high_water, failure_evidence_hash
+        ):
+            repair_evidence_high_water = _repair_evidence_add(
+                repair_evidence_high_water, failure_evidence_hash
+            )
+            repair_authorization = {
+                "schema_version": "aworld.repair-authorization/v1",
+                "scope_hash": scope_hash,
+                "candidate_fingerprint": candidate_fingerprint,
+                "failure_evidence_hash": failure_evidence_hash,
+                "used": False,
+            }
     validation_window_open = repair_authorization is not None
     active = bool(
         execution_protocol_policy(context, agent_id).mode is ProtocolMode.GUIDE
@@ -1951,6 +2009,9 @@ def _update_mutation_gate(
         "validation_window_open": validation_window_open,
         "candidate_fingerprint": candidate_fingerprint,
         "repair_authorization": repair_authorization,
+        "repair_failure_evidence_high_water": format(
+            repair_evidence_high_water, "0128x"
+        ),
         "declared_target_contract": bool(declared_action_target_ids(owner)),
         "pre_candidate_latched": pre_candidate_latched,
         "consecutive_read_only_observations": read_only_count,
@@ -2049,6 +2110,16 @@ def mutation_gate_interception(
             _model_decision_scope(context, agent_id)
         ):
             # A copied gate from another task epoch has no authority here.
+            return None
+    else:
+        owner = state_context(context)
+        if (
+            gate.get("agent_id") != agent_id
+            or gate.get("task_id") != getattr(owner, "task_id", None)
+            or gate.get("task_epoch") != getattr(owner, "task_epoch", None)
+        ):
+            # v1/v2 persisted raw scope fields.  Migrate only an exact current
+            # scope; missing or stale legacy identity is fail-open.
             return None
     stage_value = gate.get("convergence_stage")
     try:

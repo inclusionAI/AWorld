@@ -1002,6 +1002,24 @@ def _record_semantic_tool_progress_locked(
         for value in (previous.get("recent_failure_signatures") or [])
         if isinstance(value, str)
     ][-7:]
+    failure_signature_high_water = _delivery_high_water_mask(
+        previous.get("failure_signature_high_water_bloom")
+    )
+    if failure_signature_high_water == 0:
+        for fingerprint in recent_failure_signatures:
+            failure_signature_high_water = _delivery_high_water_add(
+                failure_signature_high_water, fingerprint
+            )
+    failure_novel = bool(
+        failure_signature is not None
+        and not _delivery_high_water_contains(
+            failure_signature_high_water, failure_signature
+        )
+    )
+    if failure_signature is not None:
+        failure_signature_high_water = _delivery_high_water_add(
+            failure_signature_high_water, failure_signature
+        )
     observed_results_complete = bool(action_results) and all(
         isinstance(result, Mapping)
         and result.get("success") is True
@@ -1015,17 +1033,24 @@ def _record_semantic_tool_progress_locked(
         for receipt in observed_action_semantics
         if isinstance(receipt, Mapping)
     )
+    previous_unresolved_failure = previous.get("unresolved_novel_failure")
+    if not isinstance(previous_unresolved_failure, Mapping):
+        previous_unresolved_failure = None
     failure_resolved = bool(
-        previous.get("failure_signature") is not None
-        and previous.get("failure_operation_hash") == operation_hash
+        previous_unresolved_failure is not None
+        and previous_unresolved_failure.get("operation_hash") == operation_hash
         and failure_signature is None
         and observed_results_complete
         and successful_typed_result
     )
-    failure_novel = bool(
-        failure_signature is not None
-        and failure_signature not in recent_failure_signatures
-    )
+    unresolved_novel_failure = previous_unresolved_failure
+    if failure_novel:
+        unresolved_novel_failure = {
+            "failure_signature": failure_signature,
+            "operation_hash": operation_hash,
+        }
+    elif failure_resolved:
+        unresolved_novel_failure = None
     failure_changed = failure_resolved or failure_novel
     if failure_signature is not None:
         recent_failure_signatures.append(failure_signature)
@@ -1164,6 +1189,10 @@ def _record_semantic_tool_progress_locked(
         "failure_signature": failure_signature,
         "failure_operation_hash": operation_hash if failure_signature else None,
         "failure_resolved": failure_resolved,
+        "failure_signature_high_water_bloom": format(
+            failure_signature_high_water, "0128x"
+        ),
+        "unresolved_novel_failure": unresolved_novel_failure,
         "recent_failure_signatures": recent_failure_signatures[-8:],
         "hypothesis_id": hypothesis_id,
         "semantic_progress_enabled": semantic_ledger_enabled,

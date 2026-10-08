@@ -839,6 +839,73 @@ def test_alternating_known_failure_signatures_do_not_reset_progress():
     assert len(states[-1]["recent_failure_signatures"]) == 6
 
 
+def test_failure_resolution_advances_only_one_novel_unresolved_occurrence():
+    context = Context(task_id="novel-failure-resolution")
+    configure_execution_protocol(
+        context,
+        "agent",
+        ExecutionProtocolPolicy(mode=ProtocolMode.GUIDE),
+    )
+
+    def observe(*, success: bool, index: int):
+        call_id = f"retry-{index}"
+        return record_semantic_tool_progress(
+            context,
+            tool_name="terminal",
+            agent_id="agent",
+            actions=[
+                ActionModel(
+                    tool_name="terminal",
+                    action_name="run_code",
+                    tool_call_id=call_id,
+                    params={"code": "python check.py"},
+                )
+            ],
+            observation=Observation(
+                action_result=[
+                    ActionResult(
+                        tool_call_id=call_id,
+                        success=success,
+                        error=None if success else "AssertionError: stable failure",
+                        metadata={
+                            "sandbox_observation": {
+                                "effect": "read_only",
+                                "workspace_mutated": False,
+                                "workspace_generation": 0,
+                                "action_semantic_receipt": {
+                                    "schema_version": "aworld.action-semantic-receipt/v1",
+                                    "capability_aliases": ["workspace.read"],
+                                    "effect": "read_only",
+                                    "target_ids": [],
+                                    "executed": True,
+                                    "succeeded": success,
+                                    "timed_out": False,
+                                    "validation_kind": None,
+                                    "declared_deliverable_targeted": False,
+                                    "tool_call_id": call_id,
+                                },
+                            }
+                        },
+                    )
+                ]
+            ),
+        )
+
+    first_failure = observe(success=False, index=1)
+    first_success = observe(success=True, index=2)
+    replayed_failure = observe(success=False, index=3)
+    replayed_success = observe(success=True, index=4)
+
+    assert first_failure["failure_resolved"] is False
+    assert first_failure["unresolved_novel_failure"] is not None
+    assert first_success["failure_resolved"] is True
+    assert first_success["delivery_progress_advanced"] is True
+    assert replayed_failure["failure_resolved"] is False
+    assert replayed_failure["unresolved_novel_failure"] is None
+    assert replayed_success["failure_resolved"] is False
+    assert replayed_success["delivery_progress_advanced"] is False
+
+
 def test_semantic_progress_ledger_env_opt_out(monkeypatch):
     monkeypatch.setenv("AWORLD_SEMANTIC_PROGRESS_LEDGER", "false")
     context = Context(task_id="semantic-ledger-off")
