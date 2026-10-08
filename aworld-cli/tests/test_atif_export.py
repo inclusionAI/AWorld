@@ -1,9 +1,15 @@
 from __future__ import annotations
 
 import json
+import os
+import tempfile
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+
+from aworld.core.context.base import Context
+from aworld.core.tool_action_journal import append_tool_action_event
 
 from aworld_cli.atif import (
     AtifExportStatus,
@@ -11,7 +17,14 @@ from aworld_cli.atif import (
     try_write_atif_trajectory,
     write_atif_trajectory,
 )
-from aworld_cli.main import _live_trajectory_from_llm_calls
+from aworld_cli.main import (
+    _live_provider_call_records,
+    _live_trajectory_from_llm_calls,
+)
+from aworld_cli.top_level_commands.run_cmd import (
+    _cleanup_transient_trajectory_journals,
+    _configure_transient_trajectory_journals,
+)
 
 
 def test_atif_exports_complete_provider_usage_without_counting_mirrored_calls():
@@ -103,9 +116,10 @@ def test_atif_preserves_provider_reported_zero_cache_hit() -> None:
     )
 
     assert trajectory["final_metrics"]["total_cached_tokens"] == 0
-    assert trajectory["final_metrics"]["extra"]["llm_diagnostics"]["cache"][
-        "reported"
-    ] is True
+    assert (
+        trajectory["final_metrics"]["extra"]["llm_diagnostics"]["cache"]["reported"]
+        is True
+    )
 
 
 @pytest.mark.parametrize(
@@ -322,9 +336,7 @@ def test_task_response_and_live_recovery_export_the_same_tool_name():
                 {
                     "task_id": "task-1",
                     "agent_id": "Aworld",
-                    "response": {
-                        "message": {"content": "", "tool_calls": [raw_call]}
-                    },
+                    "response": {"message": {"content": "", "tool_calls": [raw_call]}},
                 }
             ],
             context=SimpleNamespace(task_id="task-1", session_id="session-1"),
@@ -344,10 +356,535 @@ def test_task_response_and_live_recovery_export_the_same_tool_name():
         agent_version="dev",
     )
 
-    assert task_response["steps"][1]["tool_calls"] == live_recovery["steps"][1][
-        "tool_calls"
-    ]
+    assert (
+        task_response["steps"][1]["tool_calls"]
+        == live_recovery["steps"][1]["tool_calls"]
+    )
     assert task_response["steps"][1]["tool_calls"][0]["function_name"] == "run_code"
+
+
+def test_atif_labels_tool_call_only_turn_without_claiming_empty_response():
+    trajectory = build_atif_trajectory(
+        {
+            "trajectory": [
+                {
+                    "meta": {"task_id": "task-1", "step": 1},
+                    "action": {
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "call-1",
+                                "function": {
+                                    "name": "run_code",
+                                    "arguments": {"code": "pwd"},
+                                },
+                            }
+                        ],
+                    },
+                }
+            ]
+        },
+        prompt="Inspect the workspace",
+        agent_name="Aworld",
+        agent_version="dev",
+    )
+
+    step = trajectory["steps"][1]
+    assert step["message"] == "(tool call only)"
+    assert step["extra"]["assistant_response_kind"] == "tool_call_only"
+    assert "empty response" not in step["message"]
+
+
+def test_live_atif_distinguishes_reasoning_only_framework_retry():
+    raw_call = {
+        "id": "call-2",
+        "function": {"name": "run_code", "arguments": {"code": "pwd"}},
+    }
+    native = _live_trajectory_from_llm_calls(
+        [
+            {
+                "request_id": "request-1",
+                "task_id": "task-1",
+                "agent_id": "Aworld",
+                "diagnostics": {
+                    "stream": {"reported": True, "reasoning_chars_observed": 42}
+                },
+                "response": {
+                    "message": {"content": "", "tool_calls": []},
+                    "finish_reason": "stop",
+                },
+            },
+            {
+                "request_id": "request-2",
+                "task_id": "task-1",
+                "agent_id": "Aworld",
+                "turn_economics": {
+                    "schema_version": "aworld.context.turn-economics.v1",
+                    "turn_kind": "model",
+                    "cause": "framework_retry",
+                },
+                "response": {
+                    "message": {"content": "", "tool_calls": [raw_call]},
+                    "finish_reason": "tool_calls",
+                },
+            },
+        ],
+        context=SimpleNamespace(task_id="task-1", session_id="session-1"),
+    )
+
+    trajectory = build_atif_trajectory(
+        {"trajectory_capture_mode": "live_context", "trajectory": native},
+        prompt="Inspect the workspace",
+        agent_name="Aworld",
+        agent_version="dev",
+    )
+
+    first = trajectory["steps"][1]
+    assert first["message"] == "(reasoning-only response; framework retry followed)"
+    assert first["extra"]["assistant_response_kind"] == "reasoning_only_retry"
+    assert trajectory["steps"][2]["extra"]["assistant_response_kind"] == (
+        "tool_call_only"
+    )
+
+
+def test_deadline_recovery_uses_durable_llm_call_without_live_context(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+):
+    llm_journal = tmp_path / "llm-calls.journal.jsonl"
+    monkeypatch.setenv("AWORLD_LLM_CALL_JOURNAL_PATH", str(llm_journal))
+    context = Context(task_id="task-deadline")
+    context.append_llm_call(
+        {
+            "request_id": "request-deadline",
+            "task_id": "task-deadline",
+            "agent_id": "Aworld",
+            "provider_invoked": True,
+            "status": "success",
+            "started_at": 1_700_000_000,
+            "finished_at": 1_700_000_001,
+            "response": {
+                "message": {
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "call-deadline",
+                            "function": {
+                                "name": "run_code",
+                                "arguments": {"code": "printf complete"},
+                            },
+                        }
+                    ],
+                },
+                "finish_reason": "tool_calls",
+            },
+        }
+    )
+    detached = SimpleNamespace(
+        task_id="task-deadline",
+        session_id="session-deadline",
+        get_reconciled_llm_calls=lambda: [],
+    )
+
+    calls = _live_provider_call_records(detached)
+    native = _live_trajectory_from_llm_calls(calls, context=detached)
+
+    assert [call["request_id"] for call in calls] == ["request-deadline"]
+    assert native[0]["meta"]["llm_request_id"] == "request-deadline"
+    assert native[0]["action"]["tool_calls"][0]["id"] == "call-deadline"
+
+
+def test_cli_transient_journals_are_private_and_restore_environment(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.delenv("AWORLD_LLM_CALL_JOURNAL_PATH", raising=False)
+    monkeypatch.delenv("AWORLD_TOOL_ACTION_JOURNAL_PATH", raising=False)
+
+    state = _configure_transient_trajectory_journals(enabled=True)
+    assert state is not None
+    directory, owned = state
+    assert set(owned) == {
+        "AWORLD_LLM_CALL_JOURNAL_PATH",
+        "AWORLD_TOOL_ACTION_JOURNAL_PATH",
+    }
+    assert directory.parent.resolve() == Path(tempfile.gettempdir()).resolve()
+    assert all(
+        Path(path).parent.resolve() == directory.resolve() for path in owned.values()
+    )
+
+    for path in owned.values():
+        Path(path).write_text("durable evidence", encoding="utf-8")
+    _cleanup_transient_trajectory_journals(state)
+
+    assert not directory.exists()
+    assert "AWORLD_LLM_CALL_JOURNAL_PATH" not in os.environ
+    assert "AWORLD_TOOL_ACTION_JOURNAL_PATH" not in os.environ
+
+
+@pytest.mark.parametrize("capture_mode", ["task_response", "live_context"])
+def test_atif_recovers_bounded_typed_tool_results_from_durable_journal(
+    tmp_path, monkeypatch: pytest.MonkeyPatch, capture_mode: str
+):
+    journal = tmp_path / "tool-actions.journal.jsonl"
+    monkeypatch.setenv("AWORLD_TOOL_ACTION_JOURNAL_PATH", str(journal))
+    context = Context(task_id="task-journal")
+    actions = [
+        {
+            "tool_call_id": "call-inline",
+            "tool_name": "terminal",
+            "action_name": "run_code",
+            "params": {
+                "code": "printf ok",
+                "api_key": "sk-argumentsecretvalue123",
+            },
+        },
+        {
+            "tool_call_id": "call-offloaded",
+            "tool_name": "terminal",
+            "action_name": "run_code",
+            "params": {"code": "large-output"},
+        },
+        {
+            "tool_call_id": "call-cache",
+            "tool_name": "terminal",
+            "action_name": "run_code",
+            "params": {"code": "cat report.txt"},
+        },
+        {
+            "tool_call_id": "call-intercepted",
+            "tool_name": "terminal",
+            "action_name": "run_code",
+            "params": {"code": "cat secret.txt"},
+        },
+        {
+            "tool_call_id": "call-failed",
+            "tool_name": "terminal",
+            "action_name": "run_code",
+            "params": {"code": "false"},
+        },
+        {
+            "tool_call_id": "call-transport-failed",
+            "tool_name": "terminal",
+            "action_name": "run_code",
+            "params": {"code": "transport-failure"},
+        },
+    ]
+    append_tool_action_event(
+        context=context,
+        event_type="tool_observation_recorded",
+        actions=actions[:-1],
+        results=[
+            {
+                "tool_call_id": "call-inline",
+                "success": True,
+                "content": (
+                    "ok\n"
+                    + "x" * 20_000
+                    + "\napi_key=sk-supersecretvalue123"
+                ),
+                "metadata": {},
+            },
+            {
+                "tool_call_id": "call-offloaded",
+                "success": True,
+                "content": {
+                    "head": "first lines",
+                    "tail": "last lines",
+                    "omitted_chars": 90_000,
+                    "artifact_ref": "context-artifact://private-location",
+                },
+                "metadata": {
+                    "tool_output_policy": {
+                        "reason_code": "oversized_output",
+                        "raw_byte_count": 100_000,
+                        "raw_checksum": "sha256:" + "a" * 64,
+                        "inline_tokens": 64,
+                        "offloaded_tokens": 25_000,
+                        "artifact_ref": "context-artifact://private-location",
+                    }
+                },
+            },
+            {
+                "tool_call_id": "call-cache",
+                "success": True,
+                "content": "cached report",
+                "metadata": {
+                    "sandbox_observation": {
+                        "schema_version": "aworld.sandbox-tool-observation/v1",
+                        "effect": "read_only",
+                        "cache_hit": True,
+                        "changed": False,
+                        "workspace_mutated": False,
+                        "workspace_generation": 7,
+                        "observation_id": "sha256:" + "b" * 64,
+                        "terminal_execution_receipt": {
+                            "schema_version": "aworld.terminal-execution-receipt/v2",
+                            "effective_language": "shell",
+                            "effect": "read_only",
+                            "executed": True,
+                            "timed_out": False,
+                            "exit_code": 0,
+                            "read_paths": ["report.txt"]
+                            + [f"part-{index}.txt" for index in range(39)],
+                            "write_paths": [
+                                "/tmp/api_key=sk-pathsecretvalue123"
+                            ],
+                            "workspace_generation_delta": 0,
+                        },
+                    }
+                },
+            },
+            {
+                "tool_call_id": "call-intercepted",
+                "success": False,
+                "content": {"type": "convergence_gate", "message": "blocked"},
+                "error": "tool_call_intercepted",
+                "metadata": {
+                    "sandbox_observation": {
+                        "schema_version": "aworld.sandbox-tool-observation/v1",
+                        "effect": "blocked_read_only",
+                        "cache_hit": False,
+                        "changed": False,
+                        "workspace_mutated": False,
+                        "workspace_generation": 7,
+                        "hook_interception": {
+                            "schema_version": "aworld.tool-interception/v1",
+                            "kind": "block",
+                            "error_code": "tool_call_intercepted",
+                            "message": "private policy details",
+                        },
+                    }
+                },
+            },
+            {
+                "tool_call_id": "call-failed",
+                "success": False,
+                "content": "command failed",
+                "error": "nonzero_exit",
+                "metadata": {},
+            },
+        ],
+        status="completed",
+        path=journal,
+    )
+    append_tool_action_event(
+        context=context,
+        event_type="sandbox_call_failed",
+        actions=[actions[-1]],
+        status="failed",
+        metadata={"error_type": "RuntimeError"},
+        path=journal,
+    )
+    tool_calls = [
+        {
+            "id": action["tool_call_id"],
+            "function": {
+                "name": action["action_name"],
+                "arguments": action["params"],
+            },
+        }
+        for action in actions
+    ]
+
+    trajectory = build_atif_trajectory(
+        {
+            "trajectory_capture_mode": capture_mode,
+            "trajectory_fidelity": (
+                "partial" if capture_mode == "live_context" else "complete"
+            ),
+            "trajectory": [
+                {
+                    "meta": {"task_id": "task-journal", "step": 1},
+                    # Deliberately no state.input.action_result: this is the
+                    # partial/deadline shape that previously lost every result.
+                    "action": {"content": "", "tool_calls": tool_calls},
+                }
+            ],
+        },
+        prompt="Run the tools",
+        agent_name="Aworld",
+        agent_version="dev",
+        run_outcome={
+            "semantic_status": (
+                "budget_exhausted" if capture_mode == "live_context" else "succeeded"
+            )
+        },
+    )
+
+    results = {
+        item["source_call_id"]: item
+        for item in trajectory["steps"][1]["observation"]["results"]
+    }
+    arguments = trajectory["steps"][1]["tool_calls"][0]["arguments"]
+    assert arguments["api_key"] == "<REDACTED_SECRET>"
+    assert "sk-argumentsecretvalue123" not in json.dumps(trajectory)
+    assert set(results) == {action["tool_call_id"] for action in actions}
+    assert results["call-inline"]["extra"]["status"] == "completed"
+    assert "sk-supersecretvalue123" not in results["call-inline"]["content"]
+    assert "<REDACTED_SECRET>" in results["call-inline"]["content"]
+    assert len(results["call-inline"]["content"]) <= 12_000
+    assert results["call-inline"]["extra"]["content"]["truncated"] is True
+    assert results["call-offloaded"]["extra"]["output"]["kind"] == "offloaded"
+    assert "artifact_ref" not in json.dumps(results["call-offloaded"]["extra"])
+    assert results["call-cache"]["extra"]["cache_replay"] is True
+    terminal = results["call-cache"]["extra"]["terminal_execution"]
+    assert terminal["effective_language"] == "shell"
+    assert terminal["effect"] == "read_only"
+    assert terminal["executed"] is True
+    assert terminal["timed_out"] is False
+    assert terminal["exit_code"] == 0
+    assert terminal["workspace_generation_delta"] == 0
+    assert len(terminal["read_paths"]) == 32
+    assert terminal["read_paths_omitted_count"] == 8
+    assert "sk-pathsecretvalue123" not in terminal["write_paths"][0]
+    assert results["call-intercepted"]["extra"]["status"] == "intercepted"
+    assert "private policy details" not in json.dumps(results["call-intercepted"])
+    assert results["call-failed"]["extra"]["status"] == "failed"
+    assert results["call-failed"]["extra"]["error_code"] == "nonzero_exit"
+    assert results["call-transport-failed"]["extra"]["status"] == "failed"
+    assert results["call-transport-failed"]["extra"]["error_code"] == (
+        "sandbox_call_failed"
+    )
+    assert results["call-transport-failed"]["extra"]["failure_type"] == (
+        "RuntimeError"
+    )
+    evidence = trajectory["extra"]["aworld"]["tool_action_journal"]
+    assert evidence["status"] == "available"
+    assert evidence["recovered_result_count"] == 6
+
+
+def test_atif_does_not_recover_foreign_tool_result_without_task_scope(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+):
+    journal = tmp_path / "tool-actions.journal.jsonl"
+    monkeypatch.setenv("AWORLD_TOOL_ACTION_JOURNAL_PATH", str(journal))
+    append_tool_action_event(
+        context=SimpleNamespace(task_id="foreign-task"),
+        event_type="tool_observation_recorded",
+        actions=[{"tool_call_id": "reused-call"}],
+        results=[
+            {
+                "tool_call_id": "reused-call",
+                "success": True,
+                "content": "foreign secret result",
+            }
+        ],
+        status="completed",
+        path=journal,
+    )
+
+    trajectory = build_atif_trajectory(
+        {
+            "trajectory": [
+                {
+                    "meta": {"step": 1},
+                    "action": {
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "reused-call",
+                                "function": {"name": "run_code", "arguments": {}},
+                            }
+                        ],
+                    },
+                }
+            ]
+        },
+        prompt="Run",
+        agent_name="Aworld",
+        agent_version="dev",
+    )
+
+    assert "observation" not in trajectory["steps"][1]
+    evidence = trajectory["extra"]["aworld"]["tool_action_journal"]
+    assert evidence["status"] == "unavailable"
+    assert evidence["reason_code"] == "task_scope_unavailable"
+    assert "foreign secret result" not in json.dumps(trajectory)
+
+
+def test_atif_scopes_reused_call_id_to_session_and_task_epoch(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+):
+    journal = tmp_path / "tool-actions.journal.jsonl"
+    monkeypatch.setenv("AWORLD_TOOL_ACTION_JOURNAL_PATH", str(journal))
+    action = {"tool_call_id": "reused-call"}
+    for session_id, task_epoch, content in (
+        ("old-session", 1, "old result"),
+        ("current-session", 2, "current result"),
+    ):
+        append_tool_action_event(
+            context=SimpleNamespace(
+                task_id="reused-task",
+                session_id=session_id,
+                task_epoch=task_epoch,
+            ),
+            event_type="tool_observation_recorded",
+            actions=[action],
+            results=[
+                {
+                    "tool_call_id": "reused-call",
+                    "success": True,
+                    "content": content,
+                }
+            ],
+            status="completed",
+            path=journal,
+        )
+    trajectory = build_atif_trajectory(
+        {
+            "trajectory": [
+                {
+                    "meta": {
+                        "task_id": "reused-task",
+                        "session_id": "current-session",
+                        "task_epoch": 2,
+                        "step": 1,
+                    },
+                    "action": {
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "reused-call",
+                                "function": {"name": "run_code", "arguments": {}},
+                            }
+                        ],
+                    },
+                }
+            ]
+        },
+        prompt="Run",
+        agent_name="Aworld",
+        agent_version="dev",
+    )
+
+    result = trajectory["steps"][1]["observation"]["results"][0]
+    assert result["content"] == "current result"
+    assert "old result" not in json.dumps(trajectory)
+
+    ambiguous = build_atif_trajectory(
+        {
+            "trajectory": [
+                {
+                    "meta": {"task_id": "reused-task", "step": 1},
+                    "action": {
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "reused-call",
+                                "function": {"name": "run_code", "arguments": {}},
+                            }
+                        ],
+                    },
+                }
+            ]
+        },
+        prompt="Run",
+        agent_name="Aworld",
+        agent_version="dev",
+    )
+    assert "observation" not in ambiguous["steps"][1]
+    assert ambiguous["extra"]["aworld"]["tool_action_journal"][
+        "ambiguous_call_id_count"
+    ] == 1
 
 
 def test_build_atif_trajectory_has_valid_fallback_step():

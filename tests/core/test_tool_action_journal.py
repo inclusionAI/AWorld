@@ -51,6 +51,7 @@ def test_tool_action_journal_recovers_real_boundary_events(tmp_path):
     ]
     assert {event["batch_id"] for event in recovery.events} == {batch_id}
     assert recovery.events[-1]["results"][0]["content"] == "ok"
+    assert recovery.events[-1]["context"]["task_epoch"] == 0
 
 
 def test_tool_action_journal_ignores_torn_final_record(tmp_path):

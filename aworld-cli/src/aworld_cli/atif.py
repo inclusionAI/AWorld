@@ -2,18 +2,26 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
+from itertools import islice
 from pathlib import Path
 from typing import Any
 
 
 _THINK_BLOCK_RE = re.compile(r"<think>\s*(.*?)\s*</think>", re.DOTALL)
+_SAFE_ERROR_CODE_RE = re.compile(r"[A-Za-z0-9_.:-]{1,128}")
+_MAX_ATIF_TEXT_CHARS = 12_000
+_MAX_ATIF_COLLECTION_ITEMS = 128
+_MAX_DURABLE_TOOL_JOURNAL_BYTES = 256 * 1024 * 1024
+_TOOL_OBSERVATION_SCHEMA_VERSION = "aworld.atif.tool-observation.v1"
 
 
 def _as_dict(value: Any) -> dict[str, Any]:
@@ -29,16 +37,90 @@ def _execution_protocol_telemetry(value: Any) -> dict[str, Any] | None:
     return project_execution_protocol_telemetry(value)
 
 
+def _bounded_redacted_text(
+    value: Any,
+    *,
+    max_chars: int = _MAX_ATIF_TEXT_CHARS,
+) -> tuple[str, dict[str, Any]]:
+    from aworld.secret_detection import redact_sensitive_literals
+
+    if isinstance(value, str):
+        text = value
+    else:
+        try:
+            text = json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+        except (TypeError, ValueError):
+            text = str(value or "")
+    redacted = redact_sensitive_literals(text)
+    original_chars = len(redacted)
+    content_hash = "sha256:" + hashlib.sha256(redacted.encode("utf-8")).hexdigest()
+    if original_chars <= max_chars:
+        return redacted, {
+            "content_chars": original_chars,
+            "content_hash": content_hash,
+            "truncated": False,
+        }
+    marker = "\n…<bounded ATIF tool observation>…\n"
+    available = max(0, max_chars - len(marker))
+    head = available * 3 // 4
+    tail = available - head
+    bounded = redacted[:head] + marker + (redacted[-tail:] if tail else "")
+    return bounded, {
+        "content_chars": original_chars,
+        "content_hash": content_hash,
+        "truncated": True,
+        "omitted_chars": max(0, original_chars - head - tail),
+    }
+
+
+def _safe_projection(value: Any, *, depth: int = 0) -> Any:
+    """Return a bounded JSON value with concrete credential literals removed."""
+
+    if depth >= 5:
+        if isinstance(value, Mapping):
+            return {"bounded_nested_mapping": True}
+        if isinstance(value, (list, tuple)):
+            return ["<bounded nested collection>"]
+        text, _ = _bounded_redacted_text(value, max_chars=512)
+        return text
+    if isinstance(value, Mapping):
+        projected: dict[str, Any] = {}
+        for raw_key, item in islice(value.items(), _MAX_ATIF_COLLECTION_ITEMS):
+            key = str(raw_key)
+            if any(
+                token in key.casefold()
+                for token in ("secret", "token", "password", "api_key", "apikey")
+            ):
+                projected[key] = "<REDACTED_SECRET>"
+            else:
+                projected[key] = _safe_projection(item, depth=depth + 1)
+        return projected
+    if isinstance(value, (list, tuple)):
+        return [
+            _safe_projection(item, depth=depth + 1)
+            for item in value[:_MAX_ATIF_COLLECTION_ITEMS]
+        ]
+    if isinstance(value, str):
+        return _bounded_redacted_text(value)[0]
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    return _bounded_redacted_text(value, max_chars=512)[0]
+
+
 def _parse_arguments(value: Any) -> dict[str, Any]:
     if isinstance(value, dict):
-        return value
+        return _safe_projection(value)
     if isinstance(value, str):
         try:
             parsed = json.loads(value)
         except json.JSONDecodeError:
-            return {"raw": value}
-        return parsed if isinstance(parsed, dict) else {"value": parsed}
-    return {"value": value} if value is not None else {}
+            return {"raw": _safe_projection(value)}
+        return (
+            _safe_projection(parsed)
+            if isinstance(parsed, dict)
+            else {"value": _safe_projection(parsed)}
+        )
+    return {"value": _safe_projection(value)} if value is not None else {}
 
 
 def _iso_timestamp(value: Any) -> str | None:
@@ -48,18 +130,34 @@ def _iso_timestamp(value: Any) -> str | None:
         return None
 
 
-def _split_message_and_reasoning(content: Any) -> tuple[str, str | None]:
+def _split_message_and_reasoning(
+    content: Any,
+    *,
+    response_kind: str | None = None,
+    has_tool_calls: bool = False,
+) -> tuple[str, str | None]:
     text = content if isinstance(content, str) else str(content or "")
     reasoning_parts = _THINK_BLOCK_RE.findall(text)
     message = _THINK_BLOCK_RE.sub("", text).strip()
     reasoning = "\n\n".join(part.strip() for part in reasoning_parts if part.strip())
     if not message:
-        message = "(tool use)" if reasoning_parts else "(empty response)"
+        if response_kind == "reasoning_only_retry":
+            message = "(reasoning-only response; framework retry followed)"
+        elif response_kind == "empty_response_retry":
+            message = "(empty model response; framework retry followed)"
+        elif has_tool_calls:
+            message = "(tool call only)"
+        elif reasoning_parts:
+            message = "(reasoning-only response)"
+        else:
+            message = "(empty model response)"
     return message, reasoning or None
 
 
-def _tool_result_index(native_items: list[dict[str, Any]]) -> dict[str, str]:
-    results: dict[str, str] = {}
+def _tool_result_index(
+    native_items: list[dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    results: dict[str, dict[str, Any]] = {}
     for item in native_items:
         state_input = _as_dict(_as_dict(item.get("state")).get("input"))
         for result in state_input.get("action_result") or []:
@@ -67,8 +165,384 @@ def _tool_result_index(native_items: list[dict[str, Any]]) -> dict[str, str]:
                 continue
             call_id = result.get("tool_call_id")
             if call_id:
-                results[str(call_id)] = str(result.get("content") or "")
+                content, _ = _bounded_redacted_text(
+                    result.get("content")
+                    if isinstance(result.get("content"), str)
+                    else _safe_projection(result.get("content"))
+                )
+                results[str(call_id)] = {"content": content}
     return results
+
+
+def _known_trajectory_scope(
+    trajectory_payload: dict[str, Any], native_items: list[dict[str, Any]]
+) -> tuple[set[str], set[str], set[int], set[str]]:
+    task_ids = {
+        str(task_id)
+        for item in native_items
+        if (task_id := _as_dict(item.get("meta")).get("task_id")) is not None
+    }
+    task_ids.update(
+        str(task_id)
+        for call in trajectory_payload.get("llm_calls") or []
+        if isinstance(call, dict) and (task_id := call.get("task_id")) is not None
+    )
+    session_ids = {
+        str(session_id)
+        for item in native_items
+        if (session_id := _as_dict(item.get("meta")).get("session_id")) is not None
+    }
+    task_epochs = {
+        task_epoch
+        for item in native_items
+        if isinstance(
+            (task_epoch := _as_dict(item.get("meta")).get("task_epoch")), int
+        )
+        and not isinstance(task_epoch, bool)
+        and task_epoch >= 0
+    }
+    task_epochs.update(
+        task_epoch
+        for call in trajectory_payload.get("llm_calls") or []
+        if isinstance(call, dict)
+        and isinstance(
+            (task_epoch := _as_dict(call.get("turn_economics")).get("task_epoch")),
+            int,
+        )
+        and not isinstance(task_epoch, bool)
+        and task_epoch >= 0
+    )
+    call_ids = {
+        str(call_id)
+        for item in native_items
+        for raw_call in _as_dict(item.get("action")).get("tool_calls") or []
+        if isinstance(raw_call, dict)
+        and (call_id := raw_call.get("id")) is not None
+    }
+    return task_ids, session_ids, task_epochs, call_ids
+
+
+def _safe_int(value: Any) -> int | None:
+    return (
+        value
+        if isinstance(value, int) and not isinstance(value, bool) and value >= 0
+        else None
+    )
+
+
+def _safe_error_code(value: Any) -> str | None:
+    text = str(value or "").strip()
+    return text if _SAFE_ERROR_CODE_RE.fullmatch(text) else None
+
+
+def _project_terminal_execution_receipt(value: Any) -> dict[str, Any] | None:
+    receipt = _as_dict(value)
+    if receipt.get("schema_version") not in {
+        "aworld.terminal-execution-receipt/v1",
+        "aworld.terminal-execution-receipt/v2",
+    }:
+        return None
+    projected: dict[str, Any] = {
+        "schema_version": receipt["schema_version"],
+    }
+    for key in ("effective_language", "effect"):
+        candidate = _safe_error_code(receipt.get(key))
+        if candidate is not None:
+            projected[key] = candidate
+    for key in ("executed", "timed_out"):
+        candidate = receipt.get(key)
+        if isinstance(candidate, bool):
+            projected[key] = candidate
+    exit_code = receipt.get("exit_code")
+    if (
+        isinstance(exit_code, int)
+        and not isinstance(exit_code, bool)
+        and -1_000_000 <= exit_code <= 1_000_000
+    ):
+        projected["exit_code"] = exit_code
+    generation_delta = _safe_int(receipt.get("workspace_generation_delta"))
+    if generation_delta is not None:
+        projected["workspace_generation_delta"] = generation_delta
+    for key in ("read_paths", "write_paths"):
+        paths = receipt.get(key)
+        if not isinstance(paths, (list, tuple)):
+            continue
+        projected[key] = [
+            _bounded_redacted_text(path, max_chars=512)[0]
+            for path in paths[:32]
+            if isinstance(path, str)
+        ]
+        if len(paths) > 32:
+            projected[f"{key}_omitted_count"] = len(paths) - 32
+    return projected
+
+
+def _project_tool_observation_result(
+    result: dict[str, Any],
+    *,
+    call_id: str,
+    source: str,
+) -> dict[str, Any]:
+    raw_content = result.get("content")
+    content, content_projection = _bounded_redacted_text(
+        raw_content if isinstance(raw_content, str) else _safe_projection(raw_content)
+    )
+    metadata = _as_dict(result.get("metadata"))
+    sandbox = _as_dict(metadata.get("sandbox_observation"))
+    output_policy = _as_dict(metadata.get("tool_output_policy"))
+    interception = _as_dict(sandbox.get("hook_interception"))
+    terminal_execution = _project_terminal_execution_receipt(
+        sandbox.get("terminal_execution_receipt")
+        or metadata.get("terminal_execution_receipt")
+    )
+    explicit_success = result.get("success")
+    error_code = _safe_error_code(result.get("error"))
+    if interception:
+        status = "intercepted"
+    elif explicit_success is False or error_code is not None:
+        status = "failed"
+    else:
+        status = "completed"
+    output_kind = (
+        "offloaded"
+        if output_policy.get("artifact_ref")
+        or (_safe_int(output_policy.get("offloaded_tokens")) or 0) > 0
+        else "inline"
+    )
+    output: dict[str, Any] = {"kind": output_kind}
+    for source_key, target_key in (
+        ("reason_code", "reason_code"),
+        ("raw_byte_count", "raw_byte_count"),
+        ("raw_checksum", "content_hash"),
+        ("inline_tokens", "inline_tokens"),
+        ("offloaded_tokens", "offloaded_tokens"),
+    ):
+        value = output_policy.get(source_key)
+        if source_key.endswith("count") or source_key.endswith("tokens"):
+            value = _safe_int(value)
+        elif source_key == "reason_code":
+            value = _safe_error_code(value)
+        elif source_key == "raw_checksum":
+            value = value if isinstance(value, str) and len(value) <= 128 else None
+        if value is not None:
+            output[target_key] = value
+    extra: dict[str, Any] = {
+        "schema_version": _TOOL_OBSERVATION_SCHEMA_VERSION,
+        "capture_source": source,
+        "status": status,
+        "content": content_projection,
+        "output": output,
+        "cache_replay": sandbox.get("cache_hit") is True,
+    }
+    if isinstance(explicit_success, bool):
+        extra["success"] = explicit_success
+    if error_code is not None:
+        extra["error_code"] = error_code
+    sandbox_projection = {
+        key: value
+        for key, value in {
+            "effect": (
+                str(sandbox.get("effect"))[:64]
+                if sandbox.get("effect") is not None
+                else None
+            ),
+            "changed": (
+                sandbox.get("changed")
+                if isinstance(sandbox.get("changed"), bool)
+                else None
+            ),
+            "workspace_mutated": (
+                sandbox.get("workspace_mutated")
+                if isinstance(sandbox.get("workspace_mutated"), bool)
+                else None
+            ),
+            "workspace_generation": _safe_int(sandbox.get("workspace_generation")),
+            "observation_id": (
+                sandbox.get("observation_id")
+                if isinstance(sandbox.get("observation_id"), str)
+                and len(sandbox["observation_id"]) <= 128
+                else None
+            ),
+        }.items()
+        if value is not None
+    }
+    if sandbox_projection:
+        extra["sandbox"] = sandbox_projection
+    if terminal_execution is not None:
+        extra["terminal_execution"] = terminal_execution
+    if interception:
+        extra["interception"] = {
+            key: value
+            for key, value in {
+                "kind": _safe_error_code(interception.get("kind")),
+                "error_code": _safe_error_code(interception.get("error_code")),
+                "content_type": _safe_error_code(interception.get("content_type")),
+            }.items()
+            if value is not None
+        }
+    return {
+        "source_call_id": call_id,
+        "content": content,
+        "extra": extra,
+    }
+
+
+def _durable_tool_result_index(
+    trajectory_payload: dict[str, Any], native_items: list[dict[str, Any]]
+) -> tuple[dict[str, dict[str, Any]], dict[str, Any] | None]:
+    """Recover completed Tool observations from the crash-tolerant journal."""
+
+    try:
+        from aworld.core.tool_action_journal import (
+            configured_journal_path,
+            read_tool_action_journal,
+        )
+
+        path = configured_journal_path()
+    except Exception:
+        path = None
+    if path is None:
+        return {}, None
+    task_ids, session_ids, task_epochs, known_call_ids = _known_trajectory_scope(
+        trajectory_payload,
+        native_items,
+    )
+    if not task_ids or not known_call_ids:
+        return {}, {
+            "schema_version": "aworld.tool-action-journal.v1",
+            "status": "unavailable",
+            "reason_code": (
+                "task_scope_unavailable" if not task_ids else "tool_call_scope_unavailable"
+            ),
+            "recovered_result_count": 0,
+        }
+
+    try:
+        if path.stat().st_size > _MAX_DURABLE_TOOL_JOURNAL_BYTES:
+            return {}, {
+                "schema_version": "aworld.tool-action-journal.v1",
+                "status": "unavailable",
+                "reason_code": "journal_size_limit_exceeded",
+                "recovered_result_count": 0,
+            }
+        recovery = read_tool_action_journal(path)
+    except FileNotFoundError:
+        recovery = read_tool_action_journal(path)
+    except Exception:
+        return {}, {
+            "schema_version": "aworld.tool-action-journal.v1",
+            "status": "unavailable",
+            "reason_code": "journal_recovery_failed",
+            "recovered_result_count": 0,
+        }
+    selected: dict[
+        str,
+        tuple[int, tuple[str | None, int | None], dict[str, Any]],
+    ] = {}
+    ambiguous_call_ids: set[str] = set()
+    selected_event_count = 0
+    for event in recovery.events:
+        context = _as_dict(event.get("context"))
+        event_task_id = context.get("task_id")
+        if event_task_id is None or str(event_task_id) not in task_ids:
+            continue
+        event_session_id = context.get("session_id")
+        if session_ids and (
+            event_session_id is None or str(event_session_id) not in session_ids
+        ):
+            continue
+        event_task_epoch = context.get("task_epoch")
+        if task_epochs and (
+            not isinstance(event_task_epoch, int)
+            or isinstance(event_task_epoch, bool)
+            or event_task_epoch not in task_epochs
+        ):
+            continue
+        event_type = str(event.get("event_type") or "")
+        results = event.get("results")
+        actions = event.get("actions")
+        if not isinstance(actions, list):
+            continue
+        priority = {
+            "tool_observation_recorded": 3,
+            "sandbox_call_completed": 2,
+            "sandbox_call_failed": 2,
+            "sandbox_transaction_resolved": 1,
+        }.get(event_type, 0)
+        if priority == 0 or (
+            event_type != "sandbox_call_failed" and not isinstance(results, list)
+        ):
+            continue
+        if not isinstance(results, list):
+            results = []
+        selected_event_count += 1
+        for index, action in enumerate(actions):
+            action = _as_dict(action)
+            result = _as_dict(results[index] if index < len(results) else None)
+            if event_type == "sandbox_call_failed" and not result:
+                result = {
+                    "tool_call_id": action.get("tool_call_id"),
+                    "success": False,
+                    "error": "sandbox_call_failed",
+                    "content": "Tool execution failed before returning an observation.",
+                }
+            call_id = result.get("tool_call_id") or action.get("tool_call_id")
+            if (
+                not isinstance(call_id, str)
+                or not call_id
+                or call_id not in known_call_ids
+                or call_id in ambiguous_call_ids
+            ):
+                continue
+            event_scope = (
+                str(event_session_id) if event_session_id is not None else None,
+                (
+                    event_task_epoch
+                    if isinstance(event_task_epoch, int)
+                    and not isinstance(event_task_epoch, bool)
+                    else None
+                ),
+            )
+            previous = selected.get(call_id)
+            if previous is not None:
+                scopes_conflict = previous[1] != event_scope
+                if scopes_conflict:
+                    selected.pop(call_id, None)
+                    ambiguous_call_ids.add(call_id)
+                    continue
+                if previous[0] > priority:
+                    continue
+            projected_result = _project_tool_observation_result(
+                result,
+                call_id=call_id,
+                source=(
+                    "tool_action_journal:model_visible_observation"
+                    if event_type == "tool_observation_recorded"
+                    else f"tool_action_journal:{event_type}"
+                ),
+            )
+            if event_type == "sandbox_call_failed":
+                failure_type = _safe_error_code(
+                    _as_dict(event.get("metadata")).get("error_type")
+                )
+                if failure_type is not None:
+                    projected_result["extra"]["failure_type"] = failure_type
+            selected[call_id] = (
+                priority,
+                event_scope,
+                projected_result,
+            )
+    evidence = recovery.to_evidence()
+    evidence.update(
+        {
+            "selected_event_count": selected_event_count,
+            "recovered_result_count": len(selected),
+            "ambiguous_call_id_count": len(ambiguous_call_ids),
+        }
+    )
+    return {
+        call_id: value for call_id, (_, _, value) in selected.items()
+    }, evidence
 
 
 def _native_agent_step(
@@ -76,15 +550,25 @@ def _native_agent_step(
     *,
     step_id: int,
     model_name: str | None,
-    tool_results: dict[str, str],
+    tool_results: dict[str, dict[str, Any]],
 ) -> dict[str, Any]:
     meta = _as_dict(item.get("meta"))
     action = _as_dict(item.get("action"))
-    message, reasoning = _split_message_and_reasoning(action.get("content"))
+    raw_calls = action.get("tool_calls") or []
+    response_kind = meta.get("assistant_response_kind")
+    raw_content = action.get("content")
+    visible_content_empty = not _THINK_BLOCK_RE.sub(
+        "", raw_content if isinstance(raw_content, str) else str(raw_content or "")
+    ).strip()
+    message, reasoning = _split_message_and_reasoning(
+        raw_content,
+        response_kind=(str(response_kind) if response_kind else None),
+        has_tool_calls=any(isinstance(call, dict) for call in raw_calls),
+    )
 
     tool_calls: list[dict[str, Any]] = []
     observation_results: list[dict[str, Any]] = []
-    for index, raw_call in enumerate(action.get("tool_calls") or [], start=1):
+    for index, raw_call in enumerate(raw_calls, start=1):
         if not isinstance(raw_call, dict):
             continue
         function = _as_dict(raw_call.get("function"))
@@ -97,12 +581,22 @@ def _native_agent_step(
             }
         )
         if call_id in tool_results:
-            observation_results.append(
-                {
-                    "source_call_id": call_id,
-                    "content": tool_results[call_id],
-                }
-            )
+            result = tool_results[call_id]
+            observation = {
+                "source_call_id": call_id,
+                "content": result.get("content", ""),
+            }
+            if isinstance(result.get("extra"), dict):
+                observation["extra"] = result["extra"]
+            observation_results.append(observation)
+
+    if response_kind is None:
+        if tool_calls and visible_content_empty:
+            response_kind = "tool_call_only"
+        elif reasoning and visible_content_empty:
+            response_kind = "reasoning_only"
+        elif visible_content_empty:
+            response_kind = "empty_response"
 
     step: dict[str, Any] = {
         "step_id": step_id,
@@ -115,6 +609,13 @@ def _native_agent_step(
             "aworld_agent_id": meta.get("agent_id"),
         },
     }
+    if response_kind:
+        step["extra"]["assistant_response_kind"] = str(response_kind)
+    if isinstance(meta.get("llm_request_id"), str) and meta["llm_request_id"]:
+        step["extra"]["aworld_llm_request_id"] = meta["llm_request_id"][:256]
+    task_epoch = _safe_int(meta.get("task_epoch"))
+    if task_epoch is not None:
+        step["extra"]["aworld_task_epoch"] = task_epoch
     timestamp = _iso_timestamp(meta.get("execute_time"))
     if timestamp:
         step["timestamp"] = timestamp
@@ -306,6 +807,15 @@ def build_atif_trajectory(
         }
     ]
     tool_results = _tool_result_index(native_items)
+    durable_tool_results, tool_journal_evidence = _durable_tool_result_index(
+        trajectory_payload,
+        native_items,
+    )
+    # The post-boundary journal is the authoritative durable copy of the
+    # bounded result that entered model history.  It is strictly richer than a
+    # legacy ``state.input.action_result`` projection and remains available
+    # when a deadline interrupts the next trajectory checkpoint.
+    tool_results.update(durable_tool_results)
     for item in native_items:
         steps.append(
             _native_agent_step(
@@ -412,6 +922,8 @@ def build_atif_trajectory(
             "last_successful_checkpoint"
         ),
     }
+    if tool_journal_evidence is not None:
+        aworld_projection["tool_action_journal"] = tool_journal_evidence
     if normalized_outcome:
         aworld_projection["run_outcome"] = normalized_outcome
 

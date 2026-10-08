@@ -87,6 +87,10 @@ _TASK_RESPONSE_CAPABILITY_MAX_BYTES_ENV = (
 )
 _DEFAULT_TASK_RESPONSE_CAPABILITY_MAX_BYTES = 8_000_000
 _LIVE_ATIF_CHECKPOINT_INTERVAL_ENV = "AWORLD_LIVE_ATIF_CHECKPOINT_INTERVAL_SECONDS"
+_DURABLE_JOURNAL_ENV_NAMES = {
+    "AWORLD_LLM_CALL_JOURNAL_PATH": "llm-calls.journal.jsonl",
+    "AWORLD_TOOL_ACTION_JOURNAL_PATH": "tool-actions.journal.jsonl",
+}
 
 
 def _live_atif_checkpoint_interval_seconds() -> float:
@@ -96,6 +100,46 @@ def _live_atif_checkpoint_interval_seconds() -> float:
     except (TypeError, ValueError):
         return 30.0
     return value if 1.0 <= value <= 300.0 else 30.0
+
+
+def _configure_transient_trajectory_journals(
+    *, enabled: bool
+) -> tuple[Path, dict[str, str]] | None:
+    """Enable crash-tolerant ledgers for one trajectory-exporting CLI run.
+
+    Explicit caller-owned paths remain authoritative. Automatically created
+    journals live outside the exported artifact directory so their raw runtime
+    evidence cannot be mistaken for a public trajectory.
+    """
+    missing = [name for name in _DURABLE_JOURNAL_ENV_NAMES if not os.environ.get(name)]
+    if not enabled or not missing:
+        return None
+    directory = Path(tempfile.mkdtemp(prefix="aworld-cli-trajectory-journals-"))
+    owned: dict[str, str] = {}
+    for name in missing:
+        path = str((directory / _DURABLE_JOURNAL_ENV_NAMES[name]).resolve())
+        os.environ[name] = path
+        owned[name] = path
+    return directory, owned
+
+
+def _cleanup_transient_trajectory_journals(
+    state: tuple[Path, dict[str, str]] | None,
+) -> None:
+    if state is None:
+        return
+    directory, owned = state
+    for name, value in owned.items():
+        if os.environ.get(name) == value:
+            os.environ.pop(name, None)
+        try:
+            Path(value).unlink(missing_ok=True)
+        except OSError:
+            pass
+    try:
+        directory.rmdir()
+    except OSError:
+        pass
 
 
 def _bounded_text(value: object, *, max_chars: int) -> str:
@@ -529,6 +573,9 @@ class RunTopLevelCommand:
                 task_response_capability=task_response_capability,
             )
 
+        transient_journals = _configure_transient_trajectory_journals(
+            enabled=bool(getattr(args, "trajectory_output", None))
+        )
         checkpoint_receipt = self._write_initial_atif_checkpoint(
             args=args,
             agent_name=agent_name,
@@ -634,12 +681,15 @@ class RunTopLevelCommand:
                 details={"error_type": type(exc).__name__},
             )
 
-        return self._finalize_outcome(
-            args=args,
-            agent_name=agent_name,
-            outcome=outcome,
-            task_response_capability=task_response_capability,
-        )
+        try:
+            return self._finalize_outcome(
+                args=args,
+                agent_name=agent_name,
+                outcome=outcome,
+                task_response_capability=task_response_capability,
+            )
+        finally:
+            _cleanup_transient_trajectory_journals(transient_journals)
 
     @staticmethod
     def _write_initial_atif_checkpoint(*, args, agent_name: str):

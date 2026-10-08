@@ -30,6 +30,7 @@ from .run_outcome import (
 
 
 _AWORLD_PRE_PROVIDER_MAX_ATTEMPTS = 2
+_MAX_DURABLE_LLM_JOURNAL_BYTES = 512 * 1024 * 1024
 _CONTROL_DETAIL_IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 _LOGGER = logging.getLogger(__name__)
 
@@ -1709,7 +1710,7 @@ def _live_provider_call_records(context: object) -> list[dict]:
     try:
         calls = get_calls() if callable(get_calls) else []
         if not isinstance(calls, list):
-            return []
+            calls = []
         task_id = getattr(context, "task_id", None)
         selected = [
             record
@@ -1722,6 +1723,46 @@ def _live_provider_call_records(context: object) -> list[dict]:
                 or record.get("provider_attempt_status") == "attempted"
             )
         ]
+        # A cancelled owner task can lose its last transport Context before the
+        # live summary is built. Only replay the durable provider journal when
+        # the in-memory fan-in is unavailable, keeping periodic checkpoints
+        # on the cheap reconciled Context path.
+        if not selected and task_id is not None:
+            try:
+                from aworld.core.llm_call_journal import (
+                    configured_journal_path,
+                    read_llm_call_journal,
+                )
+
+                journal_path = configured_journal_path()
+                recovery = (
+                    read_llm_call_journal(journal_path)
+                    if journal_path is not None
+                    and (
+                        not journal_path.exists()
+                        or journal_path.stat().st_size
+                        <= _MAX_DURABLE_LLM_JOURNAL_BYTES
+                    )
+                    else None
+                )
+                if recovery is not None and recovery.available:
+                    selected = [
+                        record
+                        for record in recovery.merged_llm_calls
+                        if isinstance(record, dict)
+                        and record.get("task_id") == task_id
+                        and record.get("request_id")
+                        and (
+                            record.get("provider_invoked") is True
+                            or record.get("provider_attempt_status") == "attempted"
+                        )
+                    ]
+            except Exception as exc:
+                _LOGGER.warning(
+                    "Direct-run provider journal recovery failed open; "
+                    "error_type=%s",
+                    type(exc).__name__,
+                )
         return copy.deepcopy(selected)
     except Exception as exc:
         _LOGGER.warning(
@@ -1741,7 +1782,7 @@ def _live_trajectory_from_llm_calls(
     trajectory: list[dict] = []
     task_id = getattr(context, "task_id", None)
     session_id = getattr(context, "session_id", None)
-    for record in calls:
+    for index, record in enumerate(calls):
         response = record.get("response")
         if not isinstance(response, dict):
             continue
@@ -1755,7 +1796,34 @@ def _live_trajectory_from_llm_calls(
             else []
         )
         content = message.get("content")
-        if content is None and not tool_calls:
+        diagnostics = record.get("diagnostics")
+        diagnostics = diagnostics if isinstance(diagnostics, dict) else {}
+        stream_diagnostics = diagnostics.get("stream")
+        stream_diagnostics = (
+            stream_diagnostics if isinstance(stream_diagnostics, dict) else {}
+        )
+        reasoning_observed = (
+            isinstance(stream_diagnostics.get("reasoning_chars_observed"), int)
+            and stream_diagnostics.get("reasoning_chars_observed", 0) > 0
+        ) or bool(message.get("reasoning_content"))
+        next_cause = None
+        current_turn = record.get("turn_economics")
+        current_turn = current_turn if isinstance(current_turn, dict) else {}
+        if index + 1 < len(calls):
+            next_turn = calls[index + 1].get("turn_economics")
+            if isinstance(next_turn, dict):
+                next_cause = next_turn.get("cause")
+        response_kind = None
+        if not str(content or "").strip() and not tool_calls:
+            if next_cause == "framework_retry":
+                response_kind = (
+                    "reasoning_only_retry"
+                    if reasoning_observed
+                    else "empty_response_retry"
+                )
+            elif reasoning_observed:
+                response_kind = "reasoning_only"
+        if content is None and not tool_calls and response_kind is None:
             continue
         meta = {
             "step": len(trajectory) + 1,
@@ -1763,6 +1831,9 @@ def _live_trajectory_from_llm_calls(
             "session_id": session_id,
             "agent_id": record.get("agent_id"),
             "execute_time": record.get("finished_at") or record.get("started_at"),
+            "llm_request_id": record.get("request_id"),
+            "assistant_response_kind": response_kind,
+            "task_epoch": current_turn.get("task_epoch"),
         }
         trajectory.append(
             {

@@ -143,6 +143,16 @@ def append_tool_action_event(
             value = None
         if value is not None:
             identities[name] = str(value)
+    try:
+        task_epoch = getattr(context, "task_epoch", None)
+    except Exception:
+        task_epoch = None
+    if (
+        isinstance(task_epoch, int)
+        and not isinstance(task_epoch, bool)
+        and task_epoch >= 0
+    ):
+        identities["task_epoch"] = task_epoch
     recorded_at = time.time_ns()
     stream_id = _context_stream_id(context)
     payload: dict[str, Any] = {
