@@ -80,6 +80,7 @@ def _result(*, stdout: str = "", stderr: str = "") -> CommandResult:
         ("env PATH=/tmp cat input.txt", "unknown"),
         ("sudo cat input.txt", "unknown"),
         ("command cat input.txt", "unknown"),
+        (". ./mutate.sh", "unknown"),
         ("time cat input.txt", "unknown"),
     ),
 )
@@ -92,6 +93,60 @@ def test_terminal_execution_plan_preserves_shell_composition_effect(
     assert plan.language == "shell"
     assert plan.effect == effect
     assert plan.cacheable is (effect == "read_only")
+
+
+@pytest.mark.asyncio
+async def test_dot_source_is_unknown_and_invalidates_sandbox_generation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(terminal_module, "workspace", tmp_path)
+    script = tmp_path / "mutate.sh"
+    marker = tmp_path / "sourced.txt"
+    script.write_text("printf sourced > sourced.txt\n", encoding="utf-8")
+    command = ". ./mutate.sh"
+    action = {
+        "tool_name": "terminal",
+        "action_name": "run_code",
+        "tool_call_id": "call-dot-source",
+        "params": {"code": command, "cwd": str(tmp_path)},
+    }
+    context = SimpleNamespace(
+        task_id="task",
+        task_epoch=1,
+        session_id="session",
+        agent_info=SimpleNamespace(current_agent_id="agent"),
+        context_lifecycle_state=SimpleNamespace(
+            session_id="session",
+            session_epoch=0,
+            task_epoch=1,
+            branch_id="main",
+            checkpoint_revision=0,
+        ),
+    )
+
+    response = await run_code(None, command, timeout=10, cwd=str(tmp_path))
+    payload = json.loads(response.text)
+    receipt = payload["metadata"]["terminal_execution_receipt"]
+    runtime = SandboxToolObservationRuntime()
+    before = runtime.current_generation(context)
+    runtime.record(
+        action,
+        ActionResult(
+            success=True,
+            tool_call_id="call-dot-source",
+            content=payload["message"],
+            parameter=action["params"],
+            metadata=payload["metadata"],
+        ),
+        context=context,
+    )
+
+    assert marker.read_text(encoding="utf-8") == "sourced"
+    assert receipt["effect"] == "unknown"
+    assert receipt["cacheable"] is False
+    assert runtime.lookup(action, context=context) is None
+    assert runtime.current_generation(context) == before + 1
 
 
 @pytest.mark.parametrize(

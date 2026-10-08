@@ -567,7 +567,8 @@ def _command_words(words: Sequence[str]) -> tuple[str, list[str]]:
         if re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", remaining[0]):
             remaining.pop(0)
             continue
-        executable = Path(remaining[0]).name.lower()
+        raw_executable = remaining[0]
+        executable = "source" if raw_executable == "." else Path(raw_executable).name.lower()
         if executable in {"command", "builtin"}:
             remaining.pop(0)
             continue

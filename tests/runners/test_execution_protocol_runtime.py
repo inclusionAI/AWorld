@@ -1418,6 +1418,24 @@ async def test_post_candidate_read_only_loop_converges_to_validate_repair_or_sub
         context,
     ) is not None
 
+    from aworld.sandbox.tool_observation import (
+        build_preflight_action_semantic_receipt,
+    )
+
+    validation_receipt = build_preflight_action_semantic_receipt(
+        context=context,
+        action=validation,
+        delivery_intent="validate_candidate",
+    ).to_dict()
+    validation_receipt.update(
+        {
+            "executed": True,
+            "succeeded": True,
+            "timed_out": False,
+            "tool_call_id": validation.tool_call_id,
+        }
+    )
+
     record_semantic_tool_progress(
         context,
         tool_name="terminal",
@@ -1435,6 +1453,8 @@ async def test_post_candidate_read_only_loop_converges_to_validate_repair_or_sub
                             "effect": "read_only",
                             "workspace_mutated": False,
                             "workspace_generation": 1,
+                            "cache_hit": False,
+                            "action_semantic_receipt": validation_receipt,
                         }
                     },
                 )
@@ -1444,10 +1464,10 @@ async def test_post_candidate_read_only_loop_converges_to_validate_repair_or_sub
     telemetry = build_execution_protocol_telemetry(context, "agent")
     assert telemetry["post_candidate_read_only_observations"] == 0
     assert telemetry["mutation_gate_blocked_read_only_call_count"] == 2
-    # This synthetic Tool result predates Sandbox semantic receipts.  Exact
-    # arguments remain compatibility telemetry and cannot manufacture a match.
+    # A fresh Sandbox-authenticated validation is both progress and an exact
+    # match for the bound model plan.
     assert load_execution_protocol_state(context, "agent").last_action_alignment.value == (
-        "unobservable"
+        "matched"
     )
 
 
@@ -2264,6 +2284,43 @@ async def test_validate_convergence_requires_typed_validation_or_one_bound_repai
     assert mixed is not None
     assert mixed["tool_call_ids"] == ["helper-write"]
 
+    def validation_result(
+        action: ActionModel,
+        *,
+        executed: bool,
+        cache_hit: bool,
+        workspace_generation: int,
+    ) -> ActionResult:
+        from aworld.sandbox.tool_observation import (
+            build_preflight_action_semantic_receipt,
+        )
+
+        semantic_receipt = build_preflight_action_semantic_receipt(
+            context=context,
+            action=action,
+            delivery_intent="validate_candidate",
+        ).to_dict()
+        semantic_receipt.update(
+            {
+                "executed": executed,
+                "succeeded": True,
+                "timed_out": False,
+                "tool_call_id": action.tool_call_id,
+            }
+        )
+        return ActionResult(
+            tool_call_id=action.tool_call_id,
+            content="{}",
+            success=True,
+            metadata={
+                "sandbox_observation": {
+                    "cache_hit": cache_hit,
+                    "workspace_generation": workspace_generation,
+                    "action_semantic_receipt": semantic_receipt,
+                }
+            },
+        )
+
     first_validation = record_semantic_tool_progress(
         context,
         tool_name="terminal",
@@ -2271,10 +2328,11 @@ async def test_validate_convergence_requires_typed_validation_or_one_bound_repai
         actions=[validation],
         observation=Observation(
             action_result=[
-                ActionResult(
-                    tool_call_id=validation.tool_call_id,
-                    content="{}",
-                    success=True,
+                validation_result(
+                    validation,
+                    executed=True,
+                    cache_hit=False,
+                    workspace_generation=1,
                 )
             ]
         ),
@@ -2293,16 +2351,43 @@ async def test_validate_convergence_requires_typed_validation_or_one_bound_repai
         actions=[repeated_validation],
         observation=Observation(
             action_result=[
-                ActionResult(
-                    tool_call_id=repeated_validation.tool_call_id,
-                    content="{}",
-                    success=True,
+                validation_result(
+                    repeated_validation,
+                    executed=False,
+                    cache_hit=True,
+                    workspace_generation=2,
                 )
             ]
         ),
     )
     assert first_validation["delivery_progress_advanced"] is True
     assert repeated_state["delivery_progress_advanced"] is False
+
+    fresh_repeat = ActionModel(
+        tool_name="terminal",
+        action_name="run_code",
+        params={"code": validation_code},
+        tool_call_id="registered-validation-fresh-repeat",
+        agent_name="agent",
+    )
+    fresh_repeat_state = record_semantic_tool_progress(
+        context,
+        tool_name="terminal",
+        agent_id="agent",
+        actions=[fresh_repeat],
+        observation=Observation(
+            action_result=[
+                validation_result(
+                    fresh_repeat,
+                    executed=True,
+                    cache_hit=False,
+                    workspace_generation=3,
+                )
+            ]
+        ),
+    )
+    assert fresh_repeat_state["validation_evidence_advanced"] is False
+    assert fresh_repeat_state["delivery_progress_advanced"] is False
 
     failed_states = []
     for index, error in enumerate(("missing-result", "still-missing"), start=1):

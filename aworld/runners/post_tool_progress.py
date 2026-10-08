@@ -1273,6 +1273,12 @@ def _record_semantic_tool_progress_locked(
             if isinstance(item, Mapping)
             and isinstance(item.get("tool_call_id"), str)
         }
+        semantics_by_call_id = {
+            item.get("tool_call_id"): item
+            for item in observed_action_semantics
+            if isinstance(item, Mapping)
+            and isinstance(item.get("tool_call_id"), str)
+        }
         validation_results = []
         for action in actions:
             call_id = getattr(action, "tool_call_id", None)
@@ -1286,11 +1292,35 @@ def _record_semantic_tool_progress_locked(
             )
             if kind is None:
                 continue
+            semantic_receipt = semantics_by_call_id.get(call_id)
+            authenticated_execution = bool(
+                isinstance(semantic_receipt, Mapping)
+                and semantic_receipt.get("executed") is True
+                and semantic_receipt.get("succeeded") is True
+                and semantic_receipt.get("timed_out") is False
+            )
             validation_results.append(
                 {
                     "kind": kind,
-                    "result_hash": semantic_result_fingerprint(result),
-                    "succeeded": result.get("success") is True
+                    # Validation novelty is bound to the candidate plus the
+                    # semantic outcome only. Transport/cache metadata such as
+                    # workspace_generation, duration and call IDs cannot turn
+                    # the same check into a new delivery milestone.
+                    "result_hash": semantic_result_fingerprint(
+                        {
+                            "candidate_fingerprint": (
+                                public_delivery_fingerprint
+                                or previous.get("public_delivery_fingerprint")
+                                or "unbound"
+                            ),
+                            "kind": kind,
+                            "success": result.get("success") is True,
+                            "content": result.get("content"),
+                            "error": result.get("error"),
+                        }
+                    ),
+                    "succeeded": authenticated_execution
+                    and result.get("success") is True
                     and not result.get("error"),
                 }
             )
@@ -1304,16 +1334,30 @@ def _record_semantic_tool_progress_locked(
                 for value in (previous.get("recent_validation_fingerprints") or ())
                 if isinstance(value, str)
             ][-15:]
+            validation_high_water_mask = _delivery_high_water_mask(
+                previous.get("validation_high_water_bloom")
+            )
+            if validation_high_water_mask == 0:
+                for fingerprint in validation_high_water:
+                    validation_high_water_mask = _delivery_high_water_add(
+                        validation_high_water_mask, fingerprint
+                    )
             validation_advanced = False
             if successful_validation_results:
                 validation_fingerprint = semantic_fingerprint(
                     successful_validation_results
                 )
-                validation_advanced = (
-                    validation_fingerprint not in validation_high_water
+                validation_advanced = not _delivery_high_water_contains(
+                    validation_high_water_mask, validation_fingerprint
                 )
                 validation_high_water.append(validation_fingerprint)
+                validation_high_water_mask = _delivery_high_water_add(
+                    validation_high_water_mask, validation_fingerprint
+                )
             state["recent_validation_fingerprints"] = validation_high_water[-16:]
+            state["validation_high_water_bloom"] = format(
+                validation_high_water_mask, "0128x"
+            )
             state["validation_evidence_advanced"] = validation_advanced
             if validation_advanced:
                 state["delivery_progress_advanced"] = True

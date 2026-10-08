@@ -1,3 +1,5 @@
+# ruff: noqa: E402 -- companion source/wheel bootstrap must precede AWorld imports.
+
 import asyncio
 import base64
 from collections import deque
@@ -1515,7 +1517,8 @@ def _command_words(segment: list[str]) -> tuple[str, list[str]]:
         if re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", words[0]):
             words.pop(0)
             continue
-        executable = Path(words[0]).name.lower()
+        raw_executable = words[0]
+        executable = "source" if raw_executable == "." else Path(raw_executable).name.lower()
         if executable in {"command", "builtin"}:
             words.pop(0)
             continue

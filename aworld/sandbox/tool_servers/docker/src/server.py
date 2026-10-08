@@ -1,5 +1,7 @@
 """Host-side MCP bridge for an already-running local Docker container."""
 
+# ruff: noqa: E402 -- companion source/wheel bootstrap must precede AWorld imports.
+
 import asyncio
 import base64
 from collections import OrderedDict
@@ -50,7 +52,7 @@ from aworld.sandbox.artifact_observation import (
 )
 
 
-_DOCKER_ARTIFACT_READER = r'''
+_DOCKER_ARTIFACT_READER = r"""
 import base64
 import json
 import os
@@ -149,7 +151,7 @@ except SystemExit:
     raise
 except BaseException:
     fail("artifact_secure_fd_reader_failed")
-'''
+"""
 
 
 def _required_env(name: str) -> str:
