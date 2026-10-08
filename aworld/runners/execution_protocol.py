@@ -1680,6 +1680,7 @@ def project_execution_protocol_telemetry(value: Any) -> dict[str, Any] | None:
         "legacy_activation_fields_ignored",
         "decision_checkpoint_pending",
         "candidate_decision_recorded",
+        "terminal_incomplete",
         "decision_checkpoint_candidate_present",
         "mutation_gate_active",
         "mutation_gate_validation_window_open",
@@ -1741,6 +1742,7 @@ def project_execution_protocol_telemetry(value: Any) -> dict[str, Any] | None:
         "long_horizon_activation_source",
         "model_expected_tool_actions",
         "model_expected_tool_actions_overrun_count",
+        "terminal_incomplete",
     }
     if (
         value.get("schema_version") == "aworld.execution-protocol-telemetry/v1"
@@ -1820,6 +1822,7 @@ def build_execution_protocol_telemetry(context, agent_id: str) -> dict[str, Any]
             state.decision_checkpoint_candidate_present
         ),
         "candidate_decision_recorded": state.candidate_decision_recorded,
+        "terminal_incomplete": state.terminal_incomplete,
         "candidate_epoch_advanced": state.candidate_epoch_advanced,
         "candidate_checkpoint_recorded": state.candidate_checkpoint_recorded,
         "public_deliverable_declared": state.public_deliverable_declared,

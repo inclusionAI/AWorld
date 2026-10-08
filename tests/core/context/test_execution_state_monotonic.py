@@ -175,6 +175,32 @@ def test_legacy_shared_review_category_migrates_by_bounded_reason() -> None:
     )
 
 
+def test_ambiguous_legacy_review_category_becomes_nonrecoverable_work() -> None:
+    context = _context("legacy-ambiguous-review")
+    state = record_execution_state(
+        context,
+        "solver",
+        "incomplete",
+        "opaque_review_failure",
+        recoverable=True,
+    )
+    legacy = json.loads(json.dumps(state))
+    legacy["unresolved_blockers"][0]["category"] = "acceptance_review"
+    legacy["unresolved_blockers"][0]["recoverable"] = True
+
+    restored = reconcile_execution_states(
+        [legacy],
+        task_id="legacy-ambiguous-review",
+        task_epoch=state["scope"]["task_epoch"],
+        agent_id="solver",
+    )
+
+    assert restored is not None
+    blocker = restored["unresolved_blockers"][0]
+    assert blocker["category"] == "work"
+    assert blocker["recoverable"] is False
+
+
 def test_model_review_blocker_requires_fresh_authoritative_review_acceptance() -> None:
     context = _context("model-review-recovery")
     stale_observation = execution_resolution_observation(context, "solver")

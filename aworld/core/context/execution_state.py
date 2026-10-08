@@ -205,7 +205,8 @@ def _normalize_record(value: Any) -> dict[str, Any] | None:
             )
             blocker_revision = _normalized_revision(item.get("revision"), revision)
             category, _ = _bounded_code(item.get("category"), "work")
-            if category == "acceptance_review":
+            legacy_shared_review_category = category == "acceptance_review"
+            if legacy_shared_review_category:
                 # Rolling migration from the pre-authority-split v2 ledger.
                 # The bounded reason, not the incoming category claim, selects
                 # which acceptance authority may resolve this blocker.
@@ -259,7 +260,11 @@ def _normalize_record(value: Any) -> dict[str, Any] | None:
                 "status": status,
                 "reason": blocker_reason,
                 "revision": blocker_revision,
-                "recoverable": bool(item.get("recoverable", True)),
+                "recoverable": bool(item.get("recoverable", True))
+                and not (
+                    legacy_shared_review_category
+                    and category == "work"
+                ),
             }
             if blocker_reason_hash:
                 blocker["reason_hash"] = blocker_reason_hash

@@ -146,6 +146,45 @@ def test_protocol_persistence_failure_cannot_activate_runtime_gates(
     )
 
 
+def test_telemetry_distinguishes_active_review_from_terminal_unverified() -> None:
+    context = _context("review-telemetry")
+    policy = ExecutionProtocolPolicy(mode=ProtocolMode.GUIDE)
+    configure_execution_protocol(context, "agent", policy)
+    store = ExecutionProtocolStore(context, "agent", policy)
+    store.save(
+        replace(
+            store.load(),
+            phase=ProtocolPhase.REVIEW,
+            review_pending=True,
+            terminal_incomplete=False,
+        )
+    )
+
+    active = build_execution_protocol_telemetry(context, "agent")
+    assert active["phase"] == "review"
+    assert active["terminal_incomplete"] is False
+    assert project_execution_protocol_telemetry(active) == active
+
+    store.save(
+        replace(
+            store.load(),
+            phase=ProtocolPhase.REVIEW,
+            review_pending=False,
+            terminal_incomplete=True,
+        )
+    )
+    terminal = build_execution_protocol_telemetry(context, "agent")
+    assert terminal["phase"] == "review"
+    assert terminal["terminal_incomplete"] is True
+    assert project_execution_protocol_telemetry(terminal) == terminal
+
+    legacy_v1 = {
+        **terminal,
+        "schema_version": "aworld.execution-protocol-telemetry/v1",
+    }
+    assert project_execution_protocol_telemetry(legacy_v1) is None
+
+
 def _declare_long_horizon(context: Context, agent_id: str = "agent") -> None:
     transition = record_model_execution_profile(
         context,
@@ -603,6 +642,7 @@ def test_scoped_state_and_bounded_telemetry_are_public_read_only_views() -> None
         "replan_applied_count": 0,
         "decision_checkpoint_pending": False,
         "candidate_decision_recorded": False,
+        "terminal_incomplete": False,
         "candidate_epoch_advanced": False,
         "candidate_checkpoint_recorded": False,
         "public_deliverable_declared": False,
