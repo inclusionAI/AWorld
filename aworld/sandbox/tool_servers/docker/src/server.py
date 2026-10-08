@@ -16,6 +16,14 @@ import time
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal, Optional
 
+# Keep package discovery private to this companion process. In particular, do
+# not export PYTHONPATH to commands executed inside the attached task container.
+_AWORLD_PACKAGE_ROOT = Path(__file__).resolve().parents[5]
+if not (_AWORLD_PACKAGE_ROOT / "aworld" / "__init__.py").is_file():
+    raise RuntimeError("Unable to resolve the owning AWorld package")
+if str(_AWORLD_PACKAGE_ROOT) not in sys.path:
+    sys.path.insert(0, str(_AWORLD_PACKAGE_ROOT))
+
 from mcp.server import FastMCP
 from mcp.server.fastmcp import Context
 from mcp.types import TextContent
@@ -27,9 +35,111 @@ from aworld.sandbox.terminal_receipt import (
 )
 from aworld.sandbox.artifact_observation import (
     ArtifactObservationError,
-    artifact_mcp_content,
+    artifact_mcp_result,
     observe_artifact_bytes,
 )
+
+
+_DOCKER_ARTIFACT_READER = r'''
+import base64
+import json
+import os
+import stat
+import sys
+
+
+def fail(code):
+    sys.stderr.write(code)
+    raise SystemExit(73)
+
+
+try:
+    path = os.path.normpath(sys.argv[1])
+    allowed = [os.path.normpath(value) for value in json.loads(sys.argv[2])]
+    limit = int(sys.argv[3])
+    if (
+        not os.path.isabs(path)
+        or any(character in path for character in ("\x00", "\r", "\n"))
+        or os.open not in os.supports_dir_fd
+        or not hasattr(os, "O_NOFOLLOW")
+        or not hasattr(os, "O_DIRECTORY")
+    ):
+        fail("artifact_secure_fd_reader_unavailable")
+    roots = [
+        root
+        for root in allowed
+        if os.path.commonpath((path, root)) == root
+    ]
+    if not roots:
+        fail("artifact_outside_workspace")
+    root = max(roots, key=len)
+    relative = os.path.relpath(path, root)
+    if relative in {"", "."} or relative.startswith(".." + os.sep):
+        fail("artifact_path_invalid")
+    parts = [*root.split(os.sep)[1:], *relative.split(os.sep)]
+    if any(part in {"", ".", ".."} for part in parts):
+        fail("artifact_path_invalid")
+    directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+    file_flags = os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_CLOEXEC", 0)
+    descriptor = os.open(os.sep, directory_flags)
+    try:
+        for index, part in enumerate(parts):
+            flags = file_flags if index == len(parts) - 1 else directory_flags
+            next_descriptor = os.open(part, flags, dir_fd=descriptor)
+            os.close(descriptor)
+            descriptor = next_descriptor
+        before = os.fstat(descriptor)
+        if not stat.S_ISREG(before.st_mode) or before.st_size > limit:
+            fail("artifact_not_regular_or_oversized")
+        proc_path = f"/proc/self/fd/{descriptor}"
+        canonical = os.path.realpath(proc_path)
+        if canonical != path or os.path.commonpath((canonical, root)) != root:
+            fail("artifact_confinement_unproven")
+        chunks = []
+        remaining = limit + 1
+        while remaining > 0:
+            chunk = os.read(descriptor, min(65536, remaining))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        data = b"".join(chunks)
+        after = os.fstat(descriptor)
+        epoch_before = (
+            before.st_dev,
+            before.st_ino,
+            before.st_mode,
+            before.st_size,
+            before.st_mtime_ns,
+            before.st_ctime_ns,
+        )
+        epoch_after = (
+            after.st_dev,
+            after.st_ino,
+            after.st_mode,
+            after.st_size,
+            after.st_mtime_ns,
+            after.st_ctime_ns,
+        )
+        if epoch_before != epoch_after or len(data) != before.st_size:
+            fail("artifact_changed_during_read")
+        payload = {
+            "data": base64.b64encode(data).decode("ascii"),
+            "device": before.st_dev,
+            "inode": before.st_ino,
+            "mode": before.st_mode,
+            "size": before.st_size,
+            "mtime_ns": before.st_mtime_ns,
+            "ctime_ns": before.st_ctime_ns,
+        }
+        sys.stdout.write(json.dumps(payload, sort_keys=True, separators=(",", ":")))
+    finally:
+        os.close(descriptor)
+except SystemExit:
+    raise
+except BaseException:
+    fail("artifact_secure_fd_reader_failed")
+'''
 
 
 def _required_env(name: str) -> str:
@@ -229,36 +339,8 @@ class DockerBridge:
         """Read one stable, regular, non-symlink image from the container."""
 
         valid_path = self.validate_path(path)
-        symlink_script = (
-            'p="$1"; while [ "$p" != / ]; do '
-            '[ -L "$p" ] && exit 42; p=${p%/*}; [ -n "$p" ] || p=/; done'
-        )
-        return_code, _stdout, stderr, timed_out = await self.execute(
-            [self.shell, "-c", symlink_script, "aworld-artifact", valid_path],
-            timeout=5,
-            workdir=self.workdir,
-        )
-        if timed_out or return_code == 42:
-            raise ArtifactObservationError("symlink artifacts are not allowed")
-        if return_code != 0:
-            raise ArtifactObservationError(
-                stderr.decode("utf-8", errors="replace").strip()
-                or "artifact path validation failed"
-            )
-        resolved = (
-            await self.require_success(["readlink", "-f", valid_path], timeout=5)
-        ).decode("utf-8", errors="strict").strip()
-        self.validate_path(resolved)
-        stat_command = ["stat", "-Lc", "%f|%s|%i|%Y", valid_path]
-        before = (await self.require_success(stat_command, timeout=5)).decode().strip()
-        try:
-            mode_text, size_text, _inode, _mtime = before.split("|", 3)
-            mode = int(mode_text, 16)
-            size = int(size_text)
-        except (TypeError, ValueError) as exc:
-            raise ArtifactObservationError("container artifact stat is invalid") from exc
-        if mode & 0o170000 != 0o100000:
-            raise ArtifactObservationError("artifact must be a regular file")
+        if any(character in valid_path for character in ("\x00", "\r", "\n")):
+            raise ArtifactObservationError("container artifact path is invalid")
         try:
             configured_limit = int(
                 os.environ.get("AWORLD_ARTIFACT_OBSERVATION_MAX_BYTES", "5242880")
@@ -266,20 +348,66 @@ class DockerBridge:
         except ValueError:
             configured_limit = 5 * 1024 * 1024
         limit = max(1, min(configured_limit, 16 * 1024 * 1024))
-        if size > limit:
-            raise ArtifactObservationError(f"artifact exceeds byte limit ({limit})")
-        data = await self.require_success(
-            ["head", "-c", str(limit + 1), valid_path], timeout=30
+        python = os.environ.get("AWORLD_DOCKER_PYTHON", "python3")
+        return_code, stdout, stderr, timed_out = await self.execute(
+            [
+                python,
+                "-I",
+                "-c",
+                _DOCKER_ARTIFACT_READER,
+                valid_path,
+                json.dumps(self.allowed_directories, separators=(",", ":")),
+                str(limit),
+            ],
+            timeout=30,
+            workdir=self.workdir,
         )
-        after = (await self.require_success(stat_command, timeout=5)).decode().strip()
-        if before != after or len(data) != size:
-            raise ArtifactObservationError("artifact changed while it was being observed")
+        if timed_out or return_code != 0 or stderr:
+            raise ArtifactObservationError(
+                "container cannot prove secure artifact confinement"
+            )
+        try:
+            payload = json.loads(stdout.decode("utf-8", errors="strict"))
+            expected_keys = {
+                "data",
+                "device",
+                "inode",
+                "mode",
+                "size",
+                "mtime_ns",
+                "ctime_ns",
+            }
+            if not isinstance(payload, dict) or set(payload) != expected_keys:
+                raise ValueError("invalid payload keys")
+            for key in expected_keys - {"data"}:
+                if isinstance(payload[key], bool) or not isinstance(payload[key], int):
+                    raise TypeError("invalid stat value")
+            if payload["size"] < 0 or payload["size"] > limit:
+                raise ValueError("invalid artifact size")
+            data = base64.b64decode(payload["data"], validate=True)
+            if len(data) != payload["size"]:
+                raise ValueError("artifact size mismatch")
+        except (TypeError, ValueError, UnicodeError, json.JSONDecodeError) as exc:
+            raise ArtifactObservationError(
+                "container artifact receipt is invalid"
+            ) from exc
+        epoch = {
+            key: payload[key]
+            for key in ("device", "inode", "mode", "size", "mtime_ns", "ctime_ns")
+        }
         return observe_artifact_bytes(
             data,
             suffix=PurePosixPath(valid_path).suffix,
             expected_mime=expected_mime,
             path_key="sha256:" + hashlib.sha256(valid_path.encode()).hexdigest(),
-            file_epoch="sha256:" + hashlib.sha256(before.encode()).hexdigest(),
+            file_epoch=(
+                "sha256:"
+                + hashlib.sha256(
+                    json.dumps(
+                        epoch, sort_keys=True, separators=(",", ":")
+                    ).encode()
+                ).hexdigest()
+            ),
             framework_scope=framework_scope,
             max_bytes=limit,
         )
@@ -637,14 +765,14 @@ async def observe_artifact(
         default=None,
         description="Framework-injected task scope; hidden from the model schema",
     ),
-) -> list[Any]:
+) -> Any:
     del ctx
     observed = await bridge.observe_artifact(
         path,
         expected_mime=expected_mime,
         framework_scope=env_content,
     )
-    return artifact_mcp_content(observed)
+    return artifact_mcp_result(observed)
 
 
 @mcp.tool(description="Read a bounded chunk from a full Tool output artifact returned by this sandbox.")

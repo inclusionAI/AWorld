@@ -10,12 +10,14 @@ from __future__ import annotations
 import base64
 import binascii
 import hashlib
+import io
 import json
 import mimetypes
 import os
 import re
 import stat
 import threading
+import warnings
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -24,6 +26,11 @@ from typing import Any, Mapping
 
 ARTIFACT_OBSERVATION_SCHEMA = "aworld.artifact-observation/v1"
 ARTIFACT_OBSERVATION_URI_PREFIX = "aworld-artifact://observation/"
+ARTIFACT_RETAINED_MESSAGE = (
+    "AWorld retained verified image artifact observation(s) from the immediately "
+    "preceding completed Tool call group. Media is attached only on the bounded "
+    "first provider attempt; later turns retain this stable text receipt."
+)
 _DEFAULT_MAX_BYTES = 5 * 1024 * 1024
 _HARD_MAX_BYTES = 16 * 1024 * 1024
 _DEFAULT_MAX_DIMENSION = 16_384
@@ -31,6 +38,7 @@ _DEFAULT_MAX_PIXELS = 40_000_000
 _MAX_SERVER_CACHE_ENTRIES = 256
 _MAX_SIDECAR_ENTRIES = 32
 _MAX_SIDECAR_BYTES = 32 * 1024 * 1024
+_MAX_CALL_HASHES_PER_SIDECAR = 32
 _MAX_PROVIDER_IMAGES_PER_REQUEST = 4
 _MAX_PROVIDER_IMAGE_BYTES_PER_REQUEST = 16 * 1024 * 1024
 _SUPPORTED_MIME_BY_SUFFIX = {
@@ -40,6 +48,23 @@ _SUPPORTED_MIME_BY_SUFFIX = {
     ".webp": "image/webp",
     ".gif": "image/gif",
 }
+_ARTIFACT_RECEIPT_KEYS = frozenset(
+    {
+        "schema_version",
+        "status",
+        "media_type",
+        "mime_type",
+        "width",
+        "height",
+        "byte_count",
+        "content_sha256",
+        "observation_id",
+        "cache_state",
+        "file_epoch",
+        "task_scope_hash",
+        "call_id_hash",
+    }
+)
 
 
 class ArtifactObservationError(ValueError):
@@ -58,8 +83,10 @@ class _SidecarEntry:
     mime_type: str
     receipt: dict[str, Any]
     task_scope_hash: str
-    authorized_call_hashes: set[str] = field(default_factory=set)
-    bound_call_ids: set[str] = field(default_factory=set)
+    authorized_call_hashes: "OrderedDict[str, None]" = field(
+        default_factory=OrderedDict
+    )
+    bound_call_hashes: "OrderedDict[str, None]" = field(default_factory=OrderedDict)
 
 
 _state_lock = threading.RLock()
@@ -94,7 +121,7 @@ def artifact_task_scope_hash(
     elif isinstance(task_epoch, int):
         normalized_epoch = task_epoch
     else:
-        normalized_epoch = str(task_epoch or "")[:128]
+        normalized_epoch = str(task_epoch or "")
     return _canonical_hash(
         {
             "task_id": str(task_id or ""),
@@ -117,125 +144,76 @@ def _configured_max_bytes() -> int:
 
 
 def _image_shape(data: bytes) -> tuple[str, int, int]:
-    if len(data) >= 24 and data.startswith(b"\x89PNG\r\n\x1a\n"):
-        if data[12:16] != b"IHDR":
-            raise ArtifactObservationError("invalid PNG header")
-        return (
-            "image/png",
-            int.from_bytes(data[16:20], "big"),
-            int.from_bytes(data[20:24], "big"),
-        )
-    if len(data) >= 10 and data[:6] in {b"GIF87a", b"GIF89a"}:
-        width = int.from_bytes(data[6:8], "little")
-        height = int.from_bytes(data[8:10], "little")
-        position = 13
-        packed = data[10]
-        if packed & 0x80:
-            position += 3 * (2 ** ((packed & 0x07) + 1))
-        frame_count = 0
+    try:
+        from PIL import Image, ImageFile, UnidentifiedImageError
+    except ImportError as exc:  # pragma: no cover - packaging regression guard
+        raise ArtifactObservationError(
+            "Pillow is required for bounded artifact verification"
+        ) from exc
 
-        def skip_sub_blocks(offset: int) -> int:
-            while offset < len(data):
-                size = data[offset]
-                offset += 1
-                if size == 0:
-                    return offset
-                offset += size
-                if offset > len(data):
-                    break
-            raise ArtifactObservationError("invalid GIF data blocks")
-
-        while position < len(data):
-            marker = data[position]
-            if marker == 0x3B:
-                return "image/gif", width, height
-            if marker == 0x21:
-                if position + 2 >= len(data):
-                    break
-                position = skip_sub_blocks(position + 2)
-                continue
-            if marker == 0x2C:
-                frame_count += 1
-                if frame_count > 1:
-                    raise ArtifactObservationError(
-                        "animated GIF is unsupported; select one static frame"
-                    )
-                if position + 10 > len(data):
-                    break
-                descriptor_packed = data[position + 9]
-                position += 10
-                if descriptor_packed & 0x80:
-                    position += 3 * (2 ** ((descriptor_packed & 0x07) + 1))
-                if position >= len(data):
-                    break
-                position = skip_sub_blocks(position + 1)
-                continue
-            break
-        raise ArtifactObservationError("invalid GIF structure")
-    if len(data) >= 16 and data[:4] == b"RIFF" and data[8:12] == b"WEBP":
-        chunk = data[12:16]
-        if chunk == b"VP8X" and len(data) >= 30:
-            return (
-                "image/webp",
-                1 + int.from_bytes(data[24:27], "little"),
-                1 + int.from_bytes(data[27:30], "little"),
-            )
-        if chunk == b"VP8 " and len(data) >= 30 and data[23:26] == b"\x9d\x01\x2a":
-            return (
-                "image/webp",
-                int.from_bytes(data[26:28], "little") & 0x3FFF,
-                int.from_bytes(data[28:30], "little") & 0x3FFF,
-            )
-        if chunk == b"VP8L" and len(data) >= 25 and data[20] == 0x2F:
-            bits = int.from_bytes(data[21:25], "little")
-            return "image/webp", 1 + (bits & 0x3FFF), 1 + ((bits >> 14) & 0x3FFF)
-        raise ArtifactObservationError("unsupported or invalid WebP header")
-    if len(data) >= 4 and data[:2] == b"\xff\xd8":
-        index = 2
-        while index + 4 <= len(data):
-            if data[index] != 0xFF:
-                index += 1
-                continue
-            while index < len(data) and data[index] == 0xFF:
-                index += 1
-            if index >= len(data):
-                break
-            marker = data[index]
-            index += 1
-            if marker in {0xD8, 0xD9} or 0xD0 <= marker <= 0xD7:
-                continue
-            if index + 2 > len(data):
-                break
-            length = int.from_bytes(data[index : index + 2], "big")
-            if length < 2 or index + length > len(data):
-                break
-            if (
-                marker
-                in {
-                    0xC0,
-                    0xC1,
-                    0xC2,
-                    0xC3,
-                    0xC5,
-                    0xC6,
-                    0xC7,
-                    0xC9,
-                    0xCA,
-                    0xCB,
-                    0xCD,
-                    0xCE,
-                    0xCF,
-                }
-                and length >= 7
-            ):
-                height = int.from_bytes(data[index + 3 : index + 5], "big")
-                width = int.from_bytes(data[index + 5 : index + 7], "big")
-                return "image/jpeg", width, height
-            index += length
-        raise ArtifactObservationError("invalid JPEG dimensions")
-    raise ArtifactObservationError(
-        "unsupported media magic; expected PNG, JPEG, WebP, or GIF"
-    )
+    format_to_mime = {
+        "PNG": "image/png",
+        "JPEG": "image/jpeg",
+        "WEBP": "image/webp",
+        "GIF": "image/gif",
+    }
+    try:
+        # Pillow's truncated-image switch is process-global. Serialize the
+        # short verify/decode section so another integration cannot weaken it.
+        with _state_lock, warnings.catch_warnings():
+            warnings.simplefilter("error", Image.DecompressionBombWarning)
+            previous_truncated = ImageFile.LOAD_TRUNCATED_IMAGES
+            ImageFile.LOAD_TRUNCATED_IMAGES = False
+            try:
+                with Image.open(io.BytesIO(data)) as image:
+                    mime_type = format_to_mime.get(str(image.format or "").upper())
+                    if mime_type is None:
+                        raise ArtifactObservationError(
+                            "unsupported image format; expected PNG, JPEG, WebP, or GIF"
+                        )
+                    width, height = image.size
+                    if (
+                        width <= 0
+                        or height <= 0
+                        or width > _DEFAULT_MAX_DIMENSION
+                        or height > _DEFAULT_MAX_DIMENSION
+                        or width * height > _DEFAULT_MAX_PIXELS
+                    ):
+                        raise ArtifactObservationError(
+                            "image dimensions exceed the decode limit"
+                        )
+                    if (
+                        bool(getattr(image, "is_animated", False))
+                        or int(getattr(image, "n_frames", 1) or 1) != 1
+                    ):
+                        raise ArtifactObservationError(
+                            "animated media is unsupported; select one static frame"
+                        )
+                    image.verify()
+                # ``verify`` checks container integrity without decoding pixels;
+                # reopen and load to reject truncated/corrupt compressed data.
+                with Image.open(io.BytesIO(data)) as decoded:
+                    if (
+                        bool(getattr(decoded, "is_animated", False))
+                        or int(getattr(decoded, "n_frames", 1) or 1) != 1
+                    ):
+                        raise ArtifactObservationError(
+                            "animated media is unsupported; select one static frame"
+                        )
+                    decoded.load()
+            finally:
+                ImageFile.LOAD_TRUNCATED_IMAGES = previous_truncated
+    except ArtifactObservationError:
+        raise
+    except (Image.DecompressionBombError, Image.DecompressionBombWarning) as exc:
+        raise ArtifactObservationError(
+            "image dimensions exceed the decode limit"
+        ) from exc
+    except (UnidentifiedImageError, OSError, SyntaxError, ValueError) as exc:
+        raise ArtifactObservationError(
+            "image payload is truncated, corrupt, or unsupported"
+        ) from exc
+    return mime_type, int(width), int(height)
 
 
 def inspect_image_bytes(
@@ -357,13 +335,59 @@ def observe_artifact_bytes(
     return ObservedArtifact(data=data, receipt=receipt)
 
 
-def _ensure_no_symlink_components(path: Path, root: Path) -> None:
-    relative = path.relative_to(root)
-    current = root
-    for part in relative.parts:
-        current = current / part
-        if current.is_symlink():
-            raise ArtifactObservationError("symlink artifacts are not allowed")
+def _open_confined_regular_file(
+    path: str,
+    *,
+    workspace_root: str | Path,
+) -> tuple[int, str]:
+    """Open ``path`` by fd-relative, no-follow traversal from filesystem root."""
+
+    if (
+        os.open not in getattr(os, "supports_dir_fd", set())
+        or not hasattr(os, "O_NOFOLLOW")
+        or not hasattr(os, "O_DIRECTORY")
+    ):
+        raise ArtifactObservationError(
+            "this platform cannot prove workspace artifact confinement"
+        )
+    root = Path(os.path.abspath(Path(workspace_root).expanduser()))
+    candidate = Path(path).expanduser()
+    if not candidate.is_absolute():
+        candidate = root / candidate
+    candidate = Path(os.path.abspath(candidate))
+    try:
+        relative = candidate.relative_to(root)
+    except ValueError as exc:
+        raise ArtifactObservationError("artifact is outside the workspace") from exc
+    if not relative.parts:
+        raise ArtifactObservationError("artifact must be a regular file")
+    if any(part in {"", ".", ".."} for part in (*root.parts[1:], *relative.parts)):
+        raise ArtifactObservationError("artifact path is not canonical")
+
+    directory_flags = (
+        os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+    )
+    file_flags = (
+        os.O_RDONLY
+        | os.O_NOFOLLOW
+        | getattr(os, "O_NONBLOCK", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+    )
+    descriptor = os.open(os.path.sep, directory_flags)
+    try:
+        components = [*root.parts[1:], *relative.parts]
+        for index, component in enumerate(components):
+            flags = file_flags if index == len(components) - 1 else directory_flags
+            next_descriptor = os.open(component, flags, dir_fd=descriptor)
+            os.close(descriptor)
+            descriptor = next_descriptor
+        stat_result = os.fstat(descriptor)
+        if not stat.S_ISREG(stat_result.st_mode):
+            raise ArtifactObservationError("artifact must be a regular file")
+        return descriptor, relative.as_posix()
+    except BaseException:
+        os.close(descriptor)
+        raise
 
 
 def observe_local_artifact(
@@ -374,27 +398,19 @@ def observe_local_artifact(
     framework_scope: Mapping[str, Any] | None = None,
     max_bytes: int | None = None,
 ) -> ObservedArtifact:
-    root = Path(workspace_root).expanduser().resolve(strict=True)
-    candidate = Path(path).expanduser()
-    if not candidate.is_absolute():
-        candidate = root / candidate
     try:
-        resolved = candidate.resolve(strict=True)
-        resolved.relative_to(root)
-    except (OSError, ValueError) as exc:
+        descriptor, relative_path = _open_confined_regular_file(
+            path,
+            workspace_root=workspace_root,
+        )
+    except ArtifactObservationError:
+        raise
+    except OSError as exc:
         raise ArtifactObservationError(
             "artifact is outside the workspace or unavailable"
         ) from exc
-    _ensure_no_symlink_components(candidate.absolute(), root)
-    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
-    try:
-        descriptor = os.open(resolved, flags)
-    except OSError as exc:
-        raise ArtifactObservationError("artifact cannot be opened safely") from exc
     try:
         before = os.fstat(descriptor)
-        if not stat.S_ISREG(before.st_mode):
-            raise ArtifactObservationError("artifact must be a regular file")
         limit = (
             _configured_max_bytes()
             if max_bytes is None
@@ -414,24 +430,39 @@ def observe_local_artifact(
         after = os.fstat(descriptor)
     finally:
         os.close(descriptor)
-    epoch_values = (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
-    if epoch_values != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns):
+    epoch_values = (
+        before.st_dev,
+        before.st_ino,
+        before.st_mode,
+        before.st_size,
+        before.st_mtime_ns,
+        before.st_ctime_ns,
+    )
+    if epoch_values != (
+        after.st_dev,
+        after.st_ino,
+        after.st_mode,
+        after.st_size,
+        after.st_mtime_ns,
+        after.st_ctime_ns,
+    ):
         raise ArtifactObservationError("artifact changed while it was being observed")
     if len(data) != before.st_size:
         raise ArtifactObservationError("artifact changed while it was being observed")
-    relative_path = resolved.relative_to(root).as_posix()
     path_key = _sha256(relative_path)
     file_epoch = _canonical_hash(
         {
             "device": before.st_dev,
             "inode": before.st_ino,
+            "mode": before.st_mode,
             "size": before.st_size,
             "mtime_ns": before.st_mtime_ns,
+            "ctime_ns": before.st_ctime_ns,
         }
     )
     return observe_artifact_bytes(
         data,
-        suffix=resolved.suffix,
+        suffix=Path(relative_path).suffix,
         expected_mime=expected_mime,
         path_key=path_key,
         file_epoch=file_epoch,
@@ -458,6 +489,14 @@ def artifact_mcp_content(observed: ObservedArtifact) -> list[Any]:
     ]
 
 
+def artifact_mcp_result(observed: ObservedArtifact) -> Any:
+    """Return the exact closed MCP result without FastMCP structured mirroring."""
+
+    from mcp.types import CallToolResult
+
+    return CallToolResult(content=artifact_mcp_content(observed), isError=False)
+
+
 def parse_artifact_receipt(value: Any) -> dict[str, Any] | None:
     candidate = value
     if isinstance(candidate, str):
@@ -470,18 +509,7 @@ def parse_artifact_receipt(value: Any) -> dict[str, Any] | None:
         or candidate.get("schema_version") != ARTIFACT_OBSERVATION_SCHEMA
     ):
         return None
-    required = {
-        "observation_id",
-        "mime_type",
-        "content_sha256",
-        "byte_count",
-        "width",
-        "height",
-        "task_scope_hash",
-        "call_id_hash",
-        "file_epoch",
-    }
-    if not required.issubset(candidate):
+    if set(candidate) != _ARTIFACT_RECEIPT_KEYS:
         return None
     if candidate.get("status") != "ready" or candidate.get("media_type") != "image":
         return None
@@ -525,6 +553,13 @@ def _evict_sidecars() -> None:
             _sidecar_identity.pop(identity, None)
 
 
+def _retain_call_hash(values: "OrderedDict[str, None]", call_hash: str) -> None:
+    values[call_hash] = None
+    values.move_to_end(call_hash)
+    while len(values) > _MAX_CALL_HASHES_PER_SIDECAR:
+        values.popitem(last=False)
+
+
 def register_artifact_sidecar(
     *, image_base64: str, mime_type: str, receipt: Mapping[str, Any]
 ) -> str:
@@ -560,16 +595,18 @@ def register_artifact_sidecar(
                 raise ArtifactObservationError(
                     "artifact observation identity conflicts with retained payload"
                 )
-            entry.authorized_call_hashes.add(str(parsed["call_id_hash"]))
+            _retain_call_hash(entry.authorized_call_hashes, str(parsed["call_id_hash"]))
             _sidecars.move_to_end(existing)
             return ARTIFACT_OBSERVATION_URI_PREFIX + existing
-        token = hashlib.sha256(os.urandom(32) + str(identity).encode()).hexdigest()
+        token = hashlib.sha256(
+            ("artifact-sidecar/v1\0" + identity[0] + "\0" + identity[1]).encode()
+        ).hexdigest()
         _sidecars[token] = _SidecarEntry(
             data=data,
             mime_type=mime_type,
             receipt=parsed,
             task_scope_hash=str(parsed["task_scope_hash"]),
-            authorized_call_hashes={str(parsed["call_id_hash"])},
+            authorized_call_hashes=OrderedDict(((str(parsed["call_id_hash"]), None),)),
         )
         _sidecar_identity[identity] = token
         _sidecar_bytes += len(data)
@@ -598,9 +635,10 @@ def bind_artifact_sidecar(
             task_id=task_id, session_id=session_id, task_epoch=task_epoch
         ):
             return False
-        if artifact_call_id_hash(tool_call_id) not in entry.authorized_call_hashes:
+        call_hash = artifact_call_id_hash(tool_call_id)
+        if call_hash not in entry.authorized_call_hashes:
             return False
-        entry.bound_call_ids.add(tool_call_id)
+        _retain_call_hash(entry.bound_call_hashes, call_hash)
         _sidecars.move_to_end(token)
         return True
 
@@ -642,13 +680,12 @@ def artifact_memory_descriptor(
     return {
         "schema_version": ARTIFACT_OBSERVATION_SCHEMA,
         "status": "ready",
-        "reference": reference,
         "observation_id": receipt["observation_id"],
         "mime_type": receipt["mime_type"],
         "width": receipt["width"],
         "height": receipt["height"],
         "byte_count": receipt["byte_count"],
-        "tool_call_id": tool_call_id,
+        "call_id_hash": receipt["call_id_hash"],
     }
 
 
@@ -659,50 +696,20 @@ def artifact_prompt_message(
 
     selected = [
         item
-        for item in descriptors[:4]
+        for item in descriptors[:16]
         if item.get("status") == "ready"
-        and isinstance(item.get("reference"), str)
-        and isinstance(item.get("tool_call_id"), str)
+        and isinstance(item.get("observation_id"), str)
+        and isinstance(item.get("call_id_hash"), str)
     ]
     if not selected:
         return None
-    content: list[dict[str, Any]] = [
-        {
-            "type": "text",
-            "text": (
-                "AWorld artifact observation follows for the completed Tool "
-                "result(s). Inspect the image directly; do not convert it to ASCII."
-            ),
-        }
-    ]
-    for item in selected:
-        content.append(
-            {
-                "type": "image_url",
-                "image_url": {"url": item["reference"]},
-                "__aworld_artifact_tool_call_id": item["tool_call_id"],
-                "__aworld_artifact_observation_id": item["observation_id"],
-            }
-        )
-    return {"role": "user", "content": content}
+    return {"role": "user", "content": ARTIFACT_RETAINED_MESSAGE}
 
 
-def contains_artifact_references(messages: Any) -> bool:
-    for message in messages if isinstance(messages, (list, tuple)) else ():
-        content = message.get("content") if isinstance(message, Mapping) else None
-        for item in content if isinstance(content, list) else ():
-            url = (
-                item.get("image_url", {}).get("url")
-                if isinstance(item, Mapping)
-                and isinstance(item.get("image_url"), Mapping)
-                else None
-            )
-            if isinstance(url, str) and url.startswith(ARTIFACT_OBSERVATION_URI_PREFIX):
-                return True
-    return False
-
-
-def mark_artifact_rollout_late_bound(value: Any) -> Any:
+def mark_artifact_rollout_late_bound(
+    value: Any,
+    receipt: Mapping[str, Any] | None = None,
+) -> Any:
     """Make Context attribution truthful for an ephemeral media transport."""
 
     if not isinstance(value, dict):
@@ -712,8 +719,12 @@ def mark_artifact_rollout_late_bound(value: Any) -> Any:
     updated["candidate_status"] = "late_bound_artifact_transport"
     updated["artifact_observation"] = {
         "late_bound": True,
-        "provider_cache_eligible": False,
-        "retained_payload": "opaque_reference",
+        "provider_cache_eligible": True,
+        "retained_payload": "stable_text_receipt",
+        "dynamic_media_suffix": True,
+        "hydrated_count": int((receipt or {}).get("hydrated_count", 0) or 0),
+        "hydrated_bytes": int((receipt or {}).get("hydrated_bytes", 0) or 0),
+        "attempt_key_hashes": list((receipt or {}).get("attempt_keys", ()))[:16],
     }
     return updated
 
@@ -736,113 +747,292 @@ def _projection_state(context: Any, agent_id: str) -> dict[str, Any]:
     return state
 
 
+def _tool_content_receipt(content: Any, *, depth: int = 0) -> dict[str, Any] | None:
+    if depth > 5:
+        return None
+    if isinstance(content, Mapping):
+        receipt = parse_artifact_receipt(content)
+        if receipt is not None:
+            return receipt
+        for value in list(content.values())[:16]:
+            receipt = _tool_content_receipt(value, depth=depth + 1)
+            if receipt is not None:
+                return receipt
+        return None
+    if isinstance(content, (list, tuple)):
+        for value in content[:16]:
+            receipt = _tool_content_receipt(value, depth=depth + 1)
+            if receipt is not None:
+                return receipt
+        return None
+    if not isinstance(content, str) or len(content) > 32_768:
+        return None
+    receipt = parse_artifact_receipt(content)
+    if receipt is not None:
+        return receipt
+    candidates = [content]
+    if content.startswith("<aworld-untrusted-data ") and "\n" in content:
+        candidates.append(content.split("\n", 1)[1].rsplit("\n", 1)[0])
+    for candidate in candidates:
+        try:
+            decoded = json.loads(candidate)
+        except (TypeError, ValueError):
+            continue
+        receipt = _tool_content_receipt(decoded, depth=depth + 1)
+        if receipt is not None:
+            return receipt
+    return None
+
+
+def _artifact_candidates(
+    messages: list[dict[str, Any]],
+    *,
+    task_scope_hash: str,
+) -> list[dict[str, Any]]:
+    """Return only complete assistant-call/result/framework-marker chains."""
+
+    candidates: list[dict[str, Any]] = []
+    declared: dict[str, str] | None = None
+    observed: dict[str, dict[str, Any] | None] = {}
+    for index, message in enumerate(messages):
+        if not isinstance(message, Mapping):
+            declared = None
+            observed = {}
+            continue
+        role = message.get("role")
+        if role == "assistant":
+            # Any later assistant response proves that an earlier media suffix
+            # already reached a complete model turn. Only the newest causal
+            # Tool group remains eligible for attachment.
+            candidates.clear()
+        if role == "assistant" and isinstance(message.get("tool_calls"), list):
+            if len(message["tool_calls"]) > _MAX_CALL_HASHES_PER_SIDECAR:
+                declared = None
+                observed = {}
+                continue
+            values: dict[str, str] = {}
+            valid = True
+            for call in message["tool_calls"]:
+                function = call.get("function") if isinstance(call, Mapping) else None
+                call_id = call.get("id") if isinstance(call, Mapping) else None
+                name = function.get("name") if isinstance(function, Mapping) else None
+                if (
+                    not isinstance(call_id, str)
+                    or not call_id
+                    or call_id in values
+                    or not isinstance(name, str)
+                    or not name
+                ):
+                    valid = False
+                    break
+                values[call_id] = name
+            declared = values if valid and values else None
+            observed = {}
+            continue
+        if role == "tool":
+            call_id = message.get("tool_call_id")
+            if (
+                declared is None
+                or not isinstance(call_id, str)
+                or call_id not in declared
+                or call_id in observed
+            ):
+                declared = None
+                observed = {}
+                continue
+            receipt = None
+            if declared[call_id].split("__")[-1] == "observe_artifact":
+                receipt = _tool_content_receipt(message.get("content"))
+            observed[call_id] = receipt
+            continue
+        content = message.get("content")
+        framework_marker = content == ARTIFACT_RETAINED_MESSAGE or (
+            isinstance(content, list)
+            and len(content) == 1
+            and isinstance(content[0], Mapping)
+            and set(content[0]) == {"type", "text"}
+            and content[0].get("type") == "text"
+            and content[0].get("text") == ARTIFACT_RETAINED_MESSAGE
+        )
+        if (
+            role == "user"
+            and framework_marker
+            and declared is not None
+            and set(observed) == set(declared)
+        ):
+            for call_id, name in declared.items():
+                if name.split("__")[-1] != "observe_artifact":
+                    continue
+                receipt = observed.get(call_id)
+                if (
+                    receipt is None
+                    or receipt.get("task_scope_hash") != task_scope_hash
+                    or receipt.get("call_id_hash") != artifact_call_id_hash(call_id)
+                ):
+                    continue
+                candidates.append(
+                    {
+                        "message_index": index,
+                        "call_id_hash": receipt["call_id_hash"],
+                        "observation_id": receipt["observation_id"],
+                    }
+                )
+            declared = None
+            observed = {}
+            continue
+        declared = None
+        observed = {}
+    return candidates
+
+
+def _hydrate_artifact_observation(
+    *,
+    task_scope_hash: str,
+    observation_id: str,
+    call_id_hash: str,
+) -> tuple[bytes, str] | None:
+    with _state_lock:
+        token = _sidecar_identity.get((task_scope_hash, observation_id))
+        entry = _sidecars.get(token) if token is not None else None
+        if entry is None or call_id_hash not in entry.bound_call_hashes:
+            return None
+        _sidecars.move_to_end(token)
+        return entry.data, entry.mime_type
+
+
+def _delivery_key(candidate: Mapping[str, Any]) -> str:
+    return _canonical_hash(
+        {
+            "observation_id": candidate.get("observation_id"),
+            "call_id_hash": candidate.get("call_id_hash"),
+        }
+    )
+
+
 def hydrate_artifact_messages(
     messages: list[dict[str, Any]],
     *,
     context: Any,
     agent_id: str,
     vision_enabled: bool,
+    media_projection: str | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    """Late-bind opaque refs into one-shot provider image data URLs.
-
-    The returned list is ephemeral provider input. The caller must keep the
-    original reference-bearing messages for logs, trajectories and snapshots.
-    """
+    """Project newest undelivered causal observations into provider-native media."""
 
     task_id = getattr(context, "task_id", None)
     session_id = getattr(context, "session_id", None)
     task_epoch = getattr(context, "task_epoch", 0)
-    lifecycle = getattr(context, "context_lifecycle_state", None)
-    checkpoint = int(getattr(lifecycle, "checkpoint_revision", 0) or 0)
     state = _projection_state(context, agent_id)
     delivered = state.setdefault("delivered", {})
-    hydrated_count = 0
+    task_scope_hash = artifact_task_scope_hash(
+        task_id=task_id,
+        session_id=session_id,
+        task_epoch=task_epoch,
+    )
+    candidates = _artifact_candidates(messages, task_scope_hash=task_scope_hash)
+    unique_candidates: dict[str, dict[str, Any]] = {}
+    for candidate in candidates:
+        key = _delivery_key(candidate)
+        unique_candidates.pop(key, None)
+        unique_candidates[key] = candidate
+    undelivered = [
+        candidate
+        for candidate in unique_candidates.values()
+        if _delivery_key(candidate) not in delivered
+    ]
+    projection_supported = vision_enabled and media_projection in {
+        "openai.image_url.data_url.v1",
+        "anthropic.image.base64.v1",
+    }
+    if not projection_supported or not undelivered:
+        return messages, {
+            "schema_version": "aworld.artifact-observation-projection/v2",
+            "hydrated_count": 0,
+            "degraded_count": 0,
+            "hydrated_bytes": 0,
+            "attempt_keys": [],
+            "hydrated_attempt_keys": [],
+            "degraded_attempt_keys": [],
+            "unsupported_count": len(undelivered),
+        }
+
+    selected: list[tuple[dict[str, Any], bytes, str]] = []
+    degraded: list[dict[str, Any]] = []
     hydrated_bytes = 0
-    hydrated_observation_ids: list[str] = []
-    degraded_count = 0
-    output: list[dict[str, Any]] = []
-    causal_tool_ids: set[str] = set()
-    for message in messages:
-        value = dict(message)
-        if value.get("role") == "tool" and isinstance(value.get("tool_call_id"), str):
-            causal_tool_ids.add(value["tool_call_id"])
-            output.append(value)
+    for candidate in reversed(undelivered):
+        hydrated = _hydrate_artifact_observation(
+            task_scope_hash=task_scope_hash,
+            observation_id=candidate["observation_id"],
+            call_id_hash=candidate["call_id_hash"],
+        )
+        if hydrated is None:
+            degraded.append(candidate)
             continue
-        content = value.get("content")
-        if not isinstance(content, list):
-            if value.get("role") != "tool" and value.get("role") != "user":
-                causal_tool_ids.clear()
-            output.append(value)
+        data, mime_type = hydrated
+        if (
+            len(selected) >= _MAX_PROVIDER_IMAGES_PER_REQUEST
+            or hydrated_bytes + len(data) > _MAX_PROVIDER_IMAGE_BYTES_PER_REQUEST
+        ):
+            degraded.append(candidate)
             continue
-        projected: list[dict[str, Any]] = []
-        for item in content:
-            if not isinstance(item, Mapping):
-                continue
-            clean = dict(item)
-            call_id = clean.pop("__aworld_artifact_tool_call_id", None)
-            observation_id = clean.pop("__aworld_artifact_observation_id", None)
-            image = clean.get("image_url")
-            reference = image.get("url") if isinstance(image, Mapping) else None
-            if not (
-                isinstance(reference, str)
-                and reference.startswith(ARTIFACT_OBSERVATION_URI_PREFIX)
-            ):
-                projected.append(clean)
-                continue
-            reason = None
-            if not vision_enabled:
-                reason = "current model is not configured for vision"
-            elif not isinstance(call_id, str) or call_id not in causal_tool_ids:
-                reason = "causal Tool result is unavailable"
-            elif delivered.get(str(observation_id)) == checkpoint:
-                reason = "unchanged observation retained for this checkpoint"
-            elif hydrated_count >= _MAX_PROVIDER_IMAGES_PER_REQUEST:
-                reason = "per-request image count limit reached"
-            else:
-                hydrated = _hydrate_artifact_reference(
-                    reference,
-                    task_id=task_id,
-                    session_id=session_id,
-                    task_epoch=task_epoch,
-                    tool_call_id=call_id,
-                )
-                if hydrated is None:
-                    reason = "bounded artifact sidecar is unavailable"
-                else:
-                    data_url, byte_count = hydrated
-                    if (
-                        hydrated_bytes + byte_count
-                        > _MAX_PROVIDER_IMAGE_BYTES_PER_REQUEST
-                    ):
-                        reason = "per-request image byte limit reached"
-                    else:
-                        clean["image_url"] = {"url": data_url}
-                        projected.append(clean)
-                        hydrated_count += 1
-                        hydrated_bytes += byte_count
-                        hydrated_observation_ids.append(str(observation_id))
-            if reason is not None:
-                degraded_count += 1
-                projected.append(
+        selected.append((candidate, data, mime_type))
+        hydrated_bytes += len(data)
+    selected.reverse()
+
+    selected_by_message: dict[int, list[tuple[dict[str, Any], bytes, str]]] = {}
+    degraded_by_message: dict[int, int] = {}
+    for candidate, data, mime_type in selected:
+        selected_by_message.setdefault(candidate["message_index"], []).append(
+            (candidate, data, mime_type)
+        )
+    for candidate in degraded:
+        index = candidate["message_index"]
+        degraded_by_message[index] = degraded_by_message.get(index, 0) + 1
+
+    output = [dict(message) for message in messages]
+    for index in set(selected_by_message) | set(degraded_by_message):
+        text = ARTIFACT_RETAINED_MESSAGE
+        overflow = degraded_by_message.get(index, 0)
+        if overflow:
+            text += (
+                f"\nAWorld media projection degraded {overflow} "
+                "overflow/unavailable image(s)."
+            )
+        blocks: list[dict[str, Any]] = [{"type": "text", "text": text}]
+        for _candidate, data, mime_type in selected_by_message.get(index, ()):
+            encoded = base64.b64encode(data).decode("ascii")
+            if media_projection == "openai.image_url.data_url.v1":
+                blocks.append(
                     {
-                        "type": "text",
-                        "text": f"Artifact image not attached: {reason}.",
+                        "type": "image_url",
+                        "image_url": {"url": f"data:{mime_type};base64,{encoded}"},
                     }
                 )
-        value["content"] = projected
-        output.append(value)
-        causal_tool_ids.clear()
-    # Bound one-shot state independently of Memory history length.
-    if len(delivered) > _MAX_SIDECAR_ENTRIES:
-        for key in list(delivered)[: len(delivered) - _MAX_SIDECAR_ENTRIES]:
-            delivered.pop(key, None)
+            else:
+                blocks.append(
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": mime_type,
+                            "data": encoded,
+                        },
+                    }
+                )
+        output[index]["content"] = blocks
+
+    attempted = [candidate for candidate, _data, _mime in selected] + degraded
     return output, {
-        "schema_version": "aworld.artifact-observation-projection/v1",
-        "hydrated_count": hydrated_count,
-        "degraded_count": degraded_count,
+        "schema_version": "aworld.artifact-observation-projection/v2",
+        "hydrated_count": len(selected),
+        "degraded_count": len(degraded),
         "hydrated_bytes": hydrated_bytes,
-        "checkpoint_revision": checkpoint,
-        "observation_ids": hydrated_observation_ids,
+        "attempt_keys": [_delivery_key(candidate) for candidate in attempted],
+        "hydrated_attempt_keys": [
+            _delivery_key(candidate) for candidate, _data, _mime in selected
+        ],
+        "degraded_attempt_keys": [_delivery_key(candidate) for candidate in degraded],
+        "unsupported_count": 0,
     }
 
 
@@ -852,27 +1042,24 @@ def commit_artifact_projection(
     agent_id: str,
     receipt: Mapping[str, Any] | None,
 ) -> None:
-    """Commit one-shot delivery only after a provider accepted the request."""
+    """Commit one-shot delivery only after one complete provider attempt."""
 
     if not isinstance(receipt, Mapping) or receipt.get("schema_version") != (
-        "aworld.artifact-observation-projection/v1"
+        "aworld.artifact-observation-projection/v2"
     ):
         return
-    lifecycle = getattr(context, "context_lifecycle_state", None)
-    checkpoint = int(getattr(lifecycle, "checkpoint_revision", 0) or 0)
-    if receipt.get("checkpoint_revision") != checkpoint:
-        return
-    observation_ids = receipt.get("observation_ids")
-    if not isinstance(observation_ids, list):
+    attempt_keys = receipt.get("attempt_keys")
+    if not isinstance(attempt_keys, list):
         return
     state = _projection_state(context, agent_id)
     delivered = state.setdefault("delivered", {})
-    for observation_id in observation_ids[:4]:
-        if isinstance(observation_id, str) and observation_id:
-            delivered[observation_id] = checkpoint
-    if len(delivered) > _MAX_SIDECAR_ENTRIES:
-        for key in list(delivered)[: len(delivered) - _MAX_SIDECAR_ENTRIES]:
-            delivered.pop(key, None)
+    for attempt_key in attempt_keys[:_MAX_CALL_HASHES_PER_SIDECAR]:
+        if isinstance(attempt_key, str) and re.fullmatch(
+            r"sha256:[0-9a-f]{64}", attempt_key
+        ):
+            delivered[attempt_key] = True
+    while len(delivered) > _MAX_SIDECAR_ENTRIES:
+        delivered.pop(next(iter(delivered)), None)
 
 
 def hydrate_artifact_reference(
@@ -908,7 +1095,8 @@ def _hydrate_artifact_reference(
     token = reference[len(ARTIFACT_OBSERVATION_URI_PREFIX) :]
     with _state_lock:
         entry = _sidecars.get(token)
-        if entry is None or tool_call_id not in entry.bound_call_ids:
+        call_hash = artifact_call_id_hash(tool_call_id)
+        if entry is None or call_hash not in entry.bound_call_hashes:
             return None
         if entry.task_scope_hash != artifact_task_scope_hash(
             task_id=task_id, session_id=session_id, task_epoch=task_epoch

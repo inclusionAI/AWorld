@@ -19,6 +19,10 @@ from aworld.models.provider_context_request import (
     mark_prepared_provider_attempt,
     prepare_provider_context_request,
 )
+from aworld.models.provider_media import (
+    ANTHROPIC_MEDIA_PROJECTION,
+    current_provider_media_audit,
+)
 
 
 ANTHROPIC_CONTEXT_LOWERING = ProviderLoweringCapability(
@@ -108,6 +112,9 @@ class AnthropicProvider(LLMProviderBase):
         self,
     ) -> ProviderLoweringCapability | None:
         return ANTHROPIC_CONTEXT_LOWERING
+
+    def provider_media_projection_capability(self):
+        return ANTHROPIC_MEDIA_PROJECTION
 
     @staticmethod
     def _messages_api(client: Any) -> Any:
@@ -255,6 +262,10 @@ class AnthropicProvider(LLMProviderBase):
             params["temperature"],
             params["max_tokens"],
             params["stop"],
+            artifact_media_active=(
+                current_provider_media_audit(self) is not None
+            ),
+            provider_native_prompt_cache=explicit_native,
             **provider_kwargs,
         )
         cache_lowering_status = "unsupported"
@@ -602,6 +613,7 @@ class AnthropicProvider(LLMProviderBase):
         temperature: float = 0.0,
         max_tokens: int = None,
         stop: List[str] = None,
+        artifact_media_active: bool = False,
         **kwargs,
     ) -> Dict[str, Any]:
         prompt_assembly_plan = kwargs.pop("prompt_assembly_plan", None)
@@ -619,9 +631,10 @@ class AnthropicProvider(LLMProviderBase):
                 request_kwargs={},
                 enable_native_cache=provider_native_prompt_cache,
             )
-            lowered_messages = self.preprocess_messages(lowered.messages)
-            messages = lowered_messages["messages"]
-            system = lowered_messages["system"]
+            if not artifact_media_active:
+                lowered_messages = self.preprocess_messages(lowered.messages)
+                messages = lowered_messages["messages"]
+                system = lowered_messages["system"]
             lowered_request_kwargs = lowered.request_kwargs
 
         if "tools" in kwargs:

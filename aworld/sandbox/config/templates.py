@@ -119,12 +119,7 @@ def get_server_env() -> Dict[str, str]:
     - AWORLD_WORKSPACE: workspace directories
     - Log suppression vars: prevent verbose DEBUG/INFO logs from appearing in CLI
     """
-    # Companion stdio scripts must import the exact AWorld package that owns
-    # their schema. This is derived from the installed/source package location,
-    # never inherited from a caller-controlled PYTHONPATH.
-    env: Dict[str, str] = {
-        "PYTHONPATH": str(Path(__file__).resolve().parents[3]),
-    }
+    env: Dict[str, str] = {}
 
     # Workspace configuration
     v = os.environ.get(ENV_WORKSPACE, "").strip()

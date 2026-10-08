@@ -2261,34 +2261,21 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         return "openai"
 
     def _artifact_vision_enabled(self) -> bool:
-        """Resolve explicit vision declarations without guessing from names."""
+        """Require both Agent opt-in and an explicit provider wire contract."""
 
         if getattr(self.conf, "use_vision", False) is not True:
             return False
-        declarations: list[bool] = []
-        llm_config = getattr(self.conf, "llm_config", None)
-        ext_config = getattr(llm_config, "ext_config", None)
-        if isinstance(ext_config, dict):
-            value = ext_config.get("supports_vision", ext_config.get("vision_capability"))
-            if isinstance(value, bool):
-                declarations.append(value)
-            elif isinstance(value, str) and value.casefold() in {
-                "supported", "unsupported"
-            }:
-                declarations.append(value.casefold() == "supported")
-        for owner in (
-            getattr(self, "llm", None),
-            getattr(getattr(self, "llm", None), "provider", None),
-        ):
-            declared = getattr(owner, "supports_vision", None)
-            if callable(declared):
-                try:
-                    declared = declared()
-                except TypeError:
-                    declared = None
-            if isinstance(declared, bool):
-                declarations.append(declared)
-        return not declarations or all(declarations)
+        provider = getattr(getattr(self, "llm", None), "provider", None)
+        resolver = getattr(provider, "provider_media_projection_capability", None)
+        if not callable(resolver):
+            return False
+        from aworld.models.provider_media import ProviderMediaProjectionCapability
+
+        try:
+            capability = resolver()
+        except Exception:
+            return False
+        return isinstance(capability, ProviderMediaProjectionCapability)
 
     def _apply_reasoning_phase_policy(
         self,

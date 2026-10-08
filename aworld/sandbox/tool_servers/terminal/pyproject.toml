@@ -4,9 +4,10 @@ version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.10"
-aiohttp= ">=3.12.15"
 dependencies = [
+    "aiohttp>=3.12.15",
     "mcp",
     "requests~=2.32.4",
     "fastmcp~=2.11.3",
+    "pillow~=12.1.0",
 ]

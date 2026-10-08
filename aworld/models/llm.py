@@ -2797,6 +2797,42 @@ class LLMModel:
         )
         return response
 
+    def _prepare_artifact_media_messages(
+        self,
+        *,
+        messages: List[Dict[str, Any]],
+        context: Context | None,
+        agent_id: str,
+        vision_enabled: bool,
+    ) -> tuple[List[Dict[str, Any]], dict[str, Any], bool]:
+        from aworld.models.provider_media import ProviderMediaProjectionCapability
+        from aworld.sandbox.artifact_observation import hydrate_artifact_messages
+
+        resolver = getattr(
+            self.provider, "provider_media_projection_capability", None
+        )
+        try:
+            capability = resolver() if callable(resolver) else None
+        except Exception:
+            capability = None
+        projection = (
+            capability.projection
+            if isinstance(capability, ProviderMediaProjectionCapability)
+            else None
+        )
+        provider_messages, receipt = hydrate_artifact_messages(
+            messages,
+            context=context,
+            agent_id=agent_id,
+            vision_enabled=(
+                vision_enabled
+                and context is not None
+                and isinstance(capability, ProviderMediaProjectionCapability)
+            ),
+            media_projection=projection,
+        )
+        return provider_messages, receipt, bool(receipt.get("hydrated_count"))
+
     async def acompletion(
         self,
         messages: List[Dict[str, str]],
@@ -2899,22 +2935,24 @@ class LLMModel:
                 context_rollout=context_rollout,
             )
         )
-        from aworld.sandbox.artifact_observation import (
-            contains_artifact_references,
-            mark_artifact_rollout_late_bound,
+        provider_messages, _artifact_projection, artifact_media_active = (
+            self._prepare_artifact_media_messages(
+                messages=messages,
+                context=context,
+                agent_id=artifact_agent_id,
+                vision_enabled=artifact_vision_enabled,
+            )
         )
+        if artifact_media_active:
+            from aworld.sandbox.artifact_observation import (
+                mark_artifact_rollout_late_bound,
+            )
 
-        artifact_references_present = contains_artifact_references(messages)
-        if artifact_references_present:
-            # Image bytes are a late-bound transport sidecar, not Context or
-            # provider-cache material. Candidate attribution was computed from
-            # the opaque reference view; do not let an immutable candidate or
-            # an older assembly plan replace the materialized provider view.
             provider_candidate = None
             observed_attribution = None
-            kwargs.pop("prompt_assembly_plan", None)
-            kwargs.pop("provider_native_prompt_cache", None)
-            context_rollout = mark_artifact_rollout_late_bound(context_rollout)
+            context_rollout = mark_artifact_rollout_late_bound(
+                context_rollout, _artifact_projection
+            )
         self._begin_llm_call_record(
             context=context,
             request_id=request_id,
@@ -2937,30 +2975,39 @@ class LLMModel:
             kwargs[AWORLD_PROVIDER_CANDIDATE_KWARG] = provider_candidate
         if observed_attribution is not None:
             kwargs[AWORLD_PROVIDER_OBSERVED_ATTRIBUTION_KWARG] = observed_attribution
-        provider_messages = messages
-        _artifact_projection = None
-        if artifact_references_present:
-            from aworld.sandbox.artifact_observation import (
-                hydrate_artifact_messages,
-            )
+        if artifact_media_active:
+            from aworld.models.provider_media import stage_provider_media_audit
 
-            provider_messages, _artifact_projection = hydrate_artifact_messages(
-                messages,
-                context=context,
-                agent_id=artifact_agent_id,
-                vision_enabled=artifact_vision_enabled and context is not None,
+            stage_provider_media_audit(
+                self.provider,
+                request_id=request_id,
+                messages=messages,
             )
-            kwargs["_aworld_artifact_redacted_messages"] = messages
         try:
-            resp = await self.provider.acompletion(
-                messages=provider_messages,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                stop=stop,
-                context=context,
-                **kwargs,
-            )
-            if _artifact_projection is not None and context is not None:
+            try:
+                resp = await self.provider.acompletion(
+                    messages=provider_messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    stop=stop,
+                    context=context,
+                    **kwargs,
+                )
+            finally:
+                if artifact_media_active:
+                    from aworld.models.provider_media import (
+                        discard_provider_media_audit,
+                    )
+
+                    discard_provider_media_audit(
+                        self.provider,
+                        request_id=request_id,
+                    )
+            if self.llm_response_parser:
+                response_parse_args = kwargs.get("response_parse_args") or {}
+                response_parse_args["tools"] = kwargs.get("tools")
+                resp = await self.llm_response_parser.parse(resp, **response_parse_args)
+            if artifact_media_active and context is not None:
                 from aworld.sandbox.artifact_observation import (
                     commit_artifact_projection,
                 )
@@ -2970,10 +3017,6 @@ class LLMModel:
                     agent_id=artifact_agent_id,
                     receipt=_artifact_projection,
                 )
-            if self.llm_response_parser:
-                response_parse_args = kwargs.get("response_parse_args") or {}
-                response_parse_args["tools"] = kwargs.get("tools")
-                resp = await self.llm_response_parser.parse(resp, **response_parse_args)
 
             log_params["time_cost"] = round(time.time() - start_ms, 3)
             log_llm_record(
@@ -3210,18 +3253,24 @@ class LLMModel:
                 context_rollout=context_rollout,
             )
         )
-        from aworld.sandbox.artifact_observation import (
-            contains_artifact_references,
-            mark_artifact_rollout_late_bound,
+        provider_messages, _artifact_projection, artifact_media_active = (
+            self._prepare_artifact_media_messages(
+                messages=messages,
+                context=context,
+                agent_id=artifact_agent_id,
+                vision_enabled=artifact_vision_enabled,
+            )
         )
+        if artifact_media_active:
+            from aworld.sandbox.artifact_observation import (
+                mark_artifact_rollout_late_bound,
+            )
 
-        artifact_references_present = contains_artifact_references(messages)
-        if artifact_references_present:
             provider_candidate = None
             observed_attribution = None
-            kwargs.pop("prompt_assembly_plan", None)
-            kwargs.pop("provider_native_prompt_cache", None)
-            context_rollout = mark_artifact_rollout_late_bound(context_rollout)
+            context_rollout = mark_artifact_rollout_late_bound(
+                context_rollout, _artifact_projection
+            )
         self._begin_llm_call_record(
             context=context,
             request_id=request_id,
@@ -3244,30 +3293,40 @@ class LLMModel:
             kwargs[AWORLD_PROVIDER_CANDIDATE_KWARG] = provider_candidate
         if observed_attribution is not None:
             kwargs[AWORLD_PROVIDER_OBSERVED_ATTRIBUTION_KWARG] = observed_attribution
-        provider_messages = messages
-        _artifact_projection = None
-        if artifact_references_present:
-            from aworld.sandbox.artifact_observation import (
-                hydrate_artifact_messages,
-            )
+        if artifact_media_active:
+            from aworld.models.provider_media import stage_provider_media_audit
 
-            provider_messages, _artifact_projection = hydrate_artifact_messages(
-                messages,
-                context=context,
-                agent_id=artifact_agent_id,
-                vision_enabled=artifact_vision_enabled and context is not None,
+            stage_provider_media_audit(
+                self.provider,
+                request_id=request_id,
+                messages=messages,
             )
-            kwargs["_aworld_artifact_redacted_messages"] = messages
         try:
-            resp = self.provider.completion(
-                messages=provider_messages,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                stop=stop,
-                context=context,
-                **kwargs,
-            )
-            if _artifact_projection is not None and context is not None:
+            try:
+                resp = self.provider.completion(
+                    messages=provider_messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    stop=stop,
+                    context=context,
+                    **kwargs,
+                )
+            finally:
+                if artifact_media_active:
+                    from aworld.models.provider_media import (
+                        discard_provider_media_audit,
+                    )
+
+                    discard_provider_media_audit(
+                        self.provider,
+                        request_id=request_id,
+                    )
+            if self.llm_response_parser:
+                response_parse_args = kwargs.get("response_parse_args") or {}
+                resp = sync_exec(
+                    self.llm_response_parser.parse, resp, **response_parse_args
+                )
+            if artifact_media_active and context is not None:
                 from aworld.sandbox.artifact_observation import (
                     commit_artifact_projection,
                 )
@@ -3276,11 +3335,6 @@ class LLMModel:
                     context,
                     agent_id=artifact_agent_id,
                     receipt=_artifact_projection,
-                )
-            if self.llm_response_parser:
-                response_parse_args = kwargs.get("response_parse_args") or {}
-                resp = sync_exec(
-                    self.llm_response_parser.parse, resp, **response_parse_args
                 )
         except BaseException as exc:
             if isinstance(exc, CandidateRequestNotEnforceable):
@@ -3474,18 +3528,24 @@ class LLMModel:
                 context_rollout=context_rollout,
             )
         )
-        from aworld.sandbox.artifact_observation import (
-            contains_artifact_references,
-            mark_artifact_rollout_late_bound,
+        provider_messages, _artifact_projection, artifact_media_active = (
+            self._prepare_artifact_media_messages(
+                messages=messages,
+                context=context,
+                agent_id=artifact_agent_id,
+                vision_enabled=artifact_vision_enabled,
+            )
         )
+        if artifact_media_active:
+            from aworld.sandbox.artifact_observation import (
+                mark_artifact_rollout_late_bound,
+            )
 
-        artifact_references_present = contains_artifact_references(messages)
-        if artifact_references_present:
             provider_candidate = None
             observed_attribution = None
-            kwargs.pop("prompt_assembly_plan", None)
-            kwargs.pop("provider_native_prompt_cache", None)
-            context_rollout = mark_artifact_rollout_late_bound(context_rollout)
+            context_rollout = mark_artifact_rollout_late_bound(
+                context_rollout, _artifact_projection
+            )
         self._begin_llm_call_record(
             context=context,
             request_id=request_id,
@@ -3508,20 +3568,14 @@ class LLMModel:
             kwargs[AWORLD_PROVIDER_CANDIDATE_KWARG] = provider_candidate
         if observed_attribution is not None:
             kwargs[AWORLD_PROVIDER_OBSERVED_ATTRIBUTION_KWARG] = observed_attribution
-        provider_messages = messages
-        _artifact_projection = None
-        if artifact_references_present:
-            from aworld.sandbox.artifact_observation import (
-                hydrate_artifact_messages,
-            )
+        if artifact_media_active:
+            from aworld.models.provider_media import stage_provider_media_audit
 
-            provider_messages, _artifact_projection = hydrate_artifact_messages(
-                messages,
-                context=context,
-                agent_id=artifact_agent_id,
-                vision_enabled=artifact_vision_enabled and context is not None,
+            stage_provider_media_audit(
+                self.provider,
+                request_id=request_id,
+                messages=messages,
             )
-            kwargs["_aworld_artifact_redacted_messages"] = messages
         provider_stream = None
         try:
             provider_stream = self.provider.stream_completion(
@@ -3532,23 +3586,7 @@ class LLMModel:
                 context=context,
                 **kwargs,
             )
-            artifact_projection_committed = False
             for chunk in provider_stream:
-                if (
-                    not artifact_projection_committed
-                    and _artifact_projection is not None
-                    and context is not None
-                ):
-                    from aworld.sandbox.artifact_observation import (
-                        commit_artifact_projection,
-                    )
-
-                    commit_artifact_projection(
-                        context,
-                        agent_id=artifact_agent_id,
-                        receipt=_artifact_projection,
-                    )
-                    artifact_projection_committed = True
                 self._observe_stream_chunk(
                     stream_diagnostics,
                     chunk,
@@ -3572,6 +3610,20 @@ class LLMModel:
                 final_chunk = chunk
                 record_chunk = self._capture_stream_response_record(record_chunk, chunk)
                 yield chunk
+            if (
+                artifact_media_active
+                and context is not None
+                and record_chunk is not None
+            ):
+                from aworld.sandbox.artifact_observation import (
+                    commit_artifact_projection,
+                )
+
+                commit_artifact_projection(
+                    context,
+                    agent_id=artifact_agent_id,
+                    receipt=_artifact_projection,
+                )
         except GeneratorExit:
             terminal_status = "cancelled"
             terminal_error = "stream_closed_early"
@@ -3593,6 +3645,13 @@ class LLMModel:
                 terminal_error = "provider_stream_failed"
             raise
         finally:
+            if artifact_media_active:
+                from aworld.models.provider_media import discard_provider_media_audit
+
+                discard_provider_media_audit(
+                    self.provider,
+                    request_id=request_id,
+                )
             try:
                 close = getattr(provider_stream, "close", None)
                 if close is not None:
@@ -3738,18 +3797,24 @@ class LLMModel:
                 context_rollout=context_rollout,
             )
         )
-        from aworld.sandbox.artifact_observation import (
-            contains_artifact_references,
-            mark_artifact_rollout_late_bound,
+        provider_messages, _artifact_projection, artifact_media_active = (
+            self._prepare_artifact_media_messages(
+                messages=messages,
+                context=context,
+                agent_id=artifact_agent_id,
+                vision_enabled=artifact_vision_enabled,
+            )
         )
+        if artifact_media_active:
+            from aworld.sandbox.artifact_observation import (
+                mark_artifact_rollout_late_bound,
+            )
 
-        artifact_references_present = contains_artifact_references(messages)
-        if artifact_references_present:
             provider_candidate = None
             observed_attribution = None
-            kwargs.pop("prompt_assembly_plan", None)
-            kwargs.pop("provider_native_prompt_cache", None)
-            context_rollout = mark_artifact_rollout_late_bound(context_rollout)
+            context_rollout = mark_artifact_rollout_late_bound(
+                context_rollout, _artifact_projection
+            )
         self._begin_llm_call_record(
             context=context,
             request_id=request_id,
@@ -3772,20 +3837,14 @@ class LLMModel:
             kwargs[AWORLD_PROVIDER_CANDIDATE_KWARG] = provider_candidate
         if observed_attribution is not None:
             kwargs[AWORLD_PROVIDER_OBSERVED_ATTRIBUTION_KWARG] = observed_attribution
-        provider_messages = messages
-        _artifact_projection = None
-        if artifact_references_present:
-            from aworld.sandbox.artifact_observation import (
-                hydrate_artifact_messages,
-            )
+        if artifact_media_active:
+            from aworld.models.provider_media import stage_provider_media_audit
 
-            provider_messages, _artifact_projection = hydrate_artifact_messages(
-                messages,
-                context=context,
-                agent_id=artifact_agent_id,
-                vision_enabled=artifact_vision_enabled and context is not None,
+            stage_provider_media_audit(
+                self.provider,
+                request_id=request_id,
+                messages=messages,
             )
-            kwargs["_aworld_artifact_redacted_messages"] = messages
         provider_stream = None
         try:
             provider_stream = self.provider.astream_completion(
@@ -3796,23 +3855,7 @@ class LLMModel:
                 context=context,
                 **kwargs,
             )
-            artifact_projection_committed = False
             async for chunk in provider_stream:
-                if (
-                    not artifact_projection_committed
-                    and _artifact_projection is not None
-                    and context is not None
-                ):
-                    from aworld.sandbox.artifact_observation import (
-                        commit_artifact_projection,
-                    )
-
-                    commit_artifact_projection(
-                        context,
-                        agent_id=artifact_agent_id,
-                        receipt=_artifact_projection,
-                    )
-                    artifact_projection_committed = True
                 self._observe_stream_chunk(
                     stream_diagnostics,
                     chunk,
@@ -3834,6 +3877,20 @@ class LLMModel:
                 final_chunk = chunk
                 record_chunk = self._capture_stream_response_record(record_chunk, chunk)
                 yield chunk
+            if (
+                artifact_media_active
+                and context is not None
+                and record_chunk is not None
+            ):
+                from aworld.sandbox.artifact_observation import (
+                    commit_artifact_projection,
+                )
+
+                commit_artifact_projection(
+                    context,
+                    agent_id=artifact_agent_id,
+                    receipt=_artifact_projection,
+                )
         except GeneratorExit:
             terminal_status = "cancelled"
             terminal_error = "stream_closed_early"
@@ -3855,6 +3912,13 @@ class LLMModel:
                 terminal_error = "provider_stream_failed"
             raise
         finally:
+            if artifact_media_active:
+                from aworld.models.provider_media import discard_provider_media_audit
+
+                discard_provider_media_audit(
+                    self.provider,
+                    request_id=request_id,
+                )
             try:
                 close = getattr(provider_stream, "aclose", None)
                 if close is not None:

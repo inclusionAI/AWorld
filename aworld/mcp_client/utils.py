@@ -265,54 +265,131 @@ def _result_envelope_error(envelope: Dict[str, Any]) -> str:
     return "Tool returned success=false without error details"
 
 
+def _lower_artifact_observation_result(
+    call_result: CallToolResult,
+    *,
+    server_name: str,
+    tool_name: str,
+    parameter: Dict[str, Any] | None,
+) -> ActionResult:
+    """Lower the closed artifact contract without serializing media bytes."""
+
+    from aworld.sandbox.artifact_observation import (
+        ArtifactObservationError,
+        ARTIFACT_OBSERVATION_SCHEMA,
+        parse_artifact_receipt,
+        register_artifact_sidecar,
+    )
+
+    protocol_error = bool(
+        getattr(call_result, "isError", getattr(call_result, "is_error", False))
+    )
+    blocks = list(getattr(call_result, "content", None) or ())
+    structured_content = getattr(
+        call_result,
+        "structuredContent",
+        getattr(call_result, "structured_content", None),
+    )
+    top_level_extra = getattr(call_result, "model_extra", None) or {}
+    block_extras = [getattr(block, "model_extra", None) or {} for block in blocks]
+    receipt = None
+    reference = None
+    error_code = None
+    if protocol_error:
+        error_code = "artifact_observation_tool_failed"
+    elif (
+        len(blocks) != 2
+        or not isinstance(blocks[0], TextContent)
+        or not isinstance(blocks[1], ImageContent)
+        or structured_content is not None
+        or bool(top_level_extra)
+        or any(bool(extra) for extra in block_extras)
+        or getattr(call_result, "meta", None) is not None
+        or any(
+            getattr(block, "annotations", None) is not None
+            or getattr(block, "meta", None) is not None
+            for block in blocks
+        )
+    ):
+        error_code = "artifact_observation_contract_invalid"
+    else:
+        receipt = parse_artifact_receipt(blocks[0].text)
+        if receipt is None:
+            error_code = "artifact_observation_contract_invalid"
+        else:
+            try:
+                reference = register_artifact_sidecar(
+                    image_base64=blocks[1].data,
+                    mime_type=blocks[1].mimeType,
+                    receipt=receipt,
+                )
+            except ArtifactObservationError:
+                error_code = "artifact_observation_contract_invalid"
+
+    if error_code is not None:
+        failed_receipt = {
+            "schema_version": ARTIFACT_OBSERVATION_SCHEMA,
+            "status": "failed",
+            "reason": error_code,
+        }
+        return ActionResult(
+            success=False,
+            tool_name=server_name,
+            action_name=tool_name,
+            content=json.dumps(
+                failed_receipt,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+            error=error_code,
+            keep=True,
+            metadata={"artifact_observation": failed_receipt},
+            parameter=parameter or {},
+        )
+
+    canonical_receipt = json.dumps(
+        receipt,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return ActionResult(
+        success=True,
+        tool_name=server_name,
+        action_name=tool_name,
+        content=canonical_receipt,
+        keep=True,
+        metadata={
+            "artifact_observation": receipt,
+            "artifact_observation_ref": reference,
+        },
+        parameter=parameter or {},
+    )
+
+
 def lower_mcp_call_result(
     call_result: CallToolResult,
     *,
     server_name: str,
     tool_name: str,
     parameter: Dict[str, Any] | None = None,
+    trusted_artifact_observation: bool = False,
 ) -> ActionResult:
     """Lower one MCP protocol result without losing error or structured data."""
-    raw_content = list(getattr(call_result, "content", None) or [])
-    artifact_receipt = None
-    artifact_reference = None
-    artifact_error = None
-    if tool_name == "observe_artifact":
-        from aworld.sandbox.artifact_observation import (
-            ArtifactObservationError,
-            parse_artifact_receipt,
-            register_artifact_sidecar,
+    if tool_name == "observe_artifact" and trusted_artifact_observation:
+        return _lower_artifact_observation_result(
+            call_result,
+            server_name=server_name,
+            tool_name=tool_name,
+            parameter=parameter,
         )
-
-        for block in raw_content:
-            if isinstance(block, TextContent):
-                artifact_receipt = parse_artifact_receipt(block.text)
-                if artifact_receipt is not None:
-                    break
-        image_blocks = [block for block in raw_content if isinstance(block, ImageContent)]
-        try:
-            if artifact_receipt is None or len(image_blocks) != 1:
-                raise ArtifactObservationError(
-                    "artifact observation requires one receipt and one image block"
-                )
-            artifact_reference = register_artifact_sidecar(
-                image_base64=image_blocks[0].data,
-                mime_type=image_blocks[0].mimeType,
-                receipt=artifact_receipt,
-            )
-        except ArtifactObservationError:
-            artifact_error = "artifact_observation_invalid"
-
+    raw_content = list(getattr(call_result, "content", None) or [])
     content_items: List[Any] = []
     metadata: Dict[str, Any] = {}
     artifact_datas: List[Dict[str, Any]] = []
 
     for content in raw_content:
-        # Artifact bytes cross the MCP transport exactly once and live only in
-        # the bounded sidecar registry. They never enter ActionResult text,
-        # metadata, journals, trajectories, or ordinary Memory serialization.
-        if artifact_receipt is not None and isinstance(content, ImageContent):
-            continue
         content_items.append(_mcp_content_value(content))
         block_extra = getattr(content, "model_extra", None) or {}
         block_metadata = block_extra.get("metadata")
@@ -337,37 +414,6 @@ def lower_mcp_call_result(
         metadata["structured_content"] = structured_content
     if artifact_datas:
         metadata["artifacts"] = artifact_datas
-    if artifact_receipt is not None:
-        metadata["artifact_observation"] = artifact_receipt
-    if artifact_reference is not None:
-        metadata["artifact_observation_ref"] = artifact_reference
-
-    if artifact_error is not None:
-        failed_receipt = dict(artifact_receipt or {})
-        failed_receipt.update(
-            {
-                "schema_version": "aworld.artifact-observation/v1",
-                "status": "failed",
-                "reason": artifact_error,
-            }
-        )
-        metadata["artifact_observation"] = failed_receipt
-        return ActionResult(
-            success=False,
-            tool_name=server_name,
-            action_name=tool_name,
-            content=json.dumps(
-                failed_receipt,
-                ensure_ascii=False,
-                sort_keys=True,
-                separators=(",", ":"),
-            ),
-            error=artifact_error,
-            keep=True,
-            metadata=metadata,
-            parameter=parameter or {},
-        )
-
     lowered_content = _coalesce_mcp_content(content_items)
     if not content_items and structured_content is not None:
         lowered_content = structured_content

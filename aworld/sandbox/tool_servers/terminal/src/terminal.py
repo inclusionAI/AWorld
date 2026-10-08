@@ -22,6 +22,18 @@ from pathlib import Path
 from typing import Any, Literal, Mapping, Optional, Union
 import os
 
+# Direct-script stdio startup does not place the owning package root on
+# ``sys.path``. Resolve it from this immutable companion script location rather
+# than exporting PYTHONPATH into task commands.
+_AWORLD_PACKAGE_ROOT = Path(__file__).resolve().parents[5]
+if not (_AWORLD_PACKAGE_ROOT / "aworld" / "__init__.py").is_file():
+    raise RuntimeError("Unable to resolve the owning AWorld package")
+if str(_AWORLD_PACKAGE_ROOT) not in sys.path:
+    sys.path.insert(0, str(_AWORLD_PACKAGE_ROOT))
+_TERMINAL_SERVER_ROOT = Path(__file__).resolve().parent
+if str(_TERMINAL_SERVER_ROOT) not in sys.path:
+    sys.path.insert(0, str(_TERMINAL_SERVER_ROOT))
+
 import bashlex
 from bashlex import ast as shell_ast
 from bashlex import flags as shell_flags
@@ -42,7 +54,7 @@ from aworld.sandbox.terminal_receipt import (
     plan_terminal_execution,
 )
 from aworld.sandbox.artifact_observation import (
-    artifact_mcp_content,
+    artifact_mcp_result,
     observe_local_artifact,
 )
 from aworld.sandbox.task_budget import (
@@ -730,7 +742,7 @@ async def observe_artifact(
         default=None,
         description="Framework-injected task scope; hidden from the model schema",
     ),
-) -> list[Any]:
+) -> Any:
     del ctx
     if isinstance(path, FieldInfo):
         path = path.default
@@ -745,7 +757,7 @@ async def observe_artifact(
         expected_mime=expected_mime,
         framework_scope=env_content,
     )
-    return artifact_mcp_content(observed)
+    return artifact_mcp_result(observed)
 
 
 @mcp.tool(

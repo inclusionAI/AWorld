@@ -1802,6 +1802,10 @@ class McpServers:
                         server_name=server_name,
                         tool_name=tool_name,
                         parameter=parameter,
+                        trusted_artifact_observation=(
+                            tool_name == "observe_artifact"
+                            and self._is_terminal_service(server_name)
+                        ),
                     )
                     results.append(action_result)
                     self._update_metadata(result_key, action_result, operation_info)

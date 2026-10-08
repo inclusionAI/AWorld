@@ -59,6 +59,11 @@ from aworld.models.llm_http_handler import LLMHTTPHandler
 from aworld.models.openai_message_sanitizer import sanitize_openai_messages
 from aworld.models.model_response import ModelResponse, LLMResponseError
 from aworld.models.prompt_cache import OpenAIPromptAssemblyLowerer
+from aworld.models.provider_media import (
+    AZURE_OPENAI_MEDIA_PROJECTION,
+    OPENAI_MEDIA_PROJECTION,
+    consume_provider_media_audit,
+)
 from aworld.models.reasoning_policy import (
     AZURE_OPENAI_REASONING_CAPABILITY,
     OPENAI_REASONING_CAPABILITY,
@@ -446,6 +451,9 @@ class OpenAIProvider(LLMProviderBase):
     ) -> ReasoningTransportCapability | None:
         return OPENAI_REASONING_CAPABILITY
 
+    def provider_media_projection_capability(self):
+        return OPENAI_MEDIA_PROJECTION
+
     def context_model_boundary_messages(
         self, messages: List[Dict[str, Any]]
     ) -> List[Dict[str, Any]]:
@@ -471,8 +479,9 @@ class OpenAIProvider(LLMProviderBase):
             preferred=request_kwargs,
             allow_chat_template_reasoning=self._allows_chat_template_reasoning(),
         )
-        artifact_redacted_messages = request_kwargs.pop(
-            "_aworld_artifact_redacted_messages", None
+        artifact_redacted_messages = consume_provider_media_audit(
+            self,
+            request_id=request_kwargs.get("llm_request_id"),
         )
         envelope = request_kwargs.pop(AWORLD_PROVIDER_CANDIDATE_KWARG, None)
         observed_envelope = request_kwargs.pop(
@@ -600,6 +609,9 @@ class OpenAIProvider(LLMProviderBase):
                 temperature,
                 max_tokens,
                 stop,
+                artifact_media_active=isinstance(
+                    artifact_redacted_messages, list
+                ),
                 **request_kwargs,
             )
         except CandidateRequestNotEnforceable:
@@ -712,7 +724,11 @@ class OpenAIProvider(LLMProviderBase):
                 ),
                 payload=snapshot_params,
                 capture_stage=RequestCaptureStage.PROVIDER_PREPARED,
-                fidelity=ProviderRequestFidelity.PROVIDER_PREPARED,
+                fidelity=(
+                    ProviderRequestFidelity.PROVIDER_PREPARED_MEDIA_REDACTED
+                    if isinstance(artifact_redacted_messages, list)
+                    else ProviderRequestFidelity.PROVIDER_PREPARED
+                ),
                 serialized_checksum=(
                     "sha256:" + hashlib.sha256(serialized_body).hexdigest()
                     if serialized_body is not None
@@ -1523,6 +1539,7 @@ class OpenAIProvider(LLMProviderBase):
         temperature: float = 0.0,
         max_tokens: int = None,
         stop: List[str] = None,
+        artifact_media_active: bool = False,
         **kwargs,
     ) -> Dict[str, Any]:
         prompt_assembly_plan = kwargs.pop("prompt_assembly_plan", None)
@@ -1540,7 +1557,8 @@ class OpenAIProvider(LLMProviderBase):
                 request_kwargs={},
                 enable_native_cache=provider_native_prompt_cache,
             )
-            messages = sanitize_openai_messages(lowered.messages)
+            if not artifact_media_active:
+                messages = sanitize_openai_messages(lowered.messages)
             lowered_request_kwargs = lowered.request_kwargs
 
         model_name = kwargs.get("model_name", self.model_name or "")
@@ -1788,6 +1806,9 @@ class AzureOpenAIProvider(OpenAIProvider):
         self,
     ) -> ReasoningTransportCapability | None:
         return AZURE_OPENAI_REASONING_CAPABILITY
+
+    def provider_media_projection_capability(self):
+        return AZURE_OPENAI_MEDIA_PROJECTION
 
     def _azure_client_kwargs(self, *, async_client: bool) -> dict[str, Any]:
         api_key = self.api_key or os.getenv("AZURE_OPENAI_API_KEY", "")

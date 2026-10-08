@@ -24,6 +24,10 @@ from aworld.core.context.compiler import (
     build_provider_attribution_receipt,
 )
 from aworld.core.context.compiler.frozen_json import canonical_json_bytes
+from aworld.models.provider_media import (
+    bind_provider_media_audit,
+    consume_provider_media_audit,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -106,8 +110,9 @@ def prepare_provider_context_request(
 ) -> PreparedProviderContextRequest:
     """Select, lower, snapshot and commit one provider request before I/O."""
     request_kwargs = dict(kwargs)
-    artifact_redacted_messages = request_kwargs.pop(
-        "_aworld_artifact_redacted_messages", None
+    artifact_redacted_messages = consume_provider_media_audit(
+        provider,
+        request_id=request_kwargs.get("llm_request_id"),
     )
     envelope = request_kwargs.pop(AWORLD_PROVIDER_CANDIDATE_KWARG, None)
     observed_envelope = request_kwargs.pop(
@@ -154,12 +159,13 @@ def prepare_provider_context_request(
             observed_reason = "observed_model_boundary_mismatch"
 
     try:
-        projection = lower(
-            selected,
-            request_kwargs,
-            stream,
-            envelope.cache_plan if envelope is not None else None,
-        )
+        with bind_provider_media_audit(provider, artifact_redacted_messages):
+            projection = lower(
+                selected,
+                request_kwargs,
+                stream,
+                envelope.cache_plan if envelope is not None else None,
+            )
         if not isinstance(projection, ProviderWireProjection):
             raise TypeError("provider lowerer returned an invalid projection")
         canonical_json_bytes(projection.payload)
@@ -167,12 +173,13 @@ def prepare_provider_context_request(
         if isinstance(artifact_redacted_messages, list):
             redacted_selected = dict(selected)
             redacted_selected["messages"] = artifact_redacted_messages
-            redacted_projection = lower(
-                redacted_selected,
-                request_kwargs,
-                stream,
-                None,
-            )
+            with bind_provider_media_audit(provider, artifact_redacted_messages):
+                redacted_projection = lower(
+                    redacted_selected,
+                    request_kwargs,
+                    stream,
+                    None,
+                )
             if not isinstance(redacted_projection, ProviderWireProjection):
                 raise TypeError(
                     "provider redacted lowerer returned an invalid projection"
@@ -184,7 +191,11 @@ def prepare_provider_context_request(
             provider_name=capability.provider_name,
             payload=snapshot_payload,
             capture_stage=RequestCaptureStage.PROVIDER_PREPARED,
-            fidelity=ProviderRequestFidelity.PROVIDER_PREPARED,
+            fidelity=(
+                ProviderRequestFidelity.PROVIDER_PREPARED_MEDIA_REDACTED
+                if isinstance(artifact_redacted_messages, list)
+                else ProviderRequestFidelity.PROVIDER_PREPARED
+            ),
         )
     except CandidateRequestNotEnforceable:
         raise

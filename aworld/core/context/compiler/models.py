@@ -141,6 +141,7 @@ class ProviderRequestFidelity(str, Enum):
     UNKNOWN = "unknown"
     MODEL_BOUNDARY = "model_boundary"
     PROVIDER_PREPARED = "provider_prepared"
+    PROVIDER_PREPARED_MEDIA_REDACTED = "provider_prepared_media_redacted"
     HTTP_SERIALIZED = "http_serialized"
 
 

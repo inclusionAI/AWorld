@@ -45,7 +45,9 @@ async def handle_openai_request(span: Span, kwargs, instance):
     try:
         attributes = parser_request_params(kwargs, instance)
         if should_trace_prompts():
-            messages = kwargs.get("messages")
+            from aworld.models.provider_media import redact_provider_media_payloads
+
+            messages = redact_provider_media_payloads(kwargs.get("messages"))
             if need_flatten_messages():
                 attributes.update(parse_request_message(messages))
             else:

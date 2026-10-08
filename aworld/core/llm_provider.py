@@ -90,6 +90,11 @@ class LLMProviderBase(abc.ABC):
         """Return this adapter's reviewed reasoning wire contract, if any."""
         return None
 
+    def provider_media_projection_capability(self):
+        """Return an explicit reviewed media wire contract, if supported."""
+
+        return None
+
     def provider_native_cache_control_enabled(
         self, *, auto_supported: bool
     ) -> bool:

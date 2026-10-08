@@ -375,6 +375,8 @@ class LLMHTTPHandler:
         return form
 
     def _summarize_request_data_for_log(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        from aworld.models.provider_media import redact_provider_media_payloads
+
         def summarize(value: Any) -> Any:
             if self._is_multipart_file_field(value):
                 content = value.get("content", b"")
@@ -392,7 +394,8 @@ class LLMHTTPHandler:
                 return {k: summarize(v) for k, v in value.items()}
             return value
 
-        return {key: summarize(value) for key, value in data.items()}
+        redacted = redact_provider_media_payloads(data)
+        return {key: summarize(value) for key, value in redacted.items()}
 
     def sync_call(
         self,
@@ -501,7 +504,10 @@ class LLMHTTPHandler:
         """
         if data.get("stream") is not True:
             raise ValueError("stream request must be finalized before HTTP serialization")
-        logger.info(f"sync_stream_call request data: {data}")
+        logger.info(
+            "sync_stream_call request data: "
+            f"{self._summarize_request_data_for_log(data)}"
+        )
         retries = 0
 
         while retries < self.max_retries:
@@ -540,7 +546,10 @@ class LLMHTTPHandler:
         import aiohttp
         if data.get("stream") is not True:
             raise ValueError("stream request must be finalized before HTTP serialization")
-        logger.info(f"async_stream_call request data: {data}")
+        logger.info(
+            "async_stream_call request data: "
+            f"{self._summarize_request_data_for_log(data)}"
+        )
 
         retries = 0
         last_error = None

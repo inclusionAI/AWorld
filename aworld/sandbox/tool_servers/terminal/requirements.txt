@@ -3,3 +3,4 @@
 mcp
 requests~=2.32.4
 fastmcp~=2.11.3
+pillow~=12.1.0
