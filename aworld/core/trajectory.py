@@ -17,6 +17,9 @@ from enum import Enum
 from typing import Any, ClassVar
 
 
+TRAJECTORY_LLM_CALL_ID_HEADER = "aworld_trajectory_llm_call_id"
+
+
 class TrajectoryFidelity(str, Enum):
     COMPLETE = "complete"
     PARTIAL = "partial"

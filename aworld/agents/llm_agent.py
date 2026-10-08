@@ -73,6 +73,7 @@ from aworld.core.context.compiler.parity import (
     _bind_context_entrypoint_claim,
     _issue_context_entrypoint_claim,
 )
+from aworld.core.trajectory import TRAJECTORY_LLM_CALL_ID_HEADER
 from aworld.core.context.prompts import StringPromptTemplate
 from aworld.core.event.base import (
     Message,
@@ -2048,6 +2049,8 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         """Persist one request snapshot without overwriting prior LLM call state."""
         started_at = started_at or datetime.now().isoformat()
         call_id = reserved_call_id or uuid.uuid4().hex
+        if isinstance(getattr(message, "headers", None), dict):
+            message.headers[TRAJECTORY_LLM_CALL_ID_HEADER] = call_id
         serializable_messages = to_serializable(messages)
         context = message.context
         context_info = context.context_info

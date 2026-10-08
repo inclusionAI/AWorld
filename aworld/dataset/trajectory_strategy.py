@@ -15,6 +15,7 @@ from aworld.core.agent.base import AgentFactory
 from aworld.core.common import Observation
 from aworld.core.context.base import Context
 from aworld.core.event.base import Message
+from aworld.core.trajectory import TRAJECTORY_LLM_CALL_ID_HEADER
 from aworld.logs.util import logger
 from aworld.dataset.types import (
     TrajectoryItem,
@@ -221,7 +222,9 @@ class DefaultTrajectoryStrategy(TrajectoryStrategy):
         if not isinstance(llm_calls, list) or not llm_calls:
             return None
 
-        llm_call = self._select_llm_call_for_message(message, llm_calls)
+        llm_call = self._causal_llm_call_record(message, llm_calls)
+        if llm_call is None:
+            llm_call = self._select_llm_call_for_message(message, llm_calls)
         if not isinstance(llm_call, dict):
             return None
 
@@ -283,6 +286,35 @@ class DefaultTrajectoryStrategy(TrajectoryStrategy):
             return None
 
         return valid_calls[-1]
+
+    @staticmethod
+    def _causal_llm_call_record(
+        message: Any, llm_calls: List[Dict[str, Any]]
+    ) -> Optional[Dict[str, Any]]:
+        headers = getattr(message, "headers", None)
+        call_id = (
+            headers.get(TRAJECTORY_LLM_CALL_ID_HEADER)
+            if isinstance(headers, dict)
+            else None
+        )
+        if not isinstance(call_id, str) or not (0 < len(call_id) <= 256):
+            return None
+        matches = [
+            record
+            for record in llm_calls
+            if isinstance(record, dict) and record.get("call_id") == call_id
+        ]
+        if not matches:
+            return None
+        return next(
+            (
+                record
+                for record in reversed(matches)
+                if isinstance(record.get("request_id"), str)
+                and 0 < len(record["request_id"]) <= 256
+            ),
+            matches[-1],
+        )
 
     def _sanitize_trajectory_messages(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         return [self._strip_cache_usage_fields(message) for message in messages]
@@ -423,7 +455,7 @@ class DefaultTrajectoryStrategy(TrajectoryStrategy):
         llm_request_id = None
         llm_calls = message.context.context_info.get("llm_calls")
         if isinstance(llm_calls, list):
-            selected_call = self._select_llm_call_for_message(message, llm_calls)
+            selected_call = self._causal_llm_call_record(message, llm_calls)
             request_id = (
                 selected_call.get("request_id")
                 if isinstance(selected_call, dict)
@@ -492,6 +524,14 @@ class DefaultTrajectoryStrategy(TrajectoryStrategy):
         return None
 
     def _build_trajectory_item_id(self, message: Message) -> str:
+        headers = getattr(message, "headers", None)
+        causal_call_id = (
+            headers.get(TRAJECTORY_LLM_CALL_ID_HEADER)
+            if isinstance(headers, dict)
+            else None
+        )
+        if isinstance(causal_call_id, str) and 0 < len(causal_call_id) <= 256:
+            return f"{message.id}:{causal_call_id}"
         record = self._get_latest_llm_call_record(message)
         if record:
             call_id = record.get("call_id")

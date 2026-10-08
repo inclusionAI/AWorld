@@ -65,6 +65,7 @@ async def test_message_to_trajectory_item_uses_call_id_to_avoid_snapshot_overwri
             "request": {"messages": [{"role": "user", "content": "second"}]},
         }
     ]
+    message.headers["aworld_trajectory_llm_call_id"] = "call-2"
 
     item = await strategy.message_to_trajectory_item(message)
 
@@ -85,7 +86,58 @@ async def test_native_trajectory_drops_unbounded_llm_request_id() -> None:
             "request": {"messages": [{"role": "user", "content": "second"}]},
         }
     ]
+    message.headers["aworld_trajectory_llm_call_id"] = "call-oversized"
 
     item = await strategy.message_to_trajectory_item(message)
 
     assert item.meta.llm_request_id is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("include_prior", [False, True])
+async def test_native_trajectory_uses_explicit_current_call_after_source_message(
+    include_prior: bool,
+) -> None:
+    agent = _build_agent()
+    strategy = DefaultTrajectoryStrategy()
+    message = _build_message(agent)
+    message.timestamp = 100.0
+    current = {
+        "call_id": "call-current",
+        "request_id": "request-current",
+        "task_id": "task-1",
+        "agent_id": agent.id(),
+        "started_at": 101.0,
+        "finished_at": 102.0,
+        "request": {"messages": [{"role": "user", "content": "current"}]},
+    }
+    prior = {
+        "call_id": "call-prior",
+        "request_id": "request-prior",
+        "task_id": "task-1",
+        "agent_id": agent.id(),
+        "started_at": 90.0,
+        "finished_at": 99.0,
+        "request": {"messages": [{"role": "user", "content": "prior"}]},
+    }
+    message.context.context_info["llm_calls"] = (
+        [prior, current] if include_prior else [current]
+    )
+    message.headers["aworld_trajectory_llm_call_id"] = "call-current"
+
+    item = await strategy.message_to_trajectory_item(message)
+
+    assert item.meta.llm_request_id == "request-current"
+    assert item.id == f"{message.id}:call-current"
+
+
+def test_agent_request_reservation_is_carried_on_source_message() -> None:
+    agent = _build_agent()
+    message = _build_message(agent)
+
+    call_id = agent._record_llm_call_request(
+        message,
+        [{"role": "user", "content": "hello"}],
+    )
+
+    assert message.headers["aworld_trajectory_llm_call_id"] == call_id
