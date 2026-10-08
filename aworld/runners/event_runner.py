@@ -275,13 +275,13 @@ class TaskEventRunner(TaskRunner):
         ):
             status = await runtime_context.get_task_status()
         cancelled = status in {TaskStatusValue.INTERRUPTED, TaskStatusValue.CANCELLED}
-        timeout = self.task.timeout
-        timed_out = (
-            isinstance(timeout, (int, float))
-            and not isinstance(timeout, bool)
-            and timeout > 0
-            and self.timeout_elapsed_seconds() >= timeout
-        )
+        # ``deadline_epoch_seconds`` is the portable caller-owned authority and
+        # may exist without a legacy duration.  ``Task.remaining_seconds`` also
+        # applies the live monotonic guard, so checking elapsed wall time against
+        # ``task.timeout`` here can both miss restored deadlines and disagree
+        # with the Tool/generation budget seen by the rest of AWorld.
+        remaining_seconds = self.task.remaining_seconds()
+        timed_out = remaining_seconds is not None and remaining_seconds <= 0
         if not cancelled and not timed_out:
             return False
         status = status if cancelled else TaskStatusValue.TIMEOUT
