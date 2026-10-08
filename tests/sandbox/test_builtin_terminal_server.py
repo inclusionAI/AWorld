@@ -826,6 +826,50 @@ def test_budget_snapshot_never_extends_after_wall_clock_rollback() -> None:
     assert budget.remaining_at(900) == 40
 
 
+def test_unspecified_task_reserve_honors_explicit_terminal_policy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AWORLD_TERMINAL_COMPLETION_RESERVE_SECONDS", "60")
+    budget = FrameworkTaskBudget(
+        bounded=True,
+        deadline_epoch_seconds=1120,
+        remaining_seconds=120,
+        completion_reserve_seconds=None,
+        captured_at_epoch_seconds=1000,
+    )
+
+    decision = _resolve_command_timeout(
+        300,
+        now_epoch=1000,
+        task_budget=budget.to_hidden_dict(),
+    )
+
+    assert decision.effective_seconds == 60
+    assert decision.limited_by == "task_deadline"
+
+
+def test_unspecified_task_reserve_preserves_default_policy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("AWORLD_TERMINAL_COMPLETION_RESERVE_SECONDS", raising=False)
+    budget = FrameworkTaskBudget(
+        bounded=True,
+        deadline_epoch_seconds=1120,
+        remaining_seconds=120,
+        completion_reserve_seconds=None,
+        captured_at_epoch_seconds=1000,
+    )
+
+    decision = _resolve_command_timeout(
+        300,
+        now_epoch=1000,
+        task_budget=budget.to_hidden_dict(),
+    )
+
+    assert decision.effective_seconds == 105
+    assert decision.limited_by == "task_deadline"
+
+
 def test_terminal_timeout_override_preserves_original_caller_request(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

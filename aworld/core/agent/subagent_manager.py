@@ -752,6 +752,7 @@ class SubagentManager:
             get_parent_task = getattr(current_context, "get_task", None)
             parent_task = get_parent_task() if callable(get_parent_task) else None
             parent_remaining = None
+            parent_reserve_applied = 0.0
             if parent_task is not None:
                 try:
                     value = parent_task.remaining_seconds()
@@ -795,6 +796,7 @@ class SubagentManager:
                     parent_remaining = max(
                         0.0, float(value) - max(0.0, parent_reserve)
                     )
+                    parent_reserve_applied = max(0.0, parent_reserve)
             explicit_remaining = None
             if delegation_spec is not None and delegation_spec.deadline is not None:
                 explicit_remaining = max(
@@ -816,6 +818,11 @@ class SubagentManager:
                 context=sub_context,
                 parent_task=parent_task,
                 timeout=execution_timeout,
+                completion_reserve_applied_seconds=(
+                    parent_reserve_applied
+                    if parent_remaining is not None
+                    else 0.0
+                ),
             )
 
             # Execute via Runners

@@ -42,6 +42,12 @@ def test_invalid_explicit_epoch_fails_closed(value):
         Task(deadline_epoch_seconds=value)
 
 
+@pytest.mark.parametrize("value", [-1, True, "30", float("nan"), float("inf")])
+def test_invalid_applied_completion_reserve_fails_closed(value):
+    with pytest.raises(ValueError, match="completion_reserve_applied_seconds"):
+        Task(completion_reserve_applied_seconds=value)
+
+
 def test_duration_is_not_renewed_by_retry_serialization_or_child(clock):
     task = Task(timeout=100)
     advance(clock, 70)

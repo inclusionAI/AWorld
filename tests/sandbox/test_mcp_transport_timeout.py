@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 import aworld.sandbox.run.mcp_servers as mcp_servers
+from aworld.sandbox.task_budget import FrameworkTaskBudget
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -202,6 +203,62 @@ def test_terminal_environment_overrides_and_maximum_match_execution_policy(runti
         )
         == 310
     )
+
+
+def test_transport_lease_honors_explicit_reserve_when_snapshot_is_unspecified():
+    budget = FrameworkTaskBudget(
+        bounded=True,
+        deadline_epoch_seconds=1120,
+        remaining_seconds=120,
+        completion_reserve_seconds=None,
+        captured_at_epoch_seconds=1000,
+    )
+
+    decision = mcp_servers._transport_lease_decision(
+        requested_timeout=300,
+        budget=budget,
+        environ={"AWORLD_TERMINAL_COMPLETION_RESERVE_SECONDS": "60"},
+        now_epoch=1000,
+    )
+
+    assert decision.effective_seconds == 60
+    assert decision.limited_by == "task_deadline"
+
+
+@pytest.mark.asyncio
+async def test_cancelled_provider_retention_is_bounded_and_forcibly_cleaned():
+    limit = mcp_servers._MAX_RETAINED_CANCELLED_PROVIDER_CALLS
+    cancellation_counts = [0] * (limit + 5)
+
+    async def suppress_cancellation(index):
+        while True:
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                cancellation_counts[index] += 1
+
+    tasks = [
+        asyncio.create_task(suppress_cancellation(index))
+        for index in range(limit + 5)
+    ]
+    await asyncio.sleep(0)
+    for task in tasks:
+        task.cancel()
+    await asyncio.sleep(0)
+    for task in tasks:
+        mcp_servers._retain_cancelled_provider_call(task)
+        assert (
+            len(mcp_servers._task_lease_cancelled_calls)
+            <= mcp_servers._MAX_RETAINED_CANCELLED_PROVIDER_CALLS
+        )
+
+    for _ in range(12):
+        await asyncio.sleep(0)
+
+    assert len(mcp_servers._task_lease_cancelled_calls) == 0
+    assert all(task.done() for task in tasks)
+    worker = mcp_servers._task_lease_cleanup_worker
+    assert worker is None or worker.done()
 
 
 @pytest.mark.parametrize(

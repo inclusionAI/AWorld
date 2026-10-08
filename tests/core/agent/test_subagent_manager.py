@@ -35,6 +35,7 @@ from aworld.core.context.generation_budget import GenerationBudgetPolicy
 from aworld.core.execution_protocol import ExecutionProtocolPolicy
 from aworld.core.task import Task
 from aworld.mcp_client.utils import filter_mcp_tools_by_servers
+from aworld.sandbox.task_budget import resolve_tool_lease, snapshot_task_budget
 
 
 class TestSubagentManagerBasics:
@@ -727,7 +728,12 @@ class TestSpawnOrchestration:
         )
 
         context = Context(task_id="parent")
-        parent_task = Task(input="public task", timeout=120, context=context)
+        parent_task = Task(
+            input="public task",
+            timeout=100,
+            completion_reserve_seconds=30,
+            context=context,
+        )
         context.set_task(parent_task)
         context.context_info["solver_private_state"] = "must-not-leak"
         child_context = context.deep_copy()
@@ -750,6 +756,12 @@ class TestSpawnOrchestration:
 
         async def run_child(task):
             captured["task"] = task
+            budget = snapshot_task_budget(task)
+            captured["lease"] = resolve_tool_lease(
+                100,
+                budget=budget,
+                maximum_seconds=100,
+            )
             assert "solver_private_state" not in task.context.context_info
             task.context.context_info["child_private_state"] = "must-not-merge"
             task.context.append_llm_call(
@@ -791,7 +803,10 @@ class TestSpawnOrchestration:
         assert result == "Decision: ready"
         assert child_task.parent_task is parent_task
         assert child_task.deadline_epoch_seconds <= parent_task.deadline_epoch_seconds
-        assert 0 < child_task.timeout <= 120
+        assert 0 < child_task.timeout <= 70
+        assert child_task.completion_reserve_applied_seconds == 30
+        assert child_task.to_dict()["completion_reserve_applied_seconds"] == 30
+        assert 69 < captured["lease"].effective_seconds <= 70
         assert child_agent.mcp_servers == ["terminal"]
         assert child_agent.system_prompt == "Fresh verifier prompt"
         filtered_mcp_tools = filter_mcp_tools_by_servers(

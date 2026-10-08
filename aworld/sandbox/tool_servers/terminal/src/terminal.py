@@ -383,6 +383,10 @@ def _resolve_command_timeout(
         constrained_fraction=_task_lease_fraction(),
         constrained_floor_seconds=lease_floor,
         explicit_fraction_policy=_task_lease_fraction_is_explicit(),
+        default_completion_reserve_seconds=_positive_env_float(
+            _COMPLETION_RESERVE_ENV,
+            _DEFAULT_COMPLETION_RESERVE_SECONDS,
+        ),
     )
     if decision.limited_by == "tool_maximum":
         return replace(decision, limited_by="terminal_maximum")

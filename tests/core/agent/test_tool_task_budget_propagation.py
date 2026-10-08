@@ -128,9 +128,9 @@ async def test_event_driven_tool_context_retains_current_task_after_transport_co
     assert transported.context.get_task() is parent
 
 
-def test_framework_budget_uses_completion_reserve_when_task_does_not_override_it():
+def test_framework_budget_preserves_unspecified_completion_reserve():
     task = Task(timeout=300)
 
     budget = snapshot_task_budget(task)
 
-    assert budget.completion_reserve_seconds == 15
+    assert budget.completion_reserve_seconds is None

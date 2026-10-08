@@ -86,6 +86,10 @@ class Task:
     # Appended to preserve the positional constructor order of the public Task
     # contract. This time is owned by the caller after agent execution stops.
     completion_reserve_seconds: float | None = field(default=None)
+    # Amount of an ancestor completion reserve already removed from this
+    # Task's own deadline. It prevents nested execution budgets from charging
+    # the same reserve again after a bounded delegation is materialized.
+    completion_reserve_applied_seconds: float = field(default=0.0, repr=False)
     _deadline_monotonic: float | None = field(default=None, init=False, repr=False)
     _bound_deadline_epoch_seconds: float | None = field(default=None, init=False, repr=False)
 
@@ -115,6 +119,17 @@ class Task:
         ):
             raise ValueError(
                 "completion_reserve_seconds must be a finite non-negative number or None"
+            )
+        applied = self.completion_reserve_applied_seconds
+        if (
+            isinstance(applied, bool)
+            or not isinstance(applied, (int, float))
+            or not math.isfinite(applied)
+            or applied < 0
+        ):
+            raise ValueError(
+                "completion_reserve_applied_seconds must be a finite "
+                "non-negative number"
             )
 
     def bind_deadline(self) -> float | None:
@@ -189,6 +204,9 @@ class Task:
             "max_retry_count": self.max_retry_count,
             "timeout": self.timeout,
             "completion_reserve_seconds": self.completion_reserve_seconds,
+            "completion_reserve_applied_seconds": (
+                self.completion_reserve_applied_seconds
+            ),
             "deadline_epoch_seconds": self.deadline_epoch_seconds,
             "parent_task_id": self.parent_task.id if self.parent_task else None,
             "task_status": self.task_status,

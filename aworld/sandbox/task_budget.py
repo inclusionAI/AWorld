@@ -33,7 +33,7 @@ class FrameworkTaskBudget:
     stage: ToolLeaseStage = ToolLeaseStage.EXECUTE
     deadline_epoch_seconds: float | None = None
     remaining_seconds: float | None = None
-    completion_reserve_seconds: float = 0.0
+    completion_reserve_seconds: float | None = None
     captured_at_epoch_seconds: float | None = None
 
     def __post_init__(self) -> None:
@@ -48,7 +48,7 @@ class FrameworkTaskBudget:
             "captured_at_epoch_seconds",
         ):
             value = getattr(self, name)
-            if value is None and name != "completion_reserve_seconds":
+            if value is None:
                 continue
             if (
                 isinstance(value, bool)
@@ -75,10 +75,13 @@ class FrameworkTaskBudget:
                 {
                     "deadline_epoch_seconds": self.deadline_epoch_seconds,
                     "remaining_seconds": self.remaining_seconds,
-                    "completion_reserve_seconds": self.completion_reserve_seconds,
                     "captured_at_epoch_seconds": self.captured_at_epoch_seconds,
                 }
             )
+            if self.completion_reserve_seconds is not None:
+                payload["completion_reserve_seconds"] = (
+                    self.completion_reserve_seconds
+                )
         return payload
 
     @classmethod
@@ -106,7 +109,7 @@ class FrameworkTaskBudget:
                 deadline_epoch_seconds=value.get("deadline_epoch_seconds"),
                 remaining_seconds=value.get("remaining_seconds"),
                 completion_reserve_seconds=value.get(
-                    "completion_reserve_seconds", 0.0
+                    "completion_reserve_seconds"
                 ),
                 captured_at_epoch_seconds=value.get("captured_at_epoch_seconds"),
             )
@@ -133,21 +136,41 @@ def _finite_non_negative(value: Any) -> float | None:
     return value if math.isfinite(value) and value >= 0 else None
 
 
-def _task_completion_reserve(task: Any) -> float:
-    current = task
+def _task_completion_reserve(task: Any) -> float | None:
+    own_reserve = _finite_non_negative(
+        getattr(task, "completion_reserve_seconds", None)
+    )
+    applied = _finite_non_negative(
+        getattr(task, "completion_reserve_applied_seconds", 0.0)
+    ) or 0.0
+    current = getattr(task, "parent_task", None)
     seen: set[int] = set()
-    reserve: float | None = None
+    inherited_reserve: float | None = None
     while current is not None and id(current) not in seen:
         seen.add(id(current))
         candidate = _finite_non_negative(
             getattr(current, "completion_reserve_seconds", None)
         )
         if candidate is not None:
-            reserve = candidate if reserve is None else max(reserve, candidate)
+            inherited_reserve = (
+                candidate
+                if inherited_reserve is None
+                else max(inherited_reserve, candidate)
+            )
         current = getattr(current, "parent_task", None)
-    return (
-        DEFAULT_COMPLETION_RESERVE_SECONDS if reserve is None else reserve
+    inherited_remaining = (
+        max(0.0, inherited_reserve - applied)
+        if inherited_reserve is not None
+        else None
     )
+    candidates = [
+        value for value in (own_reserve, inherited_remaining) if value is not None
+    ]
+    if candidates:
+        return max(candidates)
+    # A positive applied amount is itself authoritative evidence that the
+    # bounded child deadline already preserved its ancestor's reserve.
+    return 0.0 if applied > 0 else None
 
 
 def snapshot_task_budget(
@@ -212,6 +235,7 @@ def resolve_tool_lease(
     constrained_fraction: float = 0.25,
     constrained_floor_seconds: float = 15.0,
     explicit_fraction_policy: bool = False,
+    default_completion_reserve_seconds: float = DEFAULT_COMPLETION_RESERVE_SECONDS,
 ) -> ToolLeaseDecision:
     """Resolve one authoritative lease for execution and transport boundaries."""
 
@@ -232,7 +256,12 @@ def resolve_tool_lease(
 
     remaining = budget.remaining_at(now_epoch) if budget is not None else None
     if remaining is not None:
-        available = max(0.0, remaining - budget.completion_reserve_seconds)
+        reserve = budget.completion_reserve_seconds
+        if reserve is None:
+            reserve = float(default_completion_reserve_seconds)
+        if not math.isfinite(reserve) or reserve < 0:
+            reserve = DEFAULT_COMPLETION_RESERVE_SECONDS
+        available = max(0.0, remaining - reserve)
         if available <= 0:
             return ToolLeaseDecision(
                 requested,

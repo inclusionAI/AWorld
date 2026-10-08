@@ -46,6 +46,7 @@ from aworld.core.common import ActionResult
 from aworld.output import Output
 from aworld.sandbox.runtime import SandboxManager
 from aworld.sandbox.task_budget import (
+    DEFAULT_COMPLETION_RESERVE_SECONDS,
     FrameworkTaskBudget,
     ToolLeaseDecision,
     ToolLeaseStage,
@@ -67,7 +68,10 @@ _MCP_TRANSPORT_GRACE_SECONDS = 10.0
 _MCP_TRANSPORT_MAX_TIMEOUT_SECONDS = 86410.0
 _TERMINAL_DEFAULT_TIMEOUT_SECONDS = 300.0
 _TERMINAL_MAX_TIMEOUT_SECONDS = 3600.0
-_task_lease_cancelled_calls: set[asyncio.Future[Any]] = set()
+_MAX_RETAINED_CANCELLED_PROVIDER_CALLS = 32
+_PROVIDER_FORCE_CANCEL_ROUNDS = 3
+_task_lease_cancelled_calls: dict[asyncio.Future[Any], int] = {}
+_task_lease_cleanup_worker: asyncio.Task[None] | None = None
 
 
 class _TaskToolLeaseTimeout(TimeoutError):
@@ -76,18 +80,85 @@ class _TaskToolLeaseTimeout(TimeoutError):
         self.timed_out = timed_out
 
 
+def _consume_provider_call(task: asyncio.Future[Any]) -> None:
+    if task.cancelled() or not task.done():
+        return
+    try:
+        task.exception()
+    except Exception:
+        pass
+
+
+def _force_close_provider_call(task: asyncio.Future[Any]) -> None:
+    if task.done():
+        _consume_provider_call(task)
+        return
+    task.cancel()
+    get_coro = getattr(task, "get_coro", None)
+    coroutine = get_coro() if callable(get_coro) else None
+    close = getattr(coroutine, "close", None)
+    if callable(close):
+        try:
+            close()
+        except (RuntimeError, ValueError):
+            pass
+
+
+async def _cleanup_cancelled_provider_calls() -> None:
+    global _task_lease_cleanup_worker
+    worker = asyncio.current_task()
+    try:
+        while _task_lease_cancelled_calls:
+            for task, attempts in list(_task_lease_cancelled_calls.items()):
+                if task.done():
+                    _task_lease_cancelled_calls.pop(task, None)
+                    _consume_provider_call(task)
+                    continue
+                if attempts >= _PROVIDER_FORCE_CANCEL_ROUNDS:
+                    _force_close_provider_call(task)
+                    _task_lease_cancelled_calls.pop(task, None)
+                    continue
+                _task_lease_cancelled_calls[task] = attempts + 1
+                task.cancel()
+            await asyncio.sleep(0)
+    finally:
+        # Worker cancellation or loop shutdown must not retain request-bound
+        # provider coroutines indefinitely.
+        for task in list(_task_lease_cancelled_calls):
+            _force_close_provider_call(task)
+        _task_lease_cancelled_calls.clear()
+        if _task_lease_cleanup_worker is worker:
+            _task_lease_cleanup_worker = None
+
+
 def _retain_cancelled_provider_call(task: asyncio.Future[Any]) -> None:
-    _task_lease_cancelled_calls.add(task)
+    global _task_lease_cleanup_worker
+    if task.done():
+        _consume_provider_call(task)
+        return
+    if task in _task_lease_cancelled_calls:
+        return
+    while len(_task_lease_cancelled_calls) >= _MAX_RETAINED_CANCELLED_PROVIDER_CALLS:
+        oldest = next(iter(_task_lease_cancelled_calls))
+        _task_lease_cancelled_calls.pop(oldest, None)
+        _force_close_provider_call(oldest)
+    _task_lease_cancelled_calls[task] = 0
 
     def finish_cancelled_call(done: asyncio.Future[Any]) -> None:
-        _task_lease_cancelled_calls.discard(done)
-        if not done.cancelled():
-            try:
-                done.exception()
-            except Exception:
-                pass
+        _task_lease_cancelled_calls.pop(done, None)
+        _consume_provider_call(done)
 
     task.add_done_callback(finish_cancelled_call)
+    if _task_lease_cleanup_worker is None or _task_lease_cleanup_worker.done():
+        try:
+            _task_lease_cleanup_worker = asyncio.create_task(
+                _cleanup_cancelled_provider_calls(),
+                name="aworld-task-lease-cleanup",
+            )
+        except RuntimeError:
+            _task_lease_cleanup_worker = None
+            _task_lease_cancelled_calls.pop(task, None)
+            _force_close_provider_call(task)
 
 
 def _safe_context_task(context: Context | None) -> Any:
@@ -174,6 +245,7 @@ def _transport_lease_decision(
     requested_timeout: float,
     budget: FrameworkTaskBudget,
     environ: Mapping[str, str] | None = None,
+    now_epoch: float | None = None,
 ) -> ToolLeaseDecision:
     """Use the same task deadline at the provider transport boundary."""
 
@@ -207,14 +279,23 @@ def _transport_lease_decision(
         configured_floor = 15.0
     if not math.isfinite(configured_floor) or configured_floor < 0:
         configured_floor = 15.0
+    raw_reserve = environment.get("AWORLD_TERMINAL_COMPLETION_RESERVE_SECONDS")
+    try:
+        configured_reserve = float(raw_reserve)
+    except (TypeError, ValueError):
+        configured_reserve = DEFAULT_COMPLETION_RESERVE_SECONDS
+    if not math.isfinite(configured_reserve) or configured_reserve < 0:
+        configured_reserve = DEFAULT_COMPLETION_RESERVE_SECONDS
     return resolve_tool_lease(
         requested_timeout,
         budget=budget,
         maximum_seconds=_MCP_TRANSPORT_MAX_TIMEOUT_SECONDS,
         policy_override=policy_override,
+        now_epoch=now_epoch,
         constrained_fraction=configured_fraction,
         constrained_floor_seconds=configured_floor,
         explicit_fraction_policy=explicit_fraction,
+        default_completion_reserve_seconds=configured_reserve,
     )
 
 
