@@ -142,7 +142,7 @@ async def test_run_code_emits_compact_terminal_execution_receipt() -> None:
     assert payload["success"] is True
     assert receipt == {
         "schema_version": "aworld.terminal-execution-receipt/v2",
-        "parser_version": 5,
+        "parser_version": 6,
         "language_contract_version": 1,
         "command_sha256": terminal_command_sha256(command),
         "requested_language": "shell",
@@ -387,6 +387,32 @@ async def test_nested_cd_never_replays_epoch_from_outer_directory(
     assert decoy.read_text(encoding="utf-8") == "decoy-stable"
     assert second_payload["message"]["stdout"].strip() == "nested-after"
     assert runtime.lookup(action, context=context) is None
+
+
+@pytest.mark.asyncio
+async def test_negated_nested_cd_is_unknown_before_cache_planning(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(terminal_module, "workspace", tmp_path)
+    nested = tmp_path / "sub" / "nested"
+    nested.mkdir(parents=True)
+    (tmp_path / "sub" / "result.txt").write_text("decoy", encoding="utf-8")
+    (nested / "result.txt").write_text("nested", encoding="utf-8")
+    command = "cd sub && ! cd nested; cat result.txt"
+
+    plan = _terminal_execution_plan(command)
+    response = await run_code(None, command, timeout=10, cwd=str(tmp_path))
+    payload = json.loads(response.text)
+    receipt = payload["metadata"]["terminal_execution_receipt"]
+
+    assert plan.effect == "unknown"
+    assert plan.cacheable is False
+    assert plan.command_cwd_safe is False
+    assert payload["message"]["stdout"].strip() == "nested"
+    assert receipt["effect"] == "unknown"
+    assert receipt["cacheable"] is False
+    assert receipt["read_path_epochs"] == []
 
 
 @pytest.mark.asyncio

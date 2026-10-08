@@ -2121,6 +2121,62 @@ def test_typed_validation_preflight_uses_semantics_before_exact_signature() -> N
     )
 
 
+def test_unmodeled_nested_cd_fails_semantic_validation_preflight() -> None:
+    context = _context("nested-cd-validation-preflight")
+    context.workspace_path = "/app"
+    context.configure_completion_contract(
+        CompletionContract(
+            required_artifacts=(
+                ArtifactRequirement("result", "/app/sub/nested/result.txt"),
+            ),
+            immutable_inputs=(),
+            validation_commands=(),
+            max_evidence_age_seconds=None,
+            required_final_evidence=(),
+        ),
+        mode=CompletionMode.ENFORCE,
+    )
+    configure_execution_protocol(
+        context,
+        "agent",
+        ExecutionProtocolPolicy(mode=ProtocolMode.GUIDE),
+    )
+    command = "cd sub && ! cd nested; cat result.txt"
+    assert record_model_plan_update(
+        context,
+        "agent",
+        {
+            "decision": "continue",
+            "horizon": "long",
+            "milestone": "validate the nested result",
+            "next_action": "read the nested result",
+            "next_action_tool": "terminal__run_code",
+            "next_action_arguments": json.dumps({"code": command, "cwd": "/app"}),
+            "verification_plan": "inspect the declared nested artifact",
+            "completion_assessment": "candidate_ready",
+            "delivery_intent": "validate_candidate",
+            "delivery_rationale": "the nested candidate needs validation",
+            "assumptions": [],
+            "retired_approaches": [],
+            "evidence_refs": [],
+            "selected_candidate_id": "nested-result-v1",
+        },
+    ) is not None
+    action = ActionModel(
+        tool_name="terminal",
+        action_name="run_code",
+        model_visible_tool_name="terminal__run_code",
+        params={"code": command, "cwd": "/app"},
+        tool_call_id="call-nested-cd-validation",
+        agent_name="agent",
+    )
+    assert bind_pending_next_action_call(context, "agent", [action]) is True
+
+    state = load_execution_protocol_state(context, "agent")
+    assert state.model_plan_update.next_action_semantics.effect == "unknown"
+    assert framework_observable_validation_kind(context, "agent", action) is None
+
+
 def test_invalid_model_plan_update_fails_open_without_acknowledging_checkpoint():
     context = _context("invalid-plan-update")
     policy = ExecutionProtocolPolicy(

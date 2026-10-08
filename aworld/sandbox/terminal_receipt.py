@@ -21,7 +21,7 @@ import bashlex
 
 TERMINAL_EXECUTION_RECEIPT_SCHEMA = "aworld.terminal-execution-receipt/v2"
 TERMINAL_EXECUTION_RECEIPT_KEY = "terminal_execution_receipt"
-TERMINAL_EXECUTION_ANALYZER_VERSION = 5
+TERMINAL_EXECUTION_ANALYZER_VERSION = 6
 TERMINAL_LANGUAGE_CONTRACT_VERSION = 1
 TERMINAL_LANGUAGES = frozenset({"shell", "python"})
 TERMINAL_EFFECTS = frozenset({"read_only", "mutating", "unknown"})
@@ -669,16 +669,18 @@ def _parse_shell_nodes(source: str) -> list[Any] | None:
 _LEADING_STATIC_CD = re.compile(
     r"\A\s*cd\s+(?P<path>'[^']*'|\"[^\"]*\"|[^\s;&|]+)\s*(?:&&|;|\n|\Z)"
 )
-_SHELL_CD_COMMAND = re.compile(r"(?:\A|&&|[;|(){}\n])\s*cd(?:\s|\Z)")
 
 
-def shell_command_working_directory(source: str) -> tuple[str | None, bool]:
-    """Return a leading literal Shell cwd and whether every ``cd`` is resolved."""
+def _leading_shell_working_directory(
+    source: str,
+) -> tuple[str | None, bool, int]:
+    """Model only a literal ``cd`` prefix and count consumed transitions."""
 
     if not isinstance(source, str):
-        return None, False
+        return None, False, 0
     current: str | None = None
     remainder = source
+    consumed = 0
     while True:
         match = _LEADING_STATIC_CD.match(remainder)
         if match is None:
@@ -687,20 +689,50 @@ def shell_command_working_directory(source: str) -> tuple[str | None, bool]:
         if raw_path[:1] in {"'", '"'} and raw_path[-1:] == raw_path[:1]:
             raw_path = raw_path[1:-1]
         if not raw_path or any(marker in raw_path for marker in ("$", "`", "\\")):
-            return current, False
+            return current, False, consumed
         normalized = posixpath.normpath(raw_path)
         current = (
             normalized
             if posixpath.isabs(normalized) or current is None
             else posixpath.normpath(posixpath.join(current, normalized))
         )
+        consumed += 1
         if match.end() == len(remainder):
             remainder = ""
             break
         remainder = remainder[match.end() :]
-    if _SHELL_CD_COMMAND.search(remainder):
-        return current, False
-    return current, True
+    return current, True, consumed
+
+
+def _parsed_cd_count(roots: Sequence[Any]) -> int:
+    count = 0
+    seen: set[int] = set()
+    pending = list(roots)
+    while pending:
+        node = pending.pop()
+        if id(node) in seen:
+            continue
+        seen.add(id(node))
+        if getattr(node, "kind", None) == "command":
+            words = [
+                part.word
+                for part in getattr(node, "parts", ())
+                if getattr(part, "kind", None) == "word"
+            ]
+            if _command_words(words)[0] == "cd":
+                count += 1
+        pending.extend(_shell_child_nodes(node))
+    return count
+
+
+def shell_command_working_directory(source: str) -> tuple[str | None, bool]:
+    """Return cwd only when parsed ``cd`` transitions equal the modeled prefix."""
+
+    command_cwd, prefix_safe, consumed = _leading_shell_working_directory(source)
+    roots = _parse_shell_nodes(source)
+    if roots is None:
+        return command_cwd, False
+    return command_cwd, prefix_safe and _parsed_cd_count(roots) == consumed
 
 
 _PYTHON_HEREDOC = re.compile(
