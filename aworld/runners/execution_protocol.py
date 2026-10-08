@@ -62,6 +62,8 @@ _LEGACY_MUTATION_GATE_SCHEMAS = frozenset(
     {"aworld.mutation-gate/v1", "aworld.mutation-gate/v2"}
 )
 MUTATION_GATE_STATE_KEY = "execution_protocol_mutation_gate"
+MUTATION_GATE_ACTIVE_INDEX_KEY = "execution_protocol_mutation_gate_active_index"
+_MUTATION_GATE_INDEX_NAMESPACE = "__task_convergence__"
 INDEPENDENT_ACCEPTANCE_CRITIC_ENV = "AWORLD_INDEPENDENT_ACCEPTANCE_CRITIC"
 SEMANTIC_PROGRESS_LEDGER_ENV = "AWORLD_SEMANTIC_PROGRESS_LEDGER"
 _MAX_FALLBACK_CHARS = 64_000
@@ -140,6 +142,83 @@ def _gate_matches_current_scope(
             and gate.get("task_epoch") == getattr(owner, "task_epoch", None)
         )
     return False
+
+
+def _gate_index_scope_hash(context) -> str:
+    from aworld.core.context.compiler import semantic_fingerprint
+
+    owner = state_context(context)
+    return semantic_fingerprint(
+        {
+            "task_id": getattr(owner, "task_id", None),
+            "task_epoch": getattr(owner, "task_epoch", None),
+        }
+    )
+
+
+def _update_active_gate_index(context, agent_id: str, *, active: bool) -> None:
+    """Maintain a bounded task-level index for identity-ambiguous batches."""
+
+    owner = state_context(context)
+    if owner is None:
+        return
+    scope_hash = _gate_index_scope_hash(context)
+
+    def update(current):
+        active_ids = []
+        overflow = False
+        if (
+            isinstance(current, Mapping)
+            and current.get("schema_version") == "aworld.mutation-gate-index/v1"
+            and current.get("scope_hash") == scope_hash
+        ):
+            active_ids = [
+                value
+                for value in (current.get("active_agent_ids") or ())
+                if isinstance(value, str) and value
+            ][:32]
+            overflow = current.get("overflow_active") is True
+        if active:
+            if agent_id not in active_ids:
+                if len(active_ids) < 32:
+                    active_ids.append(agent_id)
+                else:
+                    overflow = True
+        else:
+            active_ids = [value for value in active_ids if value != agent_id]
+            # Overflow is conservative: an unindexed active agent may exist.
+        return {
+            "schema_version": "aworld.mutation-gate-index/v1",
+            "scope_hash": scope_hash,
+            "active_agent_ids": active_ids,
+            "overflow_active": overflow,
+        }
+
+    _update_runtime_value(
+        context,
+        _MUTATION_GATE_INDEX_NAMESPACE,
+        MUTATION_GATE_ACTIVE_INDEX_KEY,
+        update,
+    )
+
+
+def _indexed_active_gate_agents(context) -> tuple[str, ...]:
+    current = _read_runtime_value(
+        context,
+        _MUTATION_GATE_INDEX_NAMESPACE,
+        MUTATION_GATE_ACTIVE_INDEX_KEY,
+    )
+    if (
+        not isinstance(current, Mapping)
+        or current.get("schema_version") != "aworld.mutation-gate-index/v1"
+        or current.get("scope_hash") != _gate_index_scope_hash(context)
+    ):
+        return ()
+    return tuple(
+        value
+        for value in (current.get("active_agent_ids") or ())
+        if isinstance(value, str) and value
+    )[:32]
 
 
 def _model_decision_scope(context, agent_id: str) -> dict[str, Any]:
@@ -2106,6 +2185,7 @@ def _update_mutation_gate(
     }
     owner.context_info[MUTATION_GATE_STATE_KEY] = payload
     _write_runtime_value(context, agent_id, MUTATION_GATE_STATE_KEY, payload)
+    _update_active_gate_index(context, agent_id, active=active)
     metrics = owner.context_info.get(EXECUTION_PROTOCOL_METRICS_KEY)
     if isinstance(metrics, dict):
         if active and not previous_active:
@@ -2163,7 +2243,26 @@ def mutation_gate_interception(
             is ProtocolMode.GUIDE
         ):
             candidate_gates.append((candidate_agent_id, candidate_gate))
-    if not agent_ids:
+    if ambiguous_agent_scope:
+        known_gate_agents = {value for value, _ in candidate_gates}
+        for candidate_agent_id in _indexed_active_gate_agents(context):
+            if candidate_agent_id in known_gate_agents:
+                continue
+            candidate_gate = _read_runtime_value(
+                context, candidate_agent_id, MUTATION_GATE_STATE_KEY
+            )
+            if (
+                isinstance(candidate_gate, Mapping)
+                and candidate_gate.get("active") is True
+                and _gate_matches_current_scope(
+                    context, candidate_agent_id, candidate_gate
+                )
+                and execution_protocol_policy(context, candidate_agent_id).mode
+                is ProtocolMode.GUIDE
+            ):
+                candidate_gates.append((candidate_agent_id, candidate_gate))
+                known_gate_agents.add(candidate_agent_id)
+    if ambiguous_agent_scope and not candidate_gates:
         owner = state_context(context)
         context_info = getattr(owner, "context_info", None)
         latest_gate = (
@@ -2626,6 +2725,8 @@ def _activate_convergence_constraint(
     )
     _write_runtime_value(context, agent_id, EXECUTION_PROTOCOL_PENDING_KEY, None)
     previous_gate = _read_runtime_value(context, agent_id, MUTATION_GATE_STATE_KEY)
+    if not _gate_matches_current_scope(context, agent_id, previous_gate):
+        previous_gate = {}
     _update_mutation_gate(
         context,
         agent_id,

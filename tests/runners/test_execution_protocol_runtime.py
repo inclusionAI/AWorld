@@ -1737,6 +1737,71 @@ def test_stale_v3_gate_cannot_poison_new_scope_projection() -> None:
     assert projected["repair_failure_evidence_high_water"] == "0" * 128
 
 
+@pytest.mark.parametrize("schema", ("aworld.mutation-gate/v2", "aworld.mutation-gate/v3"))
+def test_constraint_activation_ignores_stale_gate_evidence(schema) -> None:
+    from aworld.core.context.compiler import semantic_fingerprint
+
+    context = _context(f"stale-activation-{schema[-2:]}")
+    configure_execution_protocol(
+        context,
+        "agent",
+        ExecutionProtocolPolicy(
+            mode=ProtocolMode.GUIDE,
+            activation_event_threshold=1,
+            model_activation_min_tool_actions=1,
+            repetition_threshold=1,
+            stagnation_event_threshold=1,
+        ),
+    )
+    _declare_long_horizon(context)
+
+    for sequence in (1, 2):
+        transition = record_tool_protocol_event(
+            context,
+            "agent",
+            _semantic_state(
+                repetition_count=1,
+                current_agent_step=sequence,
+                operation_hash=f"sha256:stale-operation-{sequence}",
+                result_hash=f"sha256:stale-result-{sequence}",
+            ),
+        )
+        assert transition.decision.action is ControllerAction.REQUEST_REPLAN
+        assert record_model_decision_attempt_failure(
+            context, "agent", boundary="replan"
+        )
+        if sequence == 2:
+            stale = {
+                "schema_version": schema,
+                "task_id": "other-task",
+                "task_epoch": context.task_epoch + 1,
+                "scope_hash": semantic_fingerprint({"stale": True}),
+                "agent_id": "agent",
+                "active": True,
+                "public_candidate_mutated": True,
+                "workspace_mutation_observed": True,
+                "consecutive_read_only_observations": 99,
+                "blocked_call_count": 99,
+                "convergence_stage": "validate_repair_or_submit",
+            }
+            context.write_task_runtime_state(
+                "agent", "execution_protocol_mutation_gate", stale
+            )
+        assert not record_model_decision_attempt_failure(
+            context, "agent", boundary="replan"
+        )
+
+    projected = context.read_task_runtime_state(
+        "agent", "execution_protocol_mutation_gate"
+    )
+    assert projected["active"] is True
+    assert projected["convergence_stage"] == "produce_candidate"
+    assert projected["public_candidate_mutated"] is False
+    assert projected["workspace_mutation_observed"] is False
+    assert projected["consecutive_read_only_observations"] == 0
+    assert projected["blocked_call_count"] == 0
+
+
 def test_contractless_produce_requires_exact_model_bound_semantics_and_call_id() -> None:
     context = _context("contractless-produce-admission")
     configure_execution_protocol(
@@ -1930,6 +1995,49 @@ def test_active_convergence_blocks_ambiguous_agent_batches(ambiguous_kind) -> No
     assert receipt["kind"] == "convergence_scope_ambiguous"
     assert receipt["block_all"] is True
     assert receipt["tool_call_ids"] == ["ambiguous-1", "ambiguous-2"]
+
+
+def test_missing_agent_uses_all_active_gates_not_latest_inactive_helper() -> None:
+    context = _context("missing-agent-active-index")
+    configure_execution_protocol(
+        context,
+        "solver",
+        ExecutionProtocolPolicy(
+            mode=ProtocolMode.GUIDE,
+            activation_event_threshold=1,
+            model_activation_min_tool_actions=1,
+            repetition_threshold=1,
+            stagnation_event_threshold=1,
+        ),
+    )
+    _declare_long_horizon(context, "solver")
+    _activate_produce_convergence(context, "solver")
+
+    configure_execution_protocol(
+        context, "helper", ExecutionProtocolPolicy(mode=ProtocolMode.GUIDE)
+    )
+    record_tool_protocol_event(
+        context,
+        "helper",
+        _semantic_state(current_agent_step=1),
+    )
+    assert context.context_info["execution_protocol_mutation_gate"][
+        "agent_id"
+    ] == "helper"
+    actions = [
+        ActionModel(
+            tool_name="terminal",
+            action_name="run_code",
+            params={"code": "cat README.md"},
+            tool_call_id="missing-agent",
+            agent_name=None,
+        )
+    ]
+
+    receipt = mutation_gate_interception(context, actions)
+    assert receipt is not None
+    assert receipt["agent_id"] == "solver"
+    assert receipt["block_all"] is True
 
 
 @pytest.mark.asyncio
