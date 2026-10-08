@@ -26,7 +26,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("Agent + Context + Tool", result.stdout)
         self.assertEqual(result.stderr, "")
-        self.assertIn("1.0.0a5", command("--version").stdout)
+        self.assertIn("1.0.0a6", command("--version").stdout)
         tools = json.loads(command("tools", "--json").stdout)
         self.assertEqual([tool["name"] for tool in tools], ["read", "write", "bash", "read_session", "search_sessions", "session_query"])
 
@@ -87,6 +87,29 @@ class CliTests(unittest.TestCase):
         self.assertIn("Specify --model", result.stderr)
         self.assertNotIn("Traceback", result.stderr)
         self.assertEqual(command("run", "--demo", "--task", "hello", "--max-turns", "0").returncode, 2)
+
+    def test_summary_budget_defaults_and_overrides_in_exported_trajectory(self):
+        cases = [
+            (128000, 32768, None, 32768),
+            (1000000, 32768, None, 32768),
+            (65536, 32768, None, 19045),
+            (128000, 4096, None, 4096),
+            (128000, 32768, 8192, 8192),
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "trajectory.json"
+            for window, output, override, expected in cases:
+                with self.subTest(window=window, output=output, override=override):
+                    arguments = ["run", "--demo", "--task", "hello", "--context-window", str(window),
+                                 "--max-output-tokens", str(output), "--trajectory-output", str(path)]
+                    if override is not None:
+                        arguments.extend(["--summary-max-tokens", str(override)])
+                    result = command(*arguments)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    budget = json.loads(path.read_text())["extra"]["context_budget"]["budget"]
+                    self.assertEqual(budget["summary_max_tokens"], expected)
+                    self.assertLess(budget["keep_recent_tokens"] + expected,
+                                    int((window - output - budget["safety_margin"]) * budget["trigger_ratio"]))
 
 
 if __name__ == "__main__":

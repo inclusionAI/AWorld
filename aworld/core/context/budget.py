@@ -84,7 +84,7 @@ class ContextBudget:
     safety_margin: int = 2048
     trigger_ratio: float = 0.85
     keep_recent_tokens: int = 16000
-    summary_max_tokens: int = 2048
+    summary_max_tokens: int = 32768
     summary_timeout: float = 30
     max_attempts: int = 2
 
