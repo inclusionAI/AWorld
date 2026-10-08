@@ -32,6 +32,9 @@ JOURNAL_PATH_ENV = "AWORLD_TOOL_ACTION_JOURNAL_PATH"
 DEFAULT_MAX_RECORD_BYTES = 64 * 1024 * 1024
 _PATH_LOCKS: dict[str, threading.Lock] = {}
 _PATH_LOCKS_GUARD = threading.Lock()
+_MAX_SCOPE_TEXT_CHARS = 256
+_MAX_TASK_EPOCH_TEXT_CHARS = 128
+_MAX_TASK_EPOCH_INT = 2**63 - 1
 
 
 def _path_lock(path: Path) -> threading.Lock:
@@ -135,14 +138,18 @@ def append_tool_action_event(
         raise ValueError("Tool action journal status must be non-empty")
     action_values = list(actions)
     resolved_batch_id = batch_id or tool_action_batch_id(action_values)
-    identities: dict[str, str] = {}
-    for name in ("task_id", "session_id", "trace_id"):
+    identities: dict[str, Any] = {}
+    for source, target in (
+        ("task_id", "task_id"),
+        ("session_id", "session_id"),
+        ("trace_id", "run_boundary_id"),
+    ):
         try:
-            value = getattr(context, name, None)
+            value = getattr(context, source, None)
         except Exception:
             value = None
-        if value is not None:
-            identities[name] = str(value)
+        if isinstance(value, str) and value.strip() and len(value.strip()) <= _MAX_SCOPE_TEXT_CHARS:
+            identities[target] = value.strip()
     try:
         task_epoch = getattr(context, "task_epoch", None)
     except Exception:
@@ -150,9 +157,15 @@ def append_tool_action_event(
     if (
         isinstance(task_epoch, int)
         and not isinstance(task_epoch, bool)
-        and task_epoch >= 0
+        and 0 <= task_epoch <= _MAX_TASK_EPOCH_INT
     ):
         identities["task_epoch"] = task_epoch
+    elif (
+        isinstance(task_epoch, str)
+        and task_epoch.strip()
+        and len(task_epoch.strip()) <= _MAX_TASK_EPOCH_TEXT_CHARS
+    ):
+        identities["task_epoch"] = task_epoch.strip()
     recorded_at = time.time_ns()
     stream_id = _context_stream_id(context)
     payload: dict[str, Any] = {

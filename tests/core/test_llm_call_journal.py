@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from types import SimpleNamespace
 
 import aworld.core.context.base as context_base
 from aworld.core.context.base import Context
@@ -49,7 +50,10 @@ def test_context_mutations_append_checksum_valid_snapshots(tmp_path, monkeypatch
     )
     records = [json.loads(line) for line in path.read_text().splitlines()]
     assert all(record["record_checksum"].startswith("sha256:") for record in records)
-    assert all(record["context"] == {"task_id": "task-journal"} for record in records)
+    assert all(
+        record["context"] == {"task_id": "task-journal", "task_epoch": 0}
+        for record in records
+    )
     assert [record["stream_sequence"] for record in records] == [0, 1]
     assert records[0]["previous_record_checksum"] is None
     assert records[1]["previous_record_checksum"] == records[0]["record_checksum"]
@@ -555,3 +559,39 @@ def test_failed_delta_rotates_stream_and_next_snapshot_recovers_state(
     assert recovery.merged_llm_calls == (
         {"request_id": "request-1", "status": "success"},
     )
+def test_journal_merge_preserves_string_epoch_and_reused_request_scope(tmp_path):
+    path = tmp_path / "llm-calls.journal.jsonl"
+    for session_id, task_epoch, run_boundary, marker in (
+        ("old-session", "old", "old-run", "OLD"),
+        ("new-session", "new", "new-run", "NEW"),
+    ):
+        context = SimpleNamespace(
+            task_id="shared-task",
+            session_id=session_id,
+            task_epoch=task_epoch,
+            trace_id=run_boundary,
+        )
+        append_llm_call_snapshot(
+            context=context,
+            event_type="model_request_success",
+            llm_calls=[
+                {
+                    "request_id": "reused-request",
+                    "task_id": "shared-task",
+                    "status": "success",
+                    "response": {"message": {"content": marker}},
+                }
+            ],
+            path=path,
+        )
+
+    recovery = read_llm_call_journal(path)
+
+    assert len(recovery.merged_scoped_llm_calls) == 2
+    assert {
+        item["scope"]["task_epoch"] for item in recovery.merged_scoped_llm_calls
+    } == {"old", "new"}
+    assert {
+        item["llm_call"]["response"]["message"]["content"]
+        for item in recovery.merged_scoped_llm_calls
+    } == {"OLD", "NEW"}

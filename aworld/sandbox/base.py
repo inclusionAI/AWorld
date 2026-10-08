@@ -352,6 +352,7 @@ class BaseSandbox(SandboxSetup):
             journal(
                 "sandbox_call_failed",
                 "failed",
+                results=results or [],
                 metadata={"error_type": type(exc).__name__},
             )
             raise

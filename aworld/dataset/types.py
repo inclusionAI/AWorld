@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 from pydantic import BaseModel, Field
 
@@ -15,6 +15,8 @@ class ExpMeta(BaseModel):
     step: Optional[int] = None
     execute_time: Optional[float] = None
     pre_agent: Optional[str] = None
+    task_epoch: Optional[Union[str, int]] = None
+    run_boundary_id: Optional[str] = None
 
     def to_dict(self):
         return {
@@ -24,7 +26,9 @@ class ExpMeta(BaseModel):
             "agent_id": self.agent_id,
             "step": self.step,
             "execute_time": self.execute_time,
-            "pre_agent": self.pre_agent
+            "pre_agent": self.pre_agent,
+            "task_epoch": self.task_epoch,
+            "run_boundary_id": self.run_boundary_id,
         }
 
 class TrajectoryState(BaseModel):

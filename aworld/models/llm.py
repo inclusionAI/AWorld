@@ -32,6 +32,7 @@ from aworld.core.model_output_parser.default_parsers import (
 from aworld.logs.util import logger, log_llm_record
 
 from aworld.core.llm_provider import LLMProviderBase
+from aworld.core.llm_call_journal import journal_scope_from_context
 from aworld.core.video_gen_provider import VideoGenProviderBase
 from aworld.models.openai_provider import (
     AZURE_OPENAI_CONTEXT_LOWERING,
@@ -2479,6 +2480,7 @@ class LLMModel:
             "attempt": 1,
             "provider_invoked": bool(provider_invoked),
         }
+        llm_call.update(journal_scope_from_context(context))
         reasoning_selection_receipt = self._project_reasoning_selection_receipt(
             reasoning_selection,
             request_kwargs=request_kwargs,

@@ -20,6 +20,8 @@ _THINK_BLOCK_RE = re.compile(r"<think>\s*(.*?)\s*</think>", re.DOTALL)
 _SAFE_ERROR_CODE_RE = re.compile(r"[A-Za-z0-9_.:-]{1,128}")
 _MAX_ATIF_TEXT_CHARS = 12_000
 _MAX_ATIF_COLLECTION_ITEMS = 128
+_MAX_ATIF_MAPPING_KEY_CHARS = 256
+_MAX_ATIF_ARGUMENT_SERIALIZED_CHARS = 16_384
 _MAX_DURABLE_TOOL_JOURNAL_BYTES = 256 * 1024 * 1024
 _TOOL_OBSERVATION_SCHEMA_VERSION = "aworld.atif.tool-observation.v1"
 
@@ -86,9 +88,19 @@ def _safe_projection(value: Any, *, depth: int = 0) -> Any:
     if isinstance(value, Mapping):
         projected: dict[str, Any] = {}
         for raw_key, item in islice(value.items(), _MAX_ATIF_COLLECTION_ITEMS):
-            key = str(raw_key)
+            raw_key_text = str(raw_key)
+            key = _bounded_redacted_text(
+                raw_key_text,
+                max_chars=_MAX_ATIF_MAPPING_KEY_CHARS,
+            )[0]
+            if key in projected:
+                key = (
+                    key[: max(0, _MAX_ATIF_MAPPING_KEY_CHARS - 17)]
+                    + "#"
+                    + hashlib.sha256(raw_key_text.encode("utf-8")).hexdigest()[:16]
+                )
             if any(
-                token in key.casefold()
+                token in raw_key_text.casefold()
                 for token in ("secret", "token", "password", "api_key", "apikey")
             ):
                 projected[key] = "<REDACTED_SECRET>"
@@ -107,20 +119,44 @@ def _safe_projection(value: Any, *, depth: int = 0) -> Any:
     return _bounded_redacted_text(value, max_chars=512)[0]
 
 
+def _bounded_arguments(value: dict[str, Any]) -> dict[str, Any]:
+    encoded = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    if len(encoded) <= _MAX_ATIF_ARGUMENT_SERIALIZED_CHARS:
+        return value
+    preview, projection = _bounded_redacted_text(
+        encoded,
+        max_chars=_MAX_ATIF_TEXT_CHARS,
+    )
+    return {
+        "__aworld_bounded_arguments__": {
+            "schema_version": "aworld.atif.bounded-arguments.v1",
+            "truncated": True,
+            "serialized_chars": len(encoded),
+            "content_hash": projection["content_hash"],
+            "preview": preview,
+        }
+    }
+
+
 def _parse_arguments(value: Any) -> dict[str, Any]:
     if isinstance(value, dict):
-        return _safe_projection(value)
+        return _bounded_arguments(_safe_projection(value))
     if isinstance(value, str):
         try:
             parsed = json.loads(value)
         except json.JSONDecodeError:
             return {"raw": _safe_projection(value)}
-        return (
+        projected = (
             _safe_projection(parsed)
             if isinstance(parsed, dict)
             else {"value": _safe_projection(parsed)}
         )
-    return {"value": _safe_projection(value)} if value is not None else {}
+        return _bounded_arguments(projected)
+    return (
+        _bounded_arguments({"value": _safe_projection(value)})
+        if value is not None
+        else {}
+    )
 
 
 def _iso_timestamp(value: Any) -> str | None:
@@ -154,72 +190,101 @@ def _split_message_and_reasoning(
     return message, reasoning or None
 
 
-def _tool_result_index(
+def _native_scope_token(meta: dict[str, Any]) -> str:
+    from aworld_cli.durable_scope import normalize_scope
+
+    return json.dumps(
+        normalize_scope(meta),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
+def _native_tool_result_series(
     native_items: list[dict[str, Any]],
-) -> dict[str, dict[str, Any]]:
-    results: dict[str, dict[str, Any]] = {}
+) -> dict[tuple[str, str], list[dict[str, Any]]]:
+    series: dict[tuple[str, str], list[dict[str, Any]]] = {}
     for item in native_items:
+        scope_token = _native_scope_token(_as_dict(item.get("meta")))
         state_input = _as_dict(_as_dict(item.get("state")).get("input"))
         for result in state_input.get("action_result") or []:
             if not isinstance(result, dict):
                 continue
             call_id = result.get("tool_call_id")
-            if call_id:
-                content, _ = _bounded_redacted_text(
-                    result.get("content")
-                    if isinstance(result.get("content"), str)
-                    else _safe_projection(result.get("content"))
-                )
-                results[str(call_id)] = {"content": content}
-    return results
+            if not isinstance(call_id, str) or not call_id:
+                continue
+            raw_content = result.get("content")
+            content, _ = _bounded_redacted_text(
+                raw_content
+                if isinstance(raw_content, str)
+                else _safe_projection(raw_content)
+            )
+            series.setdefault((scope_token, call_id), []).append({"content": content})
+    return series
 
 
-def _known_trajectory_scope(
-    trajectory_payload: dict[str, Any], native_items: list[dict[str, Any]]
-) -> tuple[set[str], set[str], set[int], set[str]]:
-    task_ids = {
-        str(task_id)
-        for item in native_items
-        if (task_id := _as_dict(item.get("meta")).get("task_id")) is not None
-    }
-    task_ids.update(
-        str(task_id)
-        for call in trajectory_payload.get("llm_calls") or []
-        if isinstance(call, dict) and (task_id := call.get("task_id")) is not None
-    )
-    session_ids = {
-        str(session_id)
-        for item in native_items
-        if (session_id := _as_dict(item.get("meta")).get("session_id")) is not None
-    }
-    task_epochs = {
-        task_epoch
-        for item in native_items
-        if isinstance(
-            (task_epoch := _as_dict(item.get("meta")).get("task_epoch")), int
-        )
-        and not isinstance(task_epoch, bool)
-        and task_epoch >= 0
-    }
-    task_epochs.update(
-        task_epoch
-        for call in trajectory_payload.get("llm_calls") or []
-        if isinstance(call, dict)
-        and isinstance(
-            (task_epoch := _as_dict(call.get("turn_economics")).get("task_epoch")),
-            int,
-        )
-        and not isinstance(task_epoch, bool)
-        and task_epoch >= 0
-    )
-    call_ids = {
-        str(call_id)
-        for item in native_items
-        for raw_call in _as_dict(item.get("action")).get("tool_calls") or []
-        if isinstance(raw_call, dict)
-        and (call_id := raw_call.get("id")) is not None
-    }
-    return task_ids, session_ids, task_epochs, call_ids
+def _tool_call_counts(
+    native_items: list[dict[str, Any]],
+) -> tuple[dict[tuple[str, str], int], dict[str, int]]:
+    scoped: dict[tuple[str, str], int] = {}
+    global_counts: dict[str, int] = {}
+    for item in native_items:
+        scope_token = _native_scope_token(_as_dict(item.get("meta")))
+        for call in _as_dict(item.get("action")).get("tool_calls") or []:
+            call_id = call.get("id") if isinstance(call, dict) else None
+            if not isinstance(call_id, str) or not call_id:
+                continue
+            key = (scope_token, call_id)
+            scoped[key] = scoped.get(key, 0) + 1
+            global_counts[call_id] = global_counts.get(call_id, 0) + 1
+    return scoped, global_counts
+
+
+@dataclass
+class _ToolResultLedger:
+    native: dict[tuple[str, str], list[dict[str, Any]]]
+    durable: dict[tuple[tuple[Any, ...], str], list[dict[str, Any]]]
+    durable_by_call_id: dict[str, list[dict[str, Any]]]
+    scoped_call_counts: dict[tuple[str, str], int]
+    global_call_counts: dict[str, int]
+
+    def lookup(
+        self,
+        *,
+        meta: dict[str, Any],
+        call_id: str,
+        native_occurrence: int,
+        durable_occurrence: int,
+    ) -> dict[str, Any] | None:
+        from aworld_cli.durable_scope import normalize_scope, scope_key
+
+        native_key = (_native_scope_token(meta), call_id)
+        native_results = self.native.get(native_key, [])
+        if (
+            len(native_results) == self.scoped_call_counts.get(native_key, 0)
+            and native_occurrence < len(native_results)
+        ):
+            return native_results[native_occurrence]
+        exact_scope = scope_key(meta)
+        if exact_scope is not None:
+            durable_results = self.durable.get((exact_scope, call_id), [])
+            if durable_occurrence < len(durable_results):
+                return durable_results[durable_occurrence]
+        native_scope = normalize_scope(meta)
+        if "task_id" not in native_scope:
+            return None
+        legacy_results = [
+            result
+            for result in self.durable_by_call_id.get(call_id, [])
+            if all(
+                normalize_scope(result.get("_aworld_scope")).get(key) == value
+                for key, value in native_scope.items()
+            )
+        ]
+        if self.global_call_counts.get(call_id) == 1 and len(legacy_results) == 1:
+            return legacy_results[0]
+        return None
 
 
 def _safe_int(value: Any) -> int | None:
@@ -293,7 +358,6 @@ def _project_tool_observation_result(
     interception = _as_dict(sandbox.get("hook_interception"))
     terminal_execution = _project_terminal_execution_receipt(
         sandbox.get("terminal_execution_receipt")
-        or metadata.get("terminal_execution_receipt")
     )
     explicit_success = result.get("success")
     error_code = _safe_error_code(result.get("error"))
@@ -387,11 +451,25 @@ def _project_tool_observation_result(
     }
 
 
-def _durable_tool_result_index(
-    trajectory_payload: dict[str, Any], native_items: list[dict[str, Any]]
-) -> tuple[dict[str, dict[str, Any]], dict[str, Any] | None]:
-    """Recover completed Tool observations from the crash-tolerant journal."""
+def _durable_tool_result_series(
+    native_items: list[dict[str, Any]],
+) -> tuple[
+    dict[tuple[tuple[Any, ...], str], list[dict[str, Any]]],
+    dict[str, list[dict[str, Any]]],
+    dict[str, Any] | None,
+]:
+    """Recover journal results by full scope, batch occurrence and action index."""
 
+    from aworld_cli.durable_scope import normalize_scope, scope_key
+
+    known_call_ids = {
+        call_id
+        for item in native_items
+        for call in _as_dict(item.get("action")).get("tool_calls") or []
+        if isinstance(call, dict)
+        and isinstance((call_id := call.get("id")), str)
+        and call_id
+    }
     try:
         from aworld.core.tool_action_journal import (
             configured_journal_path,
@@ -402,24 +480,17 @@ def _durable_tool_result_index(
     except Exception:
         path = None
     if path is None:
-        return {}, None
-    task_ids, session_ids, task_epochs, known_call_ids = _known_trajectory_scope(
-        trajectory_payload,
-        native_items,
-    )
-    if not task_ids or not known_call_ids:
-        return {}, {
+        return {}, {}, None
+    if not known_call_ids:
+        return {}, {}, {
             "schema_version": "aworld.tool-action-journal.v1",
             "status": "unavailable",
-            "reason_code": (
-                "task_scope_unavailable" if not task_ids else "tool_call_scope_unavailable"
-            ),
+            "reason_code": "tool_call_scope_unavailable",
             "recovered_result_count": 0,
         }
-
     try:
         if path.stat().st_size > _MAX_DURABLE_TOOL_JOURNAL_BYTES:
-            return {}, {
+            return {}, {}, {
                 "schema_version": "aworld.tool-action-journal.v1",
                 "status": "unavailable",
                 "reason_code": "journal_size_limit_exceeded",
@@ -429,90 +500,85 @@ def _durable_tool_result_index(
     except FileNotFoundError:
         recovery = read_tool_action_journal(path)
     except Exception:
-        return {}, {
+        return {}, {}, {
             "schema_version": "aworld.tool-action-journal.v1",
             "status": "unavailable",
             "reason_code": "journal_recovery_failed",
             "recovered_result_count": 0,
         }
+
     selected: dict[
-        str,
-        tuple[int, tuple[str | None, int | None], dict[str, Any]],
+        tuple[str, str, int, str],
+        tuple[int, int, tuple[Any, ...] | None, dict[str, Any]],
     ] = {}
-    ambiguous_call_ids: set[str] = set()
     selected_event_count = 0
     for event in recovery.events:
-        context = _as_dict(event.get("context"))
-        event_task_id = context.get("task_id")
-        if event_task_id is None or str(event_task_id) not in task_ids:
-            continue
-        event_session_id = context.get("session_id")
-        if session_ids and (
-            event_session_id is None or str(event_session_id) not in session_ids
-        ):
-            continue
-        event_task_epoch = context.get("task_epoch")
-        if task_epochs and (
-            not isinstance(event_task_epoch, int)
-            or isinstance(event_task_epoch, bool)
-            or event_task_epoch not in task_epochs
-        ):
-            continue
-        event_type = str(event.get("event_type") or "")
-        results = event.get("results")
         actions = event.get("actions")
         if not isinstance(actions, list):
             continue
-        priority = {
-            "tool_observation_recorded": 3,
-            "sandbox_call_completed": 2,
-            "sandbox_call_failed": 2,
-            "sandbox_transaction_resolved": 1,
-        }.get(event_type, 0)
+        event_type = str(event.get("event_type") or "")
+        metadata = _as_dict(event.get("metadata"))
+        context_management = _as_dict(metadata.get("context_management"))
+        rolled_back = (
+            event_type == "sandbox_transaction_resolved"
+            and (
+                event.get("status") == "rolled_back"
+                or context_management.get("rollback_performed") is True
+            )
+        )
+        priority = (
+            40
+            if rolled_back
+            else {
+                "tool_observation_recorded": 30,
+                "sandbox_call_completed": 20,
+                "sandbox_call_failed": 20,
+                "sandbox_transaction_resolved": 10,
+            }.get(event_type, 0)
+        )
+        results = event.get("results")
         if priority == 0 or (
-            event_type != "sandbox_call_failed" and not isinstance(results, list)
+            not rolled_back
+            and event_type not in {"sandbox_call_failed"}
+            and not isinstance(results, list)
         ):
             continue
-        if not isinstance(results, list):
-            results = []
+        results = results if isinstance(results, list) else []
+        event_scope = normalize_scope(event.get("context"))
+        event_scope_key = scope_key(event_scope)
+        event_scope_token = json.dumps(
+            event_scope,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        batch_id = str(event.get("batch_id") or "")
+        if not batch_id:
+            continue
         selected_event_count += 1
-        for index, action in enumerate(actions):
-            action = _as_dict(action)
+        for index, raw_action in enumerate(actions):
+            action = _as_dict(raw_action)
             result = _as_dict(results[index] if index < len(results) else None)
-            if event_type == "sandbox_call_failed" and not result:
+            call_id = result.get("tool_call_id") or action.get("tool_call_id")
+            if not isinstance(call_id, str) or call_id not in known_call_ids:
+                continue
+            if rolled_back:
                 result = {
-                    "tool_call_id": action.get("tool_call_id"),
+                    "tool_call_id": call_id,
+                    "success": False,
+                    "error": "sandbox_transaction_rolled_back",
+                    "content": "Tool result was rolled back and is not committed.",
+                }
+            elif event_type == "sandbox_call_failed" and not result:
+                result = {
+                    "tool_call_id": call_id,
                     "success": False,
                     "error": "sandbox_call_failed",
                     "content": "Tool execution failed before returning an observation.",
                 }
-            call_id = result.get("tool_call_id") or action.get("tool_call_id")
-            if (
-                not isinstance(call_id, str)
-                or not call_id
-                or call_id not in known_call_ids
-                or call_id in ambiguous_call_ids
-            ):
+            elif not result:
                 continue
-            event_scope = (
-                str(event_session_id) if event_session_id is not None else None,
-                (
-                    event_task_epoch
-                    if isinstance(event_task_epoch, int)
-                    and not isinstance(event_task_epoch, bool)
-                    else None
-                ),
-            )
-            previous = selected.get(call_id)
-            if previous is not None:
-                scopes_conflict = previous[1] != event_scope
-                if scopes_conflict:
-                    selected.pop(call_id, None)
-                    ambiguous_call_ids.add(call_id)
-                    continue
-                if previous[0] > priority:
-                    continue
-            projected_result = _project_tool_observation_result(
+            projected = _project_tool_observation_result(
                 result,
                 call_id=call_id,
                 source=(
@@ -521,28 +587,81 @@ def _durable_tool_result_index(
                     else f"tool_action_journal:{event_type}"
                 ),
             )
+            projected["_aworld_scope"] = event_scope
             if event_type == "sandbox_call_failed":
-                failure_type = _safe_error_code(
-                    _as_dict(event.get("metadata")).get("error_type")
-                )
+                failure_type = _safe_error_code(metadata.get("error_type"))
                 if failure_type is not None:
-                    projected_result["extra"]["failure_type"] = failure_type
-            selected[call_id] = (
+                    projected["extra"]["failure_type"] = failure_type
+            if rolled_back:
+                projected["extra"].update(
+                    {
+                        "status": "rolled_back",
+                        "success": False,
+                        "error_code": "sandbox_transaction_rolled_back",
+                        "rollback": {
+                            "performed": True,
+                            "reason_code": _safe_error_code(
+                                context_management.get("rollback_reason")
+                            ),
+                        },
+                    }
+                )
+                projected["extra"]["rollback"] = {
+                    key: value
+                    for key, value in projected["extra"]["rollback"].items()
+                    if value is not None
+                }
+            occurrence_key = (event_scope_token, batch_id, index, call_id)
+            candidate = (
                 priority,
-                event_scope,
-                projected_result,
+                int(event.get("recorded_at_epoch_ns") or 0),
+                event_scope_key,
+                projected,
             )
+            previous = selected.get(occurrence_key)
+            if previous is None or candidate[:2] > previous[:2]:
+                selected[occurrence_key] = candidate
+
+    grouped: dict[
+        tuple[tuple[Any, ...], str],
+        list[tuple[int, str, int, dict[str, Any]]],
+    ] = {}
+    legacy: dict[str, list[tuple[int, str, int, dict[str, Any]]]] = {}
+    for (_scope_token, batch_id, index, call_id), (
+        _,
+        recorded_at,
+        event_scope_key,
+        result,
+    ) in selected.items():
+        entry = (recorded_at, batch_id, index, result)
+        if event_scope_key is None:
+            legacy.setdefault(call_id, []).append(entry)
+        else:
+            grouped.setdefault((event_scope_key, call_id), []).append(entry)
+    durable = {
+        key: [entry[3] for entry in sorted(entries, key=lambda item: item[:3])]
+        for key, entries in grouped.items()
+    }
+    durable_by_call_id: dict[str, list[dict[str, Any]]] = {}
+    for (_, call_id), results_for_scope in durable.items():
+        durable_by_call_id.setdefault(call_id, []).extend(results_for_scope)
+    for call_id, entries in legacy.items():
+        durable_by_call_id.setdefault(call_id, []).extend(
+            entry[3] for entry in sorted(entries, key=lambda item: item[:3])
+        )
+    ambiguous_result_count = sum(
+        max(0, len(results) - 1) for results in durable_by_call_id.values()
+    )
     evidence = recovery.to_evidence()
     evidence.update(
         {
             "selected_event_count": selected_event_count,
             "recovered_result_count": len(selected),
-            "ambiguous_call_id_count": len(ambiguous_call_ids),
+            "ambiguous_result_count": ambiguous_result_count,
+            "ambiguous_call_id_count": ambiguous_result_count,
         }
     )
-    return {
-        call_id: value for call_id, (_, _, value) in selected.items()
-    }, evidence
+    return durable, durable_by_call_id, evidence
 
 
 def _native_agent_step(
@@ -550,8 +669,12 @@ def _native_agent_step(
     *,
     step_id: int,
     model_name: str | None,
-    tool_results: dict[str, dict[str, Any]],
+    tool_results: _ToolResultLedger,
+    native_occurrences: dict[tuple[str, str], int],
+    durable_occurrences: dict[tuple[tuple[Any, ...] | None, str], int],
 ) -> dict[str, Any]:
+    from aworld_cli.durable_scope import scope_key
+
     meta = _as_dict(item.get("meta"))
     action = _as_dict(item.get("action"))
     raw_calls = action.get("tool_calls") or []
@@ -580,8 +703,19 @@ def _native_agent_step(
                 "arguments": _parse_arguments(function.get("arguments")),
             }
         )
-        if call_id in tool_results:
-            result = tool_results[call_id]
+        native_key = (_native_scope_token(meta), call_id)
+        durable_key = (scope_key(meta), call_id)
+        native_occurrence = native_occurrences.get(native_key, 0)
+        durable_occurrence = durable_occurrences.get(durable_key, 0)
+        native_occurrences[native_key] = native_occurrence + 1
+        durable_occurrences[durable_key] = durable_occurrence + 1
+        result = tool_results.lookup(
+            meta=meta,
+            call_id=call_id,
+            native_occurrence=native_occurrence,
+            durable_occurrence=durable_occurrence,
+        )
+        if result is not None:
             observation = {
                 "source_call_id": call_id,
                 "content": result.get("content", ""),
@@ -613,9 +747,14 @@ def _native_agent_step(
         step["extra"]["assistant_response_kind"] = str(response_kind)
     if isinstance(meta.get("llm_request_id"), str) and meta["llm_request_id"]:
         step["extra"]["aworld_llm_request_id"] = meta["llm_request_id"][:256]
-    task_epoch = _safe_int(meta.get("task_epoch"))
-    if task_epoch is not None:
-        step["extra"]["aworld_task_epoch"] = task_epoch
+    from aworld_cli.durable_scope import task_epoch as normalize_task_epoch
+
+    normalized_epoch = normalize_task_epoch(meta.get("task_epoch"))
+    if normalized_epoch is not None:
+        step["extra"]["aworld_task_epoch"] = normalized_epoch
+    run_boundary_id = meta.get("run_boundary_id")
+    if isinstance(run_boundary_id, str) and run_boundary_id:
+        step["extra"]["aworld_run_boundary_id"] = run_boundary_id[:256]
     timestamp = _iso_timestamp(meta.get("execute_time"))
     if timestamp:
         step["timestamp"] = timestamp
@@ -806,16 +945,22 @@ def build_atif_trajectory(
             "message": prompt,
         }
     ]
-    tool_results = _tool_result_index(native_items)
-    durable_tool_results, tool_journal_evidence = _durable_tool_result_index(
-        trajectory_payload,
-        native_items,
+    native_tool_results = _native_tool_result_series(native_items)
+    durable_tool_results, durable_by_call_id, tool_journal_evidence = (
+        _durable_tool_result_series(native_items)
     )
-    # The post-boundary journal is the authoritative durable copy of the
-    # bounded result that entered model history.  It is strictly richer than a
-    # legacy ``state.input.action_result`` projection and remains available
-    # when a deadline interrupts the next trajectory checkpoint.
-    tool_results.update(durable_tool_results)
+    scoped_call_counts, global_call_counts = _tool_call_counts(native_items)
+    tool_results = _ToolResultLedger(
+        native=native_tool_results,
+        durable=durable_tool_results,
+        durable_by_call_id=durable_by_call_id,
+        scoped_call_counts=scoped_call_counts,
+        global_call_counts=global_call_counts,
+    )
+    # Native results remain authoritative when a complete checkpoint exists;
+    # the durable post-boundary journal fills only missing occurrences.
+    native_occurrences: dict[tuple[str, str], int] = {}
+    durable_occurrences: dict[tuple[tuple[Any, ...] | None, str], int] = {}
     for item in native_items:
         steps.append(
             _native_agent_step(
@@ -823,6 +968,8 @@ def build_atif_trajectory(
                 step_id=len(steps) + 1,
                 model_name=model_name,
                 tool_results=tool_results,
+                native_occurrences=native_occurrences,
+                durable_occurrences=durable_occurrences,
             )
         )
 

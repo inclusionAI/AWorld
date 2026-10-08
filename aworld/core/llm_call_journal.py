@@ -37,6 +37,9 @@ DEFAULT_MAX_DECOMPRESSED_RECORD_BYTES = 512 * 1024 * 1024
 COMPRESSED_ENCODING = "zlib+base64"
 _PATH_LOCKS: dict[str, threading.Lock] = {}
 _PATH_LOCKS_GUARD = threading.Lock()
+_MAX_SCOPE_TEXT_CHARS = 256
+_MAX_TASK_EPOCH_TEXT_CHARS = 128
+_MAX_TASK_EPOCH_INT = 2**63 - 1
 
 
 def _path_lock(path: Path) -> threading.Lock:
@@ -183,6 +186,91 @@ def configured_journal_path() -> Path | None:
     return Path(value).expanduser().resolve() if value else None
 
 
+def _bounded_scope_text(value: Any, *, max_chars: int) -> str | None:
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip()
+    return normalized if normalized and len(normalized) <= max_chars else None
+
+
+def journal_scope_from_context(context: Any) -> dict[str, Any]:
+    identity: dict[str, Any] = {}
+    for source, target in (
+        ("task_id", "task_id"),
+        ("session_id", "session_id"),
+        ("trace_id", "run_boundary_id"),
+    ):
+        try:
+            value = getattr(context, source, None)
+        except Exception:
+            value = None
+        normalized = _bounded_scope_text(value, max_chars=_MAX_SCOPE_TEXT_CHARS)
+        if normalized is not None:
+            identity[target] = normalized
+    try:
+        task_epoch = getattr(context, "task_epoch", None)
+    except Exception:
+        task_epoch = None
+    if (
+        isinstance(task_epoch, int)
+        and not isinstance(task_epoch, bool)
+        and 0 <= task_epoch <= _MAX_TASK_EPOCH_INT
+    ):
+        identity["task_epoch"] = task_epoch
+    else:
+        normalized_epoch = _bounded_scope_text(
+            task_epoch, max_chars=_MAX_TASK_EPOCH_TEXT_CHARS
+        )
+        if normalized_epoch is not None:
+            identity["task_epoch"] = normalized_epoch
+    return identity
+
+
+def _normalize_scope(value: Any) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        return {}
+    scope: dict[str, Any] = {}
+    for key in ("task_id", "session_id", "run_boundary_id"):
+        candidate = (
+            value.get("trace_id")
+            if key == "run_boundary_id" and value.get(key) is None
+            else value.get(key)
+        )
+        normalized = _bounded_scope_text(
+            candidate, max_chars=_MAX_SCOPE_TEXT_CHARS
+        )
+        if normalized is not None:
+            scope[key] = normalized
+    task_epoch = value.get("task_epoch")
+    if (
+        isinstance(task_epoch, int)
+        and not isinstance(task_epoch, bool)
+        and 0 <= task_epoch <= _MAX_TASK_EPOCH_INT
+    ):
+        scope["task_epoch"] = task_epoch
+    else:
+        normalized_epoch = _bounded_scope_text(
+            task_epoch, max_chars=_MAX_TASK_EPOCH_TEXT_CHARS
+        )
+        if normalized_epoch is not None:
+            scope["task_epoch"] = normalized_epoch
+    return scope
+
+
+def _call_scope(call: Mapping[str, Any], fallback: Mapping[str, Any]) -> dict[str, Any]:
+    scope = _normalize_scope(fallback)
+    scope.update(_normalize_scope(call))
+    scope.update(_normalize_scope(call.get("_aworld_scope")))
+    turn = call.get("turn_economics")
+    if isinstance(turn, Mapping) and "task_epoch" in turn:
+        epoch = _normalize_scope({"task_epoch": turn.get("task_epoch")}).get(
+            "task_epoch"
+        )
+        if epoch is not None:
+            scope["task_epoch"] = epoch
+    return scope
+
+
 def _context_stream_id(context: Any) -> str:
     value = getattr(context, "_llm_call_journal_stream_id", None)
     if not isinstance(value, str) or not value:
@@ -206,14 +294,7 @@ def append_llm_call_snapshot(
         return None
     if not event_type:
         raise ValueError("LLM call journal event_type must not be empty")
-    identities: dict[str, Any] = {}
-    for name in ("task_id", "session_id", "trace_id"):
-        try:
-            value = getattr(context, name, None)
-        except Exception:
-            value = None
-        if value is not None:
-            identities[name] = str(value)
+    identities = journal_scope_from_context(context)
     recorded_at = time.time_ns()
     call_times = (
         [recorded_at] * len(llm_calls)
@@ -234,6 +315,7 @@ def append_llm_call_snapshot(
         "operation": "snapshot",
         "llm_calls": _json_value(list(llm_calls)),
         "call_recorded_at_epoch_ns": call_times,
+        "call_scopes": [_call_scope(call, identities) for call in llm_calls],
     }
     return _append_payload(
         destination=destination,
@@ -258,14 +340,7 @@ def append_llm_call_mutation(
     destination = path or configured_journal_path()
     if destination is None:
         return None
-    identities: dict[str, Any] = {}
-    for name in ("task_id", "session_id", "trace_id"):
-        try:
-            value = getattr(context, name, None)
-        except Exception:
-            value = None
-        if value is not None:
-            identities[name] = str(value)
+    identities = journal_scope_from_context(context)
     recorded_at = (
         time.time_ns() if recorded_at_epoch_ns is None else recorded_at_epoch_ns
     )
@@ -280,6 +355,7 @@ def append_llm_call_mutation(
         "stream_id": _context_stream_id(context),
         "operation": "append" if previous is None else "replace",
         "index": index,
+        "call_scope": _call_scope(current, identities),
     }
     if previous is None:
         payload["llm_call"] = _json_value(current)
@@ -321,14 +397,7 @@ def append_llm_call_fork(
         raise ValueError("LLM call journal parent checksum is invalid")
     if parent_stream_id == _context_stream_id(context):
         raise ValueError("LLM call journal stream cannot fork from itself")
-    identities: dict[str, Any] = {}
-    for name in ("task_id", "session_id", "trace_id"):
-        try:
-            value = getattr(context, name, None)
-        except Exception:
-            value = None
-        if value is not None:
-            identities[name] = str(value)
+    identities = journal_scope_from_context(context)
     payload = {
         "schema_version": SCHEMA_VERSION,
         "record_type": RECORD_TYPE,
@@ -403,6 +472,7 @@ class LLMCallJournalStreamRecovery:
     valid_record_count: int
     invalid_record_count: int
     call_recorded_at_epoch_ns: tuple[int, ...] = ()
+    call_scopes: tuple[dict[str, Any], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -423,17 +493,28 @@ class LLMCallJournalRecovery:
     @property
     def merged_llm_calls(self) -> tuple[dict[str, Any], ...]:
         """Merge isolated stream tips by stable provider-attempt identity."""
+        return tuple(
+            item["llm_call"] for item in self.merged_scoped_llm_calls
+        )
+
+    @property
+    def merged_scoped_llm_calls(self) -> tuple[dict[str, Any], ...]:
+        """Merge attempts by request identity inside their exact durable scope."""
         # Forked streams intentionally share their inherited immutable calls.
         # De-duplicate those logical mutation versions before sorting and only
         # JSON-normalize the final winners.  Deep-copying every inherited call
         # here would reintroduce quadratic memory at recovery/finalization.
         timed_by_version: dict[
-            tuple[int, str | None, str | None, str],
-            tuple[int, str, int, dict[str, Any]],
+            tuple[int, str, str | None, str | None, str],
+            tuple[int, str, int, dict[str, Any], dict[str, Any]],
         ] = {}
         for stream in self.streams:
-            for index, (call, timestamp) in enumerate(
-                zip(stream.llm_calls, stream.call_recorded_at_epoch_ns)
+            for index, (call, timestamp, scope) in enumerate(
+                zip(
+                    stream.llm_calls,
+                    stream.call_recorded_at_epoch_ns,
+                    stream.call_scopes,
+                )
             ):
                 request_id = call.get("request_id")
                 call_id = call.get("call_id")
@@ -448,47 +529,81 @@ class LLMCallJournalRecovery:
                     if request_id is not None or call_id is not None
                     else _checksum({"call": call})
                 )
-                version_key = (timestamp, request_id, call_id, fallback)
-                candidate = (timestamp, stream.stream_id, index, call)
+                scope_key = json.dumps(
+                    _normalize_scope(scope),
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                version_key = (timestamp, scope_key, request_id, call_id, fallback)
+                candidate = (timestamp, stream.stream_id, index, call, scope)
                 previous = timed_by_version.get(version_key)
                 if previous is None or candidate[:3] < previous[:3]:
                     timed_by_version[version_key] = candidate
 
         merged: list[dict[str, Any]] = []
-        request_positions: dict[str, int] = {}
-        unresolved_call_positions: dict[str, int] = {}
+        merged_times: list[int] = []
+        request_positions: dict[tuple[str, str], int] = {}
+        unresolved_call_positions: dict[tuple[str, str], int] = {}
         timed_calls = sorted(timed_by_version.values(), key=lambda entry: entry[:3])
-        for _, _, _, call in timed_calls:
+        merged_scopes: list[dict[str, Any]] = []
+        for recorded_at, _stream_id, _index, call, scope in timed_calls:
             request_id = call.get("request_id")
             call_id = call.get("call_id")
             request_id = (
                 request_id if isinstance(request_id, str) and request_id else None
             )
             call_id = call_id if isinstance(call_id, str) and call_id else None
-            if request_id is not None and request_id in request_positions:
-                position = request_positions[request_id]
+            normalized_scope = _normalize_scope(scope)
+            scope_key = json.dumps(
+                normalized_scope,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            request_key = (scope_key, request_id) if request_id is not None else None
+            call_key = (scope_key, call_id) if call_id is not None else None
+            if request_key is not None and request_key in request_positions:
+                position = request_positions[request_key]
                 merged[position] = call
+                merged_scopes[position] = normalized_scope
+                merged_times[position] = recorded_at
             elif (
-                request_id is not None
-                and call_id is not None
-                and call_id in unresolved_call_positions
+                request_key is not None
+                and call_key is not None
+                and call_key in unresolved_call_positions
             ):
-                position = unresolved_call_positions.pop(call_id)
+                position = unresolved_call_positions.pop(call_key)
                 merged[position] = call
-                request_positions[request_id] = position
-            elif request_id is not None:
+                merged_scopes[position] = normalized_scope
+                merged_times[position] = recorded_at
+                request_positions[request_key] = position
+            elif request_key is not None:
                 position = len(merged)
                 merged.append(call)
-                request_positions[request_id] = position
-            elif call_id is not None and call_id in unresolved_call_positions:
-                position = unresolved_call_positions[call_id]
+                merged_scopes.append(normalized_scope)
+                merged_times.append(recorded_at)
+                request_positions[request_key] = position
+            elif call_key is not None and call_key in unresolved_call_positions:
+                position = unresolved_call_positions[call_key]
                 merged[position] = call
+                merged_scopes[position] = normalized_scope
+                merged_times[position] = recorded_at
             else:
                 position = len(merged)
                 merged.append(call)
-                if call_id is not None:
-                    unresolved_call_positions[call_id] = position
-        return tuple(_json_value(call) for call in merged)
+                merged_scopes.append(normalized_scope)
+                merged_times.append(recorded_at)
+                if call_key is not None:
+                    unresolved_call_positions[call_key] = position
+        return tuple(
+            {
+                "llm_call": _json_value(call),
+                "scope": _json_value(scope),
+                "recorded_at_epoch_ns": recorded_at,
+            }
+            for call, scope, recorded_at in zip(merged, merged_scopes, merged_times)
+        )
 
     def to_evidence(self) -> dict[str, Any]:
         return {
@@ -510,6 +625,7 @@ def read_llm_call_journal(path: Path) -> LLMCallJournalRecovery:
     """Recover the latest checksum-valid snapshot, ignoring a torn final write."""
     states: dict[str, list[dict[str, Any]]] = {}
     state_call_times: dict[str, list[int]] = {}
+    state_call_scopes: dict[str, list[dict[str, Any]]] = {}
     stream_valid: dict[str, int] = {}
     stream_invalid: dict[str, int] = {}
     stream_chain_valid: dict[str, bool] = {}
@@ -521,7 +637,12 @@ def read_llm_call_journal(path: Path) -> LLMCallJournalRecovery:
     # Immutable tuples share call objects across fork tips.  This retains exact
     # historical bases without multiplying the large request payloads in RAM.
     record_states: dict[
-        tuple[str, str], tuple[tuple[dict[str, Any], ...], tuple[int, ...]]
+        tuple[str, str],
+        tuple[
+            tuple[dict[str, Any], ...],
+            tuple[int, ...],
+            tuple[dict[str, Any], ...],
+        ],
     ] = {}
     latest_calls: tuple[dict[str, Any], ...] = ()
     latest_event_type = None
@@ -583,6 +704,8 @@ def read_llm_call_journal(path: Path) -> LLMCallJournalRecovery:
                         raise ValueError("journal stream hash chain is invalid")
                 state = states.setdefault(stream_id, [])
                 call_times = state_call_times.setdefault(stream_id, [])
+                call_scopes = state_call_scopes.setdefault(stream_id, [])
+                record_scope = _normalize_scope(record.get("context"))
                 chain_valid = stream_chain_valid.setdefault(stream_id, True)
                 record_time = record.get("recorded_at_epoch_ns")
                 if not isinstance(record_time, int):
@@ -609,6 +732,23 @@ def read_llm_call_journal(path: Path) -> LLMCallJournalRecovery:
                         raise ValueError("journal snapshot call timestamps are invalid")
                     else:
                         next_call_times = list(snapshot_call_times)
+                    snapshot_call_scopes = record.get("call_scopes")
+                    if snapshot_call_scopes is None:
+                        next_call_scopes = [
+                            _call_scope(call, record_scope) for call in next_state
+                        ]
+                    elif (
+                        not isinstance(snapshot_call_scopes, list)
+                        or len(snapshot_call_scopes) != len(next_state)
+                        or not all(
+                            isinstance(scope, dict) for scope in snapshot_call_scopes
+                        )
+                    ):
+                        raise ValueError("journal snapshot call scopes are invalid")
+                    else:
+                        next_call_scopes = [
+                            _normalize_scope(scope) for scope in snapshot_call_scopes
+                        ]
                 elif operation == "fork":
                     parent_stream_id = record.get("parent_stream_id")
                     parent_record_checksum = record.get("parent_record_checksum")
@@ -627,6 +767,7 @@ def read_llm_call_journal(path: Path) -> LLMCallJournalRecovery:
                         raise ValueError("journal fork parent tip is unavailable")
                     next_state = list(parent_tip[0])
                     next_call_times = list(parent_tip[1])
+                    next_call_scopes = list(parent_tip[2])
                 elif operation == "append":
                     mutation_index = record.get("index")
                     call = record.get("llm_call")
@@ -634,6 +775,10 @@ def read_llm_call_journal(path: Path) -> LLMCallJournalRecovery:
                         raise ValueError("journal append mutation is not contiguous")
                     next_state = [*state, _json_value(call)]
                     next_call_times = [*call_times, record_time]
+                    next_call_scopes = [
+                        *call_scopes,
+                        _normalize_scope(record.get("call_scope")) or record_scope,
+                    ]
                 elif operation == "replace":
                     mutation_index = record.get("index")
                     patch = record.get("patch")
@@ -651,6 +796,7 @@ def read_llm_call_journal(path: Path) -> LLMCallJournalRecovery:
                     )
                     next_call_times = list(call_times)
                     next_call_times[mutation_index] = record_time
+                    next_call_scopes = list(call_scopes)
                 else:
                     raise ValueError("journal operation is unsupported")
             except (UnicodeDecodeError, json.JSONDecodeError, ValueError, TypeError):
@@ -678,9 +824,11 @@ def read_llm_call_journal(path: Path) -> LLMCallJournalRecovery:
                 stream_previous_checksum[stream_id] = checksum
             states[stream_id] = next_state
             state_call_times[stream_id] = next_call_times
+            state_call_scopes[stream_id] = next_call_scopes
             record_states[(stream_id, checksum)] = (
                 tuple(next_state),
                 tuple(next_call_times),
+                tuple(next_call_scopes),
             )
             stream_valid[stream_id] = stream_valid.get(stream_id, 0) + 1
             stream_events[stream_id] = record.get("event_type")
@@ -698,6 +846,7 @@ def read_llm_call_journal(path: Path) -> LLMCallJournalRecovery:
             valid_record_count=stream_valid.get(stream_id, 0),
             invalid_record_count=stream_invalid.get(stream_id, 0),
             call_recorded_at_epoch_ns=tuple(state_call_times.get(stream_id, ())),
+            call_scopes=tuple(state_call_scopes.get(stream_id, ())),
         )
         for stream_id, state in sorted(states.items())
         if stream_valid.get(stream_id, 0) > 0

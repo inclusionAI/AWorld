@@ -1,4 +1,5 @@
 import json
+from types import SimpleNamespace
 
 from aworld.core.common import ActionModel, ActionResult
 from aworld.core.context.base import Context
@@ -133,3 +134,28 @@ def test_tool_action_journal_preserves_structured_runtime_models(tmp_path):
         ]
         == "unexpected_implicit_artifact_loss"
     )
+
+
+def test_tool_action_journal_preserves_string_epoch_and_run_boundary(tmp_path):
+    path = tmp_path / "tool-actions.journal.jsonl"
+    append_tool_action_event(
+        context=SimpleNamespace(
+            task_id="task",
+            session_id="session",
+            task_epoch="epoch-string",
+            trace_id="run-boundary",
+        ),
+        event_type="sandbox_call_completed",
+        actions=[{"tool_call_id": "call"}],
+        results=[{"tool_call_id": "call", "success": True, "content": "ok"}],
+        status="completed",
+        path=path,
+    )
+
+    context = read_tool_action_journal(path).events[0]["context"]
+    assert context == {
+        "task_id": "task",
+        "session_id": "session",
+        "task_epoch": "epoch-string",
+        "run_boundary_id": "run-boundary",
+    }

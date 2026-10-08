@@ -427,7 +427,9 @@ class DefaultTrajectoryStrategy(TrajectoryStrategy):
             agent_id=agent_id,
             step=step,
             execute_time=message.timestamp,
-            pre_agent=pre_agent
+            pre_agent=pre_agent,
+            task_epoch=getattr(message.context, "task_epoch", None),
+            run_boundary_id=getattr(message.context, "trace_id", None),
         )
         # State (S)
         state = await self.build_trajectory_state(message, state_manager=state_manager,

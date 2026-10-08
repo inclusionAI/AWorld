@@ -17,6 +17,7 @@ from aworld.core.common import ActionResult
 from aworld.core.context.amni import ApplicationContext
 from aworld.core.context.compiler import LifecycleAction
 from aworld.core.event.base import Message
+from aworld.core.tool_action_journal import read_tool_action_journal
 from aworld.sandbox.terminal_receipt import (
     TERMINAL_EXECUTION_RECEIPT_KEY,
     TerminalExecutionPlan,
@@ -561,3 +562,63 @@ async def test_sandbox_routes_context_artifact_reads_before_remote_transport(
     )
 
     assert result is expected
+@pytest.mark.asyncio
+async def test_sandbox_failure_journals_completed_results_from_earlier_batch_action(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    journal = tmp_path / "tool-actions.journal.jsonl"
+    monkeypatch.setenv("AWORLD_TOOL_ACTION_JOURNAL_PATH", str(journal))
+
+    class _McpServers:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def call_tool(self, **kwargs):
+            self.calls += 1
+            action = kwargs["action_list"][0]
+            if self.calls == 2:
+                raise RuntimeError("transport failed")
+            return [
+                ActionResult(
+                    success=True,
+                    tool_call_id=action["tool_call_id"],
+                    tool_name=action["tool_name"],
+                    action_name=action["action_name"],
+                    content="FIRST",
+                )
+            ]
+
+    sandbox = object.__new__(Sandbox)
+    sandbox._sandbox_id = "sandbox-batch"
+    sandbox._env_type = SandboxEnvType.LOCAL
+    sandbox._metadata = {}
+    sandbox._mcpservers = _McpServers()
+    context = ApplicationContext.create(
+        session_id="batch-session",
+        task_id="batch-task",
+        task_content="run batch",
+    )
+    actions = [
+        {
+            "tool_call_id": "call-1",
+            "tool_name": "custom",
+            "action_name": "run",
+            "params": {"value": 1},
+        },
+        {
+            "tool_call_id": "call-2",
+            "tool_name": "custom",
+            "action_name": "run",
+            "params": {"value": 2},
+        },
+    ]
+
+    with pytest.raises(RuntimeError, match="transport failed"):
+        await sandbox.call_tool(action_list=actions, context=context)
+
+    failed = read_tool_action_journal(journal).events[-1]
+    assert failed["event_type"] == "sandbox_call_failed"
+    assert failed["status"] == "failed"
+    assert len(failed["results"]) == 1
+    assert failed["results"][0]["tool_call_id"] == "call-1"
+    assert failed["results"][0]["content"] == "FIRST"

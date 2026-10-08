@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 from aworld.core.context.base import Context
+from aworld.core.context.session import Session
 from aworld.core.tool_action_journal import append_tool_action_event
 
 from aworld_cli.atif import (
@@ -452,7 +453,11 @@ def test_deadline_recovery_uses_durable_llm_call_without_live_context(
 ):
     llm_journal = tmp_path / "llm-calls.journal.jsonl"
     monkeypatch.setenv("AWORLD_LLM_CALL_JOURNAL_PATH", str(llm_journal))
-    context = Context(task_id="task-deadline")
+    context = Context(
+        task_id="task-deadline",
+        session=Session(session_id="session-deadline"),
+        trace_id="run-deadline",
+    )
     context.append_llm_call(
         {
             "request_id": "request-deadline",
@@ -482,6 +487,8 @@ def test_deadline_recovery_uses_durable_llm_call_without_live_context(
     detached = SimpleNamespace(
         task_id="task-deadline",
         session_id="session-deadline",
+        task_epoch=0,
+        trace_id="run-deadline",
         get_reconciled_llm_calls=lambda: [],
     )
 
@@ -796,8 +803,7 @@ def test_atif_does_not_recover_foreign_tool_result_without_task_scope(
 
     assert "observation" not in trajectory["steps"][1]
     evidence = trajectory["extra"]["aworld"]["tool_action_journal"]
-    assert evidence["status"] == "unavailable"
-    assert evidence["reason_code"] == "task_scope_unavailable"
+    assert evidence["status"] == "available"
     assert "foreign secret result" not in json.dumps(trajectory)
 
 

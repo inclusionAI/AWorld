@@ -1683,10 +1683,17 @@ def _build_partial_summary_from_agent_executor(
         result["trajectory_capture_mode"] = "live_context"
 
     captured_trajectory = result.get("trajectory")
-    if not isinstance(captured_trajectory, list) or not captured_trajectory:
-        live_trajectory = _live_trajectory_from_llm_calls(live_calls, context=context)
-        if live_trajectory:
-            result["trajectory"] = live_trajectory
+    live_trajectory = _live_trajectory_from_llm_calls(live_calls, context=context)
+    if live_trajectory:
+        merged_trajectory = _merge_native_and_live_trajectory(
+            captured_trajectory if isinstance(captured_trajectory, list) else [],
+            live_trajectory,
+        )
+        if merged_trajectory:
+            result["trajectory"] = merged_trajectory
+        if not isinstance(captured_trajectory, list) or len(merged_trajectory) > len(
+            captured_trajectory
+        ):
             result["trajectory_capture_mode"] = "live_context"
 
     if task_response is None and not live_calls and not result.get("trajectory"):
@@ -1711,7 +1718,15 @@ def _live_provider_call_records(context: object) -> list[dict]:
         calls = get_calls() if callable(get_calls) else []
         if not isinstance(calls, list):
             calls = []
-        task_id = getattr(context, "task_id", None)
+        from aworld_cli.durable_scope import (
+            normalize_scope,
+            scope_from_context,
+            scope_key,
+        )
+
+        current_scope = scope_from_context(context)
+        current_scope_key = scope_key(current_scope)
+        task_id = current_scope.get("task_id")
         selected = [
             record
             for record in calls
@@ -1723,11 +1738,24 @@ def _live_provider_call_records(context: object) -> list[dict]:
                 or record.get("provider_attempt_status") == "attempted"
             )
         ]
-        # A cancelled owner task can lose its last transport Context before the
-        # live summary is built. Only replay the durable provider journal when
-        # the in-memory fan-in is unavailable, keeping periodic checkpoints
-        # on the cheap reconciled Context path.
-        if not selected and task_id is not None:
+        scoped_calls: list[dict] = []
+        for record in selected:
+            explicit_scope = normalize_scope(record.get("_aworld_scope"))
+            record_fields = normalize_scope(record)
+            record_scope = dict(current_scope)
+            record_scope.update(explicit_scope or record_fields)
+            turn = record.get("turn_economics")
+            if isinstance(turn, dict) and turn.get("task_epoch") is not None:
+                record_scope["task_epoch"] = turn.get("task_epoch")
+            record_scope = normalize_scope(record_scope)
+            if current_scope_key is None or scope_key(record_scope) != current_scope_key:
+                continue
+            scoped = copy.deepcopy(record)
+            scoped["_aworld_scope"] = record_scope
+            scoped_calls.append(scoped)
+
+        durable_calls: list[dict] = []
+        if current_scope_key is not None and task_id is not None:
             try:
                 from aworld.core.llm_call_journal import (
                     configured_journal_path,
@@ -1746,24 +1774,73 @@ def _live_provider_call_records(context: object) -> list[dict]:
                     else None
                 )
                 if recovery is not None and recovery.available:
-                    selected = [
-                        record
-                        for record in recovery.merged_llm_calls
-                        if isinstance(record, dict)
-                        and record.get("task_id") == task_id
-                        and record.get("request_id")
-                        and (
-                            record.get("provider_invoked") is True
-                            or record.get("provider_attempt_status") == "attempted"
+                    for recovered in recovery.merged_scoped_llm_calls:
+                        if not isinstance(recovered, dict):
+                            continue
+                        record = recovered.get("llm_call")
+                        record_scope = normalize_scope(recovered.get("scope"))
+                        if (
+                            not isinstance(record, dict)
+                            or scope_key(record_scope) != current_scope_key
+                            or record.get("task_id") != task_id
+                            or not record.get("request_id")
+                            or not (
+                                record.get("provider_invoked") is True
+                                or record.get("provider_attempt_status") == "attempted"
+                            )
+                        ):
+                            continue
+                        scoped = copy.deepcopy(record)
+                        scoped["_aworld_scope"] = record_scope
+                        scoped["_aworld_recorded_at_epoch_ns"] = recovered.get(
+                            "recorded_at_epoch_ns"
                         )
-                    ]
+                        durable_calls.append(scoped)
             except Exception as exc:
                 _LOGGER.warning(
                     "Direct-run provider journal recovery failed open; "
                     "error_type=%s",
                     type(exc).__name__,
                 )
-        return copy.deepcopy(selected)
+
+        reconciled: list[dict] = []
+        positions: dict[tuple[tuple[object, ...], str], int] = {}
+
+        def quality(record: dict) -> tuple[int, int, int]:
+            response = record.get("response")
+            status = str(record.get("status") or "")
+            return (
+                1 if isinstance(response, dict) else 0,
+                1 if status not in {"", "in_progress"} else 0,
+                1 if record.get("finished_at") is not None else 0,
+            )
+
+        for record in [*scoped_calls, *durable_calls]:
+            record_scope_key = scope_key(record.get("_aworld_scope"))
+            request_id = record.get("request_id")
+            if record_scope_key is None or not isinstance(request_id, str) or not request_id:
+                continue
+            identity = (record_scope_key, request_id)
+            position = positions.get(identity)
+            if position is None:
+                positions[identity] = len(reconciled)
+                reconciled.append(record)
+            elif quality(record) > quality(reconciled[position]):
+                reconciled[position] = record
+        def event_time(record: dict) -> float:
+            started_at = record.get("started_at")
+            if isinstance(started_at, (int, float)) and not isinstance(started_at, bool):
+                return float(started_at)
+            recorded_at = record.get("_aworld_recorded_at_epoch_ns")
+            if isinstance(recorded_at, int) and not isinstance(recorded_at, bool):
+                return recorded_at / 1_000_000_000
+            finished_at = record.get("finished_at")
+            if isinstance(finished_at, (int, float)) and not isinstance(finished_at, bool):
+                return float(finished_at)
+            return float("inf")
+
+        reconciled.sort(key=event_time)
+        return reconciled
     except Exception as exc:
         _LOGGER.warning(
             "Direct-run live evidence recovery failed open; error_type=%s",
@@ -1779,9 +1856,10 @@ def _live_trajectory_from_llm_calls(
 ) -> list[dict]:
     """Project completed provider responses into the native trajectory shape."""
 
+    from aworld_cli.durable_scope import normalize_scope, scope_from_context
+
     trajectory: list[dict] = []
-    task_id = getattr(context, "task_id", None)
-    session_id = getattr(context, "session_id", None)
+    fallback_scope = scope_from_context(context)
     for index, record in enumerate(calls):
         response = record.get("response")
         if not isinstance(response, dict):
@@ -1809,6 +1887,12 @@ def _live_trajectory_from_llm_calls(
         next_cause = None
         current_turn = record.get("turn_economics")
         current_turn = current_turn if isinstance(current_turn, dict) else {}
+        record_scope = normalize_scope(record.get("_aworld_scope")) or dict(
+            fallback_scope
+        )
+        if current_turn.get("task_epoch") is not None:
+            record_scope["task_epoch"] = current_turn.get("task_epoch")
+            record_scope = normalize_scope(record_scope)
         if index + 1 < len(calls):
             next_turn = calls[index + 1].get("turn_economics")
             if isinstance(next_turn, dict):
@@ -1827,13 +1911,14 @@ def _live_trajectory_from_llm_calls(
             continue
         meta = {
             "step": len(trajectory) + 1,
-            "task_id": record.get("task_id") or task_id,
-            "session_id": session_id,
+            "task_id": record_scope.get("task_id") or record.get("task_id"),
+            "session_id": record_scope.get("session_id"),
             "agent_id": record.get("agent_id"),
             "execute_time": record.get("finished_at") or record.get("started_at"),
             "llm_request_id": record.get("request_id"),
             "assistant_response_kind": response_kind,
-            "task_epoch": current_turn.get("task_epoch"),
+            "task_epoch": record_scope.get("task_epoch"),
+            "run_boundary_id": record_scope.get("run_boundary_id"),
         }
         trajectory.append(
             {
@@ -1845,6 +1930,115 @@ def _live_trajectory_from_llm_calls(
             }
         )
     return trajectory
+
+
+def _merge_native_and_live_trajectory(
+    native_items: list[dict], live_items: list[dict]
+) -> list[dict]:
+    """Append only a uniquely anchored monotonic live suffix."""
+
+    from aworld_cli.durable_scope import normalize_scope, scope_key
+
+    merged = copy.deepcopy([item for item in native_items if isinstance(item, dict)])
+    live = [copy.deepcopy(item) for item in live_items if isinstance(item, dict)]
+    live_scopes = {
+        key
+        for item in live
+        if (
+            key := scope_key(
+                normalize_scope(
+                    item.get("meta") if isinstance(item.get("meta"), dict) else {}
+                )
+            )
+        )
+        is not None
+    }
+    expected_scope_key = next(iter(live_scopes)) if len(live_scopes) == 1 else None
+    expected_scope = None
+    if expected_scope_key is not None:
+        expected_scope = normalize_scope(
+            next(
+                item.get("meta")
+                for item in live
+                if scope_key(normalize_scope(item.get("meta"))) == expected_scope_key
+            )
+        )
+
+    def aliases(item: dict) -> set[tuple[object, ...]]:
+        meta = item.get("meta") if isinstance(item.get("meta"), dict) else {}
+        action = item.get("action") if isinstance(item.get("action"), dict) else {}
+        partial_scope = normalize_scope(meta)
+        if expected_scope is not None:
+            if any(
+                key in partial_scope and partial_scope[key] != value
+                for key, value in expected_scope.items()
+            ):
+                return set()
+            resolved_scope = {**expected_scope, **partial_scope}
+        else:
+            resolved_scope = partial_scope
+        item_scope = scope_key(resolved_scope)
+        if item_scope is None:
+            return set()
+        keys: set[tuple[object, ...]] = set()
+        request_id = meta.get("llm_request_id")
+        if isinstance(request_id, str) and request_id:
+            keys.add(("request", item_scope, request_id))
+        call_ids = tuple(
+            call["id"]
+            for call in action.get("tool_calls") or []
+            if isinstance(call, dict)
+            and isinstance(call.get("id"), str)
+            and call.get("id")
+            and len(call["id"]) <= 256
+        )
+        if call_ids and len(call_ids) == len(action.get("tool_calls") or []) and len(
+            set(call_ids)
+        ) == len(call_ids):
+            keys.add(("tools", item_scope, call_ids))
+        return keys
+
+    alias_positions: dict[tuple[object, ...], list[int]] = {}
+    for index, item in enumerate(live):
+        for alias in aliases(item):
+            alias_positions.setdefault(alias, []).append(index)
+    anchors: list[tuple[int, int]] = []
+    for native_index, item in enumerate(merged):
+        matches = {
+            positions[0]
+            for alias in aliases(item)
+            if len((positions := alias_positions.get(alias, []))) == 1
+        }
+        if len(matches) > 1:
+            return merged
+        if len(matches) == 1:
+            anchors.append((native_index, matches.pop()))
+    if not anchors or anchors[0][1] != 0:
+        return merged
+    live_positions = [live_index for _, live_index in anchors]
+    if (
+        live_positions != list(range(live_positions[-1] + 1))
+        or anchors[-1][0] != len(merged) - 1
+    ):
+        return merged
+    for native_index, live_index in anchors:
+        native_meta = merged[native_index].setdefault("meta", {})
+        live_meta = live[live_index].get("meta")
+        if isinstance(native_meta, dict) and isinstance(live_meta, dict):
+            for key in (
+                "llm_request_id",
+                "task_epoch",
+                "run_boundary_id",
+                "session_id",
+                "task_id",
+            ):
+                if live_meta.get(key) is not None:
+                    native_meta.setdefault(key, live_meta[key])
+    for item in live[live_positions[-1] + 1 :]:
+        appended = copy.deepcopy(item)
+        appended.setdefault("meta", {})["step"] = len(merged) + 1
+        merged.append(appended)
+    return merged
 
 
 class DirectRunLiveSummary:
