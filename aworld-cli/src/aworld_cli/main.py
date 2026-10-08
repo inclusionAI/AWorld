@@ -1607,7 +1607,11 @@ def _direct_run_failure_outcome(
     )
 
 
-def _partial_summary_from_agent_executor(agent_executor: object) -> dict | None:
+def _partial_summary_from_agent_executor(
+    agent_executor: object,
+    *,
+    allow_unique_durable_run: bool = False,
+) -> dict | None:
     """Recover finalized or live task evidence after orchestration failure.
 
     A caller-owned deadline can stop direct mode before EventRunner publishes a
@@ -1617,7 +1621,10 @@ def _partial_summary_from_agent_executor(agent_executor: object) -> dict | None:
     """
 
     try:
-        return _build_partial_summary_from_agent_executor(agent_executor)
+        return _build_partial_summary_from_agent_executor(
+            agent_executor,
+            allow_unique_durable_run=allow_unique_durable_run,
+        )
     except Exception as exc:
         _LOGGER.warning(
             "Direct-run live summary recovery failed open; error_type=%s",
@@ -1628,6 +1635,8 @@ def _partial_summary_from_agent_executor(agent_executor: object) -> dict | None:
 
 def _build_partial_summary_from_agent_executor(
     agent_executor: object,
+    *,
+    allow_unique_durable_run: bool = False,
 ) -> dict | None:
     """Build a partial summary; callers must wrap this best-effort projection."""
 
@@ -1674,6 +1683,10 @@ def _build_partial_summary_from_agent_executor(
             type(exc).__name__,
         )
     live_calls = _live_provider_call_records(context)
+    if allow_unique_durable_run:
+        durable_calls = _durable_provider_calls_for_unique_transport_run(context)
+        if len(durable_calls) >= len(live_calls):
+            live_calls = durable_calls
     captured_calls = result.get("llm_calls")
     if live_calls and (
         not isinstance(captured_calls, list)
@@ -1738,6 +1751,24 @@ def _live_provider_call_records(context: object) -> list[dict]:
                 or record.get("provider_attempt_status") == "attempted"
             )
         ]
+        if current_scope_key is None:
+            # Reconciled fan-in is invocation-local. It can preserve partial
+            # counts even before the owner receives the transport trace, but
+            # the incomplete scope must never unlock durable Tool results.
+            partial_calls: list[dict] = []
+            for record in selected:
+                scoped = copy.deepcopy(record)
+                record_scope = dict(current_scope)
+                record_scope.update(
+                    normalize_scope(record.get("_aworld_scope"))
+                    or normalize_scope(record)
+                )
+                turn = record.get("turn_economics")
+                if isinstance(turn, dict) and turn.get("task_epoch") is not None:
+                    record_scope["task_epoch"] = turn["task_epoch"]
+                scoped["_aworld_scope"] = normalize_scope(record_scope)
+                partial_calls.append(scoped)
+            return partial_calls
         scoped_calls: list[dict] = []
         for record in selected:
             explicit_scope = normalize_scope(record.get("_aworld_scope"))
@@ -1862,6 +1893,89 @@ def _live_provider_call_records(context: object) -> list[dict]:
         return []
 
 
+def _durable_provider_calls_for_unique_transport_run(
+    context: object,
+) -> list[dict]:
+    """Recover one invocation-bound journal scope when owner trace fan-in lags."""
+
+    if context is None:
+        return []
+    try:
+        from aworld.core.llm_call_journal import (
+            configured_journal_path,
+            read_llm_call_journal,
+        )
+        from aworld_cli.durable_scope import normalize_scope, scope_from_context, scope_key
+
+        owner_scope = scope_from_context(context)
+        task_id = owner_scope.get("task_id")
+        session_id = owner_scope.get("session_id")
+        if not isinstance(task_id, str) or not isinstance(session_id, str):
+            return []
+        path = configured_journal_path()
+        if path is None or (path.exists() and path.stat().st_size > _MAX_DURABLE_LLM_JOURNAL_BYTES):
+            return []
+        recovery = read_llm_call_journal(path)
+        candidates: list[dict] = []
+        for recovered in recovery.merged_scoped_llm_calls:
+            if not isinstance(recovered, dict):
+                continue
+            record = recovered.get("llm_call")
+            scope = normalize_scope(recovered.get("scope"))
+            if (
+                not isinstance(record, dict)
+                or scope_key(scope) is None
+                or scope.get("task_id") != task_id
+                or scope.get("session_id") != session_id
+                or record.get("task_id") != task_id
+                or not record.get("request_id")
+                or not (
+                    record.get("provider_invoked") is True
+                    or record.get("provider_attempt_status") == "attempted"
+                )
+            ):
+                continue
+            owner_boundary = owner_scope.get("run_boundary_id")
+            if owner_boundary is not None and scope.get("run_boundary_id") != owner_boundary:
+                continue
+            owner_epoch = owner_scope.get("task_epoch")
+            if owner_epoch is not None and scope.get("task_epoch") != owner_epoch:
+                continue
+            candidates.append(
+                {
+                    "record": record,
+                    "scope": scope,
+                    "recorded_at": recovered.get("recorded_at_epoch_ns"),
+                }
+            )
+        run_boundaries = {item["scope"]["run_boundary_id"] for item in candidates}
+        scope_keys = {scope_key(item["scope"]) for item in candidates}
+        if len(run_boundaries) != 1 or (
+            owner_scope.get("task_epoch") is None and len(scope_keys) != 1
+        ):
+            return []
+        result: list[dict] = []
+        for item in candidates:
+            record = copy.deepcopy(item["record"])
+            record["_aworld_scope"] = item["scope"]
+            record["_aworld_recorded_at_epoch_ns"] = item["recorded_at"]
+            result.append(record)
+        result.sort(
+            key=lambda record: (
+                record.get("started_at")
+                if isinstance(record.get("started_at"), (int, float))
+                else record.get("_aworld_recorded_at_epoch_ns", 0) / 1_000_000_000
+            )
+        )
+        return result
+    except Exception as exc:
+        _LOGGER.warning(
+            "Direct-run provider journal recovery failed open; error_type=%s",
+            type(exc).__name__,
+        )
+        return []
+
+
 def _live_trajectory_from_llm_calls(
     calls: list[dict],
     *,
@@ -1960,6 +2074,8 @@ def _merge_native_and_live_trajectory(
 
     merged = copy.deepcopy([item for item in native_items if isinstance(item, dict)])
     live = [copy.deepcopy(item) for item in live_items if isinstance(item, dict)]
+    if not merged:
+        return live
     live_scopes = {
         key
         for item in live
@@ -2073,6 +2189,7 @@ class DirectRunLiveSummary:
         self._checkpoint_writer = checkpoint_writer
         self._checkpoint_interval_seconds = max(0.01, checkpoint_interval_seconds)
         self._checkpoint_task: asyncio.Task[None] | None = None
+        self._last_evidenced_summary: dict | None = None
 
     def bind(self, agent_executor: object) -> None:
         self._agent_executor = agent_executor
@@ -2119,8 +2236,39 @@ class DirectRunLiveSummary:
 
     def snapshot(self) -> dict | None:
         if self._agent_executor is None:
-            return None
-        return _partial_summary_from_agent_executor(self._agent_executor)
+            return self._last_evidenced_summary
+        recovered = _partial_summary_from_agent_executor(
+            self._agent_executor,
+            allow_unique_durable_run=True,
+        )
+        if recovered is not None and _direct_run_has_provider_evidence(recovered):
+            def score(summary: dict) -> tuple[int, int]:
+                results = summary.get("results") or []
+                return (
+                    sum(
+                        len(result.get("llm_calls") or [])
+                        for result in results
+                        if isinstance(result, dict)
+                    ),
+                    sum(
+                        len(result.get("trajectory") or [])
+                        for result in results
+                        if isinstance(result, dict)
+                    ),
+                )
+
+            if (
+                self._last_evidenced_summary is None
+                or all(
+                    current >= retained
+                    for current, retained in zip(
+                        score(recovered),
+                        score(self._last_evidenced_summary),
+                    )
+                )
+            ):
+                self._last_evidenced_summary = recovered
+        return self._last_evidenced_summary or recovered
 
 
 def _prefer_captured_summary(

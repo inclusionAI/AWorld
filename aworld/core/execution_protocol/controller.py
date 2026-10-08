@@ -17,6 +17,7 @@ from .models import (
     ExecutionProtocolEvent,
     ExecutionProtocolPolicy,
     ExecutionProtocolState,
+    HARD_CONVERGENCE_MIN_DEADLINE_FRACTION,
     NextActionAlignment,
     PlanUpdateDecision,
     ProtocolMode,
@@ -87,6 +88,21 @@ def _is_stagnant(
             event.no_goal_progress_count >= policy.no_goal_progress_threshold,
             state.stagnant_observations >= policy.stagnation_event_threshold,
         )
+    )
+
+
+def _hard_convergence_deadline_reached(event: ExecutionProtocolEvent) -> bool:
+    """Keep hard gates behind the caller's 40% deadline checkpoint.
+
+    A missing deadline fraction means the caller does not expose a reliable
+    clock.  Preserve the existing bounded-safety behavior in that compatibility
+    case instead of making convergence impossible.
+    """
+
+    consumed = event.deadline_consumed_fraction
+    return (
+        consumed is None
+        or consumed >= HARD_CONVERGENCE_MIN_DEADLINE_FRACTION
     )
 
 
@@ -632,6 +648,7 @@ def transition_execution_protocol(
             and not next_state.convergence_constraint_active
             and post_candidate_no_delivery_progress_observations
             >= policy.post_candidate_read_only_threshold
+            and _hard_convergence_deadline_reached(event)
         )
         if post_candidate_constraint_due:
             next_state = replace(
@@ -794,7 +811,10 @@ def transition_execution_protocol(
         )
 
     if event.kind is EventKind.REPLAN_UNACKNOWLEDGED:
-        if event.convergence_stage is not None:
+        if (
+            event.convergence_stage is not None
+            and _hard_convergence_deadline_reached(event)
+        ):
             if not execution_protocol_eligible(next_state):
                 return ProtocolTransition(
                     next_state,

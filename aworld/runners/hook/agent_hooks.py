@@ -9,6 +9,87 @@ from aworld.runners.hook.hooks import PostLLMCallHook, PreLLMCallHook, PreToolCa
 from aworld.utils.common import convert_to_snake
 
 
+_MUTATION_GATE_REASON_GUIDANCE = {
+    "effect_unknown": (
+        "The call effect could not be mechanically proved. Replace shell "
+        "pipelines, command chaining, and dynamic expansion with one direct "
+        "bounded operation whose complete write set is visible. For inline or "
+        "heredoc Python that imports modules, `python3 -I` is necessary to "
+        "prevent workspace import shadowing, but it is not sufficient: every "
+        "write must still be mechanically proved and confined to the admitted "
+        "deliverable scope."
+    ),
+    "diagnostic_quota_exhausted": (
+        "The bounded candidate diagnostic allowance is exhausted. Execute an "
+        "exact registered validation, make one eligible new declared revision, "
+        "use an evidence-backed repair, or submit without more Tools."
+    ),
+    "diagnostic_batch_limit": (
+        "Only one unregistered mechanically read-only diagnostic is admitted "
+        "per Tool batch. Issue any remaining eligible diagnostic in a later "
+        "batch."
+    ),
+    "undeclared_helper": (
+        "The mutation is not confined to declared deliverables. Remove helper "
+        "or unrelated writes and use one operation whose complete target set is "
+        "a subset of the declared deliverable set."
+    ),
+    "replayed_revision": (
+        "That exact revision signature was already admitted for the current "
+        "candidate. Use a materially different bounded declared revision, an "
+        "exact registered validation, or submit."
+    ),
+    "validation_unregistered": (
+        "This is not an exact framework-registered validation and is not "
+        "currently eligible as a bounded diagnostic. Use the registered "
+        "command with its registered working directory, or choose an admitted "
+        "revision or submission."
+    ),
+    "revision_batch_limit": (
+        "Only one declared revision is admitted per Tool batch. Put a distinct "
+        "eligible revision in a later batch after observing the first result."
+    ),
+    "repair_unauthorized": (
+        "No candidate-bound repair authorization admits this mutation. Obtain "
+        "fresh typed failure evidence, modify only declared deliverables, or "
+        "submit the current result."
+    ),
+    "candidate_plan_mismatch": (
+        "The mutation does not match the exact model-bound candidate action. "
+        "Use the bound capability, effect, and target shape, or publish a new "
+        "typed plan before retrying."
+    ),
+    "call_identity_invalid": (
+        "Every Tool call in the batch must have a unique non-empty call id. "
+        "Reissue a valid batch before any call can execute."
+    ),
+    "finalization_latched": (
+        "Tool-free finalization is already latched for this candidate. Submit "
+        "the result accurately without another Tool call."
+    ),
+    "scope_ambiguous": (
+        "The batch cannot be bound to exactly one active agent convergence "
+        "scope. Reissue calls under one explicit agent scope."
+    ),
+}
+
+
+def _mutation_gate_reason_guidance(receipt: dict) -> tuple[tuple[str, ...], str]:
+    """Project only finite rejection codes into deterministic model guidance."""
+
+    reasons: list[str] = []
+    call_rejections = receipt.get("call_rejections")
+    if isinstance(call_rejections, list):
+        for value in call_rejections:
+            if not isinstance(value, dict):
+                continue
+            reason = value.get("reason")
+            if reason in _MUTATION_GATE_REASON_GUIDANCE and reason not in reasons:
+                reasons.append(reason)
+    guidance = " ".join(_MUTATION_GATE_REASON_GUIDANCE[value] for value in reasons)
+    return tuple(reasons), guidance
+
+
 @HookFactory.register(name="PreLLMCallContextProcessHook",
                       desc="PreLLMCallContextProcessHook")
 class PreLLMCallContextProcessHook(PreLLMCallHook):
@@ -66,6 +147,10 @@ class MutationGatePreToolHook(PreToolCallHook):
         gate_receipt = mutation_gate_interception(context, actions)
         if gate_receipt is None:
             return None
+        rejection_reasons, reason_guidance = _mutation_gate_reason_guidance(
+            gate_receipt
+        )
+        reason_summary = ", ".join(rejection_reasons) or "admission_mismatch"
         count = int(gate_receipt.get("consecutive_read_only_observations", 0) or 0)
         post_candidate = gate_receipt.get("kind") == "candidate_convergence_required"
         if post_candidate:
@@ -78,7 +163,8 @@ class MutationGatePreToolHook(PreToolCallHook):
             )
             message_text = (
                 "This Tool call is outside the active candidate convergence "
-                "admission. Each current candidate permits up to three bounded "
+                f"admission (reason: {reason_summary}). Each current candidate "
+                "permits up to three bounded "
                 "mechanically read-only diagnostic calls, one per Tool batch, "
                 "without verifier or repair authorization. Registered validation "
                 "does not spend that diagnostic allowance. Once it is exhausted, "
@@ -97,12 +183,12 @@ class MutationGatePreToolHook(PreToolCallHook):
         else:
             message_text = (
                 "This Tool call is outside the active candidate-production "
-                "admission. Create or modify the exact declared deliverable, or "
-                "execute the exact model-bound contractless candidate action. "
-                "When an inline or heredoc Python candidate imports modules, "
-                "use the exact isolated form `python3 -I - <<'PY' ... PY` so "
-                "workspace module shadowing cannot hide additional mutations."
+                f"admission (reason: {reason_summary}). Create or modify the "
+                "exact declared deliverable, or execute the exact model-bound "
+                "contractless candidate action."
             )
+        if reason_guidance:
+            message_text += " " + reason_guidance
         error_code = str(gate_receipt["kind"])
         return Message(
             category="agent_hook",
@@ -125,23 +211,9 @@ class MutationGatePreToolHook(PreToolCallHook):
                 },
                 "additional_context": (
                     "AWorld convergence admission intercepted part of a Tool "
-                    f"batch after {count} observations without delivery progress. "
-                    + (
-                        "Use at most three candidate-bound mechanically read-only "
-                        "diagnostic calls, one per batch, without verifier or repair "
-                        "authorization; registered validation does not spend the "
-                        "diagnostic allowance. Once exhausted, make a declared "
-                        "revision, use an evidence-backed repair, or submit. "
-                        "Repeated, mixed, helper, unrelated, and unknown mutations "
-                        "stay blocked. Named file outputs require a direct write or "
-                        "exact-file copy primitive."
-                        if post_candidate
-                        else (
-                            "Create or modify the smallest relevant candidate now. "
-                            "For Python heredocs with imports, use the exact isolated "
-                            "form `python3 -I - <<'PY' ... PY`."
-                        )
-                    )
+                    f"batch after {count} observations without delivery progress; "
+                    f"bounded rejection reason(s): {reason_summary}. "
+                    + reason_guidance
                 ),
             },
         )

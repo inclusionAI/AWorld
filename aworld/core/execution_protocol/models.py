@@ -70,6 +70,13 @@ class NextActionAlignment(str, Enum):
 _ACTION_SEMANTIC_EFFECTS = frozenset({"read_only", "mutating", "validation", "unknown"})
 _SHA256_ID = re.compile(r"sha256:[0-9a-f]{64}")
 
+# Hard convergence removes ordinary exploratory Tool choices, so it must not
+# be entered merely because an early planning checkpoint or candidate probe was
+# unproductive.  The caller-owned deadline is the only clock authoritative
+# enough to open that phase.  Contexts without a usable deadline retain the
+# legacy bounded-safety behavior for compatibility.
+HARD_CONVERGENCE_MIN_DEADLINE_FRACTION = 0.40
+
 
 @dataclass(frozen=True, slots=True)
 class ActionSemanticReceipt:
@@ -1086,6 +1093,7 @@ class ExecutionProtocolEvent:
     bound_tool_call_id: str | None = None
     current_step: int = 0
     remaining_seconds: float | None = None
+    deadline_consumed_fraction: float | None = None
     operation_hash: str | None = None
     result_hash: str | None = None
     review_boundary_available: bool | None = None
@@ -1192,6 +1200,18 @@ class ExecutionProtocolEvent:
                 or value < 0
             ):
                 raise ValueError("remaining_seconds must be non-negative or None")
+        if self.deadline_consumed_fraction is not None:
+            value = self.deadline_consumed_fraction
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(value)
+                or not 0.0 <= float(value) <= 1.0
+            ):
+                raise ValueError(
+                    "deadline_consumed_fraction must be finite in [0, 1] or None"
+                )
+            object.__setattr__(self, "deadline_consumed_fraction", float(value))
         for name in ("operation_hash", "result_hash"):
             value = getattr(self, name)
             if value is not None and (not isinstance(value, str) or len(value) > 256):
@@ -1297,6 +1317,7 @@ class ExecutionProtocolEvent:
             bound_tool_call_id=self.bound_tool_call_id,
             current_step=self.current_step,
             remaining_seconds=self.remaining_seconds,
+            deadline_consumed_fraction=self.deadline_consumed_fraction,
             operation_hash=self.operation_hash,
             result_hash=self.result_hash,
             review_boundary_available=self.review_boundary_available,
@@ -1336,6 +1357,7 @@ class ProtocolEventRecord:
     bound_tool_call_id: str | None = None
     current_step: int = 0
     remaining_seconds: float | None = None
+    deadline_consumed_fraction: float | None = None
     operation_hash: str | None = None
     result_hash: str | None = None
     review_boundary_available: bool | None = None
@@ -1440,6 +1462,18 @@ class ProtocolEventRecord:
             or self.remaining_seconds < 0
         ):
             raise ValueError("remaining_seconds must be non-negative or None")
+        if self.deadline_consumed_fraction is not None:
+            value = self.deadline_consumed_fraction
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(value)
+                or not 0.0 <= float(value) <= 1.0
+            ):
+                raise ValueError(
+                    "deadline_consumed_fraction must be finite in [0, 1] or None"
+                )
+            object.__setattr__(self, "deadline_consumed_fraction", float(value))
         for name in ("operation_hash", "result_hash"):
             value = getattr(self, name)
             if value is not None and (not isinstance(value, str) or len(value) > 256):
@@ -1535,6 +1569,7 @@ class ProtocolEventRecord:
             "bound_tool_call_id": self.bound_tool_call_id,
             "current_step": self.current_step,
             "remaining_seconds": self.remaining_seconds,
+            "deadline_consumed_fraction": self.deadline_consumed_fraction,
             "operation_hash": self.operation_hash,
             "result_hash": self.result_hash,
             "review_boundary_available": self.review_boundary_available,
@@ -1603,6 +1638,7 @@ class ProtocolEventRecord:
                 value.get("current_step", 0), "current_step"
             ),
             remaining_seconds=value.get("remaining_seconds"),
+            deadline_consumed_fraction=value.get("deadline_consumed_fraction"),
             operation_hash=value.get("operation_hash"),
             result_hash=value.get("result_hash"),
             review_boundary_available=value.get("review_boundary_available"),
@@ -2144,6 +2180,7 @@ __all__ = [
     "ExecutionHorizon",
     "ExecutionProtocolPolicy",
     "ExecutionProtocolState",
+    "HARD_CONVERGENCE_MIN_DEADLINE_FRACTION",
     "execution_protocol_eligible",
     "ModelExecutionProfile",
     "ModelPlanUpdate",

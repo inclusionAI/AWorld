@@ -5,17 +5,20 @@ from types import SimpleNamespace
 
 import pytest
 
+from aworld_cli import main as main_module
 from aworld.core.context.base import Context
 from aworld.core.context.session import Session
 from aworld.core.task import TaskResponse
 from aworld.core.tool_action_journal import append_tool_action_event
 from aworld_cli.atif import build_atif_trajectory
 from aworld_cli.main import (
+    DirectRunLiveSummary,
     _build_partial_summary_from_agent_executor,
     _live_provider_call_records,
     _live_trajectory_from_llm_calls,
     _merge_native_and_live_trajectory,
 )
+from aworld_cli.run_outcome import DirectRunOutcome, DirectRunStatus
 
 
 def _provider_call(
@@ -204,6 +207,254 @@ def test_equal_quality_live_record_yields_to_newer_durable_mutation(
         "fresh-call"
     )
 
+
+def test_deadline_live_summary_recovers_unique_transport_run_and_tool_result(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    llm_journal = tmp_path / "llm-calls.journal.jsonl"
+    tool_journal = tmp_path / "tool-actions.journal.jsonl"
+    monkeypatch.setenv("AWORLD_LLM_CALL_JOURNAL_PATH", str(llm_journal))
+    monkeypatch.setenv("AWORLD_TOOL_ACTION_JOURNAL_PATH", str(tool_journal))
+    transport = _context(
+        task_id="task",
+        session_id="session",
+        task_epoch=1,
+        trace_id="transport-run",
+    )
+    transport.append_llm_call(
+        _provider_call(
+            request_id="request-1",
+            task_id="task",
+            tool_call_id="call-1",
+            content="Inspecting before the deadline.",
+        )
+    )
+    append_tool_action_event(
+        context=transport,
+        event_type="tool_observation_recorded",
+        actions=[
+            {
+                "tool_name": "terminal",
+                "action_name": "run_code",
+                "tool_call_id": "call-1",
+                "params": {"code": "printf recovered"},
+            }
+        ],
+        results=[
+            {
+                "tool_call_id": "call-1",
+                "success": True,
+                "content": "recovered observation",
+            }
+        ],
+        status="completed",
+        path=tool_journal,
+    )
+    owner = SimpleNamespace(
+        task_id="task",
+        session_id="session",
+        task_epoch=1,
+        trace_id=None,
+        get_reconciled_llm_calls=lambda: [
+            {
+                **_provider_call(
+                    request_id="request-1",
+                    task_id="task",
+                    tool_call_id="stale-call",
+                ),
+                "status": "in_progress",
+                "response": None,
+            }
+        ],
+    )
+    live_summary = DirectRunLiveSummary()
+    live_summary.bind(
+        SimpleNamespace(
+            context=owner,
+            last_task_response=None,
+            last_execution_protocol=None,
+            swarm=None,
+        )
+    )
+
+    summary = live_summary.snapshot()
+    outcome = DirectRunOutcome.from_summary(
+        summary,
+        status=DirectRunStatus.BUDGET_EXHAUSTED,
+        completion_reason="task_deadline_exhausted",
+    )
+    result = summary["results"][0]
+    trajectory = build_atif_trajectory(
+        {
+            "trajectory": result["trajectory"],
+            "llm_calls": result["llm_calls"],
+            "trajectory_capture_mode": result["trajectory_capture_mode"],
+        },
+        prompt="Run until the caller deadline",
+        agent_name="Aworld",
+        agent_version="dev",
+        run_outcome=outcome.to_dict(),
+    )
+
+    assert outcome.status is DirectRunStatus.BUDGET_EXHAUSTED
+    assert outcome.llm_call_count == 1
+    assert outcome.tool_call_count == 1
+    assert outcome.action_count == 1
+    assert outcome.trajectory_fidelity == "partial"
+    assert result["trajectory"][0]["meta"] == {
+        "step": 1,
+        "task_id": "task",
+        "session_id": "session",
+        "agent_id": "Aworld",
+        "execute_time": 1_700_000_001,
+        "llm_request_id": "request-1",
+        "task_epoch": 1,
+        "run_boundary_id": "transport-run",
+    }
+    assert trajectory["steps"][1]["observation"]["results"][0]["content"] == ("recovered observation")
+
+
+def test_incomplete_owner_scope_does_not_choose_between_multiple_durable_runs(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    journal = tmp_path / "llm-calls.journal.jsonl"
+    monkeypatch.setenv("AWORLD_LLM_CALL_JOURNAL_PATH", str(journal))
+    for run_boundary in ("run-a", "run-b"):
+        transport = _context(
+            task_id="task",
+            session_id="session",
+            task_epoch=1,
+            trace_id=run_boundary,
+        )
+        transport.append_llm_call(
+            _provider_call(
+                request_id=f"request-{run_boundary}",
+                task_id="task",
+                tool_call_id=f"call-{run_boundary}",
+            )
+        )
+    owner = SimpleNamespace(
+        task_id="task",
+        session_id="session",
+        task_epoch=1,
+        trace_id=None,
+        get_reconciled_llm_calls=lambda: [],
+    )
+
+    assert _live_provider_call_records(owner) == []
+
+
+def test_unique_run_scope_does_not_merge_multiple_epochs_without_owner_epoch(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    journal = tmp_path / "llm-calls.journal.jsonl"
+    monkeypatch.setenv("AWORLD_LLM_CALL_JOURNAL_PATH", str(journal))
+    for epoch in (1, 2):
+        transport = _context(
+            task_id="task",
+            session_id="session",
+            task_epoch=epoch,
+            trace_id="same-run",
+        )
+        transport.append_llm_call(
+            _provider_call(
+                request_id=f"request-{epoch}",
+                task_id="task",
+                tool_call_id=f"call-{epoch}",
+            )
+        )
+    owner = SimpleNamespace(
+        task_id="task",
+        session_id="session",
+        task_epoch=None,
+        trace_id=None,
+        get_reconciled_llm_calls=lambda: [],
+    )
+    live_summary = DirectRunLiveSummary()
+    live_summary.bind(
+        SimpleNamespace(
+            context=owner,
+            last_task_response=None,
+            last_execution_protocol=None,
+            swarm=None,
+        )
+    )
+
+    assert live_summary.snapshot() is None
+
+
+def test_live_summary_keeps_last_high_water_when_later_snapshot_regresses(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    high_water = {
+        "results": [
+            {
+                "llm_calls": [
+                    {"request_id": "request-1"},
+                    {"request_id": "request-2"},
+                ],
+                "trajectory": [{"meta": {"step": 1}}, {"meta": {"step": 2}}],
+            }
+        ]
+    }
+    regressed = {
+        "results": [
+            {
+                "llm_calls": [{"request_id": "request-1"}],
+                "trajectory": [{"meta": {"step": 1}}],
+            }
+        ]
+    }
+    snapshots = iter((high_water, regressed, None))
+    monkeypatch.setattr(
+        main_module,
+        "_partial_summary_from_agent_executor",
+        lambda *_args, **_kwargs: next(snapshots),
+    )
+    live_summary = DirectRunLiveSummary()
+    live_summary.bind(SimpleNamespace())
+
+    assert live_summary.snapshot() is high_water
+    assert live_summary.snapshot() is high_water
+    assert live_summary.snapshot() is high_water
+
+
+def test_live_summary_never_trades_trajectory_for_more_inflight_calls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    retained = {
+        "results": [
+            {
+                "llm_calls": [{"request_id": "request-1"}],
+                "trajectory": [
+                    {"meta": {"step": 1}},
+                    {"meta": {"step": 2}},
+                ],
+            }
+        ]
+    }
+    inflight = {
+        "results": [
+            {
+                "llm_calls": [
+                    {"request_id": "request-1"},
+                    {"request_id": "request-2"},
+                ],
+                "trajectory": [{"meta": {"step": 1}}],
+            }
+        ]
+    }
+    snapshots = iter((retained, inflight))
+    monkeypatch.setattr(
+        main_module,
+        "_partial_summary_from_agent_executor",
+        lambda *_args, **_kwargs: next(snapshots),
+    )
+    live_summary = DirectRunLiveSummary()
+    live_summary.bind(SimpleNamespace())
+
+    assert live_summary.snapshot() is retained
+    assert live_summary.snapshot() is retained
 
 def test_live_trajectory_never_relabels_explicit_record_scope() -> None:
     record = _provider_call(

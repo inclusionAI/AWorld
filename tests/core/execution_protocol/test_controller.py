@@ -1513,6 +1513,74 @@ def test_repeated_post_candidate_reads_activate_convergence_without_replan():
     assert second.state.replan_requested_count == 0
 
 
+@pytest.mark.parametrize(
+    ("consumed_fraction", "expected_active"),
+    ((0.148, False), (0.40, True), (None, True)),
+)
+def test_post_candidate_hard_convergence_respects_deadline_checkpoint(
+    consumed_fraction,
+    expected_active,
+):
+    policy = ExecutionProtocolPolicy(
+        mode="guide",
+        post_candidate_read_only_threshold=1,
+        repetition_threshold=99,
+        low_information_gain_threshold=99,
+        no_goal_progress_threshold=99,
+        stagnation_event_threshold=99,
+    )
+    candidate = transition_execution_protocol(
+        _armed_state(),
+        _tool(
+            candidate_present=True,
+            candidate_advanced=True,
+            workspace_mutated=True,
+            deadline_consumed_fraction=consumed_fraction,
+        ),
+        policy,
+    )
+    observed = transition_execution_protocol(
+        candidate.state,
+        _tool(
+            candidate_present=True,
+            read_only_observed=True,
+            deadline_consumed_fraction=consumed_fraction,
+        ),
+        policy,
+    )
+
+    assert observed.state.convergence_constraint_active is expected_active
+    assert (
+        observed.decision.action
+        is ControllerAction.APPLY_CONVERGENCE_CONSTRAINT
+    ) is expected_active
+
+
+@pytest.mark.parametrize(
+    ("consumed_fraction", "expected_active"),
+    ((0.148, False), (0.40, True), (None, True)),
+)
+def test_unapplied_replan_hard_convergence_respects_deadline_checkpoint(
+    consumed_fraction,
+    expected_active,
+):
+    transition = transition_execution_protocol(
+        _armed_state(),
+        ExecutionProtocolEvent(
+            kind=EventKind.REPLAN_UNACKNOWLEDGED,
+            convergence_stage=ConvergenceStage.PRODUCE_CANDIDATE,
+            deadline_consumed_fraction=consumed_fraction,
+        ),
+        ExecutionProtocolPolicy(mode="guide"),
+    )
+
+    assert transition.state.convergence_constraint_active is expected_active
+    assert (
+        transition.decision.action
+        is ControllerAction.APPLY_CONVERGENCE_CONSTRAINT
+    ) is expected_active
+
+
 def test_post_candidate_counter_tracks_all_no_delivery_progress_effects():
     policy = ExecutionProtocolPolicy(
         mode="guide",

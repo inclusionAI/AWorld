@@ -4853,6 +4853,8 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
     @staticmethod
     def _incomplete_action_recovery_kwargs(
         kwargs: dict[str, Any],
+        *,
+        max_output_tokens: int | None = None,
     ) -> dict[str, Any]:
         """Bound reasoning on a forced action retry without inventing support.
 
@@ -4894,6 +4896,86 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             updated["extra_body"] = extra
         if declared:
             updated["reasoning_effort"] = "low"
+        if (
+            isinstance(max_output_tokens, int)
+            and not isinstance(max_output_tokens, bool)
+            and max_output_tokens > 0
+        ):
+            bounded_existing = False
+            for key in ("max_tokens", "max_completion_tokens"):
+                value = updated.get(key)
+                if isinstance(value, int) and not isinstance(value, bool):
+                    updated[key] = min(value, max_output_tokens)
+                    bounded_existing = True
+            if not bounded_existing:
+                updated["max_completion_tokens"] = max_output_tokens
+        return updated
+
+    def _model_response_action_projection_kwargs(
+        self,
+        kwargs: dict[str, Any],
+        *,
+        max_output_tokens: int,
+        context: Context | None,
+    ) -> dict[str, Any]:
+        """Project an incomplete response onto one bounded concrete action.
+
+        A reasoning-only or truncated response is evidence that another open-
+        ended model turn is the wrong retry shape.  Reuse the reviewed
+        reasoning transport capability when it exists, and always bound the
+        recovery output independently of provider-specific reasoning support.
+        """
+
+        updated = self._incomplete_action_recovery_kwargs(
+            kwargs,
+            max_output_tokens=max_output_tokens,
+        )
+        from aworld.models.reasoning_policy import (
+            ReasoningPhasePolicy,
+            ReasoningProfile,
+            resolve_reasoning_request,
+        )
+
+        llm_config = getattr(self.conf, "llm_config", None)
+        provider_adapter = getattr(self.llm, "provider", None)
+        capability_resolver = getattr(
+            provider_adapter, "reasoning_transport_capability", None
+        )
+        transport_capability = (
+            capability_resolver() if callable(capability_resolver) else None
+        )
+        recovery_policy = ReasoningPhasePolicy(
+            policy_id="model-response-action-projection/v1",
+            execute=ReasoningProfile(reasoning_effort="low"),
+        )
+        resolved, receipt = resolve_reasoning_request(
+            phase="execute",
+            model_name=getattr(llm_config, "llm_model_name", None)
+            or self.model_name,
+            provider=getattr(llm_config, "llm_provider", None)
+            or self._current_provider_name(),
+            request_kwargs=updated,
+            policy=recovery_policy,
+            reasoning_transport=getattr(
+                llm_config, "reasoning_transport", "auto"
+            ),
+            transport_capability=transport_capability,
+        )
+        if receipt.applied:
+            for alias in ("thinking", "enable_thinking", "chat_template_kwargs"):
+                updated.pop(alias, None)
+            updated["reasoning_effort"] = resolved["reasoning_effort"]
+            if "extra_body" in resolved:
+                updated["extra_body"] = resolved["extra_body"]
+        if context is not None:
+            metrics = context.context_info.get("model_response_recovery_metrics")
+            if not isinstance(metrics, dict):
+                metrics = {}
+            metrics["last_action_projection"] = receipt.to_dict()
+            metrics["last_action_projection_max_output_tokens"] = (
+                max_output_tokens
+            )
+            context.context_info["model_response_recovery_metrics"] = metrics
         return updated
 
     @staticmethod
@@ -5583,14 +5665,17 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                         "Runtime response recovery: the previous model action "
                         f"ended incomplete ({reason}). Continue from retained "
                         "task and tool evidence. Do not restart or recompute the "
-                        "discarded analysis. Produce one complete, minimal Tool "
-                        "call that advances the task. When the request names a "
-                        "concrete deliverable and its core format is known, "
-                        "create or update an inspectable candidate now, then "
-                        "validate and refine it." + retained_guidance
+                        "discarded analysis. Produce one complete, minimal next "
+                        "action. If Tools are available, call one Tool that "
+                        "advances the task; otherwise return only the concise, "
+                        "accurate final answer. When the request names a concrete "
+                        "deliverable and its core format is known, create or "
+                        "update an inspectable candidate before finalizing."
+                        + retained_guidance
                     ),
                 )
                 kwargs = self._model_response_recovery_kwargs(kwargs)
+                kwargs["_model_response_recovery_turn"] = True
                 model_response_recovery_turn = True
                 await asyncio.sleep(0)
                 continue
@@ -5601,6 +5686,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                     reason="normal_tool_turn_available",
                 )
                 model_response_recovery_turn = False
+                kwargs.pop("_model_response_recovery_turn", None)
             if isinstance(result, _LongHorizonReviewContinuation):
                 long_horizon_fallback = result.fallback_actions
                 await self._raise_if_task_interrupted(
@@ -8809,6 +8895,17 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         )
         if response_message.get("aworld_stream_terminal_observed") is False:
             return "model_stream_ended_without_finish_reason"
+        if (
+            not response.tool_calls
+            and not str(response.content or "").strip()
+            and response.reasoning_content
+        ):
+            # A length stop explains why generation ended, but the actionable
+            # failure mode is that no model action was emitted after the
+            # reasoning channel consumed the allowance.  Classify that shape
+            # before the generic truncation case so recovery can be observed
+            # and tuned without mistaking hidden reasoning for partial prose.
+            return "reasoning_only_response"
         if response.finish_reason in {"length", "max_tokens", "max_output_tokens"}:
             return "model_output_truncated"
         if response.finish_reason in {"content_filter", "error", "cancelled"}:
@@ -9097,6 +9194,9 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         execution_state_resolution_mode = kwargs.pop(
             "_execution_state_resolution_mode", "ordinary"
         )
+        model_response_recovery_turn = bool(
+            kwargs.pop("_model_response_recovery_turn", False)
+        )
         controller = kwargs.pop("_generation_budget_controller", None)
         if not isinstance(controller, GenerationBudgetController):
             controller = GenerationBudgetController(
@@ -9115,6 +9215,16 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             if not tools:
                 # Some model must be clearly defined as None
                 tools = None
+            if model_response_recovery_turn and tools:
+                kwargs = self._model_response_action_projection_kwargs(
+                    kwargs,
+                    max_output_tokens=(
+                        controller.policy.action_repair_max_output_tokens
+                    ),
+                    context=context,
+                )
+                if tools:
+                    kwargs["tool_choice"] = "required"
             self._log_messages(messages, tools=tools, context=message.context)
 
             stream_mode = (
@@ -9262,6 +9372,18 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                                 recovery_context=recovery_context,
                                 limit=capsule_limit,
                             )
+                            recovery_instruction = (
+                                "Return one complete, minimal Tool call that "
+                                "advances the task. If a concrete deliverable "
+                                "and its core format are already known, create "
+                                "or update an inspectable candidate now."
+                                if tools
+                                else (
+                                    "No Tools are available in this recovery "
+                                    "turn. Return only the concise, accurate "
+                                    "final answer; do not request a Tool call."
+                                )
+                            )
                             messages.append(
                                 {
                                     "role": "user",
@@ -9270,10 +9392,10 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                                         + incomplete_reason
                                         + ". No tool calls from that response were executed. "
                                         "Continue from the retained working context without recomputing "
-                                        "it. Return one complete, minimal Tool call that advances the "
-                                        "task. If a concrete deliverable and its core format are already "
-                                        "known, create or update an inspectable candidate now. Provide a "
-                                        "final answer only when the task is actually complete."
+                                        "it. "
+                                        + recovery_instruction
+                                        + " Provide a final answer only when "
+                                        "the task is actually complete."
                                     ),
                                 }
                             )
@@ -9287,7 +9409,15 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                                 # the caller-owned deadline.
                                 kwargs = dict(kwargs)
                                 kwargs["tool_choice"] = "required"
-                            kwargs = self._incomplete_action_recovery_kwargs(kwargs)
+                                kwargs = (
+                                    self._model_response_action_projection_kwargs(
+                                        kwargs,
+                                        max_output_tokens=(
+                                            controller.policy.action_repair_max_output_tokens
+                                        ),
+                                        context=context,
+                                    )
+                                )
                             continue
                         record_execution_state(
                             context,

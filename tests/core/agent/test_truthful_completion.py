@@ -348,6 +348,7 @@ async def test_required_stream_terminal_reason_retries_implicit_eof(monkeypatch)
 @pytest.mark.parametrize("bad,reason", [
     (ModelResponse(id="x", model="f", content="Unfinished plan", finish_reason="length"), "model_output_truncated"),
     (ModelResponse(id="x", model="f", reasoning_content="Need more work", finish_reason="stop"), "reasoning_only_response"),
+    (ModelResponse(id="x", model="f", reasoning_content="Need more work", finish_reason="length"), "reasoning_only_response"),
     (ModelResponse(id="x", model="f", tool_calls=[tool('{"path":')], finish_reason="tool_calls"), "incomplete_tool_arguments"),
     (ModelResponse(id="x", model="f", tool_calls=[tool('{}'), tool('[]', 'call-2')]), "invalid_tool_arguments"),
 ])

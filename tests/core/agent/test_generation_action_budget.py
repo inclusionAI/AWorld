@@ -24,6 +24,7 @@ from aworld.core.exceptions import AWorldTransientModelError
 from aworld.core.execution_protocol import ExecutionProtocolStore
 from aworld.core.task import Task
 from aworld.models.model_response import Function, ModelResponse, ToolCall
+from aworld.models.reasoning_policy import OPENAI_REASONING_CAPABILITY
 from aworld.runners.execution_protocol import (
     build_execution_protocol_telemetry,
     configure_execution_protocol,
@@ -802,11 +803,16 @@ async def test_truncated_model_actions_continue_with_tools_until_task_boundary(
     assert all(call.get("tools") for call in provider_calls)
     assert all(
         provider_calls[index].get("tool_choice") == "required"
-        for index in (0, 1, 3, 5)
+        for index in range(7)
     )
     assert all(
-        "tool_choice" not in provider_calls[index]
-        for index in (2, 4, 6)
+        min(
+            value
+            for key, value in provider_calls[index].items()
+            if key in {"max_tokens", "max_completion_tokens"}
+        )
+        == 1024
+        for index in range(1, 7)
     )
     assert all(
         provider_calls[index]["tools"][0]["function"]["name"]
@@ -865,20 +871,116 @@ def test_incomplete_action_recovery_downgrades_only_declared_reasoning() -> None
             },
             "tool_choice": "required",
             "_aworld_reasoning_selection": {"reasoning_effort": "max"},
-        }
+        },
+        max_output_tokens=1024,
     )
 
     assert updated["reasoning_effort"] == "low"
     assert updated["tool_choice"] == "required"
+    assert updated["max_completion_tokens"] == 1024
     assert "_aworld_reasoning_selection" not in updated
     assert updated["extra_body"]["chat_template_kwargs"] == {
         "thinking": True,
         "reasoning_effort": "low",
         "preserved": "value",
     }
-    assert Agent._incomplete_action_recovery_kwargs({"stream": False}) == {
-        "stream": False
-    }
+    assert Agent._incomplete_action_recovery_kwargs(
+        {"stream": False}, max_output_tokens=1024
+    ) == {"stream": False, "max_completion_tokens": 1024}
+
+
+def test_model_response_action_projection_uses_capability_backed_low_reasoning() -> (
+    None
+):
+    agent = _agent(policy=GenerationBudgetPolicy())
+    agent._llm = SimpleNamespace(
+        provider=SimpleNamespace(
+            reasoning_transport_capability=lambda: OPENAI_REASONING_CAPABILITY
+        )
+    )
+    context = Context(task_id="reasoning-action-projection")
+
+    updated = agent._model_response_action_projection_kwargs(
+        {"stream": False, "max_completion_tokens": 16_384},
+        max_output_tokens=1024,
+        context=context,
+    )
+
+    assert updated["reasoning_effort"] == "low"
+    assert updated["max_completion_tokens"] == 1024
+    metrics = context.context_info["model_response_recovery_metrics"]
+    assert metrics["last_action_projection"]["applied"] is True
+    assert metrics["last_action_projection"]["policy_id"] == (
+        "model-response-action-projection/v1"
+    )
+    assert metrics["last_action_projection_max_output_tokens"] == 1024
+
+
+def test_model_response_action_projection_still_caps_unknown_transport() -> None:
+    agent = _agent(policy=GenerationBudgetPolicy())
+    agent._llm = SimpleNamespace(provider=object())
+    context = Context(task_id="unknown-reasoning-action-projection")
+
+    updated = agent._model_response_action_projection_kwargs(
+        {"stream": False, "max_completion_tokens": 16_384},
+        max_output_tokens=1024,
+        context=context,
+    )
+
+    assert "reasoning_effort" not in updated
+    assert updated["max_completion_tokens"] == 1024
+    receipt = context.context_info["model_response_recovery_metrics"][
+        "last_action_projection"
+    ]
+    assert receipt["applied"] is False
+    assert receipt["reason_code"] == "unsupported_reasoning_transport"
+
+
+@pytest.mark.asyncio
+async def test_tool_free_incomplete_response_recovery_preserves_final_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent = _agent(
+        policy=GenerationBudgetPolicy(total_timeout_seconds=5),
+        with_tools=False,
+        attempts=2,
+    )
+    provider_calls: list[dict] = []
+
+    async def provider(*_args, **kwargs):
+        provider_calls.append(kwargs)
+        if len(provider_calls) == 1:
+            return ModelResponse(
+                id="reasoning-only-final",
+                model="fake-model",
+                reasoning_content="compose the accurate final response",
+                finish_reason="length",
+            )
+        return ModelResponse(
+            id="recovered-final",
+            model="fake-model",
+            content="accurate final response",
+            finish_reason="stop",
+        )
+
+    monkeypatch.setattr(llm_agent_module, "acall_llm_model", provider)
+    response = await agent.invoke_model(
+        messages=[{"role": "user", "content": "finalize accurately"}],
+        message=_message("tool-free-response-recovery"),
+        prepared_tools=None,
+        max_completion_tokens=8192,
+        stream=False,
+    )
+
+    assert response.content == "accurate final response"
+    assert len(provider_calls) == 2
+    retry = provider_calls[1]
+    assert retry["tools"] is None
+    assert "tool_choice" not in retry
+    assert retry["max_completion_tokens"] == 8192
+    recovery_prompt = retry["messages"][-1]["content"]
+    assert "No Tools are available" in recovery_prompt
+    assert "do not request a Tool call" in recovery_prompt
 
 
 @pytest.mark.asyncio

@@ -49,6 +49,7 @@ from aworld.runners.execution_protocol import (
     load_model_plan_update,
     load_public_probe_receipts,
     model_owned_review_active,
+    MutationGateRejectionReason,
     mutation_gate_interception,
     project_execution_protocol_telemetry,
     record_candidate_final,
@@ -100,6 +101,13 @@ def _context(task_id: str = "long") -> Context:
     context = Context(task_id=task_id)
     context.set_task(Task(id=task_id, input="complete the public request", timeout=600))
     return context
+
+
+def _set_deadline_progress(context: Context, consumed_fraction: float) -> None:
+    task = context.get_task()
+    total = float(task.timeout)
+    remaining = total * (1.0 - consumed_fraction)
+    task.remaining_seconds = lambda: remaining
 
 
 def _semantic_state(**overrides):
@@ -241,6 +249,7 @@ def _declare_mutation_required(context: Context, agent_id: str = "agent") -> Non
 def _activate_produce_convergence(context: Context, agent_id: str = "agent") -> None:
     """Reach the real typed boundary through two unapplied replans."""
 
+    _set_deadline_progress(context, 0.40)
     for sequence in (1, 2):
         transition = record_tool_protocol_event(
             context,
@@ -283,6 +292,7 @@ def _activate_validate_repair_convergence(
         ),
     )
     _declare_long_horizon(context, agent_id)
+    _set_deadline_progress(context, 0.40)
     candidate_fingerprint = semantic_fingerprint("diagnostic-candidate")
     record_tool_protocol_event(
         context,
@@ -954,7 +964,7 @@ def test_unknown_horizon_uses_generic_observation_threshold_and_stays_armed() ->
     )
 
 
-def test_two_unapplied_replans_activate_one_executable_convergence_phase() -> None:
+def test_repeated_unapplied_continues_activate_one_convergence_phase() -> None:
     context = _context("bounded-replan-decisions")
     policy = ExecutionProtocolPolicy(
         mode=ProtocolMode.GUIDE,
@@ -965,6 +975,7 @@ def test_two_unapplied_replans_activate_one_executable_convergence_phase() -> No
     )
     configure_execution_protocol(context, "agent", policy)
     _declare_long_horizon(context)
+    _set_deadline_progress(context, 0.40)
 
     def acknowledge_without_replan(sequence: int) -> None:
         transition = record_tool_protocol_event(
@@ -1003,16 +1014,19 @@ def test_two_unapplied_replans_activate_one_executable_convergence_phase() -> No
             available_tool_names=frozenset({"terminal__execute"}),
         )
 
+    # The first executable semantic is genuine planning progress. Repeating
+    # that same semantic twice (even with new prose/arguments) still converges.
     acknowledge_without_replan(1)
     acknowledge_without_replan(2)
+    acknowledge_without_replan(3)
     third = record_tool_protocol_event(
         context,
         "agent",
         _semantic_state(
             repetition_count=1,
-            current_agent_step=3,
-            operation_hash="sha256:operation-3",
-            result_hash="sha256:result-3",
+            current_agent_step=4,
+            operation_hash="sha256:operation-4",
+            result_hash="sha256:result-4",
         ),
     )
 
@@ -1021,7 +1035,7 @@ def test_two_unapplied_replans_activate_one_executable_convergence_phase() -> No
     assert execution_protocol_model_decision_boundary(context, "agent") is None
     state = load_execution_protocol_state(context, "agent")
     assert state.decision_checkpoint_pending is False
-    assert state.replan_requested_count == 2
+    assert state.replan_requested_count == 3
     assert state.replan_applied_count == 0
     assert state.convergence_constraint_active is True
     assert state.convergence_stage.value == "produce_candidate"
@@ -1040,18 +1054,246 @@ def test_two_unapplied_replans_activate_one_executable_convergence_phase() -> No
         context,
         "agent",
         _semantic_state(
-            current_agent_step=4,
+            current_agent_step=5,
             candidate_present=True,
             candidate_advanced=True,
             workspace_mutated=True,
         ),
     )
     state = load_execution_protocol_state(context, "agent")
-    assert state.replan_requested_count == 2
+    assert state.replan_requested_count == 3
     assert state.convergence_stage.value == "validate_repair_or_submit"
     guidance = consume_execution_protocol_guidance(context, "agent")
     assert guidance is not None
     assert "an inspectable candidate exists" in guidance
+
+
+def test_unapplied_replans_wait_until_caller_deadline_is_40_percent_consumed() -> None:
+    context = _context("deadline-aligned-replan-convergence")
+    configure_execution_protocol(
+        context,
+        "agent",
+        ExecutionProtocolPolicy(
+            mode=ProtocolMode.GUIDE,
+            activation_event_threshold=1,
+            model_activation_min_tool_actions=1,
+            repetition_threshold=1,
+            stagnation_event_threshold=1,
+        ),
+    )
+    _declare_long_horizon(context)
+    _set_deadline_progress(context, 0.148)
+
+    for sequence in (1, 2):
+        transition = record_tool_protocol_event(
+            context,
+            "agent",
+            _semantic_state(
+                repetition_count=1,
+                current_agent_step=sequence,
+                operation_hash=f"sha256:early-operation-{sequence}",
+                result_hash=f"sha256:early-result-{sequence}",
+            ),
+        )
+        assert transition.decision.action is ControllerAction.REQUEST_REPLAN
+        assert record_model_decision_attempt_failure(
+            context, "agent", boundary="replan"
+        )
+        assert not record_model_decision_attempt_failure(
+            context, "agent", boundary="replan"
+        )
+
+    assert load_execution_protocol_state(
+        context, "agent"
+    ).convergence_constraint_active is False
+    assert build_execution_protocol_telemetry(context, "agent")[
+        "consecutive_unapplied_replans"
+    ] == 2
+
+    _set_deadline_progress(context, 0.40)
+    transition = record_tool_protocol_event(
+        context,
+        "agent",
+        _semantic_state(current_agent_step=3),
+    )
+    assert transition.decision.reason is DecisionReason.CONVERGENCE_CONSTRAINT_ACTIVE
+    assert load_execution_protocol_state(
+        context, "agent"
+    ).convergence_constraint_active is True
+
+
+def test_unapplied_replans_without_typed_deadline_preserve_compatibility() -> None:
+    context = Context(task_id="deadline-unavailable-replan-convergence")
+    configure_execution_protocol(
+        context,
+        "agent",
+        ExecutionProtocolPolicy(
+            mode=ProtocolMode.GUIDE,
+            activation_event_threshold=1,
+            model_activation_min_tool_actions=1,
+            repetition_threshold=1,
+            stagnation_event_threshold=1,
+        ),
+    )
+    _declare_long_horizon(context)
+
+    for sequence in (1, 2):
+        transition = record_tool_protocol_event(
+            context,
+            "agent",
+            _semantic_state(
+                repetition_count=1,
+                current_agent_step=sequence,
+                operation_hash=f"sha256:no-deadline-operation-{sequence}",
+                result_hash=f"sha256:no-deadline-result-{sequence}",
+            ),
+        )
+        assert transition.decision.action is ControllerAction.REQUEST_REPLAN
+        assert record_model_decision_attempt_failure(
+            context, "agent", boundary="replan"
+        )
+        assert not record_model_decision_attempt_failure(
+            context, "agent", boundary="replan"
+        )
+
+    assert load_execution_protocol_state(
+        context, "agent"
+    ).convergence_constraint_active is True
+
+
+def test_new_executable_plan_semantic_is_progress_but_argument_churn_is_not() -> None:
+    context = _context("semantic-plan-progress")
+    configure_execution_protocol(
+        context,
+        "agent",
+        ExecutionProtocolPolicy(
+            mode=ProtocolMode.GUIDE,
+            activation_event_threshold=1,
+            model_activation_min_tool_actions=1,
+            repetition_threshold=1,
+            stagnation_event_threshold=1,
+        ),
+    )
+    _declare_long_horizon(context)
+    _set_deadline_progress(context, 0.40)
+
+    def continue_with(sequence: int, command: str) -> None:
+        transition = record_tool_protocol_event(
+            context,
+            "agent",
+            _semantic_state(
+                repetition_count=1,
+                current_agent_step=sequence,
+                operation_hash=f"sha256:semantic-operation-{sequence}",
+                result_hash=f"sha256:semantic-result-{sequence}",
+            ),
+        )
+        assert transition.decision.action is ControllerAction.REQUEST_REPLAN
+        assert record_model_decision_boundary(
+            context,
+            "agent",
+            boundary="replan",
+            execution_profile=None,
+            plan_update={
+                "decision": "continue",
+                "horizon": "long",
+                "milestone": f"bounded inspection {sequence}",
+                "next_action": "inspect one bounded input region",
+                "next_action_tool": "terminal__execute",
+                "next_action_arguments": json.dumps({"command": command}),
+                "verification_plan": "use only the new bounded evidence",
+                "completion_assessment": "in_progress",
+                "delivery_intent": "continue_exploration",
+                "delivery_rationale": "a bounded input fact is still missing",
+                "assumptions": [],
+                "retired_approaches": [],
+                "evidence_refs": [],
+                "selected_candidate_id": None,
+            },
+            available_tool_names=frozenset({"terminal__execute"}),
+        )
+
+    continue_with(1, "cat /app/input-a.txt")
+    continue_with(2, "cat /app/input-b.txt")
+    assert build_execution_protocol_telemetry(context, "agent")[
+        "consecutive_unapplied_replans"
+    ] == 0
+    assert load_execution_protocol_state(
+        context, "agent"
+    ).convergence_constraint_active is False
+
+    # Head/tail change raw arguments, but retain the same executable semantic
+    # shape (capability, effect, and input-b target), so they cannot evade the
+    # bounded convergence counter.
+    continue_with(3, "head -n 1 /app/input-b.txt")
+    assert build_execution_protocol_telemetry(context, "agent")[
+        "consecutive_unapplied_replans"
+    ] == 1
+    continue_with(4, "tail -n 1 /app/input-b.txt")
+    assert load_execution_protocol_state(
+        context, "agent"
+    ).convergence_constraint_active is True
+
+
+def test_repeated_identical_replan_semantic_cannot_reset_convergence() -> None:
+    context = _context("replayed-replan-semantic")
+    configure_execution_protocol(
+        context,
+        "agent",
+        ExecutionProtocolPolicy(
+            mode=ProtocolMode.GUIDE,
+            activation_event_threshold=1,
+            model_activation_min_tool_actions=1,
+            repetition_threshold=1,
+            stagnation_event_threshold=1,
+        ),
+    )
+    _declare_long_horizon(context)
+    _set_deadline_progress(context, 0.40)
+
+    for sequence in (1, 2, 3):
+        transition = record_tool_protocol_event(
+            context,
+            "agent",
+            _semantic_state(
+                repetition_count=1,
+                current_agent_step=sequence,
+                operation_hash=f"sha256:replan-operation-{sequence}",
+                result_hash=f"sha256:replan-result-{sequence}",
+            ),
+        )
+        assert transition.decision.action is ControllerAction.REQUEST_REPLAN
+        assert record_model_decision_boundary(
+            context,
+            "agent",
+            boundary="replan",
+            execution_profile=None,
+            plan_update={
+                "decision": "replan",
+                "horizon": "long",
+                "milestone": "inspect the same bounded input",
+                "next_action": "read the same input",
+                "next_action_tool": "terminal__execute",
+                "next_action_arguments": json.dumps(
+                    {"command": "cat /app/input.txt"}
+                ),
+                "verification_plan": "use the bounded observation",
+                "completion_assessment": "in_progress",
+                "delivery_intent": "continue_exploration",
+                "delivery_rationale": "one input fact remains unknown",
+                "assumptions": [],
+                "retired_approaches": [],
+                "evidence_refs": [],
+                "selected_candidate_id": None,
+            },
+            available_tool_names=frozenset({"terminal__execute"}),
+        )
+
+    telemetry = build_execution_protocol_telemetry(context, "agent")
+    assert telemetry["consecutive_unapplied_replans"] == 2
+    assert load_execution_protocol_state(
+        context, "agent"
+    ).convergence_constraint_active is True
 
 
 def test_two_unacknowledged_replan_boundaries_stop_request_counter_growth() -> None:
@@ -1068,6 +1310,7 @@ def test_two_unacknowledged_replan_boundaries_stop_request_counter_growth() -> N
         ),
     )
     _declare_long_horizon(context)
+    _set_deadline_progress(context, 0.40)
 
     for sequence in (1, 2):
         transition = record_tool_protocol_event(
@@ -1441,6 +1684,7 @@ async def test_post_candidate_read_only_loop_converges_to_validate_repair_or_sub
         ),
     )
     _declare_long_horizon(context)
+    _set_deadline_progress(context, 0.40)
 
     record_tool_protocol_event(
         context,
@@ -1628,6 +1872,7 @@ async def test_post_candidate_gate_requires_evidence_before_contractless_repair(
         ),
     )
     _declare_long_horizon(context)
+    _set_deadline_progress(context, 0.40)
     record_tool_protocol_event(
         context,
         "agent",
@@ -2231,6 +2476,7 @@ def test_constraint_activation_ignores_stale_gate_evidence(schema) -> None:
         ),
     )
     _declare_long_horizon(context)
+    _set_deadline_progress(context, 0.40)
 
     for sequence in (1, 2):
         transition = record_tool_protocol_event(
@@ -2633,6 +2879,7 @@ async def test_validate_convergence_admits_bounded_declared_revision_and_validat
         ),
     )
     _declare_long_horizon(context)
+    _set_deadline_progress(context, 0.40)
     record_tool_protocol_event(
         context,
         "agent",
@@ -5453,6 +5700,7 @@ def test_stale_repair_authorization_does_not_block_novel_declared_revision(
         ),
     )
     _declare_long_horizon(context)
+    _set_deadline_progress(context, 0.40)
     first_hash = semantic_fingerprint("candidate-a")
     for step, progress in ((1, True), (2, False)):
         record_tool_protocol_event(
@@ -6659,3 +6907,206 @@ def test_candidate_fallback_does_not_cross_task_epoch() -> None:
     context.advance_context_lifecycle(LifecycleAction.NEW_TASK)
 
     assert load_candidate_fallback(context, "agent") is None
+
+
+@pytest.mark.asyncio
+async def test_mutation_gate_reports_bounded_path_free_rejection_reasons(
+    tmp_path,
+) -> None:
+    target = tmp_path / "out.txt"
+    context = _context("bounded-call-rejection-reasons")
+    context.workspace_path = str(tmp_path)
+    context.context_info["public_deliverable_contract"] = {
+        "schema_version": "aworld.public-deliverables/v1",
+        "authority": "public_task_advisory",
+        "source": "public_task_text",
+        "artifacts": [
+            {
+                "deliverable_id": "result",
+                "path": str(target),
+                "display_path": "out.txt",
+                "kind": "file",
+                "authority": "public_task_advisory",
+            }
+        ],
+    }
+    configure_execution_protocol(
+        context,
+        "agent",
+        ExecutionProtocolPolicy(
+            mode=ProtocolMode.GUIDE,
+            activation_event_threshold=1,
+            model_activation_min_tool_actions=1,
+            repetition_threshold=1,
+            stagnation_event_threshold=1,
+        ),
+    )
+    _declare_long_horizon(context)
+    _activate_produce_convergence(context)
+    actions = [
+        ActionModel(
+            tool_name="terminal",
+            action_name="run_code",
+            params={
+                "code": (
+                    "awk '{print $1}' input.txt | sort > "
+                    f"{target}"
+                )
+            },
+            tool_call_id="unknown-pipeline",
+            agent_name="agent",
+        ),
+        ActionModel(
+            tool_name="terminal",
+            action_name="run_code",
+            params={"code": f"printf helper > {tmp_path / 'helper.txt'}"},
+            tool_call_id="helper-write",
+            agent_name="agent",
+        ),
+        ActionModel(
+            tool_name="terminal",
+            action_name="run_code",
+            params={"code": "cat README.md"},
+            tool_call_id="unregistered-read",
+            agent_name="agent",
+        ),
+    ]
+
+    receipt = mutation_gate_interception(context, actions)
+
+    assert receipt is not None
+    assert receipt["call_rejections"] == [
+        {"tool_call_id": "unknown-pipeline", "reason": "effect_unknown"},
+        {"tool_call_id": "helper-write", "reason": "undeclared_helper"},
+        {
+            "tool_call_id": "unregistered-read",
+            "reason": "validation_unregistered",
+        },
+    ]
+    assert receipt["call_rejections_truncated"] == 0
+    serialized = json.dumps(receipt, sort_keys=True)
+    assert "awk '{print $1}'" not in serialized
+    assert str(target) not in serialized
+    assert str(tmp_path / "helper.txt") not in serialized
+
+    many_unknown = [
+        ActionModel(
+            tool_name="custom",
+            action_name="opaque",
+            params={"private_path": f"/private/secret-{index}"},
+            tool_call_id=f"unknown-{index}",
+            agent_name="agent",
+        )
+        for index in range(40)
+    ]
+    bounded = mutation_gate_interception(context, many_unknown)
+    assert bounded is not None
+    assert len(bounded["call_rejections"]) == 32
+    assert bounded["call_rejections_truncated"] == 8
+    assert "/private/secret" not in json.dumps(bounded, sort_keys=True)
+
+    unsafe_call_id = "/private/secret\n" + "x" * 4096
+    sanitized, truncated = execution_protocol_module._serialized_call_rejections(
+        [(unsafe_call_id, MutationGateRejectionReason.EFFECT_UNKNOWN)]
+    )
+    assert sanitized == [{"tool_call_id": None, "reason": "effect_unknown"}]
+    assert truncated == 0
+    assert unsafe_call_id not in json.dumps(sanitized)
+
+    hook_result = await MutationGatePreToolHook().exec(
+        Message(category="tool_call", payload=[actions[0]], sender="agent"),
+        context,
+    )
+    assert hook_result is not None
+    message = hook_result.headers["tool_interception"]["message"]
+    assert "effect_unknown" in message
+    assert "pipelines" in message
+    assert "python3 -I" in message
+    assert "not sufficient" in message
+
+
+def test_validate_gate_distinguishes_replay_and_exhausted_diagnostic(
+    tmp_path,
+) -> None:
+    target = tmp_path / "candidate.txt"
+    target.write_text("candidate")
+    validation_code = f"cat {target}"
+    context = _context("validate-rejection-reasons")
+    context.workspace_path = str(tmp_path)
+    context.configure_completion_contract(
+        CompletionContract(
+            required_artifacts=(ArtifactRequirement("candidate", str(target)),),
+            immutable_inputs=(),
+            validation_commands=(
+                ValidationCommand(
+                    command_id="validate-candidate",
+                    argv=("sh", "-c", validation_code),
+                ),
+            ),
+            max_evidence_age_seconds=None,
+            required_final_evidence=(),
+        ),
+        mode=CompletionMode.ENFORCE,
+    )
+    _activate_validate_repair_convergence(context)
+    revision = ActionModel(
+        tool_name="terminal",
+        action_name="run_code",
+        params={"code": f"printf revised > {target}"},
+        tool_call_id="declared-revision",
+        agent_name="agent",
+    )
+    assert mutation_gate_interception(context, [revision]) is None
+    replay = ActionModel(
+        tool_name="terminal",
+        action_name="run_code",
+        params=dict(revision.params),
+        tool_call_id="replayed-revision",
+        agent_name="agent",
+    )
+    replay_receipt = mutation_gate_interception(context, [replay])
+    assert replay_receipt is not None
+    assert replay_receipt["call_rejections"] == [
+        {"tool_call_id": "replayed-revision", "reason": "replayed_revision"}
+    ]
+
+    for index in range(3):
+        diagnostic = ActionModel(
+            tool_name="terminal",
+            action_name="run_code",
+            params={"code": f"cat diagnostic-{index}.log"},
+            tool_call_id=f"diagnostic-{index}",
+            agent_name="agent",
+        )
+        assert mutation_gate_interception(context, [diagnostic]) is None
+
+    registered = ActionModel(
+        tool_name="terminal",
+        action_name="run_code",
+        params={"code": validation_code},
+        tool_call_id="registered-validation",
+        agent_name="agent",
+    )
+    assert mutation_gate_interception(context, [registered]) is None
+    exhausted = ActionModel(
+        tool_name="terminal",
+        action_name="run_code",
+        params={"code": "cat diagnostic-exhausted.log"},
+        tool_call_id="diagnostic-exhausted",
+        agent_name="agent",
+    )
+    exhausted_receipt = mutation_gate_interception(context, [exhausted])
+    assert exhausted_receipt is not None
+    assert exhausted_receipt["call_rejections"] == [
+        {
+            "tool_call_id": "diagnostic-exhausted",
+            "reason": "diagnostic_quota_exhausted",
+        }
+    ]
+    assert {
+        MutationGateRejectionReason.EFFECT_UNKNOWN.value,
+        MutationGateRejectionReason.DIAGNOSTIC_QUOTA_EXHAUSTED.value,
+        MutationGateRejectionReason.UNDECLARED_HELPER.value,
+        MutationGateRejectionReason.REPLAYED_REVISION.value,
+        MutationGateRejectionReason.VALIDATION_UNREGISTERED.value,
+    }.issubset({reason.value for reason in MutationGateRejectionReason})

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import replace
+from enum import Enum
 import hashlib
 import json
 import os
@@ -28,10 +29,10 @@ from aworld.core.execution_protocol import (
     ExecutionProtocolEvent,
     ExecutionProtocolPolicy,
     ExecutionProtocolStore,
+    HARD_CONVERGENCE_MIN_DEADLINE_FRACTION,
     ModelExecutionProfile,
     ModelPlanUpdate,
     NextActionAlignment,
-    PlanUpdateDecision,
     ProtocolMode,
     ProtocolTransition,
     ReviewOutcome,
@@ -86,6 +87,8 @@ _MUTATION_GATE_DEADLINE_MIN_READS = 3
 _MUTATION_GATE_DEADLINE_FRACTION = 0.20
 _MAX_CANDIDATE_DIAGNOSTIC_READS = 3
 _MAX_EXHAUSTED_REJECTED_BATCHES = 2
+_MAX_MUTATION_GATE_CALL_REJECTIONS = 32
+_SAFE_RECEIPT_TOOL_CALL_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,255}\Z")
 _REPAIR_AUTHORIZATION_SCHEMA = "aworld.repair-authorization/v2"
 _REPAIR_SOURCE_VALIDATION_FAILURE = "validation_failure"
 _REPAIR_SOURCE_MODEL_REVIEW = "model_review_repair"
@@ -131,6 +134,43 @@ def _repair_evidence_positions(fingerprint: str) -> tuple[int, ...]:
         % _REPAIR_EVIDENCE_HIGH_WATER_BITS
         for index in range(0, 8, 2)
     )
+
+
+class MutationGateRejectionReason(str, Enum):
+    """Finite, path-free reasons for rejecting one converged Tool call."""
+
+    EFFECT_UNKNOWN = "effect_unknown"
+    DIAGNOSTIC_QUOTA_EXHAUSTED = "diagnostic_quota_exhausted"
+    DIAGNOSTIC_BATCH_LIMIT = "diagnostic_batch_limit"
+    UNDECLARED_HELPER = "undeclared_helper"
+    REPLAYED_REVISION = "replayed_revision"
+    VALIDATION_UNREGISTERED = "validation_unregistered"
+    REVISION_BATCH_LIMIT = "revision_batch_limit"
+    REPAIR_UNAUTHORIZED = "repair_unauthorized"
+    CANDIDATE_PLAN_MISMATCH = "candidate_plan_mismatch"
+    CALL_IDENTITY_INVALID = "call_identity_invalid"
+    FINALIZATION_LATCHED = "finalization_latched"
+    SCOPE_AMBIGUOUS = "scope_ambiguous"
+
+
+def _serialized_call_rejections(
+    values: Sequence[tuple[str | None, MutationGateRejectionReason]],
+) -> tuple[list[dict[str, str | None]], int]:
+    """Return a bounded receipt projection without Tool arguments or paths."""
+
+    retained = [
+        {
+            "tool_call_id": (
+                call_id
+                if isinstance(call_id, str)
+                and _SAFE_RECEIPT_TOOL_CALL_ID.fullmatch(call_id) is not None
+                else None
+            ),
+            "reason": reason.value,
+        }
+        for call_id, reason in values[:_MAX_MUTATION_GATE_CALL_REJECTIONS]
+    ]
+    return retained, max(0, len(values) - len(retained))
 
 
 def _repair_evidence_mask(value: Any) -> int:
@@ -607,7 +647,13 @@ def _normalized_decision_attempts(
             "replan": {},
             "consecutive_unapplied_replans": 0,
             "suppressed_replan_boundaries": 0,
+            "planning_semantic_high_water": [],
         }
+    planning_semantic_high_water = [
+        item
+        for item in (value.get("planning_semantic_high_water") or ())
+        if _is_canonical_semantic_fingerprint(item)
+    ][:16]
     return {
         "schema_version": "aworld.model-decision-attempts/v1",
         "scope": dict(expected_scope),
@@ -619,7 +665,48 @@ def _normalized_decision_attempts(
         "suppressed_replan_boundaries": _bounded_counter(
             value.get("suppressed_replan_boundaries")
         ),
+        "planning_semantic_high_water": list(
+            dict.fromkeys(planning_semantic_high_water)
+        ),
     }
+
+
+def _planning_semantic_fingerprint(update: ModelPlanUpdate) -> str | None:
+    """Identify an executable plan shape without raw Tool arguments.
+
+    Exact argument signatures are intentionally excluded: changing a flag or
+    spelling the same command differently is not planning progress.  The
+    framework credits only a previously unseen capability/effect/target/intent
+    shape, and retains a bounded high-water set so alternating old shapes
+    cannot reset the convergence counter forever.
+    """
+
+    receipt = update.next_action_semantics
+    if receipt is None or not receipt.observable or not receipt.capability_aliases:
+        return None
+    if update.delivery_intent is DeliveryIntent.PRODUCE_CANDIDATE:
+        if receipt.effect != "mutating":
+            return None
+    elif update.delivery_intent is DeliveryIntent.VALIDATE_CANDIDATE:
+        if receipt.effect != "validation" or receipt.validation_kind is None:
+            return None
+    elif update.delivery_intent is not DeliveryIntent.CONTINUE_EXPLORATION:
+        return None
+    payload = json.dumps(
+        {
+            "capability_aliases": sorted(set(receipt.capability_aliases)),
+            "declared_deliverable_targeted": (
+                receipt.declared_deliverable_targeted
+            ),
+            "delivery_intent": update.delivery_intent.value,
+            "effect": receipt.effect,
+            "target_ids": sorted(set(receipt.target_ids)),
+            "validation_kind": receipt.validation_kind,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return "sha256:" + hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def _missing_public_deliverable_names(context) -> tuple[str, ...]:
@@ -2384,6 +2471,16 @@ def _task_deadline_progress(context) -> tuple[float, float, float] | None:
     return float(total), bounded_remaining, consumed
 
 
+def _hard_convergence_deadline_reached(context) -> bool:
+    """Return whether a hard convergence phase may become active."""
+
+    progress = _task_deadline_progress(context)
+    return bool(
+        progress is None
+        or progress[2] >= HARD_CONVERGENCE_MIN_DEADLINE_FRACTION
+    )
+
+
 def _update_mutation_gate(
     context,
     agent_id: str,
@@ -2942,6 +3039,15 @@ def _mutation_gate_interception_locked(
             # exact task epoch. Even when every retained gate later becomes
             # inactive, an unindexed active gate may remain; ambiguity must
             # therefore stay fail-closed until the task scope changes.
+            call_rejections, truncated = _serialized_call_rejections(
+                [
+                    (
+                        call_id,
+                        MutationGateRejectionReason.SCOPE_AMBIGUOUS,
+                    )
+                    for call_id in action_call_ids
+                ]
+            )
             return {
                 "schema_version": MUTATION_GATE_SCHEMA,
                 "kind": "convergence_scope_ambiguous",
@@ -2952,6 +3058,8 @@ def _mutation_gate_interception_locked(
                 "convergence_stage": None,
                 "blocked_call_count": len(actions),
                 "blocked_read_only_call_count": len(actions),
+                "call_rejections": call_rejections,
+                "call_rejections_truncated": truncated,
             }
         agent_id, gate = candidate_gates[0]
         updated = dict(gate)
@@ -2977,6 +3085,12 @@ def _mutation_gate_interception_locked(
         if owner is not None:
             owner.context_info[MUTATION_GATE_STATE_KEY] = updated
         _write_runtime_value(context, agent_id, MUTATION_GATE_STATE_KEY, updated)
+        call_rejections, truncated = _serialized_call_rejections(
+            [
+                (call_id, MutationGateRejectionReason.SCOPE_AMBIGUOUS)
+                for call_id in action_call_ids
+            ]
+        )
         return {
             "schema_version": MUTATION_GATE_SCHEMA,
             "kind": "convergence_scope_ambiguous",
@@ -2989,6 +3103,8 @@ def _mutation_gate_interception_locked(
             "blocked_read_only_call_count": updated[
                 "blocked_read_only_call_count"
             ],
+            "call_rejections": call_rejections,
+            "call_rejections_truncated": truncated,
         }
     agent_id = next(iter(agent_ids))
     if execution_protocol_policy(context, agent_id).mode is not ProtocolMode.GUIDE:
@@ -3042,6 +3158,9 @@ def _mutation_gate_interception_locked(
     initial_candidate_diagnostic_read_count = candidate_diagnostic_read_count
     initial_candidate_diagnostic_high_water = candidate_diagnostic_high_water
     blocked_call_ids: list[str] = list(unique_call_ids) if invalid_call_ids else []
+    call_rejections: list[
+        tuple[str | None, MutationGateRejectionReason]
+    ] = []
     consumed_repair = False
     admitted_diagnostic_read = False
     admitted_declared_mutation = False
@@ -3050,8 +3169,17 @@ def _mutation_gate_interception_locked(
     )
     initial_declared_mutation_attempts = declared_mutation_attempts
     block_all = invalid_call_ids or candidate_tool_free_latched
-    if candidate_tool_free_latched and not invalid_call_ids:
+    if invalid_call_ids:
+        call_rejections.extend(
+            (call_id or None, MutationGateRejectionReason.CALL_IDENTITY_INVALID)
+            for call_id in action_call_ids
+        )
+    elif candidate_tool_free_latched:
         blocked_call_ids = list(unique_call_ids)
+        call_rejections.extend(
+            (call_id, MutationGateRejectionReason.FINALIZATION_LATCHED)
+            for call_id in action_call_ids
+        )
     for action, call_id in (
         zip(actions, action_call_ids) if not block_all else ()
     ):
@@ -3068,8 +3196,11 @@ def _mutation_gate_interception_locked(
         except (TypeError, ValueError):
             semantics = None
         admitted = False
+        rejection_reason: MutationGateRejectionReason | None = None
         if stage is ConvergenceStage.PRODUCE_CANDIDATE:
-            if semantics is not None:
+            if semantics is None:
+                rejection_reason = MutationGateRejectionReason.EFFECT_UNKNOWN
+            else:
                 targets = set(semantics.target_ids)
                 if declared_targets:
                     admitted = bool(
@@ -3077,15 +3208,39 @@ def _mutation_gate_interception_locked(
                         and targets
                         and targets.issubset(declared_targets)
                     )
+                    if not admitted:
+                        if semantics.effect == "unknown":
+                            rejection_reason = (
+                                MutationGateRejectionReason.EFFECT_UNKNOWN
+                            )
+                        elif semantics.effect != "mutating":
+                            rejection_reason = (
+                                MutationGateRejectionReason.VALIDATION_UNREGISTERED
+                            )
+                        else:
+                            rejection_reason = (
+                                MutationGateRejectionReason.UNDECLARED_HELPER
+                            )
                 elif semantics.effect in {"mutating", "unknown"}:
                     admitted = _action_matches_typed_candidate_plan(
                         context, agent_id, action, semantics
+                    )
+                    if not admitted:
+                        rejection_reason = (
+                            MutationGateRejectionReason.EFFECT_UNKNOWN
+                            if semantics.effect == "unknown"
+                            else MutationGateRejectionReason.CANDIDATE_PLAN_MISMATCH
+                        )
+                else:
+                    rejection_reason = (
+                        MutationGateRejectionReason.VALIDATION_UNREGISTERED
                     )
         elif stage is ConvergenceStage.VALIDATE_REPAIR_OR_SUBMIT:
             registered_validation_kind = framework_observable_validation_kind(
                 context, agent_id, action
             )
             admitted = registered_validation_kind is not None
+            provably_read_only = actions_are_provably_read_only([action])
             live_repair = bool(
                 not consumed_repair
                 and repair_authorization is not None
@@ -3098,7 +3253,7 @@ def _mutation_gate_interception_locked(
                 and candidate_binding_is_canonical
                 and candidate_diagnostic_read_count
                 < _MAX_CANDIDATE_DIAGNOSTIC_READS
-                and actions_are_provably_read_only([action])
+                and provably_read_only
             ):
                 for slot in range(_MAX_CANDIDATE_DIAGNOSTIC_READS):
                     slot_fingerprint = _candidate_diagnostic_slot_fingerprint(
@@ -3146,20 +3301,40 @@ def _mutation_gate_interception_locked(
                         )
                     except (TypeError, ValueError):
                         attempt_fingerprint = None
+                    attempt_replayed = bool(
+                        isinstance(attempt_fingerprint, str)
+                        and _repair_evidence_seen(
+                            declared_mutation_attempts, attempt_fingerprint
+                        )
+                    )
                     admitted = bool(
                         not admitted_declared_mutation
                         and targets
                         and targets.issubset(declared_targets)
                         and isinstance(attempt_fingerprint, str)
-                        and not _repair_evidence_seen(
-                            declared_mutation_attempts, attempt_fingerprint
-                        )
+                        and not attempt_replayed
                     )
                     if admitted:
                         declared_mutation_attempts = _repair_evidence_add(
                             declared_mutation_attempts, attempt_fingerprint
                         )
                         admitted_declared_mutation = True
+                    elif not targets or not targets.issubset(declared_targets):
+                        rejection_reason = (
+                            MutationGateRejectionReason.UNDECLARED_HELPER
+                        )
+                    elif attempt_replayed:
+                        rejection_reason = (
+                            MutationGateRejectionReason.REPLAYED_REVISION
+                        )
+                    elif admitted_declared_mutation:
+                        rejection_reason = (
+                            MutationGateRejectionReason.REVISION_BATCH_LIMIT
+                        )
+                    else:
+                        rejection_reason = (
+                            MutationGateRejectionReason.EFFECT_UNKNOWN
+                        )
                 elif (
                     live_repair
                     and semantics.effect in {"mutating", "unknown"}
@@ -3168,10 +3343,50 @@ def _mutation_gate_interception_locked(
                     admitted = _action_matches_typed_candidate_plan(
                         context, agent_id, action, semantics
                     )
+                    if not admitted:
+                        rejection_reason = (
+                            MutationGateRejectionReason.EFFECT_UNKNOWN
+                            if semantics.effect == "unknown"
+                            else MutationGateRejectionReason.CANDIDATE_PLAN_MISMATCH
+                        )
                 if admitted and live_repair and not declared_targets:
                     consumed_repair = True
+            if not admitted and rejection_reason is None:
+                if provably_read_only:
+                    if (
+                        candidate_diagnostic_read_count
+                        >= _MAX_CANDIDATE_DIAGNOSTIC_READS
+                    ):
+                        rejection_reason = (
+                            MutationGateRejectionReason.DIAGNOSTIC_QUOTA_EXHAUSTED
+                        )
+                    elif admitted_diagnostic_read:
+                        rejection_reason = (
+                            MutationGateRejectionReason.DIAGNOSTIC_BATCH_LIMIT
+                        )
+                    else:
+                        rejection_reason = (
+                            MutationGateRejectionReason.VALIDATION_UNREGISTERED
+                        )
+                elif semantics is None or semantics.effect == "unknown":
+                    rejection_reason = MutationGateRejectionReason.EFFECT_UNKNOWN
+                elif semantics.effect == "mutating":
+                    rejection_reason = (
+                        MutationGateRejectionReason.REPAIR_UNAUTHORIZED
+                    )
+                else:
+                    rejection_reason = (
+                        MutationGateRejectionReason.VALIDATION_UNREGISTERED
+                    )
         if not admitted:
             blocked_call_ids.append(call_id)
+            call_rejections.append(
+                (
+                    call_id,
+                    rejection_reason
+                    or MutationGateRejectionReason.EFFECT_UNKNOWN,
+                )
+            )
     if block_all:
         declared_mutation_attempts = initial_declared_mutation_attempts
         candidate_diagnostic_read_count = initial_candidate_diagnostic_read_count
@@ -3276,6 +3491,9 @@ def _mutation_gate_interception_locked(
                 "blocked_call_count"
             ]
     _write_runtime_value(context, agent_id, MUTATION_GATE_STATE_KEY, updated)
+    serialized_rejections, truncated_rejections = _serialized_call_rejections(
+        call_rejections
+    )
     return {
         "schema_version": MUTATION_GATE_SCHEMA,
         "kind": interception_kind,
@@ -3306,6 +3524,8 @@ def _mutation_gate_interception_locked(
             "blocked_read_only_call_count"
         ],
         "blocked_call_count": updated["blocked_call_count"],
+        "call_rejections": serialized_rejections,
+        "call_rejections_truncated": truncated_rejections,
     }
 
 
@@ -3527,6 +3747,8 @@ def _activate_convergence_constraint_locked(
     policy = execution_protocol_policy(context, agent_id)
     if policy.mode is ProtocolMode.OFF:
         return None
+    if not _hard_convergence_deadline_reached(context):
+        return None
     store = ExecutionProtocolStore(context, agent_id, policy)
     state = store.load()
     if not execution_protocol_control_eligible(context, agent_id):
@@ -3555,6 +3777,7 @@ def _activate_convergence_constraint_locked(
         if candidate_convergence_ready
         else ConvergenceStage.PRODUCE_CANDIDATE
     )
+    progress = _task_deadline_progress(context)
     transition = _apply_event(
         context,
         agent_id,
@@ -3563,6 +3786,9 @@ def _activate_convergence_constraint_locked(
             # convergence_stage is an additive field ignored by their reader.
             kind=EventKind.REPLAN_UNACKNOWLEDGED,
             convergence_stage=stage,
+            deadline_consumed_fraction=(
+                progress[2] if progress is not None else None
+            ),
         ),
     )
     if transition.decision.reason is DecisionReason.PERSISTENCE_ERROR:
@@ -3625,6 +3851,8 @@ def _activate_convergence_after_unapplied_limit(
         < _MAX_CONSECUTIVE_UNAPPLIED_REPLANS
     ):
         return None
+    if not _hard_convergence_deadline_reached(context):
+        return None
     return _activate_convergence_constraint(context, agent_id)
 
 
@@ -3668,6 +3896,7 @@ def _record_tool_protocol_event_locked(
             if receipt.executed is None:
                 continue
             observed_action_semantics.append(receipt)
+    deadline_progress = _task_deadline_progress(context)
     event = ExecutionProtocolEvent(
         kind=EventKind.TOOL_OBSERVATION,
         repetition_count=int(semantic_state.get("repetition_count", 0) or 0),
@@ -3717,7 +3946,14 @@ def _record_tool_protocol_event_locked(
         ),
         observed_action_semantics=tuple(observed_action_semantics),
         current_step=int(semantic_state.get("current_agent_step", 0) or 0),
-        remaining_seconds=_remaining_task_seconds(context),
+        remaining_seconds=(
+            deadline_progress[1]
+            if deadline_progress is not None
+            else _remaining_task_seconds(context)
+        ),
+        deadline_consumed_fraction=(
+            deadline_progress[2] if deadline_progress is not None else None
+        ),
         operation_hash=semantic_state.get("operation_hash"),
         result_hash=semantic_state.get("result_hash"),
     )
@@ -3789,8 +4025,12 @@ def _record_pending_checkpoint(
             # Defensive migration path. Normal Tool observations activate the
             # constraint before entering the controller, so requested counters
             # do not grow. Never silently suppress another boundary.
-            _activate_convergence_constraint(context, agent_id)
-            return
+            activated = _activate_convergence_constraint(context, agent_id)
+            if (
+                activated is not None
+                and activated.state.convergence_constraint_active
+            ):
+                return
 
         def begin_replan_decision(current):
             attempts = _normalized_decision_attempts(
@@ -4295,6 +4535,7 @@ def record_model_decision_boundary(
     )
     if acknowledged:
         expected_scope = _model_decision_scope(context, agent_id)
+        planning_semantic_fingerprint = _planning_semantic_fingerprint(update)
 
         def mark_acknowledged(current):
             attempts = _normalized_decision_attempts(
@@ -4309,8 +4550,19 @@ def record_model_decision_boundary(
                 "request_sequence": request_sequence,
                 "status": "acknowledged",
             }
+            semantic_high_water = list(
+                attempts.get("planning_semantic_high_water") or ()
+            )
+            materially_new_semantic = bool(
+                planning_semantic_fingerprint is not None
+                and planning_semantic_fingerprint not in semantic_high_water
+                and len(semantic_high_water) < 16
+            )
+            if materially_new_semantic:
+                semantic_high_water.append(planning_semantic_fingerprint)
+            attempts["planning_semantic_high_water"] = semantic_high_water
             if boundary == "replan":
-                if update.decision is PlanUpdateDecision.REPLAN:
+                if materially_new_semantic:
                     attempts["consecutive_unapplied_replans"] = 0
                 else:
                     attempts["consecutive_unapplied_replans"] = min(
@@ -4325,7 +4577,7 @@ def record_model_decision_boundary(
             EXECUTION_PROTOCOL_MODEL_DECISIONS_KEY,
             mark_acknowledged,
         )
-        if boundary == "replan" and update.decision is not PlanUpdateDecision.REPLAN:
+        if boundary == "replan":
             _activate_convergence_after_unapplied_limit(context, agent_id)
     return acknowledged
 
@@ -4962,6 +5214,7 @@ __all__ = [
     "load_candidate_fallback",
     "load_execution_protocol_state",
     "load_model_plan_update",
+    "MutationGateRejectionReason",
     "mutation_gate_interception",
     "load_public_probe_receipts",
     "load_acceptance_critic_state",

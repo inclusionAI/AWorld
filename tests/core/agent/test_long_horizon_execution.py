@@ -1903,6 +1903,7 @@ def test_default_guide_exposes_profile_after_observed_long_work_without_skill() 
 def test_default_guide_constrains_after_two_unapplied_replans_without_skill() -> None:
     context = Context(task_id="replan-default-guide")
     context.set_task(Task(id="replan-default-guide", timeout=600))
+    context.get_task().remaining_seconds = lambda: 360.0
     policy = ExecutionProtocolPolicy(mode=ProtocolMode.GUIDE, repetition_threshold=1)
     agent = _agent(context, policy)
     agent.skill_configs = {"long-running-agent": {"active": False}}
@@ -2175,6 +2176,7 @@ async def test_late_catalog_latch_finalizes_only_at_next_generation_boundary() -
     context.set_task(
         Task(id="late-catalog-agent-race", input="finish the task", timeout=600)
     )
+    context.get_task().remaining_seconds = lambda: 360.0
     policy = ExecutionProtocolPolicy(
         mode=ProtocolMode.GUIDE,
         post_candidate_read_only_threshold=1,

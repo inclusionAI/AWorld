@@ -479,6 +479,22 @@ def test_event_validates_generic_measurements_and_review_shape():
         )
     with pytest.raises(ValueError, match="requires"):
         ExecutionProtocolEvent(kind=EventKind.MODEL_EXECUTION_PROFILE)
+    for invalid_fraction in (-0.01, 1.01, float("nan"), float("inf"), True):
+        with pytest.raises(ValueError, match="deadline_consumed_fraction"):
+            ExecutionProtocolEvent(
+                kind=EventKind.TOOL_OBSERVATION,
+                deadline_consumed_fraction=invalid_fraction,
+            )
+
+    deadline_event = ExecutionProtocolEvent(
+        kind=EventKind.TOOL_OBSERVATION,
+        deadline_consumed_fraction=0.148,
+    )
+    assert (
+        ProtocolEventRecord.from_dict(deadline_event.to_record(1).to_dict())
+        .deadline_consumed_fraction
+        == 0.148
+    )
 
 
 def test_state_round_trip_contains_no_raw_task_or_tool_text():
