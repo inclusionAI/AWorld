@@ -851,6 +851,7 @@ def _consume_search_options(
     value_options: Mapping[str, str],
     unsafe_options: frozenset[str] = frozenset(),
     allow_files_mode: bool = False,
+    observed_literal_flags: set[str] | None = None,
 ) -> tuple[list[str], list[str], bool, bool, bool]:
     """Return positionals, extra dependencies, pattern flag, files mode, safe."""
 
@@ -875,6 +876,8 @@ def _consume_search_options(
             return [], [], False, False, False
         if allow_files_mode and name == "--files" and not separator:
             files_mode = True
+            if observed_literal_flags is not None:
+                observed_literal_flags.add(name)
             index += 1
             continue
         option_kind = value_options.get(name)
@@ -889,11 +892,15 @@ def _consume_search_options(
             )
             if value_index is None:
                 if all(item in literal_flags for item in short_names):
+                    if observed_literal_flags is not None:
+                        observed_literal_flags.update(short_names)
                     index += 1
                     continue
                 return [], [], False, False, False
             if not all(item in literal_flags for item in short_names[:value_index]):
                 return [], [], False, False, False
+            if observed_literal_flags is not None:
+                observed_literal_flags.update(short_names[:value_index])
             name = short_names[value_index]
             option_kind = value_options[name]
             short_attached = value[value_index + 2 :]
@@ -914,6 +921,8 @@ def _consume_search_options(
             index += 1
             continue
         if value in literal_flags:
+            if observed_literal_flags is not None:
+                observed_literal_flags.add(value)
             index += 1
             continue
         return [], [], False, False, False
@@ -1412,13 +1421,17 @@ def _shell_projection_is_reusable(
     return False
 
 
-def _actual_flag_before_double_dash(args: Sequence[str], flag: str) -> bool:
-    for value in args:
-        if value == "--":
-            return False
-        if value == flag:
-            return True
-    return False
+def _rg_actual_literal_flags(args: Sequence[str]) -> frozenset[str]:
+    observed: set[str] = set()
+    *_ignored, safe = _consume_search_options(
+        args,
+        literal_flags=_SEARCH_LITERAL_FLAGS,
+        value_options=_RG_VALUE_OPTIONS,
+        unsafe_options=_RG_UNSAFE_OPTIONS,
+        allow_files_mode=True,
+        observed_literal_flags=observed,
+    )
+    return frozenset(observed) if safe else frozenset()
 
 
 def _git_version_only(args: Sequence[str]) -> bool:
@@ -1800,9 +1813,7 @@ def plan_terminal_execution(
         executable, args = _command_words(words)
         if not executable:
             continue
-        if executable == "rg" and not _actual_flag_before_double_dash(
-            args, "--no-config"
-        ):
+        if executable == "rg" and "--no-config" not in _rg_actual_literal_flags(args):
             callback_kinds.add("ripgrep_config")
         elif executable == "git" and not _git_version_only(args):
             callback_kinds.add("git_config")

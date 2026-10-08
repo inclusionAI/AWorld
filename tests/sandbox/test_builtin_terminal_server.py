@@ -28,7 +28,11 @@ from aworld.sandbox.tool_servers.terminal.src.terminal import (
     read_output_artifact,
     run_code,
 )
-from aworld.sandbox.terminal_receipt import terminal_command_sha256
+from aworld.sandbox.terminal_receipt import (
+    _RG_VALUE_OPTIONS,
+    _rg_actual_literal_flags,
+    terminal_command_sha256,
+)
 from aworld.sandbox.task_budget import FrameworkTaskBudget
 from aworld.sandbox.tool_observation import SandboxToolObservationRuntime
 
@@ -210,6 +214,12 @@ def test_callback_sensitive_reads_require_callback_free_authority(
 ) -> None:
     source = tmp_path / "input.txt"
     source.write_text("needle\n", encoding="utf-8")
+    (tmp_path / "f").write_text("needle\n", encoding="utf-8")
+    ripgrep_config = tmp_path / "ripgrep.conf"
+    ripgrep_config.write_text(
+        "--pre=sh -c 'touch /tmp/rg-pre-mutated'\n",
+        encoding="utf-8",
+    )
     monkeypatch.setattr(terminal_module, "workspace", tmp_path)
     environment = dict(terminal_module.os.environ)
 
@@ -217,14 +227,14 @@ def test_callback_sensitive_reads_require_callback_free_authority(
         command="rg needle input.txt",
         potential_plan=_terminal_execution_plan("rg needle input.txt"),
         working_directory=tmp_path,
-        environment={**environment, "RIPGREP_CONFIG_PATH": str(source)},
+        environment={**environment, "RIPGREP_CONFIG_PATH": str(ripgrep_config)},
         environment_overrides=None,
     )
     no_config_rg, no_config_source = _terminal_receipt_plan(
         command="rg --no-config needle input.txt",
         potential_plan=_terminal_execution_plan("rg --no-config needle input.txt"),
         working_directory=tmp_path,
-        environment={**environment, "RIPGREP_CONFIG_PATH": str(source)},
+        environment={**environment, "RIPGREP_CONFIG_PATH": str(ripgrep_config)},
         environment_overrides=None,
     )
     git_plan, git_source = _terminal_receipt_plan(
@@ -242,9 +252,30 @@ def test_callback_sensitive_reads_require_callback_free_authority(
     assert git_plan.effect == "unknown"
     assert git_source == "untrusted_execution_context"
 
+    for command in (
+        "rg -e --no-config f",
+        "rg -g --no-config needle f",
+        "rg --glob --no-config needle f",
+    ):
+        consumed_value_plan, consumed_value_source = _terminal_receipt_plan(
+            command=command,
+            potential_plan=_terminal_execution_plan(command),
+            working_directory=tmp_path,
+            environment={
+                **environment,
+                "RIPGREP_CONFIG_PATH": str(ripgrep_config),
+            },
+            environment_overrides=None,
+        )
+        assert consumed_value_plan.effect == "unknown"
+        assert consumed_value_source == "untrusted_execution_context"
+
 
 def test_callback_bypass_tokens_must_be_actual_top_level_options() -> None:
     rg_pathspec = _terminal_execution_plan("rg needle -- --no-config")
+    rg_pattern_value = _terminal_execution_plan("rg -e --no-config f")
+    rg_short_glob_value = _terminal_execution_plan("rg -g --no-config needle f")
+    rg_long_glob_value = _terminal_execution_plan("rg --glob --no-config needle f")
     rg_real_flag = _terminal_execution_plan("rg --no-config needle -- --no-config")
     git_pathspec = _terminal_execution_plan("git status -- --version")
     git_version = _terminal_execution_plan("git --no-pager --version")
@@ -254,6 +285,9 @@ def test_callback_bypass_tokens_must_be_actual_top_level_options() -> None:
     external_diff = _terminal_execution_plan("git diff --ext-diff")
 
     assert rg_pathspec.callback_kinds == ("ripgrep_config",)
+    assert rg_pattern_value.callback_kinds == ("ripgrep_config",)
+    assert rg_short_glob_value.callback_kinds == ("ripgrep_config",)
+    assert rg_long_glob_value.callback_kinds == ("ripgrep_config",)
     assert rg_real_flag.callback_kinds == ()
     assert git_pathspec.callback_kinds == ("git_config",)
     assert git_version.callback_kinds == ()
@@ -261,6 +295,15 @@ def test_callback_bypass_tokens_must_be_actual_top_level_options() -> None:
     assert mutating_config.callback_kinds == ("git_config",)
     assert external_diff.effect == "unknown"
     assert external_diff.callback_kinds == ("git_config",)
+
+
+def test_rg_no_config_consumed_by_any_value_option_is_not_a_flag() -> None:
+    for option in _RG_VALUE_OPTIONS:
+        assert "--no-config" not in _rg_actual_literal_flags(
+            (option, "--no-config", "needle", "f")
+        )
+
+    assert "--no-config" in _rg_actual_literal_flags(("--no-config", "needle", "f"))
 
 
 @pytest.mark.parametrize(
