@@ -37,6 +37,12 @@ from aworld.utils.serialized_util import to_serializable
 
 OBSERVATION_SCHEMA = "aworld.sandbox-tool-observation/v1"
 ACTION_SEMANTIC_RECEIPT_KEY = "action_semantic_receipt"
+READ_OBSERVATION_RECEIPT_KEY = "read_observation_receipt"
+# Provider-neutral, additive metadata for one bounded file read. ``epoch`` is
+# authoritative only in its named environment; the Sandbox may revalidate
+# ``authority=host`` itself, while container authorities must be revalidated by
+# their provider. The receipt contains hashes/coverage, never retained bytes.
+READ_OBSERVATION_SCHEMA = "aworld.read-observation/v1"
 _MAX_CACHE_ENTRIES = 256
 # Exact replay keeps the original Tool body in the Sandbox control plane so a
 # checkpoint that discarded it can be hydrated without executing the Tool
@@ -229,8 +235,7 @@ def _declared_target_ids(context: Any) -> frozenset[str]:
         )
         if (
             not isinstance(public_contract, Mapping)
-            or public_contract.get("schema_version")
-            != "aworld.public-deliverables/v1"
+            or public_contract.get("schema_version") != "aworld.public-deliverables/v1"
             or public_contract.get("authority") != "public_task_advisory"
             or public_contract.get("source") != "public_task_text"
         ):
@@ -358,7 +363,11 @@ def _effective_action_cwd(
         cwd = metadata.get("working_directory")
     if (not isinstance(cwd, str) or not cwd.strip()) and context is not None:
         cwd = getattr(context, "workspace_path", None)
-    current = posixpath.normpath(cwd.replace("\\", "/")) if isinstance(cwd, str) and cwd.strip() else None
+    current = (
+        posixpath.normpath(cwd.replace("\\", "/"))
+        if isinstance(cwd, str) and cwd.strip()
+        else None
+    )
     code = params.get("code", params.get("command"))
     if not isinstance(code, str) or params.get("language", "shell") != "shell":
         return current
@@ -603,15 +612,18 @@ def classify_tool_effect(action: Any) -> ToolEffect:
             "sha256": hashlib.sha256(encoded_env_content).hexdigest(),
             "type": type(params["env_content"]).__name__,
         }
-    operation_hash = "sha256:" + hashlib.sha256(
-        json.dumps(
-            {"identity": identity, "params": operation_params},
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-            default=str,
-        ).encode("utf-8")
-    ).hexdigest()
+    operation_hash = (
+        "sha256:"
+        + hashlib.sha256(
+            json.dumps(
+                {"identity": identity, "params": operation_params},
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+                default=str,
+            ).encode("utf-8")
+        ).hexdigest()
+    )
     return ToolEffect(identity, effect, cacheable, operation_hash)
 
 
@@ -662,7 +674,8 @@ def _validated_terminal_execution_receipt(
     action_params = _value(action, "params", {})
     params = (
         result_params
-        if isinstance(result_params, Mapping) and isinstance(result_params.get("code"), str)
+        if isinstance(result_params, Mapping)
+        and isinstance(result_params.get("code"), str)
         else action_params
     )
     code = params.get("code") if isinstance(params, Mapping) else None
@@ -678,8 +691,7 @@ def _validated_terminal_execution_receipt(
     if requested_language not in TERMINAL_LANGUAGES:
         return None, True
     if (
-        receipt.get("language_contract_version")
-        != TERMINAL_LANGUAGE_CONTRACT_VERSION
+        receipt.get("language_contract_version") != TERMINAL_LANGUAGE_CONTRACT_VERSION
         or receipt.get("requested_language") != requested_language
         or receipt.get("effective_language") not in TERMINAL_LANGUAGES
         or receipt.get("effective_language") != requested_language
@@ -757,6 +769,45 @@ def _validated_terminal_execution_receipt(
         ):
             return None, True
     read_paths = receipt["read_paths"]
+    read_ranges = receipt.get("read_ranges")
+    if read_ranges is None:
+        # Additive v2 compatibility: derive coverage only when the same shared
+        # parser reproduces the provider's complete path sequence. Never guess
+        # that a legacy bounded read covered the full file.
+        planned = plan_terminal_execution(code, language=requested_language)
+        if tuple(read_paths) != planned.read_paths:
+            return None, True
+        planned_ranges = tuple(planned.read_ranges or ())
+        read_ranges = (
+            [item.to_dict() for item in planned_ranges]
+            if len(planned_ranges) == len(read_paths)
+            else [{"kind": "full"} for _ in read_paths]
+        )
+        receipt["read_ranges"] = read_ranges
+    if (
+        not isinstance(read_ranges, list)
+        or len(read_ranges) != len(read_paths)
+        or any(not _valid_read_coverage(item) for item in read_ranges)
+    ):
+        return None, True
+    projection_reusable = receipt.get("read_projection_reusable", False)
+    if not isinstance(projection_reusable, bool):
+        return None, True
+    verifier_plan = plan_terminal_execution(code, language=requested_language)
+    if tuple(read_paths) == verifier_plan.read_paths:
+        verifier_ranges = tuple(verifier_plan.read_ranges or ())
+        expected_ranges = (
+            [item.to_dict() for item in verifier_ranges]
+            if len(verifier_ranges) == len(read_paths)
+            else [{"kind": "full"} for _ in read_paths]
+        )
+        if read_ranges != expected_ranges:
+            return None, True
+        if projection_reusable and not verifier_plan.read_projection_reusable:
+            return None, True
+    elif cacheable or projection_reusable:
+        return None, True
+    receipt["read_projection_reusable"] = projection_reusable
     read_path_epochs = receipt.get("read_path_epochs")
     if not isinstance(read_path_epochs, list) or len(read_path_epochs) > 16:
         return None, True
@@ -766,8 +817,7 @@ def _validated_terminal_execution_receipt(
         if not isinstance(epoch, Mapping):
             return None, True
         if any(
-            isinstance(epoch.get(key), bool)
-            or not isinstance(epoch.get(key), int)
+            isinstance(epoch.get(key), bool) or not isinstance(epoch.get(key), int)
             for key in (
                 "link_inode",
                 "link_mtime_ns",
@@ -784,6 +834,127 @@ def _validated_terminal_execution_receipt(
             for key in ("path", "resolved_path")
         ):
             return None, True
+        authority = epoch.get("authority")
+        if authority is not None and (
+            not isinstance(authority, str) or len(authority) > 256
+        ):
+            return None, True
+        fingerprint = epoch.get("fingerprint")
+        if fingerprint is not None and (
+            not isinstance(fingerprint, str)
+            or re.fullmatch(r"sha256:[0-9a-f]{64}", fingerprint) is None
+        ):
+            return None, True
+    return receipt, True
+
+
+def _valid_read_coverage(value: Any) -> bool:
+    if not isinstance(value, Mapping):
+        return False
+    kind = value.get("kind")
+    if kind not in {
+        "full",
+        "line_range",
+        "byte_range",
+        "tail_lines",
+        "tail_bytes",
+        "query",
+        "metadata",
+    }:
+        return False
+    if set(value).difference({"kind", "start", "end"}):
+        return False
+    for key in ("start", "end"):
+        item = value.get(key)
+        if item is not None and (
+            isinstance(item, bool) or not isinstance(item, int) or item < 0
+        ):
+            return False
+    if kind == "line_range":
+        return (
+            isinstance(value.get("start"), int)
+            and value["start"] >= 1
+            and isinstance(value.get("end"), int)
+            and value["end"] >= value["start"]
+        )
+    if kind == "byte_range":
+        return (
+            isinstance(value.get("start"), int)
+            and isinstance(value.get("end"), int)
+            and value["end"] >= value["start"]
+        )
+    if kind in {"tail_lines", "tail_bytes"}:
+        return isinstance(value.get("start"), int) and value["start"] >= 1
+    return value.get("start") is None and value.get("end") is None
+
+
+def _epoch_is_host_authoritative(epoch: Mapping[str, Any]) -> bool:
+    return epoch.get("authority") in (None, "", "host")
+
+
+def _validated_read_observation_receipt(
+    action: Any,
+    result: Any,
+) -> tuple[dict[str, Any] | None, bool]:
+    tool, operation = canonical_tool_identity(action)
+    normalized = tool.strip().lower().replace("_", "-")
+    if normalized not in _FILESYSTEM_CAPABILITY_TOOLS or operation != "read_file":
+        return None, False
+    metadata = _metadata(result)
+    if READ_OBSERVATION_RECEIPT_KEY not in metadata:
+        return None, False
+    candidate = metadata.get(READ_OBSERVATION_RECEIPT_KEY)
+    if not isinstance(candidate, Mapping):
+        return None, True
+    receipt = dict(candidate)
+    epoch = receipt.get("epoch")
+    coverage = receipt.get("coverage")
+    if (
+        receipt.get("schema_version") != READ_OBSERVATION_SCHEMA
+        or not isinstance(receipt.get("authority"), str)
+        or len(receipt["authority"]) > 256
+        or not isinstance(receipt.get("path"), str)
+        or len(receipt["path"]) > 1024
+        or not isinstance(epoch, Mapping)
+        or not _valid_read_coverage(coverage)
+        or not isinstance(receipt.get("coverage_complete"), bool)
+        or not isinstance(receipt.get("cache_hit"), bool)
+        or re.fullmatch(
+            r"sha256:[0-9a-f]{64}", str(receipt.get("content_sha256") or "")
+        )
+        is None
+    ):
+        return None, True
+    observation_id = receipt.get("observation_id")
+    if (
+        observation_id is not None
+        and re.fullmatch(r"sha256:[0-9a-f]{64}", str(observation_id)) is None
+    ):
+        return None, True
+    required_epoch_ints = (
+        "link_inode",
+        "link_mtime_ns",
+        "mode",
+        "size",
+        "mtime_ns",
+        "ctime_ns",
+        "inode",
+    )
+    if any(
+        isinstance(epoch.get(key), bool) or not isinstance(epoch.get(key), int)
+        for key in required_epoch_ints
+    ):
+        return None, True
+    if any(
+        not isinstance(epoch.get(key), str) or len(epoch.get(key)) > 1024
+        for key in ("path", "resolved_path")
+    ):
+        return None, True
+    if receipt["path"] != epoch["path"]:
+        return None, True
+    epoch_authority = epoch.get("authority") or "host"
+    if receipt["authority"] != epoch_authority:
+        return None, True
     return receipt, True
 
 
@@ -845,6 +1016,8 @@ def _bounded_replay_content(
 
 
 def _read_epoch_matches(epoch: Mapping[str, Any]) -> bool:
+    if not _epoch_is_host_authoritative(epoch):
+        return False
     path = Path(str(epoch.get("path") or ""))
     if not path.is_absolute():
         return False
@@ -865,7 +1038,131 @@ def _read_epoch_matches(epoch: Mapping[str, Any]) -> bool:
         "ctime_ns": target_stat.st_ctime_ns,
         "inode": target_stat.st_ino,
     }
-    return all(current.get(key) == value for key, value in epoch.items())
+    comparable = {
+        "path",
+        "resolved_path",
+        "link_inode",
+        "link_mtime_ns",
+        "mode",
+        "size",
+        "mtime_ns",
+        "ctime_ns",
+        "inode",
+    }
+    return all(current.get(key) == epoch.get(key) for key in comparable)
+
+
+def _coverage_contains(stored: Mapping[str, Any], requested: Mapping[str, Any]) -> bool:
+    if stored.get("kind") in {"query", "metadata"} or requested.get("kind") in {
+        "query",
+        "metadata",
+    }:
+        return False
+    if dict(stored) == dict(requested):
+        return True
+    stored_kind = stored.get("kind")
+    requested_kind = requested.get("kind")
+    if stored_kind == "full" and requested_kind in {
+        "full",
+        "line_range",
+        "byte_range",
+        "tail_lines",
+        "tail_bytes",
+    }:
+        return True
+    if stored_kind != requested_kind:
+        return False
+    if stored_kind in {"line_range", "byte_range"}:
+        return (
+            isinstance(stored.get("start"), int)
+            and isinstance(stored.get("end"), int)
+            and isinstance(requested.get("start"), int)
+            and isinstance(requested.get("end"), int)
+            and stored["start"] <= requested["start"]
+            and stored["end"] >= requested["end"]
+        )
+    if stored_kind in {"tail_lines", "tail_bytes"}:
+        return (
+            isinstance(stored.get("start"), int)
+            and isinstance(requested.get("start"), int)
+            and stored["start"] >= requested["start"]
+        )
+    return False
+
+
+def _requested_read_projection(
+    action: Any,
+    *,
+    context: Any,
+) -> tuple[str, dict[str, Any]] | None:
+    tool, operation = canonical_tool_identity(action)
+    normalized = tool.strip().lower().replace("_", "-")
+    params = _value(action, "params", {})
+    if not isinstance(params, Mapping):
+        return None
+    if normalized in _TERMINAL_CAPABILITY_TOOLS and operation == "run_code":
+        code = params.get("code")
+        language = params.get("language", "shell")
+        if not isinstance(code, str) or language not in TERMINAL_LANGUAGES:
+            return None
+        plan = plan_terminal_execution(code, language=language)
+        if (
+            plan.effect != "read_only"
+            or not plan.read_set_complete
+            or not plan.read_projection_reusable
+            or len(plan.read_paths) != 1
+        ):
+            return None
+        ranges = tuple(plan.read_ranges or ())
+        coverage = ranges[0].to_dict() if len(ranges) == 1 else {"kind": "full"}
+        cwd = _effective_action_cwd(action, context=context)
+        path = posixpath.normpath(plan.read_paths[0].replace("\\", "/"))
+        if not posixpath.isabs(path):
+            if cwd is None:
+                return None
+            path = posixpath.normpath(posixpath.join(cwd, path))
+        return path, coverage
+    if normalized in _FILESYSTEM_CAPABILITY_TOOLS and operation == "read_file":
+        if params.get("refresh") is True:
+            return None
+        raw_path = params.get("path")
+        if not isinstance(raw_path, str) or not raw_path:
+            return None
+        path = posixpath.normpath(raw_path.replace("\\", "/"))
+        if not posixpath.isabs(path):
+            cwd = canonical_invocation_cwd(context)
+            if cwd is None:
+                return None
+            path = posixpath.normpath(posixpath.join(cwd, path))
+        head = params.get("head")
+        tail = params.get("tail")
+        output = params.get("output", "text")
+        if isinstance(head, bool) or isinstance(tail, bool):
+            return None
+        if isinstance(head, int) and isinstance(tail, int):
+            coverage = {"kind": "line_range", "start": head, "end": tail}
+        elif isinstance(head, int):
+            coverage = {"kind": "line_range", "start": 1, "end": head}
+        elif isinstance(tail, int):
+            coverage = {"kind": "tail_lines", "start": tail}
+        elif output == "base64":
+            offset = params.get("offset", 0)
+            limit = params.get("limit")
+            if not isinstance(offset, int) or isinstance(offset, bool) or offset < 0:
+                return None
+            if not isinstance(limit, int) or isinstance(limit, bool) or limit < 1:
+                return None
+            coverage = {
+                "kind": "byte_range",
+                "start": offset,
+                "end": offset + limit,
+            }
+        else:
+            coverage = {"kind": "full"}
+        if not _valid_read_coverage(coverage):
+            return None
+        return path, coverage
+    return None
 
 
 class SandboxToolObservationRuntime:
@@ -888,6 +1185,7 @@ class SandboxToolObservationRuntime:
         self._generation: dict[tuple[str, str, str], int] = {}
         self._cache: "OrderedDict[tuple[tuple[str, str, str], int, str], dict[str, Any]]" = OrderedDict()
         self._authoritative_effects: "OrderedDict[tuple[tuple[str, str, str], str], ToolEffect]" = OrderedDict()
+        self._retained_read_facts: "OrderedDict[tuple[tuple[str, str, str], str, str], dict[str, Any]]" = OrderedDict()
         self._volatile_scopes: set[tuple[str, str, str]] = set()
 
     def _current_generation(self, context: Any) -> int:
@@ -898,6 +1196,145 @@ class SandboxToolObservationRuntime:
 
         return self._current_generation(context)
 
+    def _lookup_retained_read_fact(
+        self,
+        action: Any,
+        *,
+        context: Any,
+        effect: ToolEffect,
+    ) -> ActionResult | None:
+        projection = _requested_read_projection(action, context=context)
+        if projection is None:
+            return None
+        requested_path, requested_coverage = projection
+        scope = _scope(context)
+        stale_path = False
+        selected_key = None
+        selected = None
+        for key in reversed(self._retained_read_facts):
+            fact_scope, fact_path, _ = key
+            if fact_scope != scope or fact_path != requested_path:
+                continue
+            fact = self._retained_read_facts[key]
+            epoch = fact.get("epoch")
+            if not isinstance(epoch, Mapping) or not _epoch_is_host_authoritative(
+                epoch
+            ):
+                continue
+            if not _read_epoch_matches(epoch):
+                stale_path = True
+                continue
+            if fact.get("coverage_complete") is not True or not _coverage_contains(
+                fact.get("coverage", {}), requested_coverage
+            ):
+                continue
+            selected_key = key
+            selected = fact
+            break
+        if stale_path:
+            self._invalidate_read_path(scope, requested_path)
+            self._generation[scope] = self._current_generation(context) + 1
+            return None
+        if selected is None or selected_key is None:
+            return None
+        self._retained_read_facts.move_to_end(selected_key)
+        generation = self._current_generation(context)
+        checkpoint_revision = _context_checkpoint_revision(context)
+        receipt = {
+            "schema_version": OBSERVATION_SCHEMA,
+            "canonical_tool": effect.identity,
+            "effect": "read_only",
+            "cache_hit": True,
+            "cache_state": "retained_facts",
+            "changed": False,
+            "workspace_mutated": False,
+            "workspace_generation": generation,
+            "operation_hash": effect.operation_hash,
+            "observation_id": selected["observation_id"],
+            "content_sha256": selected["content_sha256"],
+            "cache_validation": "host_epoch_overlap",
+            "source_workspace_generation": selected["workspace_generation"],
+            "source_checkpoint_revision": selected["source_checkpoint_revision"],
+            "evidence_checkpoint_revision": checkpoint_revision,
+            "content_rehydrated": False,
+            "exact_replay_cached": False,
+            "retained_fact_coverage": dict(selected["coverage"]),
+            "requested_coverage": dict(requested_coverage),
+            "scope_volatile": False,
+        }
+        return ActionResult(
+            success=True,
+            is_done=bool(selected.get("is_done", False)),
+            tool_name=canonical_tool_identity(action)[0],
+            action_name=canonical_tool_identity(action)[1],
+            tool_call_id=_value(action, "tool_call_id"),
+            content=json.dumps(
+                {
+                    "type": "unchanged",
+                    "observationId": selected["observation_id"],
+                    "contentSha256": selected["content_sha256"],
+                    "coverage": requested_coverage,
+                    "message": "unchanged since a scoped Sandbox observation; reuse retained facts",
+                },
+                ensure_ascii=False,
+            ),
+            keep=True,
+            metadata={"sandbox_observation": receipt},
+            parameter=deepcopy(_value(action, "params", {}) or {}),
+        )
+
+    def _invalidate_read_path(
+        self,
+        scope: tuple[str, str, str],
+        path: str,
+    ) -> None:
+        for key in list(self._retained_read_facts):
+            if key[0] == scope and key[1] == path:
+                self._retained_read_facts.pop(key, None)
+        for key, cached in list(self._cache.items()):
+            if key[0] != scope:
+                continue
+            if any(
+                isinstance(epoch, Mapping) and epoch.get("path") == path
+                for epoch in cached.get("read_path_epochs", ())
+            ):
+                self._cache.pop(key, None)
+
+    def _store_retained_read_fact(
+        self,
+        *,
+        context: Any,
+        path: str,
+        coverage: Mapping[str, Any],
+        epoch: Mapping[str, Any],
+        observation_id: str,
+        content_sha256: str,
+        coverage_complete: bool,
+        is_done: bool,
+    ) -> None:
+        if (
+            not _epoch_is_host_authoritative(epoch)
+            or not _valid_read_coverage(coverage)
+            or not coverage_complete
+            or coverage.get("kind") in {"query", "metadata"}
+        ):
+            return
+        scope = _scope(context)
+        key = (scope, path, observation_id)
+        self._retained_read_facts[key] = {
+            "epoch": deepcopy(dict(epoch)),
+            "coverage": deepcopy(dict(coverage)),
+            "coverage_complete": True,
+            "observation_id": observation_id,
+            "content_sha256": content_sha256,
+            "workspace_generation": self._current_generation(context),
+            "source_checkpoint_revision": _context_checkpoint_revision(context),
+            "is_done": bool(is_done),
+        }
+        self._retained_read_facts.move_to_end(key)
+        while len(self._retained_read_facts) > self._max_cache_entries:
+            self._retained_read_facts.popitem(last=False)
+
     def lookup(self, action: Any, *, context: Any) -> ActionResult | None:
         fallback_effect = classify_tool_effect(action)
         scope = _scope(context)
@@ -906,7 +1343,11 @@ class SandboxToolObservationRuntime:
         learned_key = (scope, fallback_effect.operation_hash)
         effect = self._authoritative_effects.get(learned_key, fallback_effect)
         if not effect.cacheable:
-            return None
+            return self._lookup_retained_read_fact(
+                action,
+                context=context,
+                effect=effect,
+            )
         if learned_key in self._authoritative_effects:
             self._authoritative_effects.move_to_end(learned_key)
         generation = self._current_generation(context)
@@ -936,11 +1377,21 @@ class SandboxToolObservationRuntime:
                 epoch_revalidated = True
                 break
         if cached is None:
-            return None
-        if not all(
-            _read_epoch_matches(epoch)
+            return self._lookup_retained_read_fact(
+                action,
+                context=context,
+                effect=effect,
+            )
+        stale_epochs = [
+            epoch
             for epoch in cached.get("read_path_epochs", ())
-        ):
+            if not _read_epoch_matches(epoch)
+        ]
+        if stale_epochs:
+            for epoch in stale_epochs:
+                path = epoch.get("path") if isinstance(epoch, Mapping) else None
+                if isinstance(path, str):
+                    self._invalidate_read_path(scope, path)
             self._cache.pop(key, None)
             generation += 1
             self._generation[scope] = generation
@@ -973,9 +1424,7 @@ class SandboxToolObservationRuntime:
             "observation_id": cached["observation_id"],
             "content_sha256": cached["content_sha256"],
             "cache_validation": (
-                "epoch_revalidated"
-                if epoch_revalidated
-                else "exact_generation"
+                "epoch_revalidated" if epoch_revalidated else "exact_generation"
             ),
             "source_workspace_generation": source_generation,
             "source_checkpoint_revision": cached["source_checkpoint_revision"],
@@ -1013,12 +1462,36 @@ class SandboxToolObservationRuntime:
         terminal_receipt, terminal_receipt_supplied = (
             _validated_terminal_execution_receipt(action, result)
         )
+        read_receipt, read_receipt_supplied = _validated_read_observation_receipt(
+            action, result
+        )
         effect = fallback_effect
         if terminal_receipt is not None:
+            terminal_epochs = terminal_receipt.get("read_path_epochs", ())
+            sandbox_cacheable = bool(terminal_receipt["cacheable"]) and all(
+                _epoch_is_host_authoritative(epoch) for epoch in terminal_epochs
+            )
             effect = ToolEffect(
                 identity=fallback_effect.identity,
                 effect=str(terminal_receipt["effect"]),
-                cacheable=bool(terminal_receipt["cacheable"]),
+                cacheable=sandbox_cacheable,
+                operation_hash=fallback_effect.operation_hash,
+            )
+        elif read_receipt is not None:
+            read_epoch = read_receipt["epoch"]
+            action_params = _value(action, "params", {})
+            refresh_requested = bool(
+                isinstance(action_params, Mapping)
+                and action_params.get("refresh") is True
+            )
+            effect = ToolEffect(
+                identity=fallback_effect.identity,
+                effect="read_only",
+                cacheable=bool(
+                    read_receipt["coverage_complete"]
+                    and _epoch_is_host_authoritative(read_epoch)
+                    and not refresh_requested
+                ),
                 operation_hash=fallback_effect.operation_hash,
             )
         elif terminal_receipt_supplied:
@@ -1039,12 +1512,24 @@ class SandboxToolObservationRuntime:
                 cacheable=False,
                 operation_hash=fallback_effect.operation_hash,
             )
+        elif read_receipt_supplied:
+            # A malformed read receipt is never replay evidence. The declared
+            # filesystem operation remains mechanically read-only.
+            effect = ToolEffect(
+                identity=fallback_effect.identity,
+                effect="read_only",
+                cacheable=False,
+                operation_hash=fallback_effect.operation_hash,
+            )
         scope = _scope(context)
         result_metadata = _metadata(result)
-        scope_volatile = bool(
-            terminal_receipt is not None
-            and terminal_receipt.get("scope_volatile") is True
-        ) or result_metadata.get("background_output_detached") is True
+        scope_volatile = (
+            bool(
+                terminal_receipt is not None
+                and terminal_receipt.get("scope_volatile") is True
+            )
+            or result_metadata.get("background_output_detached") is True
+        )
         if result_metadata.get("capture_complete") is False:
             scope_volatile = True
         if scope_volatile:
@@ -1081,25 +1566,28 @@ class SandboxToolObservationRuntime:
             # Unknown calls must execute and conservatively invalidate replay,
             # but do not claim progress merely because a command ran.
             workspace_mutated = None
-        if terminal_receipt is not None:
+        if terminal_receipt is not None or read_receipt is not None:
             learned_key = (scope, effect.operation_hash)
             self._authoritative_effects[learned_key] = effect
             self._authoritative_effects.move_to_end(learned_key)
             while len(self._authoritative_effects) > self._max_cache_entries:
                 self._authoritative_effects.popitem(last=False)
         content_sha256 = _result_content_hash(result)
-        observation_id = "sha256:" + hashlib.sha256(
-            json.dumps(
-                {
-                    "scope": scope,
-                    "generation": generation,
-                    "operation_hash": effect.operation_hash,
-                    "content_sha256": content_sha256,
-                },
-                sort_keys=True,
-                separators=(",", ":"),
-            ).encode("utf-8")
-        ).hexdigest()
+        observation_id = (
+            "sha256:"
+            + hashlib.sha256(
+                json.dumps(
+                    {
+                        "scope": scope,
+                        "generation": generation,
+                        "operation_hash": effect.operation_hash,
+                        "content_sha256": content_sha256,
+                    },
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ).hexdigest()
+        )
         checkpoint_revision = _context_checkpoint_revision(context)
         replay_content = None
         replay_content_bytes = None
@@ -1156,6 +1644,8 @@ class SandboxToolObservationRuntime:
             receipt["cache_bypass_reason"] = replay_bypass_reason
         if terminal_receipt is not None:
             receipt["terminal_execution_receipt"] = terminal_receipt
+        if read_receipt is not None:
+            receipt[READ_OBSERVATION_RECEIPT_KEY] = read_receipt
         metadata = _metadata(result)
         metadata["sandbox_observation"] = receipt
         try:
@@ -1175,18 +1665,54 @@ class SandboxToolObservationRuntime:
                 "read_path_epochs": deepcopy(
                     terminal_receipt.get("read_path_epochs", ())
                     if terminal_receipt is not None
+                    else (read_receipt.get("epoch"),)
+                    if read_receipt is not None
                     else ()
                 ),
             }
             self._cache.move_to_end(key)
             while len(self._cache) > self._max_cache_entries:
                 self._cache.popitem(last=False)
+        if success and terminal_receipt is not None:
+            read_paths = terminal_receipt.get("read_paths", ())
+            read_ranges = terminal_receipt.get("read_ranges", ())
+            read_epochs = terminal_receipt.get("read_path_epochs", ())
+            if len(read_paths) == len(read_ranges) == len(read_epochs) == 1:
+                self._store_retained_read_fact(
+                    context=context,
+                    path=str(read_epochs[0]["path"]),
+                    coverage=read_ranges[0],
+                    epoch=read_epochs[0],
+                    observation_id=observation_id,
+                    content_sha256=content_sha256,
+                    coverage_complete=bool(
+                        terminal_receipt.get("cacheable")
+                        and terminal_receipt.get("read_projection_reusable") is True
+                        and result_metadata.get("output_truncated") is not True
+                    ),
+                    is_done=bool(_value(result, "is_done", False)),
+                )
+        elif success and read_receipt is not None:
+            self._store_retained_read_fact(
+                context=context,
+                path=str(read_receipt["path"]),
+                coverage=read_receipt["coverage"],
+                epoch=read_receipt["epoch"],
+                observation_id=str(
+                    read_receipt.get("observation_id") or observation_id
+                ),
+                content_sha256=str(read_receipt["content_sha256"]),
+                coverage_complete=bool(read_receipt["coverage_complete"]),
+                is_done=bool(_value(result, "is_done", False)),
+            )
         return result
 
 
 __all__ = [
     "ACTION_SEMANTIC_RECEIPT_KEY",
     "OBSERVATION_SCHEMA",
+    "READ_OBSERVATION_RECEIPT_KEY",
+    "READ_OBSERVATION_SCHEMA",
     "SandboxToolObservationRuntime",
     "ToolEffect",
     "actions_are_provably_read_only",

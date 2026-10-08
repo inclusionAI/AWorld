@@ -1,8 +1,12 @@
+import hashlib
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
 from aworld.core.common import ActionResult
 from aworld.sandbox.tool_observation import (
+    READ_OBSERVATION_RECEIPT_KEY,
+    READ_OBSERVATION_SCHEMA,
     SandboxToolObservationRuntime,
     actions_are_provably_read_only,
     build_planned_action_semantic_receipt,
@@ -167,8 +171,8 @@ def test_shell_classifier_accepts_provably_read_only_inline_python() -> None:
         "python -c 'print(1)'",
         "cd /app && python3 -c \"from pathlib import Path; print(Path('a').read_text())\"",
         "cd /app && python -c \"\nimport cv2, numpy as np\ncap = cv2.VideoCapture('example.mp4')\nprint(np.array([cap.get(1)]).max())\n\"",
-        "cd /app && python -c \"print(1 > 0)\" 2>&1 | head -20",
-        "cd /app && python -c \"print(1)\" 2>/dev/null",
+        'cd /app && python -c "print(1 > 0)" 2>&1 | head -20',
+        'cd /app && python -c "print(1)" 2>/dev/null',
     ):
         effect = classify_tool_effect(
             {
@@ -363,7 +367,9 @@ def test_shell_classifier_does_not_treat_fd_redirection_as_file_mutation() -> No
     assert effect.cacheable is False
 
 
-def test_known_mutation_advances_generation_but_unknown_does_not_claim_progress() -> None:
+def test_known_mutation_advances_generation_but_unknown_does_not_claim_progress() -> (
+    None
+):
     runtime = SandboxToolObservationRuntime()
     context = _context()
     mutation = {
@@ -395,7 +401,9 @@ def test_known_mutation_advances_generation_but_unknown_does_not_claim_progress(
     assert uncertain.metadata["sandbox_observation"]["workspace_generation"] == 2
 
 
-def test_authoritative_terminal_receipt_overrides_raw_code_guess_and_seeds_cache() -> None:
+def test_authoritative_terminal_receipt_overrides_raw_code_guess_and_seeds_cache() -> (
+    None
+):
     runtime = SandboxToolObservationRuntime()
     context = _context()
     code = "if depth > 3:\n    print(depth)"
@@ -454,6 +462,7 @@ def test_explicit_file_epoch_revalidates_cache_across_unknown_generation(
             True,
             True,
             read_paths=(str(source),),
+            read_projection_reusable=True,
         ),
         executed=True,
         exit_code=0,
@@ -511,6 +520,7 @@ def test_cross_generation_epoch_mismatch_reexecutes_read(
             True,
             True,
             read_paths=(str(source),),
+            read_projection_reusable=True,
         ),
         executed=True,
         exit_code=0,
@@ -617,6 +627,93 @@ def test_invalid_terminal_receipt_fails_open_and_does_not_seed_cache() -> None:
     assert runtime.lookup(action, context=context) is None
 
 
+def test_malformed_terminal_read_coverage_cannot_seed_replay(tmp_path: Path) -> None:
+    runtime = SandboxToolObservationRuntime()
+    context = _context()
+    source = tmp_path / "input.txt"
+    source.write_text("stable", encoding="utf-8")
+    code = f"head -n 1 {source}"
+    action = {
+        "tool_name": "terminal",
+        "action_name": "run_code",
+        "params": {"code": code},
+    }
+    receipt = build_terminal_execution_receipt(
+        code=code,
+        plan=plan_terminal_execution(code),
+        executed=True,
+        exit_code=0,
+        timed_out=False,
+        effect_source="trusted_command_contract",
+        read_path_epochs=[_file_epoch(source)],
+    )
+    receipt["read_ranges"] = [{"kind": "line_range", "start": 2, "end": 1}]
+
+    observed = runtime.record(
+        action,
+        ActionResult(
+            success=True,
+            content="stable",
+            parameter=action["params"],
+            metadata={TERMINAL_EXECUTION_RECEIPT_KEY: receipt},
+        ),
+        context=context,
+    )
+
+    assert observed.metadata["sandbox_observation"]["effect"] == "unknown"
+    assert runtime.lookup(action, context=context) is None
+
+
+def test_provider_authoritative_container_epoch_is_not_replayed_on_host() -> None:
+    runtime = SandboxToolObservationRuntime()
+    context = _context()
+    code = "cat /workspace/input.txt"
+    action = {
+        "tool_name": "docker",
+        "action_name": "run_code",
+        "params": {"code": code},
+    }
+    plan = plan_terminal_execution(code)
+    remote_epoch = {
+        "path": "/workspace/input.txt",
+        "resolved_path": "/workspace/input.txt",
+        "link_inode": 1,
+        "link_mtime_ns": 2,
+        "mode": 0o100644,
+        "size": 6,
+        "mtime_ns": 3,
+        "ctime_ns": 4,
+        "inode": 5,
+        "authority": "docker:sha256:" + "a" * 64,
+        "fingerprint": "sha256:" + "b" * 64,
+    }
+    receipt = build_terminal_execution_receipt(
+        code=code,
+        plan=plan,
+        executed=True,
+        exit_code=0,
+        timed_out=False,
+        effect_source="trusted_docker_command_contract",
+        read_path_epochs=[remote_epoch],
+    )
+
+    observed = runtime.record(
+        action,
+        ActionResult(
+            success=True,
+            content="remote",
+            parameter=action["params"],
+            metadata={TERMINAL_EXECUTION_RECEIPT_KEY: receipt},
+        ),
+        context=context,
+    )
+
+    assert observed.metadata["sandbox_observation"]["effect"] == "read_only"
+    assert observed.metadata["sandbox_observation"]["workspace_generation"] == 0
+    assert runtime.lookup(action, context=context) is None
+    assert runtime.current_generation(context) == 0
+
+
 def test_terminal_receipt_language_must_match_requested_execution_mode() -> None:
     runtime = SandboxToolObservationRuntime()
     context = _context()
@@ -708,7 +805,9 @@ def test_future_terminal_receipt_version_fails_open() -> None:
     assert runtime.lookup(action, context=context) is None
 
 
-def test_terminal_may_mutate_receipt_invalidates_without_claiming_actual_change() -> None:
+def test_terminal_may_mutate_receipt_invalidates_without_claiming_actual_change() -> (
+    None
+):
     runtime = SandboxToolObservationRuntime()
     context = _context()
     code = "printf x > output.txt"
@@ -878,7 +977,9 @@ def test_background_execution_makes_scope_replay_volatile() -> None:
     assert runtime.lookup(read_action, context=context) is None
 
 
-def test_cache_rehydrates_content_after_context_checkpoint_then_renews_reference() -> None:
+def test_cache_rehydrates_content_after_context_checkpoint_then_renews_reference() -> (
+    None
+):
     runtime = SandboxToolObservationRuntime()
     context = _context()
     context.context_lifecycle_state = SimpleNamespace(checkpoint_revision=3)
@@ -924,12 +1025,14 @@ def test_cache_rehydrates_content_after_context_checkpoint_then_renews_reference
     assert rehydrated.tool_call_id == "call-after-checkpoint"
     assert rehydrated_receipt["cache_state"] == "rehydrated"
     assert rehydrated_receipt["content_rehydrated"] is True
-    assert rehydrated_receipt["observation_id"] == original.metadata[
-        "sandbox_observation"
-    ]["observation_id"]
-    assert rehydrated_receipt["content_sha256"] == original.metadata[
-        "sandbox_observation"
-    ]["content_sha256"]
+    assert (
+        rehydrated_receipt["observation_id"]
+        == original.metadata["sandbox_observation"]["observation_id"]
+    )
+    assert (
+        rehydrated_receipt["content_sha256"]
+        == original.metadata["sandbox_observation"]["content_sha256"]
+    )
 
     renewed = runtime.lookup(action, context=context)
     assert renewed is not None
@@ -939,23 +1042,35 @@ def test_cache_rehydrates_content_after_context_checkpoint_then_renews_reference
     assert '"type": "unchanged"' in renewed.content
 
 
-def test_oversized_result_is_not_eligible_for_exact_replay() -> None:
+def test_oversized_file_result_retains_only_compact_epoch_bound_facts(
+    tmp_path: Path,
+) -> None:
     runtime = SandboxToolObservationRuntime(max_replay_content_bytes=32)
     context = _context()
     context.context_lifecycle_state = SimpleNamespace(checkpoint_revision=0)
-    code = "print('x' * 128)"
+    source = tmp_path / "large.txt"
+    source.write_text("x" * 128, encoding="utf-8")
+    code = f"cat {source}"
     action = {
         "tool_name": "terminal",
         "action_name": "run_code",
-        "params": {"code": code, "language": "python"},
+        "params": {"code": code},
     }
     terminal_receipt = build_terminal_execution_receipt(
         code=code,
-        plan=TerminalExecutionPlan("python", "read_only", True, True),
+        plan=TerminalExecutionPlan(
+            "shell",
+            "read_only",
+            True,
+            True,
+            read_paths=(str(source),),
+            read_projection_reusable=True,
+        ),
         executed=True,
         exit_code=0,
         timed_out=False,
         effect_source="trusted_command_contract",
+        read_path_epochs=[_file_epoch(source)],
     )
 
     observed = runtime.record(
@@ -973,7 +1088,85 @@ def test_oversized_result_is_not_eligible_for_exact_replay() -> None:
     assert receipt["exact_replay_cached"] is False
     assert receipt["cache_state"] == "not_stored"
     assert receipt["cache_bypass_reason"] == "content_too_large"
+    retained = runtime.lookup(action, context=context)
+    assert retained is not None
+    retained_receipt = retained.metadata["sandbox_observation"]
+    assert retained_receipt["cache_state"] == "retained_facts"
+    assert retained_receipt["exact_replay_cached"] is False
+    assert len(retained.content.encode("utf-8")) < 1024
+
+    other_scope = SimpleNamespace(
+        task_id="other-task",
+        task_epoch=context.task_epoch,
+        session_id=context.session_id,
+    )
+    assert runtime.lookup(action, context=other_scope) is None
+
+    source.write_text("changed", encoding="utf-8")
     assert runtime.lookup(action, context=context) is None
+
+
+def test_filesystem_fact_can_satisfy_overlapping_terminal_read_without_payload(
+    tmp_path: Path,
+) -> None:
+    runtime = SandboxToolObservationRuntime(max_replay_content_bytes=32)
+    context = _context()
+    source = tmp_path / "input.txt"
+    source.write_text("alpha\nbeta\ngamma\n", encoding="utf-8")
+    epoch = _file_epoch(source)
+    filesystem_action = {
+        "tool_name": "filesystem",
+        "action_name": "read_file",
+        "params": {"path": str(source), "output": "text"},
+    }
+    content_sha256 = "sha256:" + hashlib.sha256(source.read_bytes()).hexdigest()
+    filesystem_result = ActionResult(
+        success=True,
+        content="alpha\nbeta\ngamma\n" * 8,
+        parameter=filesystem_action["params"],
+        metadata={
+            READ_OBSERVATION_RECEIPT_KEY: {
+                "schema_version": READ_OBSERVATION_SCHEMA,
+                "authority": "host",
+                "path": str(source),
+                "epoch": {**epoch, "authority": "host"},
+                "coverage": {"kind": "full"},
+                "coverage_complete": True,
+                "content_sha256": content_sha256,
+                "observation_id": "sha256:" + "a" * 64,
+                "cache_hit": False,
+            }
+        },
+    )
+    runtime.record(filesystem_action, filesystem_result, context=context)
+
+    refresh_action = {
+        **filesystem_action,
+        "params": {**filesystem_action["params"], "refresh": True},
+    }
+    assert runtime.lookup(refresh_action, context=context) is None
+
+    terminal_action = {
+        "tool_name": "terminal",
+        "action_name": "run_code",
+        "params": {"code": f"head -n 2 {source}"},
+    }
+    retained = runtime.lookup(terminal_action, context=context)
+
+    transformed_action = {
+        "tool_name": "terminal",
+        "action_name": "run_code",
+        "params": {"code": f"wc -l {source}"},
+    }
+    assert runtime.lookup(transformed_action, context=context) is None
+
+    assert retained is not None
+    payload = json.loads(retained.content)
+    assert payload["type"] == "unchanged"
+    assert payload["coverage"] == {"kind": "line_range", "start": 1, "end": 2}
+    assert retained.metadata["sandbox_observation"]["cache_validation"] == (
+        "host_epoch_overlap"
+    )
 
 
 def test_uncopyable_result_is_not_retained_for_exact_replay() -> None:

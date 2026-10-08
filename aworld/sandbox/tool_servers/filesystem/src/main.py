@@ -8,7 +8,7 @@ import sys
 import json
 import logging
 from pathlib import Path
-from typing import Annotated, Literal, Optional
+from typing import Annotated, Any, Literal, Mapping, Optional
 from fnmatch import fnmatch
 
 from mcp.server import FastMCP
@@ -78,6 +78,8 @@ allowed_directories: list[str] = []
 _READ_OBSERVATION_CACHE: "OrderedDict[tuple, dict]" = OrderedDict()
 _DEFAULT_FULL_READ_MAX_BYTES = 64 * 1024
 _DEFAULT_HEAD_LINES = 400
+_READ_OBSERVATION_RECEIPT_KEY = "read_observation_receipt"
+_READ_OBSERVATION_SCHEMA = "aworld.read-observation/v1"
 
 
 def _env_bounded_int(name: str, default: int, *, minimum: int, maximum: int) -> int:
@@ -105,22 +107,58 @@ def _file_epoch(path: str) -> tuple[int, int, int, int]:
     return (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns)
 
 
+def _file_epoch_receipt(path: str) -> dict[str, Any]:
+    absolute = Path(path).absolute()
+    link_stat = absolute.lstat()
+    resolved = absolute.resolve()
+    target_stat = resolved.stat()
+    return {
+        "path": str(absolute),
+        "resolved_path": str(resolved),
+        "link_inode": link_stat.st_ino,
+        "link_mtime_ns": link_stat.st_mtime_ns,
+        "mode": target_stat.st_mode,
+        "size": target_stat.st_size,
+        "mtime_ns": target_stat.st_mtime_ns,
+        "ctime_ns": target_stat.st_ctime_ns,
+        "inode": target_stat.st_ino,
+        "authority": "host",
+    }
+
+
+def _framework_scope(env_content: Any) -> tuple[str, str, str]:
+    if not isinstance(env_content, Mapping):
+        return ("", "", "")
+    return (
+        str(env_content.get("task_id") or ""),
+        str(env_content.get("task_epoch") or ""),
+        str(env_content.get("session_id") or ""),
+    )
+
+
 def _cache_observation(
     key: tuple,
     *,
     path: str,
     payload_text: str,
     epoch: tuple[int, int, int, int],
+    epoch_receipt: dict[str, Any],
+    coverage: dict[str, Any],
+    coverage_complete: bool,
 ) -> str:
     digest = "sha256:" + hashlib.sha256(payload_text.encode("utf-8")).hexdigest()
-    observation_id = "sha256:" + hashlib.sha256(
-        repr((key, epoch, digest)).encode("utf-8")
-    ).hexdigest()
+    observation_id = (
+        "sha256:"
+        + hashlib.sha256(repr((key, epoch, digest)).encode("utf-8")).hexdigest()
+    )
     _READ_OBSERVATION_CACHE[key] = {
         "path": path,
         "epoch": epoch,
         "content_sha256": digest,
         "observation_id": observation_id,
+        "epoch_receipt": epoch_receipt,
+        "coverage": coverage,
+        "coverage_complete": bool(coverage_complete),
     }
     _READ_OBSERVATION_CACHE.move_to_end(key)
     capacity = _read_cache_capacity()
@@ -152,9 +190,23 @@ def _unchanged_observation(key: tuple, epoch: tuple[int, int, int, int]) -> dict
     }
 
 
+def _read_receipt(cached: Mapping[str, Any], *, cache_hit: bool) -> dict[str, Any]:
+    return {
+        "schema_version": _READ_OBSERVATION_SCHEMA,
+        "authority": "host",
+        "path": cached["epoch_receipt"]["path"],
+        "epoch": dict(cached["epoch_receipt"]),
+        "coverage": dict(cached["coverage"]),
+        "coverage_complete": bool(cached["coverage_complete"]),
+        "content_sha256": cached["content_sha256"],
+        "observation_id": cached["observation_id"],
+        "cache_hit": bool(cache_hit),
+    }
+
+
 def _invalidate_read_cache(path: str) -> None:
     normalized = os.path.realpath(path)
-    stale = [key for key in _READ_OBSERVATION_CACHE if key[0] == normalized]
+    stale = [key for key in _READ_OBSERVATION_CACHE if key[1] == normalized]
     for key in stale:
         _READ_OBSERVATION_CACHE.pop(key, None)
 
@@ -226,16 +278,22 @@ def _list_directory_bounded(path: str, limit: int) -> tuple[list[str], bool]:
 
 # Initialize FastMCP server
 # Read log level from environment variable, default to WARNING for clean CLI output
-_log_level = os.environ.get("MCP_LOG_LEVEL") or os.environ.get("LOG_LEVEL") or os.environ.get("LOGLEVEL") or "WARNING"
+_log_level = (
+    os.environ.get("MCP_LOG_LEVEL")
+    or os.environ.get("LOG_LEVEL")
+    or os.environ.get("LOGLEVEL")
+    or "WARNING"
+)
 mcp = FastMCP(
     "filesystem-server",
     log_level=_log_level,
     port=8084,
-    instructions="Filesystem MCP Server for file operations"
+    instructions="Filesystem MCP Server for file operations",
 )
 
 
 # ==================== Enabled MCP tools ====================
+
 
 @mcp.tool(
     description="Read file content. Use output='text' for text (supports head/tail); use output='base64' for binary. "
@@ -243,20 +301,37 @@ mcp = FastMCP(
     "Binary reads support offset/limit paging. Large text reads without an explicit range default to a bounded head window. "
     "Repeated reads of an unchanged file/range return a compact unchanged receipt; set refresh=true to bypass the cache. "
     "Large results include completeness metadata. "
-    "Returns JSON: {\"type\":\"text\",\"content\":\"...\"} or {\"type\":\"base64\",\"base64\":\"...\",\"mimeType\":\"...\",\"fileName\":\"...\"}."
+    'Returns JSON: {"type":"text","content":"..."} or {"type":"base64","base64":"...","mimeType":"...","fileName":"..."}.'
 )
 async def read_file(
     ctx: Context,
     path: str = Field(description="File path to read"),
-    head: Optional[int] = Field(None, description="First N lines, or start line when used with tail"),
-    tail: Optional[int] = Field(None, description="Last N lines, or end line when used with head"),
+    head: Optional[int] = Field(
+        None, description="First N lines, or start line when used with tail"
+    ),
+    tail: Optional[int] = Field(
+        None, description="Last N lines, or end line when used with head"
+    ),
     output: str = Field("text", description="Output format: 'text' or 'base64'"),
-    offset: Annotated[int, Field(description="Binary byte offset; only used with output='base64'")] = 0,
-    limit: Annotated[Optional[int], Field(description="Binary bytes to return; capped by server policy")] = None,
-    refresh: bool = Field(False, description="Return a fresh payload even when this file/range is unchanged"),
+    offset: Annotated[
+        int, Field(description="Binary byte offset; only used with output='base64'")
+    ] = 0,
+    limit: Annotated[
+        Optional[int],
+        Field(description="Binary bytes to return; capped by server policy"),
+    ] = None,
+    refresh: bool = Field(
+        False,
+        description="Return a fresh payload even when this file/range is unchanged",
+    ),
+    env_content: Optional[dict[str, Any]] = Field(
+        None,
+        description="Framework-injected task scope; hidden from the model schema",
+    ),
 ) -> TextContent:
     """Read file as text or base64; head/tail apply only when file is text (content-based detection)."""
     import base64 as b64
+
     if not isinstance(refresh, bool):
         refresh = False
     valid_path = await validate_path(path, allowed_directories)
@@ -264,6 +339,7 @@ async def read_file(
     if output not in ("text", "base64"):
         raise ValueError("output must be 'text' or 'base64'")
     epoch = _file_epoch(valid_path)
+    epoch_receipt = _file_epoch_receipt(valid_path)
     effective_head = head
     default_bounded = False
     if output == "text" and head is None and tail is None:
@@ -282,6 +358,7 @@ async def read_file(
             )
             default_bounded = True
     cache_key = (
+        _framework_scope(env_content),
         os.path.realpath(valid_path),
         output,
         effective_head,
@@ -291,14 +368,31 @@ async def read_file(
     )
     if not refresh:
         unchanged = _unchanged_observation(cache_key, epoch)
-        if unchanged is not None:
-            return TextContent(type="text", text=json.dumps(unchanged))
+        if (
+            unchanged is not None
+            and _file_epoch(valid_path) == epoch
+            and _file_epoch_receipt(valid_path) == epoch_receipt
+        ):
+            cached = _READ_OBSERVATION_CACHE[cache_key]
+            return TextContent(
+                type="text",
+                text=json.dumps(unchanged),
+                **{
+                    "metadata": {
+                        _READ_OBSERVATION_RECEIPT_KEY: _read_receipt(
+                            cached, cache_hit=True
+                        )
+                    }
+                },
+            )
 
     if output == "text":
         if offset != 0 or limit is not None:
             raise ValueError("offset and limit are only supported with output='base64'")
         if not await is_text_file(valid_path):
-            raise ValueError("File is not valid UTF-8 text; use output='base64' for binary files")
+            raise ValueError(
+                "File is not valid UTF-8 text; use output='base64' for binary files"
+            )
         read_result = await read_text_bounded(
             valid_path, head=effective_head, tail=tail
         )
@@ -316,14 +410,39 @@ async def read_file(
             )
             payload["defaultBounded"] = True
             payload["requestedHead"] = effective_head
+        if effective_head is not None and tail is not None:
+            coverage = {"kind": "line_range", "start": effective_head, "end": tail}
+        elif effective_head is not None:
+            coverage = {"kind": "line_range", "start": 1, "end": effective_head}
+        elif tail is not None:
+            coverage = {"kind": "tail_lines", "start": tail}
+        else:
+            coverage = {"kind": "full"}
+        coverage_complete = bool(read_result.complete and not default_bounded)
         payload_text = json.dumps(payload)
-        payload["observationId"] = _cache_observation(
-            cache_key,
-            path=path,
-            payload_text=payload_text,
-            epoch=epoch,
+        try:
+            post_epoch = _file_epoch(valid_path)
+            post_epoch_receipt = _file_epoch_receipt(valid_path)
+        except OSError:
+            post_epoch = None
+            post_epoch_receipt = None
+        metadata: dict[str, Any] = {}
+        if post_epoch == epoch and post_epoch_receipt == epoch_receipt:
+            payload["observationId"] = _cache_observation(
+                cache_key,
+                path=path,
+                payload_text=payload_text,
+                epoch=epoch,
+                epoch_receipt=epoch_receipt,
+                coverage=coverage,
+                coverage_complete=coverage_complete,
+            )
+            metadata[_READ_OBSERVATION_RECEIPT_KEY] = _read_receipt(
+                _READ_OBSERVATION_CACHE[cache_key], cache_hit=False
+            )
+        return TextContent(
+            type="text", text=json.dumps(payload), **{"metadata": metadata}
         )
-        return TextContent(type="text", text=json.dumps(payload))
 
     # output == "base64"
     is_text = await is_text_file(valid_path)
@@ -334,25 +453,66 @@ async def read_file(
         b64_data = b64.b64encode(read_result.content.encode("utf-8")).decode("ascii")
         mime_type = "text/plain; charset=utf-8"
         file_name = Path(valid_path).name
-        payload = {"type": "base64", "base64": b64_data, "mimeType": mime_type, "fileName": file_name}
+        payload = {
+            "type": "base64",
+            "base64": b64_data,
+            "mimeType": mime_type,
+            "fileName": file_name,
+        }
         payload.update(_partial_read_metadata(read_result))
     else:
         binary_result = await read_binary_chunk(valid_path, offset=offset, limit=limit)
         b64_data = b64.b64encode(binary_result.data).decode("ascii")
         mime_type, file_name = get_mime_and_filename(valid_path)
-        payload = {"type": "base64", "base64": b64_data, "mimeType": mime_type, "fileName": file_name}
+        payload = {
+            "type": "base64",
+            "base64": b64_data,
+            "mimeType": mime_type,
+            "fileName": file_name,
+        }
         payload.update(_binary_read_metadata(binary_result))
+    if is_text and (head is not None or tail is not None):
+        if head is not None and tail is not None:
+            coverage = {"kind": "line_range", "start": head, "end": tail}
+        elif head is not None:
+            coverage = {"kind": "line_range", "start": 1, "end": head}
+        else:
+            coverage = {"kind": "tail_lines", "start": tail}
+        coverage_complete = bool(read_result.complete)
+    else:
+        coverage = {
+            "kind": "byte_range",
+            "start": binary_result.offset,
+            "end": binary_result.next_offset,
+        }
+        coverage_complete = True
     payload_text = json.dumps(payload)
-    payload["observationId"] = _cache_observation(
-        cache_key,
-        path=path,
-        payload_text=payload_text,
-        epoch=epoch,
-    )
-    return TextContent(type="text", text=json.dumps(payload))
+    try:
+        post_epoch = _file_epoch(valid_path)
+        post_epoch_receipt = _file_epoch_receipt(valid_path)
+    except OSError:
+        post_epoch = None
+        post_epoch_receipt = None
+    metadata: dict[str, Any] = {}
+    if post_epoch == epoch and post_epoch_receipt == epoch_receipt:
+        payload["observationId"] = _cache_observation(
+            cache_key,
+            path=path,
+            payload_text=payload_text,
+            epoch=epoch,
+            epoch_receipt=epoch_receipt,
+            coverage=coverage,
+            coverage_complete=coverage_complete,
+        )
+        metadata[_READ_OBSERVATION_RECEIPT_KEY] = _read_receipt(
+            _READ_OBSERVATION_CACHE[cache_key], cache_hit=False
+        )
+    return TextContent(type="text", text=json.dumps(payload), **{"metadata": metadata})
 
 
-@mcp.tool(description="Create or overwrite a file. Completely replaces existing file content. Automatically creates parent directories if they don't exist.")
+@mcp.tool(
+    description="Create or overwrite a file. Completely replaces existing file content. Automatically creates parent directories if they don't exist."
+)
 async def write_file(
     ctx: Context,
     path: str = Field(description="File path to write"),
@@ -383,7 +543,9 @@ async def write_file_base64(
     return TextContent(type="text", text=f"Successfully wrote binary content to {path}")
 
 
-@mcp.tool(description="Create directory. Automatically creates parent directories recursively. Silently succeeds if directory already exists.")
+@mcp.tool(
+    description="Create directory. Automatically creates parent directories recursively. Silently succeeds if directory already exists."
+)
 async def create_directory(
     ctx: Context,
     path: str = Field(description="Directory path to create"),
@@ -394,7 +556,9 @@ async def create_directory(
     return TextContent(type="text", text=f"Successfully created directory {path}")
 
 
-@mcp.tool(description="List directory contents with file, directory, and symlink prefixes. Large directories are producer-bounded and return an explicit truncation marker.")
+@mcp.tool(
+    description="List directory contents with file, directory, and symlink prefixes. Large directories are producer-bounded and return an explicit truncation marker."
+)
 async def list_directory(
     ctx: Context,
     path: str = Field(description="Directory path to list"),
@@ -413,7 +577,9 @@ async def list_directory(
     return TextContent(type="text", text="\n".join(entries))
 
 
-@mcp.tool(description="Move or rename file. Can move files between directories or rename files within the same directory. Operation will fail if destination path already exists.")
+@mcp.tool(
+    description="Move or rename file. Can move files between directories or rename files within the same directory. Operation will fail if destination path already exists."
+)
 async def move_file(
     ctx: Context,
     source: str = Field(description="Source path"),
@@ -425,10 +591,14 @@ async def move_file(
     Path(valid_source).rename(valid_dest)
     _invalidate_read_cache(valid_source)
     _invalidate_read_cache(valid_dest)
-    return TextContent(type="text", text=f"Successfully moved {source} to {destination}")
+    return TextContent(
+        type="text", text=f"Successfully moved {source} to {destination}"
+    )
 
 
-@mcp.tool(description="List allowed directories. Shows all directories that the server currently allows access to. Useful for understanding the accessible scope.")
+@mcp.tool(
+    description="List allowed directories. Shows all directories that the server currently allows access to. Useful for understanding the accessible scope."
+)
 async def list_allowed_directories(
     ctx: Context,
 ) -> TextContent:
@@ -436,6 +606,7 @@ async def list_allowed_directories(
     dirs = get_allowed_directories()
     text = "Allowed directories:\n" + "\n".join(dirs)
     return TextContent(type="text", text=text)
+
 
 @mcp.tool(
     description=(
@@ -449,7 +620,9 @@ async def edit_file(
     path: str = Field(description="File path to edit"),
     start_line: int = Field(description="Start line number (1-based, inclusive)"),
     end_line: int = Field(description="End line number (1-based, inclusive)"),
-    new_content: str = Field("", description="New content to replace these lines; empty to delete"),
+    new_content: str = Field(
+        "", description="New content to replace these lines; empty to delete"
+    ),
     dryRun: bool = Field(False, description="Preview diff without applying changes"),
 ) -> TextContent:
     """Edit file by line range: replace lines [start_line, end_line] with new_content."""
@@ -473,13 +646,18 @@ async def edit_file(
         _invalidate_read_cache(valid_path)
     return TextContent(type="text", text=diff_text)
 
+
 @mcp.tool(
     description="Copy a regular server-side file into an allowed workspace path. source_path may be any readable path on this server; target_path must be allowed. Overwrites if target exists."
 )
 async def upload_file(
     ctx: Context,
-    source_path: str = Field(description="Source file path readable by the filesystem server"),
-    target_path: str = Field(description="Target path inside allowed directories; overwrites if exists"),
+    source_path: str = Field(
+        description="Source file path readable by the filesystem server"
+    ),
+    target_path: str = Field(
+        description="Target path inside allowed directories; overwrites if exists"
+    ),
 ) -> TextContent:
     """Import a server-local file into the configured workspace authority."""
     source_resolved = resolve_and_require_file(source_path)
@@ -489,18 +667,25 @@ async def upload_file(
         raise ValueError(f"Target path is a directory: {target_path}")
     await copy_file_binary(source_resolved, valid_target)
     _invalidate_read_cache(valid_target)
-    return TextContent(type="text", text=f"Successfully uploaded {source_path} to {target_path}")
+    return TextContent(
+        type="text", text=f"Successfully uploaded {source_path} to {target_path}"
+    )
 
 
-@mcp.tool(description="Download a bounded binary chunk by path. Returns base64, MIME metadata, and paging metadata when more bytes remain.")
+@mcp.tool(
+    description="Download a bounded binary chunk by path. Returns base64, MIME metadata, and paging metadata when more bytes remain."
+)
 async def download_file(
     ctx: Context,
     path: str = Field(description="Full path to file to download"),
     offset: Annotated[int, Field(description="Zero-based byte offset")] = 0,
-    limit: Annotated[Optional[int], Field(description="Bytes to return; capped by server policy")] = None,
+    limit: Annotated[
+        Optional[int], Field(description="Bytes to return; capped by server policy")
+    ] = None,
 ) -> TextContent:
     """Download file as base64 + metadata."""
     import base64 as b64
+
     valid_path = await validate_path(path, allowed_directories)
     if not Path(valid_path).exists():
         raise ValueError(f"Path does not exist: {path}")
@@ -510,7 +695,12 @@ async def download_file(
     read_result = await read_binary_chunk(valid_path, offset=offset, limit=limit)
     b64_data = b64.b64encode(read_result.data).decode("ascii")
     mime_type, file_name = get_mime_and_filename(valid_path)
-    payload = {"type": "base64", "base64": b64_data, "mimeType": mime_type, "fileName": file_name}
+    payload = {
+        "type": "base64",
+        "base64": b64_data,
+        "mimeType": mime_type,
+        "fileName": file_name,
+    }
     payload.update(_binary_read_metadata(read_result))
     return TextContent(
         type="text",
@@ -524,10 +714,12 @@ async def download_file(
 async def parse_file(
     ctx: Context,
     file_path: str = Field(description="Full path to file to parse"),
-    file_type: Literal["pdf", "txt", "md", "doc", "docx", "xlsx", "xls", "csv", "ppt", "pptx"] = Field(
-        description="File type"
+    file_type: Literal[
+        "pdf", "txt", "md", "doc", "docx", "xlsx", "xls", "csv", "ppt", "pptx"
+    ] = Field(description="File type"),
+    output_path: Optional[str] = Field(
+        None, description="Output path for Markdown; default workspace / {stem}.md"
     ),
-    output_path: Optional[str] = Field(None, description="Output path for Markdown; default workspace / {stem}.md"),
 ) -> TextContent:
     """Parse document to Markdown and write to output_path."""
     source_resolved = resolve_and_require_file(file_path)
@@ -554,7 +746,13 @@ async def parse_file(
         result_path = await parse_file_to_path(source_resolved, output_valid, file_type)
         return TextContent(
             type="text",
-            text=json.dumps({"success": True, "message": "Document parsed successfully", "output_path": result_path}),
+            text=json.dumps(
+                {
+                    "success": True,
+                    "message": "Document parsed successfully",
+                    "output_path": result_path,
+                }
+            ),
         )
     except NotImplementedError as e:
         # Raising makes MCP's isError flag truthful; a nested success=false in a
@@ -577,11 +775,22 @@ async def parse_file(
 async def search_content(
     ctx: Context,
     path: str = Field(description="File or directory path to search"),
-    pattern: str = Field(description="Regex pattern to match in line content (e.g. keyword or full regex)"),
-    max_matches: Optional[int] = Field(None, description="Maximum total matching lines; default uses server safety cap"),
-    max_per_file: Optional[int] = Field(None, description="Maximum matching lines per file; default uses server safety cap"),
-    before: int = Field(0, description="Number of context lines to include before each match"),
-    after: int = Field(0, description="Number of context lines to include after each match"),
+    pattern: str = Field(
+        description="Regex pattern to match in line content (e.g. keyword or full regex)"
+    ),
+    max_matches: Optional[int] = Field(
+        None, description="Maximum total matching lines; default uses server safety cap"
+    ),
+    max_per_file: Optional[int] = Field(
+        None,
+        description="Maximum matching lines per file; default uses server safety cap",
+    ),
+    before: int = Field(
+        0, description="Number of context lines to include before each match"
+    ),
+    after: int = Field(
+        0, description="Number of context lines to include after each match"
+    ),
 ) -> TextContent:
     """Search content in file(s) by regex; path may be file or directory."""
     valid_path = await validate_path(path, allowed_directories)
@@ -602,12 +811,17 @@ async def search_content(
 
 # ==================== Additional MCP tools ====================
 
-@mcp.tool(description="Read a bounded image/audio/blob chunk as base64. Partial results include byte paging metadata.")
+
+@mcp.tool(
+    description="Read a bounded image/audio/blob chunk as base64. Partial results include byte paging metadata."
+)
 async def read_media_file(
     ctx: Context,
     path: str = Field(description="Media file path"),
     offset: Annotated[int, Field(description="Zero-based byte offset")] = 0,
-    limit: Annotated[Optional[int], Field(description="Bytes to return; capped by server policy")] = None,
+    limit: Annotated[
+        Optional[int], Field(description="Bytes to return; capped by server policy")
+    ] = None,
 ) -> TextContent:
     """Read image or audio file as base64"""
     import base64 as b64
@@ -626,13 +840,13 @@ async def read_media_file(
     result = {
         "type": media_type,
         "data": b64.b64encode(read_result.data).decode("ascii"),
-        "mimeType": mime_type
+        "mimeType": mime_type,
     }
     result.update(_binary_read_metadata(read_result))
     return TextContent(type="text", text=json.dumps(result))
 
 
-#@mcp.tool(description="Read multiple files simultaneously. More efficient than reading files one by one. Individual file read failures won't stop the entire operation.")
+# @mcp.tool(description="Read multiple files simultaneously. More efficient than reading files one by one. Individual file read failures won't stop the entire operation.")
 async def read_multiple_files(
     ctx: Context,
     paths: list[str] = Field(description="Array of file paths to read"),
@@ -650,7 +864,7 @@ async def read_multiple_files(
     return TextContent(type="text", text="\n---\n".join(results))
 
 
-#@mcp.tool(description="List directory contents with file sizes. Shows file sizes, supports sorting by name or size. Displays statistics including total file count, total directory count, and combined size.")
+# @mcp.tool(description="List directory contents with file sizes. Shows file sizes, supports sorting by name or size. Displays statistics including total file count, total directory count, and combined size.")
 async def list_directory_with_sizes(
     ctx: Context,
     path: str = Field(description="Directory path to list"),
@@ -664,17 +878,21 @@ async def list_directory_with_sizes(
         try:
             stat = entry.stat()
             size = stat.st_size if entry.is_file() else 0
-            entries.append({
-                "name": entry.name,
-                "isDirectory": entry.is_dir(),
-                "size": size,
-            })
+            entries.append(
+                {
+                    "name": entry.name,
+                    "isDirectory": entry.is_dir(),
+                    "size": size,
+                }
+            )
         except OSError:
-            entries.append({
-                "name": entry.name,
-                "isDirectory": entry.is_dir(),
-                "size": 0,
-            })
+            entries.append(
+                {
+                    "name": entry.name,
+                    "isDirectory": entry.is_dir(),
+                    "size": 0,
+                }
+            )
 
     if sortBy == "size":
         entries.sort(key=lambda x: x["size"], reverse=True)
@@ -698,18 +916,22 @@ async def list_directory_with_sizes(
     return TextContent(type="text", text="\n".join(formatted))
 
 
-#@mcp.tool(description="Get directory tree as JSON structure. Returns recursive directory tree in JSON format. Supports exclude patterns (glob format). Each node contains name, type, and children array.")
+# @mcp.tool(description="Get directory tree as JSON structure. Returns recursive directory tree in JSON format. Supports exclude patterns (glob format). Each node contains name, type, and children array.")
 async def directory_tree(
     ctx: Context,
     path: str = Field(description="Directory path"),
-    excludePatterns: list[str] = Field(default_factory=list, description="Exclude patterns"),
+    excludePatterns: list[str] = Field(
+        default_factory=list, description="Exclude patterns"
+    ),
 ) -> TextContent:
     """Get directory tree as JSON"""
     valid_path = await validate_path(path, allowed_directories)
 
     def should_exclude(relative_path: str) -> bool:
         for pattern in excludePatterns:
-            if fnmatch(relative_path, pattern) or fnmatch(relative_path, f"**/{pattern}"):
+            if fnmatch(relative_path, pattern) or fnmatch(
+                relative_path, f"**/{pattern}"
+            ):
                 return True
         return False
 
@@ -738,12 +960,16 @@ async def directory_tree(
     return TextContent(type="text", text=json.dumps(tree_data, indent=2))
 
 
-@mcp.tool(description="Search for paths matching a glob pattern. Recurses without following symlinks and applies finite traversal/output/deadline budgets. Truncation is reported explicitly.")
+@mcp.tool(
+    description="Search for paths matching a glob pattern. Recurses without following symlinks and applies finite traversal/output/deadline budgets. Truncation is reported explicitly."
+)
 async def search_files(
     ctx: Context,
     path: str = Field(description="Search root path"),
     pattern: str = Field(description="Search pattern (glob)"),
-    excludePatterns: list[str] = Field(default_factory=list, description="Exclude patterns"),
+    excludePatterns: list[str] = Field(
+        default_factory=list, description="Exclude patterns"
+    ),
 ) -> TextContent:
     """Search for files matching pattern"""
     valid_path = await validate_path(path, allowed_directories)
@@ -771,7 +997,7 @@ async def search_files(
     return TextContent(type="text", text=text)
 
 
-#@mcp.tool(description="Get file metadata. Returns file size, creation time, modification time, access time, file type (file/directory), and permissions information.")
+# @mcp.tool(description="Get file metadata. Returns file size, creation time, modification time, access time, file type (file/directory), and permissions information.")
 async def get_file_info(
     ctx: Context,
     path: str = Field(description="File or directory path"),
@@ -787,14 +1013,14 @@ if __name__ == "__main__":
     import asyncio
 
     # Configure logging
-    logging.basicConfig(level=logging.INFO, format='%(message)s')
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
 
     # Allowed directories: read from AWORLD_WORKSPACE (comma-separated); fall back to defaults if unset
     home_dir = Path.home()
     DEFAULT_WORKSPACES = [
         str(home_dir / "workspace"),
         str(home_dir / "aworld_workspace"),
-        str("/tmp")
+        str("/tmp"),
     ]
     env_workspace = os.environ.get("AWORLD_WORKSPACE", "").strip()
     if env_workspace:
@@ -809,9 +1035,12 @@ if __name__ == "__main__":
     logging.info("Allowed directories:")
     for i, dir_path in enumerate(allowed_dirs, 1):
         logging.info(f"  {i}. {dir_path}")
-    
+
     # Run the server: default streamable-http (compat with start_tool_servers.sh); use stdio when --stdio or MCP_TRANSPORT=stdio
-    use_stdio = "--stdio" in sys.argv or os.environ.get("MCP_TRANSPORT", "").strip().lower() == "stdio"
+    use_stdio = (
+        "--stdio" in sys.argv
+        or os.environ.get("MCP_TRANSPORT", "").strip().lower() == "stdio"
+    )
     try:
         if use_stdio:
             mcp.run(transport="stdio")

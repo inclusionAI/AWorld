@@ -63,7 +63,9 @@ def test_terminal_policy_configuration_is_forwarded_to_stdio_server(
 
 
 @pytest.mark.asyncio
-async def test_small_file_contract_and_existing_parameters_remain_compatible(tmp_path: Path) -> None:
+async def test_small_file_contract_and_existing_parameters_remain_compatible(
+    tmp_path: Path,
+) -> None:
     await filesystem.set_allowed_directories([str(tmp_path)])
     text_path = tmp_path / "small.txt"
     text_path.write_text("alpha\nbeta\n", encoding="utf-8")
@@ -105,14 +107,10 @@ async def test_repeated_unchanged_read_returns_receipt_and_refresh_bypasses_cach
     path.write_text("alpha\nbeta\n", encoding="utf-8")
 
     first = _json(
-        await filesystem.read_file(
-            None, str(path), head=None, tail=None, output="text"
-        )
+        await filesystem.read_file(None, str(path), head=None, tail=None, output="text")
     )
     repeated = _json(
-        await filesystem.read_file(
-            None, str(path), head=None, tail=None, output="text"
-        )
+        await filesystem.read_file(None, str(path), head=None, tail=None, output="text")
     )
     refreshed = _json(
         await filesystem.read_file(
@@ -133,12 +131,88 @@ async def test_repeated_unchanged_read_returns_receipt_and_refresh_bypasses_cach
 
     path.write_text("changed\n", encoding="utf-8")
     changed = _json(
-        await filesystem.read_file(
-            None, str(path), head=None, tail=None, output="text"
-        )
+        await filesystem.read_file(None, str(path), head=None, tail=None, output="text")
     )
     assert changed["type"] == "text"
     assert changed["content"] == "changed\n"
+
+
+@pytest.mark.asyncio
+async def test_read_observation_cache_is_task_scoped_and_emits_epoch_coverage(
+    tmp_path: Path,
+) -> None:
+    await filesystem.set_allowed_directories([str(tmp_path)])
+    path = tmp_path / "scoped.txt"
+    path.write_text("alpha\nbeta\n", encoding="utf-8")
+    scope_a = {"task_id": "task-a", "task_epoch": 1, "session_id": "session"}
+    scope_b = {"task_id": "task-b", "task_epoch": 1, "session_id": "session"}
+
+    first = await filesystem.read_file(
+        None,
+        str(path),
+        head=1,
+        tail=None,
+        output="text",
+        env_content=scope_a,
+    )
+    isolated = await filesystem.read_file(
+        None,
+        str(path),
+        head=1,
+        tail=None,
+        output="text",
+        env_content=scope_b,
+    )
+    repeated = await filesystem.read_file(
+        None,
+        str(path),
+        head=1,
+        tail=None,
+        output="text",
+        env_content=scope_a,
+    )
+
+    assert _json(first)["type"] == "text"
+    assert _json(isolated)["type"] == "text"
+    assert _json(repeated)["type"] == "unchanged"
+    receipt = first.model_extra["metadata"]["read_observation_receipt"]
+    assert receipt["authority"] == "host"
+    assert receipt["coverage"] == {"kind": "line_range", "start": 1, "end": 1}
+    assert receipt["epoch"]["path"] == str(path)
+
+
+@pytest.mark.asyncio
+async def test_read_changed_during_capture_never_seeds_observation_cache(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    await filesystem.set_allowed_directories([str(tmp_path)])
+    path = tmp_path / "racing.txt"
+    path.write_text("before\n", encoding="utf-8")
+    original = filesystem.read_text_bounded
+    raced = False
+
+    async def racing_read(*args, **kwargs):
+        nonlocal raced
+        result = await original(*args, **kwargs)
+        if not raced:
+            raced = True
+            path.write_text("after\n", encoding="utf-8")
+        return result
+
+    monkeypatch.setattr(filesystem, "read_text_bounded", racing_read)
+    first = await filesystem.read_file(
+        None, str(path), head=None, tail=None, output="text"
+    )
+    second = await filesystem.read_file(
+        None, str(path), head=None, tail=None, output="text"
+    )
+
+    assert _json(first)["content"] == "before\n"
+    assert "observationId" not in _json(first)
+    assert first.model_extra["metadata"] == {}
+    assert _json(second)["type"] == "text"
+    assert _json(second)["content"] == "after\n"
 
 
 @pytest.mark.asyncio
@@ -149,12 +223,12 @@ async def test_large_implicit_text_read_defaults_to_bounded_head(
     monkeypatch.setenv("AWORLD_FILESYSTEM_DEFAULT_HEAD_LINES", "3")
     await filesystem.set_allowed_directories([str(tmp_path)])
     path = tmp_path / "large.txt"
-    path.write_text("".join(f"line-{index:04d}\n" for index in range(1000)), encoding="utf-8")
+    path.write_text(
+        "".join(f"line-{index:04d}\n" for index in range(1000)), encoding="utf-8"
+    )
 
     payload = _json(
-        await filesystem.read_file(
-            None, str(path), head=None, tail=None, output="text"
-        )
+        await filesystem.read_file(None, str(path), head=None, tail=None, output="text")
     )
 
     assert payload["content"] == "line-0000\nline-0001\nline-0002"
@@ -179,15 +253,17 @@ async def test_large_single_line_and_binary_download_are_bounded_and_observable(
 
     tracemalloc.start()
     text_payload = _json(
-        await filesystem.read_file(
-            None, str(path), head=None, tail=1, output="text"
-        )
+        await filesystem.read_file(None, str(path), head=None, tail=1, output="text")
     )
     _, peak = tracemalloc.get_traced_memory()
     tracemalloc.stop()
     assert len(text_payload["content"].encode("utf-8")) <= 4096
     assert text_payload["complete"] is False
-    assert text_payload["truncationReason"] in {"read_bytes", "scan_bytes", "line_bytes"}
+    assert text_payload["truncationReason"] in {
+        "read_bytes",
+        "scan_bytes",
+        "line_bytes",
+    }
     assert peak < 4 * 1024 * 1024
 
     chunks: list[bytes] = []
@@ -217,9 +293,7 @@ async def test_directory_operations_are_capped_and_do_not_follow_symlinks(
         listing = (await filesystem.list_directory(None, str(tmp_path))).text
         assert "[TRUNCATED] reason=list_entries; limit=2" in listing
 
-        matches = (
-            await filesystem.search_files(None, str(tmp_path), "*.txt", [])
-        ).text
+        matches = (await filesystem.search_files(None, str(tmp_path), "*.txt", [])).text
         assert "secret.txt" not in matches
         assert matches.count("a.txt") == 1
         assert "/loop/" not in matches
@@ -375,9 +449,7 @@ async def test_copy_rejects_fifo_without_blocking_open(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="regular file"):
         await asyncio.wait_for(
-            file_ops_module.copy_file_binary(
-                str(fifo), str(tmp_path / "target.bin")
-            ),
+            file_ops_module.copy_file_binary(str(fifo), str(tmp_path / "target.bin")),
             timeout=1,
         )
 
@@ -525,9 +597,7 @@ async def test_document_parse_cancellation_reaps_worker_and_cleans_staging(
         return process
 
     monkeypatch.setattr(parse_module.asyncio, "create_subprocess_exec", sleeping_worker)
-    task = asyncio.create_task(
-        parse_module.parse_to_path(source, destination, "md")
-    )
+    task = asyncio.create_task(parse_module.parse_to_path(source, destination, "md"))
     await asyncio.sleep(0.1)
     task.cancel()
 
