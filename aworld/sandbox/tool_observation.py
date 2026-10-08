@@ -227,6 +227,16 @@ def _declared_target_ids(context: Any) -> frozenset[str]:
     return frozenset(targets)
 
 
+def declared_action_target_ids(context: Any) -> frozenset[str]:
+    """Return bounded hashed targets from trusted delivery contracts.
+
+    Raw paths remain local to the Sandbox preflight boundary.  Controllers use
+    only these stable identities when admitting a converged Tool call.
+    """
+
+    return _declared_target_ids(context)
+
+
 def _registered_validation_kind(
     context: Any,
     *,
@@ -1138,5 +1148,6 @@ __all__ = [
     "build_preflight_action_semantic_receipt",
     "canonical_tool_identity",
     "classify_tool_effect",
+    "declared_action_target_ids",
     "semantic_target_sha256",
 ]

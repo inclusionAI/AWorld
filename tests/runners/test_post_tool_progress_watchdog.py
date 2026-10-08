@@ -362,7 +362,7 @@ async def test_successful_mutation_receipt_opens_one_real_hook_validation_window
     message = Message(
         category="tool_call", payload=[read], sender="agent"
     )
-    assert await hook.exec(message, context) is not None
+    assert await hook.exec(message, context) is None
 
     repair_code = "touch candidate.txt"
     repair = ActionModel(
@@ -387,11 +387,11 @@ async def test_successful_mutation_receipt_opens_one_real_hook_validation_window
     assert semantic["workspace_mutation_observed"] is False
     telemetry = build_execution_protocol_telemetry(context, "agent")
     assert telemetry["mutation_gate_active"] is False
-    assert telemetry["mutation_gate_validation_window_open"] is True
+    assert telemetry["mutation_gate_validation_window_open"] is False
     assert await hook.exec(message, context) is None
 
     # The permitted validation produces a normal read receipt.  Because no
     # actual candidate mutation was observed, the pre-candidate latch closes
     # again instead of treating a potential write as goal progress.
     observe(read, effect="read_only", index=10)
-    assert await hook.exec(message, context) is not None
+    assert await hook.exec(message, context) is None

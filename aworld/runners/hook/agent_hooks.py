@@ -69,17 +69,23 @@ class MutationGatePreToolHook(PreToolCallHook):
         post_candidate = gate_receipt.get("kind") == "candidate_convergence_required"
         if post_candidate:
             count = int(
-                gate_receipt.get("post_candidate_read_only_observations", 0) or 0
+                gate_receipt.get(
+                    "post_candidate_no_delivery_progress_observations",
+                    gate_receipt.get("post_candidate_read_only_observations", 0),
+                )
+                or 0
             )
             message_text = (
-                "Further broad read-only exploration is gated after a candidate "
-                "was observed. Validate the candidate, make an evidence-driven "
-                "repair, or submit the current result accurately."
+                "This Tool call is outside the active candidate convergence "
+                "admission. Run one registered validation, use one repair "
+                "authorized by fresh failed validation evidence, or submit the "
+                "current result accurately without Tools."
             )
         else:
             message_text = (
-                "Further provably read-only work is gated. Create or modify the "
-                "smallest relevant inspectable candidate now."
+                "This Tool call is outside the active candidate-production "
+                "admission. Create or modify the exact declared deliverable, or "
+                "execute the exact model-bound contractless candidate action."
             )
         error_code = str(gate_receipt["kind"])
         return Message(
@@ -92,14 +98,15 @@ class MutationGatePreToolHook(PreToolCallHook):
                     "schema_version": "aworld.tool-interception/v1",
                     "kind": "block",
                     "tool_call_ids": gate_receipt["tool_call_ids"],
+                    "block_all": gate_receipt.get("block_all") is True,
                     "error_code": error_code,
                     "content_type": error_code,
                     "message": message_text,
                     "source_receipt": gate_receipt,
                 },
                 "additional_context": (
-                    "AWorld convergence gate intercepted a provably read-only "
-                    f"Tool batch after {count} consecutive read-only observations. "
+                    "AWorld convergence admission intercepted part of a Tool "
+                    f"batch after {count} observations without delivery progress. "
                     + (
                         "Validate, repair from evidence, or submit; do not restart "
                         "broad exploration."

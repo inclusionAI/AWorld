@@ -1423,6 +1423,95 @@ def test_repeated_post_candidate_reads_activate_convergence_without_replan():
     assert second.state.replan_requested_count == 0
 
 
+def test_post_candidate_counter_tracks_all_no_delivery_progress_effects():
+    policy = ExecutionProtocolPolicy(
+        mode="guide",
+        post_candidate_read_only_threshold=2,
+        repetition_threshold=99,
+        low_information_gain_threshold=99,
+        no_goal_progress_threshold=99,
+        stagnation_event_threshold=99,
+    )
+    candidate = transition_execution_protocol(
+        _state(),
+        _tool(
+            candidate_present=True,
+            candidate_advanced=True,
+            delivery_progress_advanced=True,
+            workspace_mutated=True,
+        ),
+        policy,
+    )
+    scratch = transition_execution_protocol(
+        candidate.state,
+        _tool(
+            candidate_present=True,
+            workspace_mutated=True,
+            known_mutation_executed=True,
+        ),
+        policy,
+    )
+    assert scratch.state.post_candidate_no_delivery_progress_observations == 1
+    assert scratch.state.post_candidate_read_only_observations == 1
+
+    unknown = transition_execution_protocol(
+        scratch.state,
+        _tool(candidate_present=True),
+        policy,
+    )
+    assert unknown.decision.action is ControllerAction.APPLY_CONVERGENCE_CONSTRAINT
+    assert unknown.state.post_candidate_no_delivery_progress_observations == 2
+
+
+def test_only_new_delivery_high_water_resets_post_candidate_counter():
+    policy = ExecutionProtocolPolicy(
+        mode="guide",
+        post_candidate_read_only_threshold=4,
+        repetition_threshold=99,
+        low_information_gain_threshold=99,
+        no_goal_progress_threshold=99,
+        stagnation_event_threshold=99,
+    )
+    first = transition_execution_protocol(
+        _state(),
+        _tool(
+            candidate_present=True,
+            candidate_advanced=True,
+            delivery_progress_advanced=True,
+        ),
+        policy,
+    )
+    stagnant = transition_execution_protocol(
+        first.state, _tool(candidate_present=True, workspace_mutated=True), policy
+    )
+    assert stagnant.state.post_candidate_no_delivery_progress_observations == 1
+
+    new_hash = transition_execution_protocol(
+        stagnant.state,
+        _tool(
+            candidate_present=True,
+            candidate_advanced=True,
+            delivery_progress_advanced=True,
+        ),
+        policy,
+    )
+    assert new_hash.state.post_candidate_no_delivery_progress_observations == 0
+
+    # A changed artifact that revisits an already-seen high-water fingerprint
+    # is projected by the observation layer as candidate_advanced=False.
+    oscillated = transition_execution_protocol(
+        new_hash.state,
+        _tool(
+            candidate_present=True,
+            candidate_advanced=False,
+            delivery_progress_advanced=False,
+            workspace_mutated=True,
+        ),
+        policy,
+    )
+    assert oscillated.state.post_candidate_no_delivery_progress_observations == 1
+
+
 def test_explicit_candidate_checkpoint_enables_contractless_post_candidate_phase():
     policy = ExecutionProtocolPolicy(
         mode="guide",

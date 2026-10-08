@@ -39,7 +39,9 @@ from aworld.core.execution_protocol import (
 )
 from aworld.sandbox.tool_observation import (
     actions_are_provably_read_only,
+    build_preflight_action_semantic_receipt,
     canonical_tool_identity,
+    declared_action_target_ids,
 )
 
 
@@ -53,8 +55,10 @@ EXECUTION_PROTOCOL_HYPOTHESES_KEY = "execution_protocol_hypotheses"
 EXECUTION_PROTOCOL_CRITIC_KEY = "execution_protocol_acceptance_critic"
 EXECUTION_PROTOCOL_PUBLIC_PROBES_KEY = "execution_protocol_public_probes"
 EXECUTION_PROTOCOL_DEADLINE_GUIDANCE_KEY = "execution_protocol_deadline_guidance"
-MUTATION_GATE_SCHEMA = "aworld.mutation-gate/v2"
-_LEGACY_MUTATION_GATE_SCHEMA = "aworld.mutation-gate/v1"
+MUTATION_GATE_SCHEMA = "aworld.mutation-gate/v3"
+_LEGACY_MUTATION_GATE_SCHEMAS = frozenset(
+    {"aworld.mutation-gate/v1", "aworld.mutation-gate/v2"}
+)
 MUTATION_GATE_STATE_KEY = "execution_protocol_mutation_gate"
 INDEPENDENT_ACCEPTANCE_CRITIC_ENV = "AWORLD_INDEPENDENT_ACCEPTANCE_CRITIC"
 SEMANTIC_PROGRESS_LEDGER_ENV = "AWORLD_SEMANTIC_PROGRESS_LEDGER"
@@ -992,6 +996,43 @@ def _action_matches_typed_validation_plan(
     return observed_signature == update.next_action_signature
 
 
+def _action_matches_typed_candidate_plan(
+    context,
+    agent_id: str,
+    action: Any,
+    observed: ActionSemanticReceipt,
+) -> bool:
+    """Authorize a contractless mutation only from its exact model checkpoint.
+
+    Without a trusted named target the framework cannot infer that an arbitrary
+    write is a deliverable.  Require the pending model-owned produce-candidate
+    semantics and the exact bound call ID; raw arguments are never persisted.
+    """
+
+    state = load_execution_protocol_state(context, agent_id)
+    update = state.model_plan_update
+    call_id = _action_value(action, "tool_call_id")
+    if (
+        update is None
+        or update.delivery_intent is not DeliveryIntent.PRODUCE_CANDIDATE
+        or update.next_action_semantics is None
+        or observed.effect != "mutating"
+        or not state.next_action_alignment_pending
+        or not isinstance(call_id, str)
+        or not call_id
+        or state.pending_next_action_call_id != call_id
+    ):
+        return False
+    return (
+        compare_action_semantic_shape(
+            update.next_action_semantics,
+            observed,
+            intent=DeliveryIntent.PRODUCE_CANDIDATE,
+        )
+        is NextActionAlignment.MATCHED
+    )
+
+
 def framework_observable_validation_kind(
     context, agent_id: str, action: Any
 ) -> str | None:
@@ -1220,6 +1261,45 @@ def clear_acceptance_critic_state(context, agent_id: str) -> None:
     _write_runtime_value(context, agent_id, EXECUTION_PROTOCOL_CRITIC_KEY, None)
 
 
+def _mint_review_repair_authorization(
+    context,
+    agent_id: str,
+    *,
+    evidence: Mapping[str, Any],
+) -> None:
+    """Bind one repair use to fresh typed reviewer evidence and candidate."""
+
+    gate = _read_runtime_value(context, agent_id, MUTATION_GATE_STATE_KEY)
+    if (
+        not isinstance(gate, Mapping)
+        or gate.get("schema_version") != MUTATION_GATE_SCHEMA
+        or gate.get("active") is not True
+        or gate.get("convergence_stage")
+        != ConvergenceStage.VALIDATE_REPAIR_OR_SUBMIT.value
+    ):
+        return
+    from aworld.core.context.compiler import semantic_fingerprint
+
+    candidate_fingerprint = gate.get("candidate_fingerprint")
+    if not isinstance(candidate_fingerprint, str):
+        candidate_fingerprint, _ = _public_candidate_binding(context, agent_id)
+    scope_hash = semantic_fingerprint(_model_decision_scope(context, agent_id))
+    updated = dict(gate)
+    updated["candidate_fingerprint"] = candidate_fingerprint
+    updated["repair_authorization"] = {
+        "schema_version": "aworld.repair-authorization/v1",
+        "scope_hash": scope_hash,
+        "candidate_fingerprint": candidate_fingerprint,
+        "failure_evidence_hash": semantic_fingerprint(dict(evidence)),
+        "used": False,
+    }
+    updated["validation_window_open"] = True
+    owner = state_context(context)
+    if owner is not None:
+        owner.context_info[MUTATION_GATE_STATE_KEY] = updated
+    _write_runtime_value(context, agent_id, MUTATION_GATE_STATE_KEY, updated)
+
+
 def record_acceptance_critic_decision(
     context, agent_id: str, value: Any
 ) -> tuple[ProtocolTransition | None, Any, bool]:
@@ -1276,6 +1356,17 @@ def record_acceptance_critic_decision(
         )
     )
     _record_transition_metrics(context, transition)
+    if outcome is ReviewOutcome.REPAIR and decision is not None:
+        _mint_review_repair_authorization(
+            context,
+            agent_id,
+            evidence={
+                "review_decision": ReviewOutcome.REPAIR.value,
+                "critic_candidate_hash": critic_state.get("candidate_hash"),
+                "critic_evidence_hash": critic_state.get("evidence_hash"),
+                "critic_receipt_id": getattr(receipt, "receipt_id", None),
+            },
+        )
     clear_acceptance_critic_state(context, agent_id)
     return transition, decision, independently_supported
 
@@ -1413,8 +1504,10 @@ def project_execution_protocol_telemetry(value: Any) -> dict[str, Any] | None:
         "acceptance_controller_error_count",
         "mutation_gate_activation_count",
         "mutation_gate_blocked_read_only_call_count",
+        "convergence_gate_blocked_call_count",
         "consecutive_read_only_observations",
         "post_candidate_read_only_observations",
+        "post_candidate_no_delivery_progress_observations",
         "convergence_constraint_activation_count",
         "model_expected_tool_actions",
         "model_expected_tool_actions_overrun_count",
@@ -1431,6 +1524,7 @@ def project_execution_protocol_telemetry(value: Any) -> dict[str, Any] | None:
         "convergence_stage",
         "convergence_constraint_activation_count",
         "post_candidate_read_only_observations",
+        "post_candidate_no_delivery_progress_observations",
         "mutation_gate_validation_window_open",
         "long_horizon_activation_source",
         "model_expected_tool_actions",
@@ -1567,13 +1661,29 @@ def build_execution_protocol_telemetry(context, agent_id: str) -> dict[str, Any]
             mutation_gate.get("activation_count")
         ),
         "mutation_gate_blocked_read_only_call_count": _bounded_counter(
-            mutation_gate.get("blocked_read_only_call_count")
+            mutation_gate.get(
+                "blocked_read_only_call_count", mutation_gate.get("blocked_call_count")
+            )
+        ),
+        "convergence_gate_blocked_call_count": _bounded_counter(
+            mutation_gate.get(
+                "blocked_call_count", mutation_gate.get("blocked_read_only_call_count")
+            )
         ),
         "consecutive_read_only_observations": _bounded_counter(
             mutation_gate.get("consecutive_read_only_observations")
         ),
         "post_candidate_read_only_observations": (
-            state.post_candidate_read_only_observations
+            max(
+                state.post_candidate_read_only_observations,
+                state.post_candidate_no_delivery_progress_observations,
+            )
+        ),
+        "post_candidate_no_delivery_progress_observations": (
+            max(
+                state.post_candidate_read_only_observations,
+                state.post_candidate_no_delivery_progress_observations,
+            )
         ),
         "convergence_constraint_active": state.convergence_constraint_active,
         "convergence_stage": (
@@ -1650,7 +1760,11 @@ def _update_mutation_gate(
     transition: ProtocolTransition,
     semantic_state: Mapping[str, Any],
 ) -> None:
-    """Project a persistent, task-scoped gate for mutation-required work."""
+    """Project a persistent, task-scoped convergence admission state.
+
+    The projection contains only hashes, booleans, counters, and enums.  Raw
+    paths and Tool arguments remain transient at Sandbox preflight.
+    """
 
     owner = state_context(context)
     if owner is None:
@@ -1671,9 +1785,6 @@ def _update_mutation_gate(
     mutation_observed = bool(
         semantic_state.get("workspace_mutation_observed")
     )
-    known_mutation_executed = bool(
-        semantic_state.get("known_mutation_executed")
-    )
     read_only_count = _bounded_counter(
         semantic_state.get("consecutive_read_only_observations")
     )
@@ -1689,13 +1800,16 @@ def _update_mutation_gate(
     previous_active = bool(
         isinstance(previous, Mapping)
         and previous.get("schema_version")
-        in {MUTATION_GATE_SCHEMA, _LEGACY_MUTATION_GATE_SCHEMA}
+        in {MUTATION_GATE_SCHEMA, *_LEGACY_MUTATION_GATE_SCHEMAS}
         and previous.get("agent_id") == agent_id
         and previous.get("active") is True
     )
     previous_pre_candidate_latched = bool(
         isinstance(previous, Mapping)
-        and previous.get("reason") != "post_candidate_read_only_limit"
+        and previous.get("reason") not in {
+            "post_candidate_read_only_limit",
+            "post_candidate_no_delivery_progress_limit",
+        }
         and (previous_active or previous.get("pre_candidate_latched") is True)
     )
     # When the public task names a concrete output, an unrelated setup write
@@ -1716,11 +1830,14 @@ def _update_mutation_gate(
         and convergence_stage is ConvergenceStage.PRODUCE_CANDIDATE
         and not resolved
     )
+    no_delivery_progress_count = max(
+        transition.state.post_candidate_no_delivery_progress_observations,
+        transition.state.post_candidate_read_only_observations,
+    )
     post_candidate_convergence_due = bool(
         transition.state.convergence_constraint_active
         and convergence_stage is ConvergenceStage.VALIDATE_REPAIR_OR_SUBMIT
-        and not known_mutation_executed
-        and transition.state.post_candidate_read_only_observations
+        and no_delivery_progress_count
         >= execution_protocol_policy(
             context, agent_id
         ).post_candidate_read_only_threshold
@@ -1735,30 +1852,78 @@ def _update_mutation_gate(
             or convergence_produce_due
         )
     )
-    validation_window_open = bool(
-        known_mutation_executed
-        and (
-            previous_active
-            or previous_pre_candidate_latched
-            or transition.state.convergence_constraint_active
-        )
+    from aworld.core.context.compiler import semantic_fingerprint
+
+    scope_hash = semantic_fingerprint(_model_decision_scope(context, agent_id))
+    previous_candidate_fingerprint = (
+        previous.get("candidate_fingerprint")
+        if isinstance(previous, Mapping)
+        and isinstance(previous.get("candidate_fingerprint"), str)
+        else None
     )
+    candidate_fingerprint = semantic_state.get("public_delivery_fingerprint")
+    if not isinstance(candidate_fingerprint, str):
+        candidate_fingerprint = previous_candidate_fingerprint
+    if candidate_present and candidate_fingerprint is None:
+        candidate_fingerprint, _ = _public_candidate_binding(context, agent_id)
+    if not candidate_present and convergence_stage is ConvergenceStage.PRODUCE_CANDIDATE:
+        candidate_fingerprint = None
+
+    repair_authorization = (
+        dict(previous.get("repair_authorization"))
+        if isinstance(previous, Mapping)
+        and isinstance(previous.get("repair_authorization"), Mapping)
+        else None
+    )
+    if repair_authorization is not None and (
+        repair_authorization.get("scope_hash") != scope_hash
+        or repair_authorization.get("candidate_fingerprint")
+        != candidate_fingerprint
+        or repair_authorization.get("used") is True
+    ):
+        repair_authorization = None
+    failed_validations = []
+    for value in semantic_state.get("observed_action_semantics") or ():
+        try:
+            receipt = (
+                value
+                if isinstance(value, ActionSemanticReceipt)
+                else ActionSemanticReceipt.from_dict(value)
+            )
+        except (TypeError, ValueError):
+            continue
+        if (
+            receipt.validation_kind is not None
+            and receipt.executed is True
+            and receipt.succeeded is False
+        ):
+            failed_validations.append(receipt)
+    if candidate_fingerprint and failed_validations:
+        receipt = failed_validations[0]
+        repair_authorization = {
+            "schema_version": "aworld.repair-authorization/v1",
+            "scope_hash": scope_hash,
+            "candidate_fingerprint": candidate_fingerprint,
+            "failure_evidence_hash": semantic_fingerprint(
+                {
+                    "validation_kind": receipt.validation_kind,
+                    "target_ids": receipt.target_ids,
+                    "result_hash": semantic_state.get("result_hash"),
+                    "failure_signature": semantic_state.get("failure_signature"),
+                }
+            ),
+            "used": False,
+        }
+    validation_window_open = repair_authorization is not None
     active = bool(
         execution_protocol_policy(context, agent_id).mode is ProtocolMode.GUIDE
-        and (
-            post_candidate_convergence_due
-            or (
-                pre_candidate_latched
-                and convergence_stage
-                is not ConvergenceStage.VALIDATE_REPAIR_OR_SUBMIT
-                and not known_mutation_executed
-            )
-        )
+        and transition.state.convergence_constraint_active
+        and convergence_stage is not None
     )
     if active and not previous_active:
         activation_count = min(_MAX_TELEMETRY_COUNTER, activation_count + 1)
     reason = (
-        "post_candidate_read_only_limit"
+        "post_candidate_no_delivery_progress_limit"
         if post_candidate_convergence_due
         else "convergence_candidate_required"
         if convergence_produce_due
@@ -1773,8 +1938,7 @@ def _update_mutation_gate(
     )
     payload = {
         "schema_version": MUTATION_GATE_SCHEMA,
-        "task_id": getattr(owner, "task_id", None),
-        "task_epoch": getattr(owner, "task_epoch", None),
+        "scope_hash": scope_hash,
         "agent_id": agent_id,
         "active": active,
         "activation_count": activation_count,
@@ -1784,13 +1948,17 @@ def _update_mutation_gate(
         "candidate_present": candidate_present,
         "public_candidate_mutated": public_candidate_mutated,
         "workspace_mutation_observed": mutation_observed,
-        "known_mutation_executed": known_mutation_executed,
         "validation_window_open": validation_window_open,
+        "candidate_fingerprint": candidate_fingerprint,
+        "repair_authorization": repair_authorization,
+        "declared_target_contract": bool(declared_action_target_ids(owner)),
         "pre_candidate_latched": pre_candidate_latched,
         "consecutive_read_only_observations": read_only_count,
-        "post_candidate_read_only_observations": (
-            transition.state.post_candidate_read_only_observations
+        "post_candidate_no_delivery_progress_observations": (
+            no_delivery_progress_count
         ),
+        # One-release legacy alias.
+        "post_candidate_read_only_observations": no_delivery_progress_count,
         "read_only_threshold": _MUTATION_GATE_READ_ONLY_THRESHOLD,
         "deadline_consumed_fraction": consumed_fraction,
         "convergence_stage": (
@@ -1799,8 +1967,18 @@ def _update_mutation_gate(
         # Preserve interception evidence across subsequent observation
         # projections; previously this counter was reset on the next Tool
         # result, making successful gate blocks disappear from telemetry.
+        "blocked_call_count": _bounded_counter(
+            previous.get(
+                "blocked_call_count", previous.get("blocked_read_only_call_count")
+            )
+            if isinstance(previous, Mapping)
+            else 0
+        ),
+        # One-release legacy alias.
         "blocked_read_only_call_count": _bounded_counter(
-            previous.get("blocked_read_only_call_count")
+            previous.get(
+                "blocked_call_count", previous.get("blocked_read_only_call_count")
+            )
             if isinstance(previous, Mapping)
             else 0
         ),
@@ -1821,9 +1999,13 @@ def _update_mutation_gate(
             "validation_window_open"
         ]
         metrics["consecutive_read_only_observations"] = read_only_count
-        metrics["post_candidate_read_only_observations"] = (
-            transition.state.post_candidate_read_only_observations
+        metrics["post_candidate_no_delivery_progress_observations"] = (
+            no_delivery_progress_count
         )
+        metrics["post_candidate_read_only_observations"] = no_delivery_progress_count
+        metrics["convergence_gate_blocked_call_count"] = payload[
+            "blocked_call_count"
+        ]
         metrics["mutation_gate_blocked_read_only_call_count"] = payload[
             "blocked_read_only_call_count"
         ]
@@ -1833,11 +2015,11 @@ def mutation_gate_interception(
     context,
     actions: list[Any],
 ) -> dict[str, Any] | None:
-    """Block broad reads while allowing only bound validation actions.
+    """Apply per-call semantic admission after a typed convergence boundary.
 
-    A mixed batch is handled per action: mutations remain available, exact
-    framework-observable validation may run, and unrelated reads are listed in
-    the interception receipt for the Sandbox to materialize as blocked.
+    Ordinary execution remains fail-open before convergence.  Once constrained,
+    unknown or unrelated actions fail closed while a mixed batch still runs
+    every individually admitted call.
     """
 
     if context is None or not actions:
@@ -1856,33 +2038,117 @@ def mutation_gate_interception(
     if (
         not isinstance(gate, Mapping)
         or gate.get("schema_version")
-        not in {MUTATION_GATE_SCHEMA, _LEGACY_MUTATION_GATE_SCHEMA}
+        not in {MUTATION_GATE_SCHEMA, *_LEGACY_MUTATION_GATE_SCHEMAS}
         or gate.get("active") is not True
     ):
         return None
+    if gate.get("schema_version") == MUTATION_GATE_SCHEMA:
+        from aworld.core.context.compiler import semantic_fingerprint
+
+        if gate.get("scope_hash") != semantic_fingerprint(
+            _model_decision_scope(context, agent_id)
+        ):
+            # A copied gate from another task epoch has no authority here.
+            return None
+    stage_value = gate.get("convergence_stage")
+    try:
+        stage = ConvergenceStage(stage_value)
+    except (TypeError, ValueError):
+        # A legacy active read gate has no typed convergence boundary and must
+        # retain the pre-convergence fail-open guarantee.
+        return None
+    state = load_execution_protocol_state(context, agent_id)
+    declared_targets = declared_action_target_ids(state_context(context))
+    repair_authorization = (
+        dict(gate.get("repair_authorization"))
+        if isinstance(gate.get("repair_authorization"), Mapping)
+        else None
+    )
     blocked_call_ids: list[str] = []
+    consumed_repair = False
+    block_all = False
     for action in actions:
-        if not actions_are_provably_read_only([action]):
-            continue
         call_id = str(_action_value(action, "tool_call_id") or "")
         if not call_id:
-            # Tool calls without a stable identity cannot be selectively
-            # intercepted. Keep the historical fail-open behavior.
-            return None
-        if framework_observable_validation_kind(context, agent_id, action) is None:
+            # Selective materialization is impossible without a stable call ID.
+            # Mark the whole batch for Sandbox-owned fail-closed blocking.
+            block_all = True
+            consumed_repair = False
+            blocked_call_ids = [
+                str(_action_value(item, "tool_call_id") or "")
+                for item in actions
+                if str(_action_value(item, "tool_call_id") or "")
+            ]
+            break
+        try:
+            semantics = build_preflight_action_semantic_receipt(
+                context=state_context(context),
+                action=action,
+                delivery_intent=(
+                    state.model_plan_update.delivery_intent.value
+                    if state.model_plan_update is not None
+                    else DeliveryIntent.UNKNOWN.value
+                ),
+            )
+        except (TypeError, ValueError):
+            semantics = None
+        admitted = False
+        if stage is ConvergenceStage.PRODUCE_CANDIDATE:
+            if semantics is not None and semantics.effect == "mutating":
+                targets = set(semantics.target_ids)
+                if declared_targets:
+                    admitted = bool(targets) and targets.issubset(declared_targets)
+                else:
+                    admitted = _action_matches_typed_candidate_plan(
+                        context, agent_id, action, semantics
+                    )
+        elif stage is ConvergenceStage.VALIDATE_REPAIR_OR_SUBMIT:
+            admitted = (
+                framework_observable_validation_kind(context, agent_id, action)
+                is not None
+            )
+            live_repair = bool(
+                not consumed_repair
+                and repair_authorization is not None
+                and repair_authorization.get("used") is False
+                and repair_authorization.get("candidate_fingerprint")
+                == gate.get("candidate_fingerprint")
+                and repair_authorization.get("scope_hash") == gate.get("scope_hash")
+            )
+            if not admitted and live_repair and semantics is not None:
+                targets = set(semantics.target_ids)
+                if semantics.effect == "mutating" and declared_targets:
+                    admitted = bool(targets) and targets.issubset(declared_targets)
+                elif semantics.effect == "mutating" and not declared_targets:
+                    admitted = _action_matches_typed_candidate_plan(
+                        context, agent_id, action, semantics
+                    )
+                if admitted:
+                    consumed_repair = True
+        if not admitted:
             blocked_call_ids.append(call_id)
-    if not blocked_call_ids:
-        return None
     owner = state_context(context)
     updated = dict(gate)
-    updated["blocked_read_only_call_count"] = min(
+    updated["blocked_call_count"] = min(
         _MAX_TELEMETRY_COUNTER,
-        _bounded_counter(gate.get("blocked_read_only_call_count"))
-        + len(blocked_call_ids),
+        _bounded_counter(
+            gate.get("blocked_call_count", gate.get("blocked_read_only_call_count"))
+        )
+        + (len(actions) if block_all else len(blocked_call_ids)),
     )
+    updated["blocked_read_only_call_count"] = updated["blocked_call_count"]
+    if consumed_repair:
+        updated["repair_authorization"] = None
+        updated["validation_window_open"] = False
+    if not blocked_call_ids and not block_all:
+        if consumed_repair:
+            if owner is not None:
+                owner.context_info[MUTATION_GATE_STATE_KEY] = updated
+            _write_runtime_value(context, agent_id, MUTATION_GATE_STATE_KEY, updated)
+        return None
     interception_kind = (
         "candidate_convergence_required"
-        if gate.get("reason") == "post_candidate_read_only_limit"
+        if stage is ConvergenceStage.VALIDATE_REPAIR_OR_SUBMIT
         else "candidate_mutation_required"
     )
     updated["last_interception_kind"] = interception_kind
@@ -1893,12 +2159,16 @@ def mutation_gate_interception(
             metrics["mutation_gate_blocked_read_only_call_count"] = updated[
                 "blocked_read_only_call_count"
             ]
+            metrics["convergence_gate_blocked_call_count"] = updated[
+                "blocked_call_count"
+            ]
     _write_runtime_value(context, agent_id, MUTATION_GATE_STATE_KEY, updated)
     return {
         "schema_version": MUTATION_GATE_SCHEMA,
         "kind": interception_kind,
         "agent_id": agent_id,
         "tool_call_ids": blocked_call_ids,
+        "block_all": block_all,
         "reason": updated.get("reason"),
         "consecutive_read_only_observations": updated.get(
             "consecutive_read_only_observations", 0
@@ -1906,10 +2176,14 @@ def mutation_gate_interception(
         "post_candidate_read_only_observations": updated.get(
             "post_candidate_read_only_observations", 0
         ),
+        "post_candidate_no_delivery_progress_observations": updated.get(
+            "post_candidate_no_delivery_progress_observations", 0
+        ),
         "convergence_stage": updated.get("convergence_stage"),
         "blocked_read_only_call_count": updated[
             "blocked_read_only_call_count"
         ],
+        "blocked_call_count": updated["blocked_call_count"],
     }
 
 
@@ -2260,13 +2534,14 @@ def record_tool_protocol_event(
             semantic_state.get("missing_public_deliverable_count", 0) or 0
         ),
         candidate_present=semantic_state.get("candidate_present"),
-        # ``candidate_advanced`` is edge-triggered: it means the candidate
-        # changed on this Tool turn.  ``public_candidate_mutated`` is the
-        # current level relative to the task-start baseline.  Folding the
-        # latter into the former would make every later read of a changed
-        # candidate look like fresh progress and post-candidate convergence
-        # could never accumulate.
+        # ``candidate_advanced`` is a successful public-delivery high-water
+        # advance. ``public_candidate_mutated`` is only the current level
+        # relative to the task-start baseline. Folding the latter into the
+        # former would let failed writes and repeated states evade convergence.
         candidate_advanced=bool(semantic_state.get("candidate_advanced")),
+        delivery_progress_advanced=bool(
+            semantic_state.get("delivery_progress_advanced")
+        ),
         public_candidate_mutated=bool(
             semantic_state.get("public_candidate_mutated")
         ),
@@ -3133,6 +3408,16 @@ def record_review_repair_decision(
         )
     )
     _record_transition_metrics(context, transition)
+    from aworld.core.context.compiler import semantic_fingerprint
+
+    _mint_review_repair_authorization(
+        context,
+        agent_id,
+        evidence={
+            "review_decision": ReviewOutcome.REPAIR.value,
+            "review_reason_hash": semantic_fingerprint(value["reason"].strip()),
+        },
+    )
     return transition
 
 

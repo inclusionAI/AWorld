@@ -582,6 +582,22 @@ def test_convergence_state_declares_v2_and_round_trips_known_v1_history_kind():
     assert restored == state
 
 
+def test_no_delivery_progress_counter_restores_from_legacy_read_only_alias():
+    state = ExecutionProtocolState(
+        scope=ProtocolScope(task_id="task", task_epoch=1, agent_id="agent"),
+        post_candidate_read_only_observations=3,
+        post_candidate_no_delivery_progress_observations=3,
+    )
+    legacy = state.to_dict()
+    legacy.pop("post_candidate_no_delivery_progress_observations")
+
+    restored = ExecutionProtocolState.from_dict(legacy)
+
+    assert restored.post_candidate_no_delivery_progress_observations == 3
+    assert restored.post_candidate_read_only_observations == 3
+    assert restored.to_dict()["post_candidate_read_only_observations"] == 3
+
+
 def test_state_round_trip_preserves_content_free_model_profile():
     scope = ProtocolScope(task_id="task", task_epoch=3, agent_id="agent")
     profile = ModelExecutionProfile(

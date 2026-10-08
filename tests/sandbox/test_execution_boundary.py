@@ -522,6 +522,51 @@ async def test_sandbox_materializes_typed_pre_tool_hook_interception() -> None:
 
 
 @pytest.mark.asyncio
+async def test_sandbox_honors_converged_whole_batch_block_without_call_ids() -> None:
+    class _McpServers:
+        async def call_tool(self, **_kwargs):
+            pytest.fail("whole-batch convergence block must not reach transport")
+
+    sandbox = object.__new__(Sandbox)
+    sandbox._sandbox_id = "sandbox-1"
+    sandbox._env_type = SandboxEnvType.LOCAL
+    sandbox._metadata = {}
+    sandbox._mcpservers = _McpServers()
+    action = {
+        "tool_name": "terminal",
+        "action_name": "run_code",
+        "params": {"code": "printf candidate > result.txt"},
+        "agent_name": "agent",
+    }
+    event_message = Message(
+        category="tool_call",
+        payload=[action],
+        headers={
+            "tool_interception": {
+                "schema_version": "aworld.tool-interception/v1",
+                "kind": "block",
+                "tool_call_ids": [],
+                "block_all": True,
+                "error_code": "convergence_admission_required",
+                "content_type": "convergence_admission_required",
+                "message": "Stable call identity is required after convergence.",
+            }
+        },
+    )
+
+    results = await sandbox.call_tool(
+        action_list=[action],
+        context=_sandbox_context(),
+        event_message=event_message,
+    )
+
+    assert len(results) == 1
+    assert results[0].success is False
+    assert results[0].error == "convergence_admission_required"
+    assert results[0].metadata["sandbox_observation"]["effect"] == "blocked"
+
+
+@pytest.mark.asyncio
 async def test_sandbox_routes_context_artifact_reads_before_remote_transport(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

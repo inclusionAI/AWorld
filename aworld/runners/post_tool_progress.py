@@ -26,6 +26,35 @@ _PUBLIC_DELIVERABLE_SCHEMA = "aworld.public-deliverables/v1"
 _PUBLIC_DELIVERABLE_AUTHORITY = "public_task_advisory"
 _PUBLIC_DELIVERABLE_BASELINE_KEY = "public_deliverable_baseline"
 _PUBLIC_DELIVERABLE_HASH_MAX_BYTES = 8 * 1024 * 1024
+_PUBLIC_DELIVERY_HIGH_WATER_BLOOM_BITS = 512
+
+
+def _delivery_high_water_positions(fingerprint: str) -> tuple[int, ...]:
+    digest = hashlib.sha256(fingerprint.encode("utf-8")).digest()
+    return tuple(
+        int.from_bytes(digest[index : index + 2], "big")
+        % _PUBLIC_DELIVERY_HIGH_WATER_BLOOM_BITS
+        for index in range(0, 8, 2)
+    )
+
+
+def _delivery_high_water_mask(value: Any) -> int:
+    if not isinstance(value, str) or len(value) > 128:
+        return 0
+    try:
+        return int(value, 16)
+    except ValueError:
+        return 0
+
+
+def _delivery_high_water_contains(mask: int, fingerprint: str) -> bool:
+    return all(mask & (1 << bit) for bit in _delivery_high_water_positions(fingerprint))
+
+
+def _delivery_high_water_add(mask: int, fingerprint: str) -> int:
+    for bit in _delivery_high_water_positions(fingerprint):
+        mask |= 1 << bit
+    return mask
 
 
 def _public_file_version(
@@ -847,20 +876,45 @@ def _record_semantic_tool_progress_locked(
         value
         for value in (previous.get("recent_public_delivery_fingerprints") or ())
         if isinstance(value, str)
-    ][-7:]
+    ][-31:]
     if (
         not recent_public_delivery_fingerprints
         and isinstance(baseline, dict)
         and isinstance(baseline.get("fingerprint"), str)
     ):
         recent_public_delivery_fingerprints.append(baseline["fingerprint"])
+    public_delivery_high_water_mask = _delivery_high_water_mask(
+        previous.get("public_delivery_high_water_bloom")
+    )
+    if public_delivery_high_water_mask == 0:
+        for fingerprint in recent_public_delivery_fingerprints:
+            public_delivery_high_water_mask = _delivery_high_water_add(
+                public_delivery_high_water_mask, fingerprint
+            )
     public_delivery_advanced = bool(
         public_delivery_changed
         and public_delivery_fingerprint
-        and public_delivery_fingerprint not in recent_public_delivery_fingerprints
+        and not _delivery_high_water_contains(
+            public_delivery_high_water_mask, public_delivery_fingerprint
+        )
+    )
+    successful_declared_candidate_mutation = any(
+        receipt.get("effect") == "mutating"
+        and receipt.get("executed") is True
+        and receipt.get("succeeded") is True
+        and receipt.get("timed_out") is False
+        and receipt.get("declared_deliverable_targeted") is True
+        for receipt in observed_action_semantics
+        if isinstance(receipt, Mapping)
+    )
+    public_delivery_progress_advanced = bool(
+        public_delivery_advanced and successful_declared_candidate_mutation
     )
     if public_delivery_fingerprint:
         recent_public_delivery_fingerprints.append(public_delivery_fingerprint)
+        public_delivery_high_water_mask = _delivery_high_water_add(
+            public_delivery_high_water_mask, public_delivery_fingerprint
+        )
     public_delivery_high_water_count = max(
         previous_public_delivery_high_water,
         public_delivery_count,
@@ -948,8 +1002,25 @@ def _record_semantic_tool_progress_locked(
         for value in (previous.get("recent_failure_signatures") or [])
         if isinstance(value, str)
     ][-7:]
+    observed_results_complete = bool(action_results) and all(
+        isinstance(result, Mapping)
+        and result.get("success") is True
+        and not result.get("error")
+        for result in action_results
+    )
+    successful_typed_result = any(
+        receipt.get("executed") is True
+        and receipt.get("succeeded") is True
+        and receipt.get("timed_out") is False
+        for receipt in observed_action_semantics
+        if isinstance(receipt, Mapping)
+    )
     failure_resolved = bool(
-        previous.get("failure_signature") is not None and failure_signature is None
+        previous.get("failure_signature") is not None
+        and previous.get("failure_operation_hash") == operation_hash
+        and failure_signature is None
+        and observed_results_complete
+        and successful_typed_result
     )
     failure_novel = bool(
         failure_signature is not None
@@ -962,7 +1033,7 @@ def _record_semantic_tool_progress_locked(
         artifact_advanced
         or validation_evidence_advanced
         or completion_advanced
-        or public_delivery_advanced
+        or public_delivery_progress_advanced
         or failure_changed
     )
     # New failures and opaque workspace changes are useful evidence, but they
@@ -970,7 +1041,11 @@ def _record_semantic_tool_progress_locked(
     # Reserve ``goal_progress`` for monotonic, inspectable milestone evidence;
     # the controller uses it only to reset an advisory no-progress window and
     # never to declare success.
-    durable_milestone_advanced = completion_advanced or public_delivery_advanced
+    durable_milestone_advanced = (
+        completion_advanced
+        or public_delivery_progress_advanced
+        or failure_resolved
+    )
     goal_progress = durable_milestone_advanced
     goal_progress_count = int(previous.get("goal_progress_count", 0) or 0) + int(
         goal_progress
@@ -1087,6 +1162,8 @@ def _record_semantic_tool_progress_locked(
         "workspace_generation": workspace_generation,
         "diagnostic_progress_observable": diagnostic_progress_observable,
         "failure_signature": failure_signature,
+        "failure_operation_hash": operation_hash if failure_signature else None,
+        "failure_resolved": failure_resolved,
         "recent_failure_signatures": recent_failure_signatures[-8:],
         "hypothesis_id": hypothesis_id,
         "semantic_progress_enabled": semantic_ledger_enabled,
@@ -1102,20 +1179,25 @@ def _record_semantic_tool_progress_locked(
         "public_delivery_fingerprint": public_delivery_fingerprint,
         "public_delivery_count": public_delivery_count,
         "public_delivery_high_water_count": public_delivery_high_water_count,
+        "public_delivery_high_water_bloom": format(
+            public_delivery_high_water_mask, "0128x"
+        ),
         "public_delivery_advanced": public_delivery_advanced,
+        "public_delivery_progress_advanced": public_delivery_progress_advanced,
         "public_delivery_changed": public_delivery_changed,
         "recent_public_delivery_fingerprints": (
-            recent_public_delivery_fingerprints[-8:]
+            recent_public_delivery_fingerprints[-32:]
         ),
         "public_delivery_versions": public_delivery_versions,
         "public_deliverable_declared": public_deliverable_declared,
         "missing_public_deliverable_count": missing_public_deliverable_count,
         "candidate_present": candidate_present,
         "public_candidate_mutated": public_candidate_mutated,
-        # Exact plan/action alignment needs to know whether the declared
-        # candidate changed on this Tool turn. Durable goal progress below is
-        # stricter: an A→B→A oscillation is not a new milestone.
-        "candidate_advanced": public_delivery_changed,
+        # Candidate advancement is a successful, never-before-seen public
+        # delivery high-water fingerprint.  A failed Tool result, missing
+        # receipt, or A→B→A oscillation cannot manufacture progress.
+        "candidate_advanced": public_delivery_progress_advanced,
+        "delivery_progress_advanced": durable_milestone_advanced,
         "validation_evidence_advanced": validation_evidence_advanced,
         "validation_observed": validation_evidence_advanced,
         "new_information_observed": new_information_observed,
@@ -1156,26 +1238,62 @@ def _record_semantic_tool_progress_locked(
             framework_observable_validation_kind,
         )
 
-        observed_call_ids = {
-            item.get("tool_call_id")
+        results_by_call_id = {
+            item.get("tool_call_id"): item
             for item in action_results
             if isinstance(item, Mapping)
             and isinstance(item.get("tool_call_id"), str)
         }
-        if any(
-            isinstance(getattr(action, "tool_call_id", None), str)
-            and action.tool_call_id in observed_call_ids
-            and framework_observable_validation_kind(
-                runtime_context, agent_id, action
+        validation_results = []
+        for action in actions:
+            call_id = getattr(action, "tool_call_id", None)
+            result = results_by_call_id.get(call_id)
+            kind = (
+                framework_observable_validation_kind(
+                    runtime_context, agent_id, action
+                )
+                if isinstance(call_id, str) and result is not None
+                else None
             )
-            is not None
-            for action in actions
-        ):
+            if kind is None:
+                continue
+            validation_results.append(
+                {
+                    "kind": kind,
+                    "result_hash": semantic_result_fingerprint(result),
+                    "succeeded": result.get("success") is True
+                    and not result.get("error"),
+                }
+            )
+        if validation_results:
             state["validation_observed"] = True
+            validation_fingerprint = semantic_fingerprint(validation_results)
+            validation_high_water = [
+                value
+                for value in (previous.get("recent_validation_fingerprints") or ())
+                if isinstance(value, str)
+            ][-15:]
+            validation_advanced = validation_fingerprint not in validation_high_water
+            validation_high_water.append(validation_fingerprint)
+            state["recent_validation_fingerprints"] = validation_high_water[-16:]
+            state["validation_evidence_advanced"] = validation_advanced
+            if validation_advanced:
+                state["delivery_progress_advanced"] = True
+                state["durable_milestone_advanced"] = True
+                state["progress_guard_reset"] = True
+                state["goal_progress"] = True
+                state["goal_progress_count"] = int(
+                    previous.get("goal_progress_count", 0) or 0
+                ) + 1
+                state["no_goal_progress_count"] = 0
     except Exception:
         # Protocol accounting is advisory and cannot turn a successful Tool
         # observation into a runtime failure.
         pass
+    # Keep local metric projections aligned with the typed validation update.
+    goal_progress = bool(state.get("goal_progress"))
+    progress_guard_reset = bool(state.get("progress_guard_reset"))
+    durable_milestone_advanced = bool(state.get("durable_milestone_advanced"))
     state_by_agent[agent_id] = state
     runtime_context.context_info[SEMANTIC_PROGRESS_KEY] = state_by_agent
     shared_writer = getattr(runtime_context, "write_task_runtime_state", None)
@@ -1443,7 +1561,7 @@ def _record_semantic_tool_progress_locked(
                 reason="positive_completion_evidence_observed",
                 observation=resolution_observation,
             )
-        elif public_delivery_advanced:
+        elif public_delivery_progress_advanced:
             record_execution_resolution(
                 runtime_context,
                 agent_id,

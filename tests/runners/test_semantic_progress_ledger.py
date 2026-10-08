@@ -339,7 +339,7 @@ def test_changed_failure_signature_is_meaningful_progress():
     assert changed["last_meaningful_progress_at"] is not None
 
 
-def test_public_deliverable_creation_is_one_durable_milestone(tmp_path):
+def test_failed_tool_result_cannot_promote_public_file_change_to_progress(tmp_path):
     output = tmp_path / "result.json"
     context = Context(task_id="public-delivery-progress")
     context.context_info["public_deliverable_contract"] = {
@@ -391,12 +391,13 @@ def test_public_deliverable_creation_is_one_durable_milestone(tmp_path):
     assert created["completion_advanced"] is False
     assert created["public_delivery_count"] == 1
     assert created["public_delivery_advanced"] is True
+    assert created["public_delivery_progress_advanced"] is False
     assert created["candidate_present"] is True
-    assert created["candidate_advanced"] is True
-    assert created["durable_milestone_advanced"] is True
-    assert created["goal_progress"] is True
+    assert created["candidate_advanced"] is False
+    assert created["durable_milestone_advanced"] is False
+    assert created["goal_progress"] is False
     assert context.completion_contract is None
-    assert get_execution_state(context, agent_id="agent")["status"] == "running"
+    assert get_execution_state(context, agent_id="agent")["status"] == "incomplete"
 
     repeated = _record_failure(context, 2)
     assert repeated["public_delivery_advanced"] is False
@@ -404,6 +405,8 @@ def test_public_deliverable_creation_is_one_durable_milestone(tmp_path):
 
 
 def test_public_candidate_resolution_uses_tool_start_watermark(tmp_path):
+    from aworld.sandbox.tool_observation import semantic_target_sha256
+
     output = tmp_path / "result.json"
     context = Context(task_id="candidate-resolution-watermark")
     context.context_info["public_deliverable_contract"] = {
@@ -420,19 +423,53 @@ def test_public_candidate_resolution_uses_tool_start_watermark(tmp_path):
             }
         ],
     }
+    capture_public_deliverable_baseline(context)
     stale_tool_start = execution_resolution_observation(context, "agent")
     record_execution_state(
         context, "agent", "incomplete", "delivery_candidate_missing"
     )
 
     output.write_text("{}")
+    stale_action = ActionModel(
+        tool_name="terminal",
+        action_name="run_code",
+        tool_call_id="stale-candidate-write",
+        params={"code": f"printf '{{}}' > {output}"},
+    )
     record_semantic_tool_progress(
         context,
         tool_name="terminal",
         agent_id="agent",
-        actions=[ActionModel(tool_name="terminal", action_name="execute")],
+        actions=[stale_action],
         observation=Observation(
-            action_result=[ActionResult(content="candidate", success=True)]
+            action_result=[
+                ActionResult(
+                    tool_call_id="stale-candidate-write",
+                    content="candidate",
+                    success=True,
+                    metadata={
+                        "sandbox_observation": {
+                            "effect": "mutating",
+                            "workspace_mutated": True,
+                            "workspace_generation": 1,
+                            "action_semantic_receipt": {
+                                "schema_version": "aworld.action-semantic-receipt/v1",
+                                "capability_aliases": ["workspace.mutate"],
+                                "effect": "mutating",
+                                "target_ids": [
+                                    semantic_target_sha256(str(output))
+                                ],
+                                "executed": True,
+                                "succeeded": True,
+                                "timed_out": False,
+                                "validation_kind": None,
+                                "declared_deliverable_targeted": True,
+                                "tool_call_id": "stale-candidate-write",
+                            },
+                        }
+                    },
+                )
+            ]
         ),
         resolution_observation=stale_tool_start,
     )
@@ -440,17 +477,209 @@ def test_public_candidate_resolution_uses_tool_start_watermark(tmp_path):
 
     fresh_tool_start = execution_resolution_observation(context, "agent")
     output.write_text('{"complete": true}')
+    fresh_action = ActionModel(
+        tool_name="terminal",
+        action_name="run_code",
+        tool_call_id="fresh-candidate-write",
+        params={"code": f"printf complete > {output}"},
+    )
     record_semantic_tool_progress(
         context,
         tool_name="terminal",
         agent_id="agent",
-        actions=[ActionModel(tool_name="terminal", action_name="execute")],
+        actions=[fresh_action],
         observation=Observation(
-            action_result=[ActionResult(content="candidate updated", success=True)]
+            action_result=[
+                ActionResult(
+                    tool_call_id="fresh-candidate-write",
+                    content="candidate updated",
+                    success=True,
+                    metadata={
+                        "sandbox_observation": {
+                            "effect": "mutating",
+                            "workspace_mutated": True,
+                            "workspace_generation": 2,
+                            "action_semantic_receipt": {
+                                "schema_version": "aworld.action-semantic-receipt/v1",
+                                "capability_aliases": ["workspace.mutate"],
+                                "effect": "mutating",
+                                "target_ids": [
+                                    semantic_target_sha256(str(output))
+                                ],
+                                "executed": True,
+                                "succeeded": True,
+                                "timed_out": False,
+                                "validation_kind": None,
+                                "declared_deliverable_targeted": True,
+                                "tool_call_id": "fresh-candidate-write",
+                            },
+                        }
+                    },
+                )
+            ]
         ),
         resolution_observation=fresh_tool_start,
     )
     assert get_execution_state(context, agent_id="agent")["status"] == "running"
+
+
+def test_successful_typed_declared_mutation_advances_public_candidate(tmp_path):
+    from aworld.sandbox.tool_observation import semantic_target_sha256
+
+    output = tmp_path / "result.json"
+    context = Context(task_id="typed-public-delivery-progress")
+    context.context_info["public_deliverable_contract"] = {
+        "schema_version": "aworld.public-deliverables/v1",
+        "authority": "public_task_advisory",
+        "source": "public_task_text",
+        "artifacts": [
+            {
+                "deliverable_id": "public-output-1",
+                "path": str(output),
+                "display_path": "result.json",
+                "kind": "file",
+                "authority": "public_task_advisory",
+            }
+        ],
+    }
+    capture_public_deliverable_baseline(context)
+    output.write_text("{}")
+    action = ActionModel(
+        tool_name="terminal",
+        action_name="run_code",
+        tool_call_id="typed-write",
+        params={"code": f"printf '{{}}' > {output}"},
+    )
+    state = record_semantic_tool_progress(
+        context,
+        tool_name="terminal",
+        agent_id="agent",
+        actions=[action],
+        observation=Observation(
+            action_result=[
+                ActionResult(
+                    tool_call_id="typed-write",
+                    success=True,
+                    metadata={
+                        "sandbox_observation": {
+                            "effect": "mutating",
+                            "workspace_mutated": True,
+                            "workspace_generation": 1,
+                            "action_semantic_receipt": {
+                                "schema_version": "aworld.action-semantic-receipt/v1",
+                                "capability_aliases": ["workspace.mutate"],
+                                "effect": "mutating",
+                                "target_ids": [semantic_target_sha256(str(output))],
+                                "executed": True,
+                                "succeeded": True,
+                                "timed_out": False,
+                                "validation_kind": None,
+                                "declared_deliverable_targeted": True,
+                                "tool_call_id": "typed-write",
+                            },
+                        }
+                    },
+                )
+            ]
+        ),
+    )
+
+    assert state["public_delivery_advanced"] is True
+    assert state["public_delivery_progress_advanced"] is True
+    assert state["candidate_advanced"] is True
+    assert state["delivery_progress_advanced"] is True
+
+
+def test_failed_declared_mutations_do_not_reset_candidate_convergence(tmp_path):
+    from aworld.sandbox.tool_observation import semantic_target_sha256
+
+    output = tmp_path / "result.json"
+    context = Context(task_id="failed-public-delivery-progress")
+    context.context_info["public_deliverable_contract"] = {
+        "schema_version": "aworld.public-deliverables/v1",
+        "authority": "public_task_advisory",
+        "source": "public_task_text",
+        "artifacts": [
+            {
+                "deliverable_id": "public-output-1",
+                "path": str(output),
+                "display_path": "result.json",
+                "kind": "file",
+                "authority": "public_task_advisory",
+            }
+        ],
+    }
+    configure_execution_protocol(
+        context,
+        "agent",
+        ExecutionProtocolPolicy(
+            mode=ProtocolMode.GUIDE,
+            post_candidate_read_only_threshold=2,
+            repetition_threshold=99,
+            low_information_gain_threshold=99,
+            no_goal_progress_threshold=99,
+            stagnation_event_threshold=99,
+        ),
+    )
+    capture_public_deliverable_baseline(context)
+
+    def observe(content: str, *, success: bool, index: int):
+        output.write_text(content)
+        call_id = f"declared-write-{index}"
+        action = ActionModel(
+            tool_name="terminal",
+            action_name="run_code",
+            tool_call_id=call_id,
+            params={"code": f"printf value > {output}"},
+        )
+        return record_semantic_tool_progress(
+            context,
+            tool_name="terminal",
+            agent_id="agent",
+            actions=[action],
+            observation=Observation(
+                action_result=[
+                    ActionResult(
+                        tool_call_id=call_id,
+                        success=success,
+                        error=None if success else "command_failed",
+                        metadata={
+                            "sandbox_observation": {
+                                "effect": "mutating",
+                                "workspace_mutated": True,
+                                "workspace_generation": index,
+                                "action_semantic_receipt": {
+                                    "schema_version": "aworld.action-semantic-receipt/v1",
+                                    "capability_aliases": ["workspace.mutate"],
+                                    "effect": "mutating",
+                                    "target_ids": [
+                                        semantic_target_sha256(str(output))
+                                    ],
+                                    "executed": True,
+                                    "succeeded": success,
+                                    "timed_out": False,
+                                    "validation_kind": None,
+                                    "declared_deliverable_targeted": True,
+                                    "tool_call_id": call_id,
+                                },
+                            }
+                        },
+                    )
+                ]
+            ),
+        )
+
+    initial = observe("A", success=True, index=1)
+    first_failed = observe("B", success=False, index=2)
+    second_failed = observe("C", success=False, index=3)
+
+    assert initial["candidate_advanced"] is True
+    assert first_failed["public_delivery_advanced"] is True
+    assert first_failed["candidate_advanced"] is False
+    assert second_failed["candidate_advanced"] is False
+    protocol = load_execution_protocol_state(context, "agent")
+    assert protocol.post_candidate_no_delivery_progress_observations == 2
+    assert protocol.convergence_constraint_active is True
 
 
 def test_public_deliverable_baseline_distinguishes_existing_file_from_update(
@@ -492,11 +721,12 @@ def test_public_deliverable_baseline_distinguishes_existing_file_from_update(
     output.write_text('{"candidate": true}')
     updated = _record_failure(context, 2)
     assert updated["candidate_present"] is True
-    assert updated["candidate_advanced"] is True
+    assert updated["public_delivery_advanced"] is True
+    assert updated["candidate_advanced"] is False
 
     output.write_text("{}")
     reverted = _record_failure(context, 3)
-    assert reverted["candidate_advanced"] is True
+    assert reverted["candidate_advanced"] is False
     assert reverted["public_delivery_advanced"] is False
     assert reverted["goal_progress"] is False
 
@@ -549,9 +779,11 @@ def test_public_deliverable_content_oscillation_is_not_repeated_goal_progress(
     repeated_a = _record_failure(context, 2)
 
     assert first_a["public_delivery_advanced"] is True
+    assert first_a["candidate_advanced"] is False
     assert first_b["public_delivery_advanced"] is True
+    assert first_b["candidate_advanced"] is False
     assert repeated_a["public_delivery_changed"] is True
-    assert repeated_a["candidate_advanced"] is True
+    assert repeated_a["candidate_advanced"] is False
     assert repeated_a["public_delivery_advanced"] is False
     assert repeated_a["durable_milestone_advanced"] is False
     assert repeated_a["goal_progress"] is False
@@ -626,7 +858,7 @@ def test_semantic_progress_ledger_env_opt_out(monkeypatch):
     assert state["no_goal_progress_count"] == 0
 
 
-def test_two_ineffective_replans_stop_injecting_without_finalizing():
+def test_candidate_claim_with_no_delivery_progress_enters_convergence_not_finalization():
     context = Context(task_id="semantic-replan-limit")
     configure_execution_protocol(
         context,
@@ -639,48 +871,51 @@ def test_two_ineffective_replans_stop_injecting_without_finalizing():
     )
     _record_failure(context, 0)
     next_index = 1
-    for _ in range(2):
-        for _ in range(6):
-            _record_failure(context, next_index)
-            next_index += 1
-        guidance = consume_execution_protocol_guidance(context, "agent")
-        assert guidance is not None and "checkpoint" in guidance
-        assert (
-            record_model_plan_update(
-                context,
-                "agent",
-                {
-                    "decision": "replan",
-                    "horizon": "long",
-                    "milestone": "resolve the repeated failure",
-                    "next_action": "try a materially different bounded probe",
-                    "next_action_tool": "terminal__execute",
-                    "next_action_arguments": json.dumps(
-                        {"command": f"candidate-{next_index} --retry"}
-                    ),
-                    "verification_plan": "compare the next observed failure signature",
-                    "completion_assessment": "in_progress",
-                    "delivery_intent": "validate_candidate",
-                    "delivery_rationale": "the next probe tests the revised approach",
-                    "assumptions": [],
-                    "retired_approaches": ["repeat the same ineffective retry"],
-                    "evidence_refs": [f"tool:call-{next_index - 1}"],
-                    "selected_candidate_id": None,
-                },
-            )
-            is not None
-        )
-
     for _ in range(6):
+        _record_failure(context, next_index)
+        next_index += 1
+    guidance = consume_execution_protocol_guidance(context, "agent")
+    assert guidance is not None and "checkpoint" in guidance
+    assert (
+        record_model_plan_update(
+            context,
+            "agent",
+            {
+                "decision": "replan",
+                "horizon": "long",
+                "milestone": "resolve the repeated failure",
+                "next_action": "try a materially different bounded probe",
+                "next_action_tool": "terminal__execute",
+                "next_action_arguments": json.dumps(
+                    {"command": f"candidate-{next_index} --retry"}
+                ),
+                "verification_plan": "compare the next observed failure signature",
+                "completion_assessment": "in_progress",
+                "delivery_intent": "validate_candidate",
+                "delivery_rationale": "the next probe tests the revised approach",
+                "assumptions": [],
+                "retired_approaches": ["repeat the same ineffective retry"],
+                "evidence_refs": [f"tool:call-{next_index - 1}"],
+                "selected_candidate_id": None,
+            },
+        )
+        is not None
+    )
+
+    for _ in range(3):
         _record_failure(context, next_index)
         next_index += 1
 
     metrics = context.context_info["execution_protocol_metrics"]
-    assert metrics["last_action"] == ControllerAction.CONTINUE.value
-    assert metrics["last_reason"] == "replan_limit_reached"
-    assert consume_execution_protocol_guidance(context, "agent") is None
+    assert metrics["last_action"] == ControllerAction.APPLY_CONVERGENCE_CONSTRAINT.value
+    assert metrics["last_reason"] == "post_candidate_stagnation"
+    assert "convergence constraint" in consume_execution_protocol_guidance(
+        context, "agent"
+    )
     protocol_state = load_execution_protocol_state(context, "agent")
-    assert protocol_state.replan_count == 2
+    assert protocol_state.replan_count == 1
+    assert protocol_state.convergence_constraint_active is True
+    assert protocol_state.convergence_stage.value == "validate_repair_or_submit"
     assert protocol_state.finalization_entered is False
 
 

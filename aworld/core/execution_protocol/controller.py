@@ -453,29 +453,27 @@ def transition_execution_protocol(
                 )
             )
         )
-        post_candidate_read_only_observations = (
-            next_state.post_candidate_read_only_observations
+        post_candidate_no_delivery_progress_observations = (
+            max(
+                next_state.post_candidate_no_delivery_progress_observations,
+                next_state.post_candidate_read_only_observations,
+            )
         )
         if event.kind is EventKind.TOOL_OBSERVATION:
-            if (
-                candidate_convergence_ready
-                and event.read_only_observed
-                and not event.workspace_mutated
-                and not event.candidate_advanced
-                and not event.validation_observed
+            # Once an inspectable candidate exists, *every* Tool observation
+            # consumes convergence runway unless it advances a monotonic,
+            # framework-owned delivery high-water mark.  Workspace churn,
+            # unknown effects, cache hits, and merely repeated validation no
+            # longer reopen broad exploration.
+            if candidate_convergence_ready and not (
+                event.delivery_progress_advanced or event.candidate_advanced
             ):
-                post_candidate_read_only_observations = min(
+                post_candidate_no_delivery_progress_observations = min(
                     policy.post_candidate_read_only_threshold,
-                    post_candidate_read_only_observations + 1,
+                    post_candidate_no_delivery_progress_observations + 1,
                 )
-            elif (
-                not candidate_convergence_ready
-                or event.workspace_mutated
-                or event.known_mutation_executed
-                or event.candidate_advanced
-                or event.validation_observed
-            ):
-                post_candidate_read_only_observations = 0
+            else:
+                post_candidate_no_delivery_progress_observations = 0
         convergence_stage = next_state.convergence_stage
         if next_state.convergence_constraint_active:
             convergence_stage = (
@@ -490,8 +488,12 @@ def transition_execution_protocol(
             public_candidate_mutated=public_candidate_mutated,
             candidate_epoch_advanced=candidate_epoch_advanced,
             candidate_checkpoint_recorded=candidate_checkpoint_recorded,
+            post_candidate_no_delivery_progress_observations=(
+                post_candidate_no_delivery_progress_observations
+            ),
+            # One-release alias for v2 readers and existing dashboards.
             post_candidate_read_only_observations=(
-                post_candidate_read_only_observations
+                post_candidate_no_delivery_progress_observations
             ),
             convergence_stage=convergence_stage,
         )
@@ -585,7 +587,7 @@ def transition_execution_protocol(
             event.kind is EventKind.TOOL_OBSERVATION
             and candidate_convergence_ready
             and not next_state.convergence_constraint_active
-            and post_candidate_read_only_observations
+            and post_candidate_no_delivery_progress_observations
             >= policy.post_candidate_read_only_threshold
         )
         if post_candidate_constraint_due:

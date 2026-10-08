@@ -224,6 +224,13 @@ class BaseSandbox(SandboxSetup):
                 and interception.get("kind") == "block"
                 else ()
             )
+            block_all = bool(
+                isinstance(interception, dict)
+                and interception.get("schema_version")
+                == "aworld.tool-interception/v1"
+                and interception.get("kind") == "block"
+                and interception.get("block_all") is True
+            )
             # Preserve one canonical execution boundary for every capability.
             # Existing MCP/local/docker details remain private transports below
             # this method. Sequential execution also makes workspace generation
@@ -233,7 +240,7 @@ class BaseSandbox(SandboxSetup):
                 server_name = action_value.get("tool_name") or ""
                 action_name = action_value.get("action_name") or ""
                 tool_call_id = str(action_value.get("tool_call_id") or "")
-                if tool_call_id and tool_call_id in blocked_call_ids:
+                if block_all or (tool_call_id and tool_call_id in blocked_call_ids):
                     effect = classify_tool_effect(action)
                     canonical_tool, canonical_action = canonical_tool_identity(action)
                     error_code = str(
@@ -265,6 +272,7 @@ class BaseSandbox(SandboxSetup):
                     results.append(
                         ActionResult(
                             success=False,
+                            tool_call_id=tool_call_id or None,
                             tool_name=canonical_tool,
                             action_name=canonical_action,
                             content=json.dumps(

@@ -125,6 +125,32 @@ def _declare_mutation_required(context: Context, agent_id: str = "agent") -> Non
     assert transition is not None
 
 
+def _activate_produce_convergence(context: Context, agent_id: str = "agent") -> None:
+    """Reach the real typed boundary through two unapplied replans."""
+
+    for sequence in (1, 2):
+        transition = record_tool_protocol_event(
+            context,
+            agent_id,
+            _semantic_state(
+                repetition_count=1,
+                current_agent_step=sequence,
+                operation_hash=f"sha256:produce-operation-{sequence}",
+                result_hash=f"sha256:produce-result-{sequence}",
+            ),
+        )
+        assert transition.decision.action is ControllerAction.REQUEST_REPLAN
+        assert record_model_decision_attempt_failure(
+            context, agent_id, boundary="replan"
+        )
+        assert not record_model_decision_attempt_failure(
+            context, agent_id, boundary="replan"
+        )
+    state = load_execution_protocol_state(context, agent_id)
+    assert state.convergence_constraint_active is True
+    assert state.convergence_stage.value == "produce_candidate"
+
+
 @pytest.mark.parametrize(
     ("task_timeout", "expected_review_timeout"),
     [(600, 60.0), (7_200, 180.0)],
@@ -549,8 +575,10 @@ def test_scoped_state_and_bounded_telemetry_are_public_read_only_views() -> None
         "mutation_gate_validation_window_open": False,
         "mutation_gate_activation_count": 0,
         "mutation_gate_blocked_read_only_call_count": 0,
+        "convergence_gate_blocked_call_count": 0,
         "consecutive_read_only_observations": 0,
         "post_candidate_read_only_observations": 0,
+        "post_candidate_no_delivery_progress_observations": 0,
         "convergence_constraint_active": False,
         "convergence_constraint_activation_count": 0,
     }
@@ -911,7 +939,7 @@ def test_deadline_guidance_moves_from_candidate_to_delivery_only() -> None:
     assert consume_execution_protocol_guidance(context, "agent") is None
 
 
-def test_mutation_gate_activates_after_repeated_read_only_observations() -> None:
+def test_read_only_heuristic_is_advisory_before_typed_convergence() -> None:
     context = _context("mutation-gate")
     configure_execution_protocol(
         context,
@@ -935,13 +963,13 @@ def test_mutation_gate_activates_after_repeated_read_only_observations() -> None
         ),
     )
 
-    guidance = consume_execution_protocol_guidance(context, "agent")
-    assert guidance is not None
-    assert guidance.startswith("AWorld mutation gate:")
-    assert "8 consecutive read-only observations" in guidance
+    assert consume_execution_protocol_guidance(context, "agent") is None
+    assert build_execution_protocol_telemetry(context, "agent")[
+        "mutation_gate_active"
+    ] is False
 
 
-def test_known_mutation_execution_opens_one_validation_window_without_claiming_progress(
+def test_known_mutation_does_not_mint_validation_or_repair_authority(
 ) -> None:
     context = _context("mutation-validation-window")
     configure_execution_protocol(
@@ -972,7 +1000,7 @@ def test_known_mutation_execution_opens_one_validation_window_without_claiming_p
         tool_call_id="call-validation",
         agent_name="agent",
     )
-    assert mutation_gate_interception(context, [read]) is not None
+    assert mutation_gate_interception(context, [read]) is None
 
     record_tool_protocol_event(
         context,
@@ -987,12 +1015,9 @@ def test_known_mutation_execution_opens_one_validation_window_without_claiming_p
     )
     telemetry = build_execution_protocol_telemetry(context, "agent")
     assert telemetry["mutation_gate_active"] is False
-    assert telemetry["mutation_gate_validation_window_open"] is True
+    assert telemetry["mutation_gate_validation_window_open"] is False
     assert mutation_gate_interception(context, [read]) is None
-    guidance = consume_execution_protocol_guidance(context, "agent")
-    assert guidance is not None
-    assert guidance.startswith("AWorld mutation validation window:")
-    assert "not evidence of progress or completion" in guidance
+    assert consume_execution_protocol_guidance(context, "agent") is None
 
     # If validation still cannot observe an actual mutation/candidate, the
     # already-armed pre-candidate gate closes again immediately.
@@ -1006,7 +1031,7 @@ def test_known_mutation_execution_opens_one_validation_window_without_claiming_p
             candidate_present=False,
         ),
     )
-    assert mutation_gate_interception(context, [read]) is not None
+    assert mutation_gate_interception(context, [read]) is None
 
     # Actual mutation evidence resolves the gate; it is distinct from the
     # successful mutating execution receipt used only for validation liveness.
@@ -1097,9 +1122,7 @@ def test_named_deliverable_gate_ignores_unrelated_workspace_mutation(
         ),
     )
 
-    guidance = consume_execution_protocol_guidance(context, "agent")
-    assert guidance is not None
-    assert guidance.startswith("AWorld mutation gate:")
+    assert consume_execution_protocol_guidance(context, "agent") is None
 
 
 def test_named_deliverable_gate_reopens_reads_after_candidate_changes(
@@ -1146,7 +1169,7 @@ def test_named_deliverable_gate_reopens_reads_after_candidate_changes(
         tool_call_id="call-read",
         agent_name="agent",
     )
-    assert mutation_gate_interception(context, [read]) is not None
+    assert mutation_gate_interception(context, [read]) is None
 
     record_tool_protocol_event(
         context,
@@ -1161,7 +1184,7 @@ def test_named_deliverable_gate_reopens_reads_after_candidate_changes(
     assert mutation_gate_interception(context, [read]) is None
     assert build_execution_protocol_telemetry(context, "agent")[
         "mutation_gate_blocked_read_only_call_count"
-    ] == 1
+    ] == 0
 
 
 @pytest.mark.asyncio
@@ -1334,7 +1357,7 @@ async def test_post_candidate_read_only_loop_converges_to_validate_repair_or_sub
 
 
 @pytest.mark.asyncio
-async def test_post_candidate_gate_does_not_require_mutation_classification_and_allows_repair(
+async def test_post_candidate_gate_requires_evidence_before_contractless_repair(
 ) -> None:
     context = _context("contractless-post-candidate-convergence")
     configure_execution_protocol(
@@ -1394,10 +1417,9 @@ async def test_post_candidate_gate_does_not_require_mutation_classification_and_
     ) is not None
     assert await hook.exec(
         Message(category="tool_call", payload=[repair], sender="agent"), context
-    ) is None
+    ) is not None
 
-    # A successful known-mutating repair with no observable filesystem diff
-    # opens a validation window without being promoted to candidate progress.
+    # A successful mutation claim cannot mint its own repair authority.
     record_tool_protocol_event(
         context,
         "agent",
@@ -1410,11 +1432,11 @@ async def test_post_candidate_gate_does_not_require_mutation_classification_and_
         ),
     )
     telemetry = build_execution_protocol_telemetry(context, "agent")
-    assert telemetry["mutation_gate_active"] is False
-    assert telemetry["mutation_gate_validation_window_open"] is True
+    assert telemetry["mutation_gate_active"] is True
+    assert telemetry["mutation_gate_validation_window_open"] is False
     assert await hook.exec(
         Message(category="tool_call", payload=[read], sender="agent"), context
-    ) is None
+    ) is not None
 
 def test_preexisting_named_file_does_not_arm_post_candidate_convergence(
     tmp_path,
@@ -1474,7 +1496,7 @@ def test_preexisting_named_file_does_not_arm_post_candidate_convergence(
 
 
 @pytest.mark.asyncio
-async def test_mutation_gate_pre_tool_hook_intercepts_only_read_only_batches() -> None:
+async def test_pre_tool_hook_is_fail_open_before_typed_convergence() -> None:
     context = _context("mutation-gate-hook")
     configure_execution_protocol(
         context,
@@ -1522,34 +1544,455 @@ async def test_mutation_gate_pre_tool_hook_intercepts_only_read_only_batches() -
         context,
     )
 
-    assert intercepted is not None
-    tool_interception = intercepted.headers["tool_interception"]
-    assert tool_interception["schema_version"] == "aworld.tool-interception/v1"
-    assert tool_interception["kind"] == "block"
-    assert tool_interception["tool_call_ids"] == ["call-read"]
-    assert tool_interception["error_code"] == "candidate_mutation_required"
-    assert tool_interception["source_receipt"] == {
-        "schema_version": "aworld.mutation-gate/v2",
-        "kind": "candidate_mutation_required",
-        "agent_id": "agent",
-        "tool_call_ids": ["call-read"],
-        "reason": "read_only_limit",
-        "consecutive_read_only_observations": 8,
-        "post_candidate_read_only_observations": 0,
-        "convergence_stage": None,
-        "blocked_read_only_call_count": 1,
-    }
-    assert "Create or modify" in intercepted.headers["additional_context"]
+    assert intercepted is None
     assert allowed is None
     telemetry = build_execution_protocol_telemetry(context, "agent")
-    assert telemetry["mutation_gate_active"] is True
-    assert telemetry["mutation_gate_activation_count"] == 1
-    assert telemetry["mutation_gate_blocked_read_only_call_count"] == 1
+    assert telemetry["mutation_gate_active"] is False
+    assert telemetry["mutation_gate_activation_count"] == 0
+    assert telemetry["mutation_gate_blocked_read_only_call_count"] == 0
     assert telemetry["consecutive_read_only_observations"] == 8
 
 
 @pytest.mark.asyncio
-async def test_mutation_gate_allows_registered_validation_but_blocks_broad_read(
+async def test_produce_convergence_admits_only_exact_declared_target(tmp_path) -> None:
+    target = tmp_path / "result.json"
+    context = _context("produce-semantic-admission")
+    context.context_info["public_deliverable_contract"] = {
+        "schema_version": "aworld.public-deliverables/v1",
+        "authority": "public_task_advisory",
+        "source": "public_task_text",
+        "artifacts": [
+            {
+                "deliverable_id": "public-output-1",
+                "path": str(target),
+                "display_path": "result.json",
+                "kind": "file",
+                "authority": "public_task_advisory",
+            }
+        ],
+    }
+    configure_execution_protocol(
+        context,
+        "agent",
+        ExecutionProtocolPolicy(
+            mode=ProtocolMode.GUIDE,
+            activation_event_threshold=1,
+            model_activation_min_tool_actions=1,
+            repetition_threshold=1,
+            stagnation_event_threshold=1,
+        ),
+    )
+    _declare_long_horizon(context)
+    _activate_produce_convergence(context)
+
+    deliverable = ActionModel(
+        tool_name="terminal",
+        action_name="run_code",
+        params={"code": f"printf '{{}}' > {target}"},
+        tool_call_id="declared-write",
+        agent_name="agent",
+    )
+    helper = ActionModel(
+        tool_name="terminal",
+        action_name="run_code",
+        params={"code": f"printf helper > {tmp_path / 'helper.py'}"},
+        tool_call_id="helper-write",
+        agent_name="agent",
+    )
+    deliverable_and_helper = ActionModel(
+        tool_name="terminal",
+        action_name="run_code",
+        params={
+            "code": (
+                f"printf '{{}}' > {target}; "
+                f"printf helper > {tmp_path / 'helper.py'}"
+            )
+        },
+        tool_call_id="mixed-target-write",
+        agent_name="agent",
+    )
+    unknown = ActionModel(
+        tool_name="custom",
+        action_name="opaque",
+        params={"value": "x"},
+        tool_call_id="unknown-call",
+        agent_name="agent",
+    )
+
+    assert mutation_gate_interception(context, [deliverable]) is None
+    receipt = mutation_gate_interception(
+        context,
+        [deliverable, helper, deliverable_and_helper, unknown],
+    )
+    assert receipt is not None
+    assert receipt["tool_call_ids"] == [
+        "helper-write",
+        "mixed-target-write",
+        "unknown-call",
+    ]
+    assert receipt["convergence_stage"] == "produce_candidate"
+
+    anonymous = ActionModel(
+        tool_name="terminal",
+        action_name="run_code",
+        params={"code": f"printf '{{}}' > {target}"},
+        agent_name="agent",
+    )
+    anonymous_receipt = mutation_gate_interception(context, [anonymous])
+    assert anonymous_receipt is not None
+    assert anonymous_receipt["block_all"] is True
+    assert anonymous_receipt["tool_call_ids"] == []
+
+
+def test_pre_convergence_unknown_action_remains_fail_open() -> None:
+    context = _context("pre-convergence-fail-open")
+    configure_execution_protocol(
+        context,
+        "agent",
+        ExecutionProtocolPolicy(mode=ProtocolMode.GUIDE),
+    )
+    unknown = ActionModel(
+        tool_name="custom",
+        action_name="opaque",
+        params={"value": "x"},
+        tool_call_id="unknown-call",
+        agent_name="agent",
+    )
+
+    assert mutation_gate_interception(context, [unknown]) is None
+
+
+def test_contractless_produce_requires_exact_model_bound_semantics_and_call_id() -> None:
+    context = _context("contractless-produce-admission")
+    configure_execution_protocol(
+        context,
+        "agent",
+        ExecutionProtocolPolicy(
+            mode=ProtocolMode.GUIDE,
+            activation_event_threshold=1,
+            model_activation_min_tool_actions=1,
+            repetition_threshold=1,
+            stagnation_event_threshold=1,
+        ),
+    )
+    _declare_long_horizon(context)
+    _activate_produce_convergence(context)
+    candidate = ActionModel(
+        tool_name="filesystem",
+        action_name="write_file",
+        params={"path": "candidate.txt", "content": "candidate"},
+        tool_call_id="model-bound-candidate",
+        agent_name="agent",
+    )
+    unbound = ActionModel(
+        tool_name="filesystem",
+        action_name="write_file",
+        params={"path": "helper.txt", "content": "helper"},
+        tool_call_id="unbound-helper",
+        agent_name="agent",
+    )
+    assert record_model_plan_update(
+        context,
+        "agent",
+        {
+            "decision": "continue",
+            "horizon": "long",
+            "milestone": "produce the contractless candidate",
+            "next_action": "write the exact candidate",
+            "next_action_tool": "filesystem__write_file",
+            "next_action_arguments": json.dumps(candidate.params),
+            "verification_plan": "inspect the resulting state",
+            "completion_assessment": "in_progress",
+            "delivery_intent": "produce_candidate",
+            "delivery_rationale": "the task has no trusted named artifact",
+            "assumptions": [],
+            "retired_approaches": [],
+            "evidence_refs": [],
+            "selected_candidate_id": None,
+        },
+    ) is not None
+    assert bind_pending_next_action_call(context, "agent", [candidate]) is True
+
+    assert mutation_gate_interception(context, [candidate]) is None
+    blocked = mutation_gate_interception(context, [unbound])
+    assert blocked is not None
+    assert blocked["tool_call_ids"] == ["unbound-helper"]
+
+
+@pytest.mark.asyncio
+async def test_validate_convergence_requires_typed_validation_or_one_bound_repair(
+    tmp_path,
+) -> None:
+    from aworld.core.context.compiler import semantic_fingerprint
+
+    target = tmp_path / "result.json"
+    target.write_text("{}")
+    context = _context("validate-semantic-admission")
+    context.context_info["public_deliverable_contract"] = {
+        "schema_version": "aworld.public-deliverables/v1",
+        "authority": "public_task_advisory",
+        "source": "public_task_text",
+        "artifacts": [
+            {
+                "deliverable_id": "public-output-1",
+                "path": str(target),
+                "display_path": "result.json",
+                "kind": "file",
+                "authority": "public_task_advisory",
+            }
+        ],
+    }
+    validation_code = f"cat {target}"
+    context.configure_completion_contract(
+        CompletionContract(
+            required_artifacts=(),
+            immutable_inputs=(),
+            validation_commands=(
+                ValidationCommand(
+                    command_id="validate-result",
+                    argv=("sh", "-c", validation_code),
+                ),
+            ),
+            max_evidence_age_seconds=None,
+            required_final_evidence=(),
+        ),
+        mode=CompletionMode.ENFORCE,
+    )
+    configure_execution_protocol(
+        context,
+        "agent",
+        ExecutionProtocolPolicy(
+            mode=ProtocolMode.GUIDE,
+            post_candidate_read_only_threshold=1,
+            repetition_threshold=99,
+            low_information_gain_threshold=99,
+            no_goal_progress_threshold=99,
+            stagnation_event_threshold=99,
+        ),
+    )
+    record_tool_protocol_event(
+        context,
+        "agent",
+        _semantic_state(
+            current_agent_step=1,
+            candidate_present=True,
+            candidate_advanced=True,
+            delivery_progress_advanced=True,
+            public_deliverable_declared=True,
+            public_candidate_mutated=True,
+            public_delivery_fingerprint=semantic_fingerprint("candidate-a"),
+        ),
+    )
+    record_tool_protocol_event(
+        context,
+        "agent",
+        _semantic_state(
+            current_agent_step=2,
+            candidate_present=True,
+            public_deliverable_declared=True,
+            public_candidate_mutated=True,
+            public_delivery_fingerprint=semantic_fingerprint("candidate-a"),
+        ),
+    )
+    assert load_execution_protocol_state(
+        context, "agent"
+    ).convergence_stage.value == "validate_repair_or_submit"
+
+    validation = ActionModel(
+        tool_name="terminal",
+        action_name="run_code",
+        params={"code": validation_code},
+        tool_call_id="registered-validation",
+        agent_name="agent",
+    )
+    helper = ActionModel(
+        tool_name="terminal",
+        action_name="run_code",
+        params={"code": f"printf helper > {tmp_path / 'helper.py'}"},
+        tool_call_id="helper-write",
+        agent_name="agent",
+    )
+    mixed = mutation_gate_interception(context, [validation, helper])
+    assert mixed is not None
+    assert mixed["tool_call_ids"] == ["helper-write"]
+
+    first_validation = record_semantic_tool_progress(
+        context,
+        tool_name="terminal",
+        agent_id="agent",
+        actions=[validation],
+        observation=Observation(
+            action_result=[
+                ActionResult(
+                    tool_call_id=validation.tool_call_id,
+                    content="{}",
+                    success=True,
+                )
+            ]
+        ),
+    )
+    repeated_validation = ActionModel(
+        tool_name="terminal",
+        action_name="run_code",
+        params={"code": validation_code},
+        tool_call_id="registered-validation-repeat",
+        agent_name="agent",
+    )
+    repeated_state = record_semantic_tool_progress(
+        context,
+        tool_name="terminal",
+        agent_id="agent",
+        actions=[repeated_validation],
+        observation=Observation(
+            action_result=[
+                ActionResult(
+                    tool_call_id=repeated_validation.tool_call_id,
+                    content="{}",
+                    success=True,
+                )
+            ]
+        ),
+    )
+    assert first_validation["delivery_progress_advanced"] is True
+    assert repeated_state["delivery_progress_advanced"] is False
+
+    failed_validation = {
+        "schema_version": "aworld.action-semantic-receipt/v1",
+        "capability_aliases": ["workspace.validate"],
+        "effect": "validation",
+        "target_ids": [],
+        "executed": True,
+        "succeeded": False,
+        "timed_out": False,
+        "validation_kind": "registered:test",
+        "declared_deliverable_targeted": False,
+        "tool_call_id": "failed-validation",
+    }
+    record_tool_protocol_event(
+        context,
+        "agent",
+        _semantic_state(
+            current_agent_step=3,
+            candidate_present=True,
+            public_deliverable_declared=True,
+            public_candidate_mutated=True,
+            public_delivery_fingerprint=semantic_fingerprint("candidate-a"),
+            failure_signature=semantic_fingerprint("failed-validation"),
+            observed_action_semantics=(failed_validation,),
+        ),
+    )
+    repair = ActionModel(
+        tool_name="terminal",
+        action_name="run_code",
+        params={"code": f"printf repaired > {target}"},
+        tool_call_id="repair-once",
+        agent_name="agent",
+    )
+    assert mutation_gate_interception(context, [repair]) is None
+    blocked_second = mutation_gate_interception(context, [repair])
+    assert blocked_second is not None
+    assert blocked_second["tool_call_ids"] == ["repair-once"]
+
+
+def test_repair_authorization_becomes_stale_after_candidate_change(tmp_path) -> None:
+    from aworld.core.context.compiler import semantic_fingerprint
+
+    target = tmp_path / "result.json"
+    target.write_text("{}")
+    context = _context("stale-repair-authorization")
+    context.context_info["public_deliverable_contract"] = {
+        "schema_version": "aworld.public-deliverables/v1",
+        "authority": "public_task_advisory",
+        "source": "public_task_text",
+        "artifacts": [
+            {
+                "deliverable_id": "public-output-1",
+                "path": str(target),
+                "display_path": "result.json",
+                "kind": "file",
+                "authority": "public_task_advisory",
+            }
+        ],
+    }
+    configure_execution_protocol(
+        context,
+        "agent",
+        ExecutionProtocolPolicy(
+            mode=ProtocolMode.GUIDE,
+            post_candidate_read_only_threshold=1,
+            repetition_threshold=99,
+            low_information_gain_threshold=99,
+            no_goal_progress_threshold=99,
+            stagnation_event_threshold=99,
+        ),
+    )
+    first_hash = semantic_fingerprint("candidate-a")
+    for step, progress in ((1, True), (2, False)):
+        record_tool_protocol_event(
+            context,
+            "agent",
+            _semantic_state(
+                current_agent_step=step,
+                candidate_present=True,
+                candidate_advanced=progress,
+                delivery_progress_advanced=progress,
+                public_deliverable_declared=True,
+                public_candidate_mutated=True,
+                public_delivery_fingerprint=first_hash,
+            ),
+        )
+    failed_validation = {
+        "schema_version": "aworld.action-semantic-receipt/v1",
+        "capability_aliases": ["workspace.validate"],
+        "effect": "validation",
+        "target_ids": [],
+        "executed": True,
+        "succeeded": False,
+        "timed_out": False,
+        "validation_kind": "registered:test",
+        "declared_deliverable_targeted": False,
+        "tool_call_id": "failed-validation",
+    }
+    record_tool_protocol_event(
+        context,
+        "agent",
+        _semantic_state(
+            current_agent_step=3,
+            candidate_present=True,
+            public_deliverable_declared=True,
+            public_candidate_mutated=True,
+            public_delivery_fingerprint=first_hash,
+            failure_signature=semantic_fingerprint("failure"),
+            observed_action_semantics=(failed_validation,),
+        ),
+    )
+    record_tool_protocol_event(
+        context,
+        "agent",
+        _semantic_state(
+            current_agent_step=4,
+            candidate_present=True,
+            candidate_advanced=True,
+            delivery_progress_advanced=True,
+            public_deliverable_declared=True,
+            public_candidate_mutated=True,
+            public_delivery_fingerprint=semantic_fingerprint("candidate-b"),
+        ),
+    )
+    repair = ActionModel(
+        tool_name="terminal",
+        action_name="run_code",
+        params={"code": f"printf repaired > {target}"},
+        tool_call_id="stale-repair",
+        agent_name="agent",
+    )
+    receipt = mutation_gate_interception(context, [repair])
+    assert receipt is not None
+    assert receipt["tool_call_ids"] == ["stale-repair"]
+
+
+@pytest.mark.asyncio
+async def test_pre_convergence_registered_validation_and_reads_remain_fail_open(
     tmp_path,
 ) -> None:
     context = _context("mutation-gate-registered-validation")
@@ -1628,10 +2071,7 @@ async def test_mutation_gate_allows_registered_validation_but_blocks_broad_read(
         context,
     )
 
-    assert intercepted is not None
-    assert intercepted.headers["tool_interception"]["tool_call_ids"] == [
-        "broad-read"
-    ]
+    assert intercepted is None
     spoofed = await hook.exec(
         Message(
             category="tool_call",
@@ -1640,10 +2080,7 @@ async def test_mutation_gate_allows_registered_validation_but_blocks_broad_read(
         ),
         context,
     )
-    assert spoofed is not None
-    assert spoofed.headers["tool_interception"]["tool_call_ids"] == [
-        "spoofed-validation"
-    ]
+    assert spoofed is None
 
 
 @pytest.mark.asyncio

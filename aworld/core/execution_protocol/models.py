@@ -1065,6 +1065,10 @@ class ExecutionProtocolEvent:
     missing_public_deliverable_count: int = 0
     candidate_present: bool | None = None
     candidate_advanced: bool = False
+    # Monotonic, framework-observed delivery high-water advance.  Unlike
+    # ``candidate_advanced`` this is false for a changed-but-previously-seen
+    # candidate, a failed Tool result, or untyped workspace churn.
+    delivery_progress_advanced: bool = False
     public_candidate_mutated: bool = False
     workspace_mutated: bool = False
     read_only_observed: bool = False
@@ -1112,6 +1116,7 @@ class ExecutionProtocolEvent:
             "read_only_observed",
             "known_mutation_executed",
             "candidate_advanced",
+            "delivery_progress_advanced",
             "public_candidate_mutated",
             "validation_observed",
             "new_information_observed",
@@ -1276,6 +1281,7 @@ class ExecutionProtocolEvent:
             missing_public_deliverable_count=self.missing_public_deliverable_count,
             candidate_present=self.candidate_present,
             candidate_advanced=self.candidate_advanced,
+            delivery_progress_advanced=self.delivery_progress_advanced,
             public_candidate_mutated=self.public_candidate_mutated,
             workspace_mutated=self.workspace_mutated,
             read_only_observed=self.read_only_observed,
@@ -1312,6 +1318,7 @@ class ProtocolEventRecord:
     missing_public_deliverable_count: int = 0
     candidate_present: bool | None = None
     candidate_advanced: bool = False
+    delivery_progress_advanced: bool = False
     public_candidate_mutated: bool = False
     workspace_mutated: bool = False
     read_only_observed: bool = False
@@ -1357,6 +1364,7 @@ class ProtocolEventRecord:
             "read_only_observed",
             "known_mutation_executed",
             "candidate_advanced",
+            "delivery_progress_advanced",
             "public_candidate_mutated",
             "validation_observed",
             "new_information_observed",
@@ -1509,6 +1517,7 @@ class ProtocolEventRecord:
             "missing_public_deliverable_count": self.missing_public_deliverable_count,
             "candidate_present": self.candidate_present,
             "candidate_advanced": self.candidate_advanced,
+            "delivery_progress_advanced": self.delivery_progress_advanced,
             "public_candidate_mutated": self.public_candidate_mutated,
             "workspace_mutated": self.workspace_mutated,
             "read_only_observed": self.read_only_observed,
@@ -1574,6 +1583,9 @@ class ProtocolEventRecord:
             ),
             candidate_present=value.get("candidate_present"),
             candidate_advanced=value.get("candidate_advanced", False),
+            delivery_progress_advanced=value.get(
+                "delivery_progress_advanced", False
+            ),
             public_candidate_mutated=value.get("public_candidate_mutated", False),
             workspace_mutated=value.get("workspace_mutated", False),
             read_only_observed=value.get("read_only_observed", False),
@@ -1652,6 +1664,9 @@ class ExecutionProtocolState:
     candidate_epoch_advanced: bool = False
     candidate_checkpoint_recorded: bool = False
     post_candidate_read_only_observations: int = 0
+    # Authoritative counter.  The read-only name above remains a one-release
+    # serialization/telemetry alias for older readers.
+    post_candidate_no_delivery_progress_observations: int = 0
     convergence_constraint_active: bool = False
     convergence_stage: ConvergenceStage | None = None
     convergence_constraint_activation_count: int = 0
@@ -1693,6 +1708,7 @@ class ExecutionProtocolState:
             "action_alignment_match_count",
             "action_alignment_mismatch_count",
             "post_candidate_read_only_observations",
+            "post_candidate_no_delivery_progress_observations",
             "convergence_constraint_activation_count",
         ):
             _non_negative_int(getattr(self, name), name)
@@ -1885,6 +1901,9 @@ class ExecutionProtocolState:
             "post_candidate_read_only_observations": (
                 self.post_candidate_read_only_observations
             ),
+            "post_candidate_no_delivery_progress_observations": (
+                self.post_candidate_no_delivery_progress_observations
+            ),
             "convergence_constraint_active": self.convergence_constraint_active,
             "convergence_stage": (
                 self.convergence_stage.value
@@ -2010,8 +2029,20 @@ class ExecutionProtocolState:
                 "candidate_checkpoint_recorded", False
             ),
             post_candidate_read_only_observations=_non_negative_int(
-                value.get("post_candidate_read_only_observations", 0),
+                value.get(
+                    "post_candidate_read_only_observations",
+                    value.get(
+                        "post_candidate_no_delivery_progress_observations", 0
+                    ),
+                ),
                 "post_candidate_read_only_observations",
+            ),
+            post_candidate_no_delivery_progress_observations=_non_negative_int(
+                value.get(
+                    "post_candidate_no_delivery_progress_observations",
+                    value.get("post_candidate_read_only_observations", 0),
+                ),
+                "post_candidate_no_delivery_progress_observations",
             ),
             convergence_constraint_active=value.get(
                 "convergence_constraint_active", False
