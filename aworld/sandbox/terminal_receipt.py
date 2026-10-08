@@ -14,13 +14,17 @@ import hashlib
 import posixpath
 import re
 from pathlib import Path
-from typing import Any, Iterable, Sequence
+from typing import Any, Iterable, Mapping, Sequence
 
 import bashlex
 
 
 TERMINAL_EXECUTION_RECEIPT_SCHEMA = "aworld.terminal-execution-receipt/v2"
 TERMINAL_EXECUTION_RECEIPT_KEY = "terminal_execution_receipt"
+# v2 coverage fields are additive: ``read_ranges`` aligns one-for-one with
+# ``read_paths`` and ``read_projection_reusable`` says whether stdout preserves
+# that single-file window. Legacy v2 receipts are re-derived by the Sandbox
+# with this same analyzer; they are never assumed reusable by default.
 TERMINAL_EXECUTION_ANALYZER_VERSION = 6
 TERMINAL_LANGUAGE_CONTRACT_VERSION = 1
 TERMINAL_LANGUAGES = frozenset({"shell", "python"})
@@ -43,6 +47,9 @@ _SHELL_READ_COMMANDS = frozenset(
         "du",
         "echo",
         "false",
+        "find",
+        "git",
+        "grep",
         "head",
         "ls",
         "md5sum",
@@ -283,6 +290,35 @@ class TerminalExecutionPlan:
     nested_source_sha256: tuple[str, ...] = ()
     command_cwd: str | None = None
     command_cwd_safe: bool = True
+    read_ranges: tuple["TerminalReadRange", ...] = ()
+    read_projection_reusable: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class TerminalReadRange:
+    """Bounded semantic coverage for one path in ``read_paths``.
+
+    The range is descriptive evidence, not an instruction to execute.  Only
+    ``full``, explicit line/byte windows, and tail windows can participate in
+    overlap reuse.  ``query`` and ``metadata`` remain exact-operation facts.
+    """
+
+    kind: str
+    start: int | None = None
+    end: int | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        value: dict[str, Any] = {"kind": self.kind}
+        if self.start is not None:
+            value["start"] = self.start
+        if self.end is not None:
+            value["end"] = self.end
+        return value
+
+
+_FULL_READ = TerminalReadRange("full")
+_QUERY_READ = TerminalReadRange("query")
+_METADATA_READ = TerminalReadRange("metadata")
 
 
 def terminal_command_sha256(code: str) -> str:
@@ -423,8 +459,7 @@ def _python_effect_and_paths(
                 known_mutation = True
                 writes.append(path)
             elif (
-                receiver_name == "os"
-                and function.attr in _PYTHON_OS_MUTATION_METHODS
+                receiver_name == "os" and function.attr in _PYTHON_OS_MUTATION_METHODS
             ) or (
                 receiver_name == "shutil"
                 and function.attr in _PYTHON_SHUTIL_MUTATION_METHODS
@@ -542,7 +577,10 @@ def _command_words(words: Sequence[str]) -> tuple[str, list[str]]:
             remaining.pop(0)
             while remaining and remaining[0].startswith("-"):
                 option = remaining.pop(0)
-                if option in {"-u", "-g", "-h", "-p", "-C", "-T", "-R", "-D"} and remaining:
+                if (
+                    option in {"-u", "-g", "-h", "-p", "-C", "-T", "-R", "-D"}
+                    and remaining
+                ):
                     remaining.pop(0)
             continue
         if executable == "env":
@@ -577,6 +615,8 @@ def _python_source_from_shell_command(node: Any, args: Sequence[str]) -> str | N
 
 
 def _path_arguments(executable: str, args: Sequence[str]) -> tuple[str, ...]:
+    """Best-effort mutation operands for commands with known write effects."""
+
     if executable in {
         ":",
         "basename",
@@ -591,9 +631,6 @@ def _path_arguments(executable: str, args: Sequence[str]) -> tuple[str, ...]:
         "which",
     }:
         return ()
-    if executable == "rg":
-        positional = [value for value in args if not value.startswith("-")]
-        return tuple(positional[1:] or (".",))
     if executable in {"du", "ls"}:
         positional = [value for value in args if not value.startswith("-")]
         return tuple(positional or (".",))
@@ -622,29 +659,723 @@ def _path_arguments(executable: str, args: Sequence[str]) -> tuple[str, ...]:
     return tuple(values)
 
 
-def _shell_read_command_is_provable(
+_SEARCH_LITERAL_FLAGS = frozenset(
+    {
+        "-c",
+        "-F",
+        "-H",
+        "-h",
+        "-i",
+        "-l",
+        "-L",
+        "-n",
+        "-N",
+        "-o",
+        "-q",
+        "-s",
+        "-S",
+        "-v",
+        "-w",
+        "-x",
+        "--case-sensitive",
+        "--column",
+        "--count",
+        "--count-matches",
+        "--files-with-matches",
+        "--files-without-match",
+        "--fixed-strings",
+        "--follow",
+        "--heading",
+        "--hidden",
+        "--ignore-case",
+        "--include-zero",
+        "--invert-match",
+        "--line-number",
+        "--line-regexp",
+        "--no-filename",
+        "--no-heading",
+        "--no-hidden",
+        "--no-ignore",
+        "--no-ignore-dot",
+        "--no-ignore-exclude",
+        "--no-ignore-files",
+        "--no-ignore-global",
+        "--no-ignore-messages",
+        "--no-ignore-parent",
+        "--no-line-number",
+        "--no-messages",
+        "--null",
+        "--null-data",
+        "--only-matching",
+        "--quiet",
+        "--smart-case",
+        "--stats",
+        "--trim",
+        "--type-list",
+        "--unrestricted",
+        "--word-regexp",
+    }
+)
+_RG_VALUE_OPTIONS = {
+    "-A": "value",
+    "-B": "value",
+    "-C": "value",
+    "-e": "pattern",
+    "-f": "pattern_file",
+    "-g": "glob",
+    "-j": "value",
+    "-m": "value",
+    "-r": "value",
+    "-t": "value",
+    "-T": "value",
+    "--after-context": "value",
+    "--before-context": "value",
+    "--color": "value",
+    "--colors": "value",
+    "--context": "value",
+    "--context-separator": "value",
+    "--encoding": "value",
+    "--engine": "value",
+    "--field-context-separator": "value",
+    "--field-match-separator": "value",
+    "--file": "pattern_file",
+    "--glob": "glob",
+    "--iglob": "glob",
+    "--ignore-file": "dependency",
+    "--max-columns": "value",
+    "--max-count": "value",
+    "--max-depth": "value",
+    "--max-filesize": "value",
+    "--path-separator": "value",
+    "--regexp": "pattern",
+    "--replace": "value",
+    "--sort": "value",
+    "--sortr": "value",
+    "--threads": "value",
+    "--type": "value",
+    "--type-not": "value",
+}
+_RG_UNSAFE_OPTIONS = frozenset(
+    {
+        "--hostname-bin",
+        "--pre",
+        "--pre-glob",
+        "--type-add",
+        "--type-clear",
+    }
+)
+_GREP_LITERAL_FLAGS = frozenset(
+    {
+        "-a",
+        "-b",
+        "-c",
+        "-E",
+        "-F",
+        "-G",
+        "-H",
+        "-h",
+        "-i",
+        "-I",
+        "-l",
+        "-L",
+        "-n",
+        "-o",
+        "-q",
+        "-r",
+        "-R",
+        "-s",
+        "-v",
+        "-w",
+        "-x",
+        "-Z",
+        "-z",
+        "--binary-files=text",
+        "--byte-offset",
+        "--count",
+        "--extended-regexp",
+        "--files-with-matches",
+        "--files-without-match",
+        "--fixed-strings",
+        "--ignore-case",
+        "--initial-tab",
+        "--invert-match",
+        "--line-buffered",
+        "--line-number",
+        "--line-regexp",
+        "--no-filename",
+        "--null",
+        "--null-data",
+        "--only-matching",
+        "--quiet",
+        "--recursive",
+        "--silent",
+        "--text",
+        "--with-filename",
+        "--word-regexp",
+    }
+)
+_GREP_VALUE_OPTIONS = {
+    "-A": "value",
+    "-B": "value",
+    "-C": "value",
+    "-e": "pattern",
+    "-f": "pattern_file",
+    "-m": "value",
+    "--after-context": "value",
+    "--before-context": "value",
+    "--binary-files": "value",
+    "--context": "value",
+    "--exclude": "glob",
+    "--exclude-dir": "glob",
+    "--exclude-from": "dependency",
+    "--include": "glob",
+    "--label": "value",
+    "--max-count": "value",
+    "--regexp": "pattern",
+    "--file": "pattern_file",
+}
+
+
+def _has_dynamic_path(value: str) -> bool:
+    return any(marker in value for marker in ("$", "`", "*", "?", "[", "]", "\n", "\r"))
+
+
+def _consume_search_options(
+    args: Sequence[str],
+    *,
+    literal_flags: frozenset[str],
+    value_options: Mapping[str, str],
+    unsafe_options: frozenset[str] = frozenset(),
+    allow_files_mode: bool = False,
+) -> tuple[list[str], list[str], bool, bool, bool]:
+    """Return positionals, extra dependencies, pattern flag, files mode, safe."""
+
+    positionals: list[str] = []
+    dependencies: list[str] = []
+    pattern_supplied = False
+    files_mode = False
+    index = 0
+    options = True
+    while index < len(args):
+        value = args[index]
+        if options and value == "--":
+            options = False
+            index += 1
+            continue
+        if not options or value == "-" or not value.startswith("-"):
+            positionals.append(value)
+            index += 1
+            continue
+        name, separator, attached = value.partition("=")
+        if name in unsafe_options:
+            return [], [], False, False, False
+        if allow_files_mode and name == "--files" and not separator:
+            files_mode = True
+            index += 1
+            continue
+        option_kind = value_options.get(name)
+        short_attached = ""
+        if option_kind is None and value.startswith("-") and not value.startswith("--"):
+            # Accept clusters of boolean short options, or one value-taking
+            # option with its value attached (for example ``-g*.py``/``-A3``).
+            short_names = ["-" + char for char in value[1:]]
+            value_index = next(
+                (i for i, item in enumerate(short_names) if item in value_options),
+                None,
+            )
+            if value_index is None:
+                if all(item in literal_flags for item in short_names):
+                    index += 1
+                    continue
+                return [], [], False, False, False
+            if not all(item in literal_flags for item in short_names[:value_index]):
+                return [], [], False, False, False
+            name = short_names[value_index]
+            option_kind = value_options[name]
+            short_attached = value[value_index + 2 :]
+            # Anything after a value-taking option is its value, not flags.
+        if option_kind is not None:
+            option_value = attached if separator else short_attached
+            if not option_value:
+                index += 1
+                if index >= len(args):
+                    return [], [], False, False, False
+                option_value = args[index]
+            if option_kind == "pattern":
+                pattern_supplied = True
+            elif option_kind in {"pattern_file", "dependency"}:
+                dependencies.append(option_value)
+                if option_kind == "pattern_file":
+                    pattern_supplied = True
+            index += 1
+            continue
+        if value in literal_flags:
+            index += 1
+            continue
+        return [], [], False, False, False
+    return positionals, dependencies, pattern_supplied, files_mode, True
+
+
+def _search_read_analysis(
     executable: str,
     args: Sequence[str],
-) -> bool:
-    if executable not in _SHELL_READ_COMMANDS:
-        return False
-    if executable == "rg" and any(
-        value.startswith("--pre") or value.startswith("--hostname-bin")
-        for value in args
-    ):
-        return False
-    if executable == "rg" and (
-        not args or any(value.startswith("-") for value in args)
-    ):
-        return False
-    if executable == "sed":
-        return (
-            len(args) >= 3
-            and args[0] == "-n"
-            and re.fullmatch(r"\d+(?:,\d+)?p", args[1]) is not None
-            and all(not value.startswith("-") for value in args[2:])
+) -> tuple[bool, tuple[tuple[str, TerminalReadRange], ...], bool]:
+    if executable == "rg":
+        positionals, dependencies, pattern_supplied, files_mode, safe = (
+            _consume_search_options(
+                args,
+                literal_flags=_SEARCH_LITERAL_FLAGS,
+                value_options=_RG_VALUE_OPTIONS,
+                unsafe_options=_RG_UNSAFE_OPTIONS,
+                allow_files_mode=True,
+            )
         )
-    return True
+    else:
+        positionals, dependencies, pattern_supplied, files_mode, safe = (
+            _consume_search_options(
+                args,
+                literal_flags=_GREP_LITERAL_FLAGS,
+                value_options=_GREP_VALUE_OPTIONS,
+            )
+        )
+    if not safe:
+        return False, (), False
+    if files_mode:
+        paths = positionals or ["."]
+    else:
+        if not pattern_supplied:
+            if not positionals:
+                return False, (), False
+            positionals = positionals[1:]
+        paths = positionals
+    entries = [
+        *((path, _FULL_READ) for path in dependencies),
+        *((path, _QUERY_READ) for path in paths),
+    ]
+    complete = not any(path == "-" or _has_dynamic_path(path) for path, _ in entries)
+    return True, tuple(entries), complete
+
+
+def _head_tail_analysis(
+    executable: str,
+    args: Sequence[str],
+) -> tuple[bool, tuple[tuple[str, TerminalReadRange], ...], bool]:
+    count = 10
+    unit = "lines"
+    relative_count = False
+    paths: list[str] = []
+    index = 0
+    options = True
+    while index < len(args):
+        value = args[index]
+        if options and value == "--":
+            options = False
+        elif not options or value == "-" or not value.startswith("-"):
+            paths.append(value)
+        elif executable == "tail" and (
+            value in {"-f", "-F", "--follow", "--retry", "--pid"}
+            or value.startswith(("--follow=", "--pid="))
+        ):
+            return False, (), False
+        elif value in {
+            "-q",
+            "-v",
+            "-z",
+            "--quiet",
+            "--silent",
+            "--verbose",
+            "--zero-terminated",
+        }:
+            pass
+        elif value in {"-n", "--lines", "-c", "--bytes"}:
+            index += 1
+            if index >= len(args) or not re.fullmatch(r"[+-]?\d+", args[index]):
+                return False, (), False
+            relative_count = args[index].startswith(("+", "-"))
+            count = abs(int(args[index]))
+            unit = "bytes" if value in {"-c", "--bytes"} else "lines"
+        elif value.startswith(("--lines=", "--bytes=")):
+            raw = value.split("=", 1)[1]
+            if not re.fullmatch(r"[+-]?\d+", raw):
+                return False, (), False
+            relative_count = raw.startswith(("+", "-"))
+            count = abs(int(raw))
+            unit = "bytes" if value.startswith("--bytes=") else "lines"
+        elif match := re.fullmatch(r"-(?P<unit>[nc])(?P<count>[+-]?\d+)", value):
+            raw = match.group("count")
+            relative_count = raw.startswith(("+", "-"))
+            count = abs(int(raw))
+            unit = "bytes" if match.group("unit") == "c" else "lines"
+        elif re.fullmatch(r"-\d+", value):
+            count = int(value[1:])
+            unit = "lines"
+        else:
+            return False, (), False
+        index += 1
+    if not paths:
+        # Terminal subprocess stdin is explicitly DEVNULL; pipeline stdin is
+        # already represented by the upstream command's dependencies.
+        return True, (), True
+    kind = (
+        "tail_bytes"
+        if executable == "tail" and unit == "bytes"
+        else "tail_lines"
+        if executable == "tail"
+        else "byte_range"
+        if unit == "bytes"
+        else "line_range"
+    )
+    coverage = (
+        _QUERY_READ
+        if relative_count or count == 0
+        else TerminalReadRange(kind, count, None)
+        if kind.startswith("tail_")
+        else TerminalReadRange(kind, 0, count)
+        if unit == "bytes"
+        else TerminalReadRange(kind, 1, count)
+    )
+    return (
+        True,
+        tuple((path, coverage) for path in paths),
+        not any(path == "-" or _has_dynamic_path(path) for path in paths),
+    )
+
+
+def _cat_analysis(
+    args: Sequence[str],
+) -> tuple[bool, tuple[tuple[str, TerminalReadRange], ...], bool]:
+    safe = {
+        "-A",
+        "-b",
+        "-e",
+        "-E",
+        "-n",
+        "-s",
+        "-t",
+        "-T",
+        "-u",
+        "-v",
+        "--number",
+        "--number-nonblank",
+        "--show-all",
+        "--show-ends",
+        "--show-nonprinting",
+        "--show-tabs",
+        "--squeeze-blank",
+    }
+    paths: list[str] = []
+    options = True
+    for value in args:
+        if options and value == "--":
+            options = False
+        elif options and value.startswith("-") and value != "-":
+            short = (
+                ["-" + char for char in value[1:]] if not value.startswith("--") else []
+            )
+            if value not in safe and not (
+                short and all(item in safe for item in short)
+            ):
+                return False, (), False
+        else:
+            paths.append(value)
+    if not paths:
+        return True, (), True
+    return (
+        True,
+        tuple((path, _FULL_READ) for path in paths),
+        not any(path == "-" or _has_dynamic_path(path) for path in paths),
+    )
+
+
+def _sed_analysis(
+    args: Sequence[str],
+) -> tuple[bool, tuple[tuple[str, TerminalReadRange], ...], bool]:
+    # Deliberately support only the bounded, non-evaluating print form.
+    if len(args) < 3 or args[0] != "-n":
+        return False, (), False
+    match = re.fullmatch(r"(?P<start>\d+)(?:,(?P<end>\d+))?p", args[1])
+    if match is None or any(value.startswith("-") for value in args[2:]):
+        return False, (), False
+    start = int(match.group("start"))
+    end = int(match.group("end") or start)
+    if start < 1 or end < start:
+        return False, (), False
+    paths = list(args[2:])
+    return (
+        True,
+        tuple((path, TerminalReadRange("line_range", start, end)) for path in paths),
+        not any(_has_dynamic_path(path) for path in paths),
+    )
+
+
+_FIND_UNSAFE_ACTIONS = frozenset(
+    {"-delete", "-exec", "-execdir", "-fls", "-fprint", "-fprintf", "-ok", "-okdir"}
+)
+_FIND_VALUE_PREDICATES = frozenset(
+    {
+        "-amin",
+        "-anewer",
+        "-atime",
+        "-cmin",
+        "-cnewer",
+        "-ctime",
+        "-fstype",
+        "-gid",
+        "-group",
+        "-ilname",
+        "-iname",
+        "-inum",
+        "-ipath",
+        "-iregex",
+        "-links",
+        "-lname",
+        "-maxdepth",
+        "-mindepth",
+        "-mmin",
+        "-mnewer",
+        "-mtime",
+        "-name",
+        "-newer",
+        "-newerXY",
+        "-path",
+        "-perm",
+        "-printf",
+        "-regex",
+        "-size",
+        "-type",
+        "-uid",
+        "-used",
+        "-user",
+        "-wholename",
+    }
+)
+
+
+def _find_analysis(
+    args: Sequence[str],
+) -> tuple[bool, tuple[tuple[str, TerminalReadRange], ...], bool]:
+    index = 0
+    while index < len(args) and args[index] in {"-H", "-L", "-P"}:
+        index += 1
+    paths: list[str] = []
+    while index < len(args) and not args[index].startswith(("-", "!", "(")):
+        paths.append(args[index])
+        index += 1
+    paths = paths or ["."]
+    dependencies: list[str] = []
+    while index < len(args):
+        value = args[index]
+        if value in _FIND_UNSAFE_ACTIONS or any(
+            value.startswith(item + "=") for item in _FIND_UNSAFE_ACTIONS
+        ):
+            return False, (), False
+        if value in {
+            "(",
+            ")",
+            "!",
+            "-a",
+            "-and",
+            "-o",
+            "-or",
+            "-not",
+            "-empty",
+            "-print",
+            "-print0",
+            "-ls",
+            "-true",
+            "-false",
+            "-xdev",
+            "-mount",
+            "-depth",
+            "-daystart",
+            "-follow",
+            "-ignore_readdir_race",
+            "-noignore_readdir_race",
+        }:
+            index += 1
+            continue
+        if value in _FIND_VALUE_PREDICATES or re.fullmatch(r"-newer[A-Za-z]{2}", value):
+            index += 1
+            if index >= len(args):
+                return False, (), False
+            if value.startswith(("-newer", "-anewer", "-cnewer", "-mnewer")):
+                dependencies.append(args[index])
+            index += 1
+            continue
+        return False, (), False
+    entries = [
+        *((path, _QUERY_READ) for path in paths),
+        *((path, _METADATA_READ) for path in dependencies),
+    ]
+    # A directory traversal's complete file dependency set is discovered only
+    # at runtime, so it is read-only but never exact-replay cacheable.
+    return True, tuple(entries), False
+
+
+_GIT_READ_SUBCOMMANDS = frozenset(
+    {
+        "cat-file",
+        "describe",
+        "diff",
+        "diff-files",
+        "diff-index",
+        "diff-tree",
+        "grep",
+        "log",
+        "ls-files",
+        "ls-tree",
+        "name-rev",
+        "rev-list",
+        "rev-parse",
+        "show",
+        "show-ref",
+        "status",
+    }
+)
+_GIT_EXECUTING_OPTIONS = frozenset(
+    {
+        "--ext-diff",
+        "--textconv",
+        "--exec-path",
+        "--config-env",
+        "--paginate",
+        "-p",
+        "-c",
+        "--filters",
+        "--output",
+        "--open-files-in-pager",
+        "-O",
+    }
+)
+
+
+def _git_analysis(
+    args: Sequence[str],
+) -> tuple[bool, tuple[tuple[str, TerminalReadRange], ...], bool]:
+    if not args:
+        return False, (), False
+    index = 0
+    while index < len(args) and args[index].startswith("-"):
+        value = args[index]
+        if value in _GIT_EXECUTING_OPTIONS or any(
+            value.startswith(item + "=") for item in _GIT_EXECUTING_OPTIONS
+        ):
+            return False, (), False
+        if value not in {
+            "--no-pager",
+            "--no-replace-objects",
+            "--no-optional-locks",
+            "--literal-pathspecs",
+            "--glob-pathspecs",
+            "--noglob-pathspecs",
+            "--icase-pathspecs",
+            "--version",
+            "--help",
+        }:
+            return False, (), False
+        index += 1
+    if index >= len(args):
+        # ``git --version``/``git --help`` have no workspace dependency.
+        return True, (), True
+    subcommand = args[index]
+    if subcommand not in _GIT_READ_SUBCOMMANDS:
+        return False, (), False
+    remaining = args[index + 1 :]
+    if any(
+        value in _GIT_EXECUTING_OPTIONS
+        or value.startswith(
+            (
+                "--ext-diff=",
+                "--textconv=",
+                "--filters=",
+                "--output=",
+                "--open-files-in-pager=",
+                "-O",
+            )
+        )
+        for value in remaining
+    ):
+        return False, (), False
+    # Git resolves refs, index, config, attributes and worktree files.  Keep a
+    # compact repository-root dependency but fail replay completeness closed.
+    return True, ((".", _QUERY_READ),), False
+
+
+def _generic_read_analysis(
+    executable: str,
+    args: Sequence[str],
+) -> tuple[bool, tuple[tuple[str, TerminalReadRange], ...], bool]:
+    if executable not in _SHELL_READ_COMMANDS:
+        return False, (), False
+    if executable in {"rg", "grep"}:
+        return _search_read_analysis(executable, args)
+    if executable in {"head", "tail"}:
+        return _head_tail_analysis(executable, args)
+    if executable == "cat":
+        return _cat_analysis(args)
+    if executable == "sed":
+        return _sed_analysis(args)
+    if executable == "find":
+        return _find_analysis(args)
+    if executable == "git":
+        return _git_analysis(args)
+    paths = _path_arguments(executable, args)
+    entries = tuple(
+        (
+            path,
+            _METADATA_READ
+            if executable in {"ls", "stat", "test", "readlink", "realpath", "du"}
+            else _FULL_READ,
+        )
+        for path in paths
+    )
+    return (
+        True,
+        entries,
+        not any(_has_dynamic_path(path) for path, _ in entries),
+    )
+
+
+def _shell_projection_is_reusable(
+    commands: Sequence[Any],
+    *,
+    read_paths: Sequence[str],
+    read_ranges: Sequence[TerminalReadRange],
+) -> bool:
+    """Admit overlap reuse only when stdout is the selected file bytes."""
+
+    if len(commands) != 1 or len(read_paths) != 1 or len(read_ranges) != 1:
+        return False
+    if read_ranges[0].kind not in {
+        "full",
+        "line_range",
+        "byte_range",
+        "tail_lines",
+        "tail_bytes",
+    }:
+        return False
+    node = commands[0]
+    words = [
+        part.word
+        for part in getattr(node, "parts", ())
+        if getattr(part, "kind", None) == "word"
+    ]
+    executable, args = _command_words(words)
+    if executable == "cat":
+        return all(value == "--" or not value.startswith("-") for value in args)
+    if executable in {"head", "tail"}:
+        return not any(
+            value
+            in {
+                "-q",
+                "-v",
+                "--quiet",
+                "--silent",
+                "--verbose",
+            }
+            for value in args
+        )
+    return executable == "sed"
 
 
 def _bounded_paths(values: Iterable[str]) -> tuple[str, ...]:
@@ -659,10 +1390,85 @@ def _bounded_paths(values: Iterable[str]) -> tuple[str, ...]:
     return tuple(bounded)
 
 
+def _merge_coverage(
+    current: TerminalReadRange,
+    incoming: TerminalReadRange,
+) -> TerminalReadRange:
+    if current == incoming or current.kind == "full":
+        return current
+    if incoming.kind == "full":
+        return incoming
+    if current.kind == incoming.kind == "line_range":
+        if (
+            current.start is not None
+            and current.end is not None
+            and incoming.start is not None
+            and incoming.end is not None
+            and incoming.start <= current.end + 1
+            and current.start <= incoming.end + 1
+        ):
+            return TerminalReadRange(
+                "line_range",
+                min(current.start, incoming.start),
+                max(current.end, incoming.end),
+            )
+    if current.kind == incoming.kind == "byte_range":
+        if (
+            current.start is not None
+            and current.end is not None
+            and incoming.start is not None
+            and incoming.end is not None
+            and incoming.start <= current.end
+            and current.start <= incoming.end
+        ):
+            return TerminalReadRange(
+                "byte_range",
+                min(current.start, incoming.start),
+                max(current.end, incoming.end),
+            )
+    if current.kind == incoming.kind and current.kind in {"tail_lines", "tail_bytes"}:
+        return TerminalReadRange(
+            current.kind,
+            max(current.start or 0, incoming.start or 0),
+            None,
+        )
+    # Disjoint/mixed projections cannot be represented as one contiguous
+    # reusable window. Keep the dependency but restrict it to exact-query facts.
+    return _QUERY_READ
+
+
+def _bounded_read_entries(
+    entries: Iterable[tuple[str, TerminalReadRange]],
+) -> tuple[tuple[str, ...], tuple[TerminalReadRange, ...], bool]:
+    merged: dict[str, TerminalReadRange] = {}
+    complete = True
+    for raw_path, coverage in entries:
+        path = str(raw_path)
+        if not path:
+            continue
+        if len(path) > _MAX_RECEIPT_PATH_CHARS:
+            complete = False
+            path = path[:_MAX_RECEIPT_PATH_CHARS]
+        if path in merged:
+            merged[path] = _merge_coverage(merged[path], coverage)
+            continue
+        if len(merged) >= _MAX_RECEIPT_PATHS:
+            complete = False
+            continue
+        merged[path] = coverage
+    return tuple(merged), tuple(merged.values()), complete
+
+
 def _parse_shell_nodes(source: str) -> list[Any] | None:
     try:
         return list(bashlex.parse(source))
-    except (bashlex.errors.ParsingError, NotImplementedError, RecursionError, AssertionError, TypeError):
+    except (
+        bashlex.errors.ParsingError,
+        NotImplementedError,
+        RecursionError,
+        AssertionError,
+        TypeError,
+    ):
         return None
 
 
@@ -788,15 +1594,19 @@ def plan_terminal_execution(
             parsed = False
         else:
             parsed = True
+        read_paths, read_ranges, entries_complete = _bounded_read_entries(
+            (path, _FULL_READ) for path in reads
+        )
         return TerminalExecutionPlan(
             "python",
             effect,
             effect == "read_only",
             parsed,
-            reads,
+            read_paths,
             writes,
             False,
-            read_set_complete,
+            read_set_complete and entries_complete,
+            read_ranges=read_ranges,
         )
     nested_heredoc = _python_heredoc_source(code)
     if nested_heredoc is not None:
@@ -814,17 +1624,21 @@ def plan_terminal_execution(
             effect = "unknown"
         else:
             parsed = True
+        read_paths, read_ranges, entries_complete = _bounded_read_entries(
+            (path, _FULL_READ) for path in reads
+        )
         return TerminalExecutionPlan(
             "shell",
             effect,
             effect == "read_only",
             parsed,
-            reads,
+            read_paths,
             writes,
             False,
-            read_set_complete,
+            read_set_complete and entries_complete,
             ("python",),
             (terminal_command_sha256(nested_python),),
+            read_ranges=read_ranges,
         )
     if _looks_like_bare_python(code):
         # run_code is a shell contract.  Recognizing Python-looking input here
@@ -855,7 +1669,7 @@ def plan_terminal_execution(
             background_operator = True
         pending.extend(_shell_child_nodes(node))
 
-    reads: list[str] = []
+    read_entries: list[tuple[str, TerminalReadRange]] = []
     writes: list[str] = []
     known_mutation = False
     unknown = background_operator
@@ -873,17 +1687,14 @@ def plan_terminal_execution(
             non_file_target = (
                 isinstance(output, int)
                 or raw_target in _NON_FILE_REDIRECT_TARGETS
-                or (
-                    isinstance(raw_target, str)
-                    and raw_target.startswith("/dev/fd/")
-                )
+                or (isinstance(raw_target, str) and raw_target.startswith("/dev/fd/"))
             )
             if not non_file_target:
                 known_mutation = True
             if path is not None:
                 writes.append(path)
         elif redirect_type == "<" and path is not None:
-            reads.append(path)
+            read_entries.append((path, _FULL_READ))
         elif redirect_type == "<":
             read_set_complete = False
 
@@ -900,9 +1711,7 @@ def plan_terminal_execution(
         ]
         words = [part.word for part in word_nodes]
         if words:
-            leading_assignments = bool(
-                re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", words[0])
-            )
+            leading_assignments = bool(re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", words[0]))
             wrapper = Path(words[0]).name.lower() in {
                 "builtin",
                 "command",
@@ -914,12 +1723,13 @@ def plan_terminal_execution(
             explicitly_trusted = False
             if "/" in raw_executable:
                 try:
-                    resolved_executable = str(Path(raw_executable).expanduser().resolve())
+                    resolved_executable = str(
+                        Path(raw_executable).expanduser().resolve()
+                    )
                 except OSError:
                     resolved_executable = raw_executable
                 explicitly_trusted = any(
-                    resolved_executable
-                    == str(Path(value).expanduser().resolve())
+                    resolved_executable == str(Path(value).expanduser().resolve())
                     for value in trusted_executable_paths
                 )
             untrusted_explicit_path = (
@@ -952,7 +1762,7 @@ def plan_terminal_execution(
                 python_writes,
                 python_reads_complete,
             ) = _python_effect_and_paths(python_source)
-            reads.extend(python_reads)
+            read_entries.extend((path, _FULL_READ) for path in python_reads)
             writes.extend(python_writes)
             read_set_complete = read_set_complete and python_reads_complete
             if python_effect == "mutating":
@@ -966,35 +1776,35 @@ def plan_terminal_execution(
             known_mutation = True
             writes.extend(_path_arguments(executable, args))
             continue
-        if not _shell_read_command_is_provable(executable, args):
+        command_read_only, command_entries, command_complete = _generic_read_analysis(
+            executable, args
+        )
+        if not command_read_only:
             unknown = True
             continue
-        path_arguments = (
-            args[1:]
-            if executable == "rg" and args
-            else args
-        )
-        if any(
-            any(marker in value for marker in ("*", "?", "[", "]"))
-            for value in path_arguments
-        ):
-            read_set_complete = False
-        reads.extend(_path_arguments(executable, args))
+        read_entries.extend(command_entries)
+        read_set_complete = read_set_complete and command_complete
 
     effect = "mutating" if known_mutation else "unknown" if unknown else "read_only"
-    if len(dict.fromkeys(reads)) > _MAX_RECEIPT_PATHS:
-        read_set_complete = False
+    read_paths, read_ranges, entries_complete = _bounded_read_entries(read_entries)
+    read_set_complete = read_set_complete and entries_complete
     return TerminalExecutionPlan(
         "shell",
         effect,
         effect == "read_only",
         True,
-        _bounded_paths(reads),
+        read_paths,
         _bounded_paths(writes),
         background_operator,
         read_set_complete,
         command_cwd=command_cwd,
         command_cwd_safe=command_cwd_safe,
+        read_ranges=read_ranges,
+        read_projection_reusable=_shell_projection_is_reusable(
+            commands,
+            read_paths=read_paths,
+            read_ranges=read_ranges,
+        ),
     )
 
 
@@ -1014,11 +1824,16 @@ def build_terminal_execution_receipt(
 ) -> dict[str, Any]:
     """Project one terminal decision/result into bounded transport metadata."""
 
-    generation_delta = (
-        0 if not executed or plan.effect == "read_only" else 1
-    )
+    generation_delta = 0 if not executed or plan.effect == "read_only" else 1
     read_epochs = [dict(epoch) for epoch in read_path_epochs][:_MAX_RECEIPT_PATHS]
-    read_epochs_complete = not plan.read_paths or len(read_epochs) == len(plan.read_paths)
+    read_epochs_complete = not plan.read_paths or len(read_epochs) == len(
+        plan.read_paths
+    )
+    read_ranges = (
+        plan.read_ranges
+        if len(plan.read_ranges) == len(plan.read_paths)
+        else tuple(_FULL_READ for _ in plan.read_paths)
+    )
     nested_language_evidence = (
         [
             {"language": language, "source_sha256": source_sha256}
@@ -1055,6 +1870,8 @@ def build_terminal_execution_receipt(
             and capture_complete
         ),
         "read_paths": list(plan.read_paths),
+        "read_ranges": [coverage.to_dict() for coverage in read_ranges],
+        "read_projection_reusable": bool(plan.read_projection_reusable),
         "write_paths": list(plan.write_paths),
         "read_set_complete": plan.read_set_complete,
         "read_path_epochs": read_epochs,
@@ -1079,6 +1896,7 @@ __all__ = [
     "TERMINAL_EXECUTION_RECEIPT_KEY",
     "TERMINAL_EXECUTION_RECEIPT_SCHEMA",
     "TerminalExecutionPlan",
+    "TerminalReadRange",
     "build_terminal_execution_receipt",
     "plan_terminal_execution",
     "python_is_provably_read_only",

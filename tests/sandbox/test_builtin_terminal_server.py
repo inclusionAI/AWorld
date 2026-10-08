@@ -132,6 +132,109 @@ def test_terminal_execution_plan_captures_read_operand(
     assert expected_path in plan.read_paths
 
 
+@pytest.mark.parametrize(
+    ("command", "expected_paths", "expected_kind"),
+    (
+        ("rg -n -g '*.py' needle src/main.py", ("src/main.py",), "query"),
+        ("rg --glob=*.py --regexp needle -- src/main.py", ("src/main.py",), "query"),
+        ("grep -n -E -A 2 -e needle -- src/main.py", ("src/main.py",), "query"),
+        ("head -n 25 src/main.py", ("src/main.py",), "line_range"),
+        ("tail --lines=25 src/main.py", ("src/main.py",), "tail_lines"),
+        ("sed -n 10,20p src/main.py", ("src/main.py",), "line_range"),
+    ),
+)
+def test_read_only_option_parser_emits_paths_and_typed_coverage(
+    command: str,
+    expected_paths: tuple[str, ...],
+    expected_kind: str,
+) -> None:
+    plan = _terminal_execution_plan(command)
+
+    assert plan.effect == "read_only"
+    assert plan.read_set_complete is True
+    assert plan.read_paths == expected_paths
+    assert tuple(item.kind for item in plan.read_ranges) == (expected_kind,)
+
+
+@pytest.mark.parametrize(
+    "command",
+    (
+        "rg --pre 'sh -c mutate' needle src",
+        "rg --hostname-bin ./hostname needle src",
+        "find . -type f -exec sh -c 'touch changed' ';'",
+        "find . -delete",
+        "find . -fprint output.txt",
+        "git -c core.pager='sh -c touch changed' status",
+        "git diff --ext-diff",
+        "git show --textconv HEAD:file",
+        "git diff --output=patch.txt",
+        "git grep --open-files-in-pager='sh -c touch changed' needle",
+        "git cat-file --filters HEAD:file",
+        "tail -f application.log",
+    ),
+)
+def test_read_only_option_parser_rejects_executing_or_unbounded_forms(
+    command: str,
+) -> None:
+    plan = _terminal_execution_plan(command)
+
+    assert plan.effect == "unknown"
+    assert plan.cacheable is False
+
+
+@pytest.mark.parametrize(
+    "command",
+    (
+        "find src -maxdepth 3 -type f -name '*.py' -print",
+        "git --no-pager status --short",
+        "git log --oneline -20",
+        "git ls-files --cached",
+    ),
+)
+def test_recursive_and_repository_queries_are_read_only_but_not_replay_complete(
+    command: str,
+) -> None:
+    plan = _terminal_execution_plan(command)
+
+    assert plan.effect == "read_only"
+    assert plan.read_set_complete is False
+    assert plan.cacheable is True
+
+
+@pytest.mark.parametrize(
+    "command",
+    ("head -n -5 input.txt", "head -c +5 input.txt", "tail -n +5 input.txt"),
+)
+def test_relative_head_tail_counts_never_claim_contiguous_overlap(
+    command: str,
+) -> None:
+    plan = _terminal_execution_plan(command)
+
+    assert plan.effect == "read_only"
+    assert plan.read_ranges[0].kind == "query"
+
+
+@pytest.mark.parametrize(
+    ("command", "reusable"),
+    (
+        ("cat input.txt", True),
+        ("head -n 2 input.txt", True),
+        ("sed -n 2,4p input.txt", True),
+        ("cat input.txt | head -n 2", False),
+        ("wc -l input.txt", False),
+        ("cat -n input.txt", False),
+    ),
+)
+def test_terminal_read_projection_reuse_requires_content_preserving_stdout(
+    command: str,
+    reusable: bool,
+) -> None:
+    plan = _terminal_execution_plan(command)
+
+    assert plan.effect == "read_only"
+    assert plan.read_projection_reusable is reusable
+
+
 @pytest.mark.asyncio
 async def test_run_code_emits_compact_terminal_execution_receipt() -> None:
     command = "printf alpha; printf beta | wc -c"
@@ -155,6 +258,8 @@ async def test_run_code_emits_compact_terminal_execution_receipt() -> None:
         "effect_source": "trusted_command_contract",
         "cacheable": True,
         "read_paths": [],
+        "read_ranges": [],
+        "read_projection_reusable": False,
         "write_paths": [],
         "read_set_complete": True,
         "read_path_epochs": [],
@@ -666,7 +771,9 @@ def test_safety_policy_allows_scoped_cleanup_and_non_device_dd(command: str) -> 
         "dd if=/dev/zero of=/dev/sda bs=1M",
     ),
 )
-def test_safety_policy_blocks_broad_or_device_destructive_commands(command: str) -> None:
+def test_safety_policy_blocks_broad_or_device_destructive_commands(
+    command: str,
+) -> None:
     allowed, reason = _check_command_safety(command)
 
     assert allowed is False
