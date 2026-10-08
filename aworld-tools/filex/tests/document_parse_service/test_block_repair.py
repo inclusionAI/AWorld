@@ -187,9 +187,15 @@ def test_chart_table_rejects_unscorable_or_unbounded_values(
         '{"labels":["Period","Change","2024"],"estimated":false,'
         '"value_columns":[1],"columns":["Period","Change"],'
         '"rows":[["2024","15.2%¹"]]}',
+        '{"labels":["Month","Sales","January"],"estimated":true,'
+        '"value_columns":[1],"columns":["Month","Sales"],'
+        '"rows":[["January","~42"]]}',
+        '{"labels":["Year","Revenue","Profit","2024"],"estimated":true,'
+        '"value_columns":[1,2],"columns":["Year","Revenue","Profit"],'
+        '"rows":[["2024","42","≈17"]]}',
     ],
 )
-def test_chart_table_accepts_visible_labels_and_printed_measure_values(
+def test_chart_table_accepts_visible_labels_and_supported_measure_values(
     content: str,
 ) -> None:
     table = StructuredTable.from_model_output(
@@ -610,9 +616,10 @@ async def test_chart_repair_creates_missing_picture_item_after_model_success(
         f"Top block\n\n{item['html']}\n\nBottom block"
     )
     assert render_options[0]["padding_ratio"] >= 0.20
-    assert "will not be accepted" in prompts[0]
     assert "every visible axis" in prompts[0]
-    assert "best numeric estimate" not in prompts[0]
+    assert "visible labelled axis and tick scale" in prompts[0]
+    assert "prefix that cell with ≈" in prompts[0]
+    assert "never extrapolate beyond visible ticks" in prompts[0]
 
 
 @pytest.mark.asyncio
@@ -1106,7 +1113,7 @@ def test_empty_chart_page_in_multi_page_document_uses_neighbor_page_anchor() -> 
 
 
 @pytest.mark.asyncio
-async def test_estimated_chart_value_returns_typed_failure_without_mutation(
+async def test_axis_bounded_estimated_chart_value_is_applied_with_marker(
     tmp_path: Path,
 ) -> None:
     @dataclass
@@ -1183,12 +1190,20 @@ async def test_estimated_chart_value_returns_typed_failure_without_mutation(
         crop_renderer=render,
     )
 
-    assert result["repaired"] == []
-    assert result["failures"][0]["reason"] == (
-        "filex_chart_repair_estimated_value_unverified"
-    )
-    assert result["document"] == "Chart prose"
-    assert result["layout"] == layout
+    assert result["failures"] == []
+    assert result["repaired"] == [
+        {
+            "kind": "charts",
+            "page_number": 1,
+            "item_index": 0,
+            "block_id": "chart-1",
+        }
+    ]
+    assert "<th>Year</th><th>Value</th>" in result["document"]
+    assert "<td>2024</td><td>~42</td>" in result["document"]
+    assert result["layout"]["layout_pages"][0]["items"][0]["html"] in result[
+        "document"
+    ]
     assert backend.calls == 1
 
 

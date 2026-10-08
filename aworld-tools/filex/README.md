@@ -66,6 +66,14 @@ to read the chart again with a correction prompt; it is not a local reformatting
 pass. Prompt selection and contract enforcement are independent settings, so
 either can be enabled without the other.
 
+Structured chart prompts transcribe printed values exactly. When a plotted mark
+has no printed value, it may be read only against a visible labelled axis and
+tick scale, to no more precision than those ticks support. Such values remain
+explicitly prefixed with `~` or `≈`; the structural contract accepts the marker
+because downstream chart evaluation preserves approximate chart readings.
+Narrative estimates, ranges, unmarked guesses, and values without a usable scale
+remain invalid.
+
 Transient VLM transport failures retry the complete document at most once by
 default. Set `FILEX_PADDLE_OCR_VLM_MAX_RETRIES=0` to disable that replay, or set
 an explicit higher value only when the caller's time budget can accommodate

@@ -1317,7 +1317,11 @@ def test_chart_contract_rejects_persistent_narrative_table() -> None:
     [
         (
             "| Country | Value |\n| --- | ---: |\n| USA | ~38 |",
-            False,
+            True,
+        ),
+        (
+            "| Country | Value |\n| --- | ---: |\n| USA | ≈38 |",
+            True,
         ),
         (
             "| Year | Value |\n| --- | --- |\n| 2021 | garbage |",

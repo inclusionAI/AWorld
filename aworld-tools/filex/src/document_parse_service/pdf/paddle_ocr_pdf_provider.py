@@ -34,18 +34,24 @@ _STRUCTURED_CHART_PROMPT = """Chart Recognition:
 Extract all visible chart data into one or more Markdown tables.
 Return Markdown tables only. Do not return prose, bullets, commentary, or a chart summary.
 Put every label, series name, category, date or year, and numeric value in its own cell.
-Use one data point per row. Transcribe only numeric values printed in the source; do not
-visually estimate an unprinted point. Preserve exact printed footnote markers. Preserve panel
-titles as a table column or a short heading immediately before the corresponding table. Never
-wrap a narrative sentence in a one-column table."""
+Use one data point per row. Transcribe printed numeric values exactly. When a plotted mark has
+no printed value, but a visible labelled axis and tick scale bound its value, read it to no more
+precision than that scale supports and prefix the numeric cell with ≈. Do not estimate from an
+unlabelled, cropped, ambiguous, or non-linear scale, and never extrapolate beyond visible ticks.
+Preserve exact printed footnote markers. Preserve panel titles as a table column or a short
+heading immediately before the corresponding table. Never wrap a narrative sentence in a
+one-column table and never invent a value that the chart does not visually support."""
 _CHART_CORRECTION_PROMPT = """Chart Recognition:
 CORRECTION ATTEMPT {attempt}: the previous response violated the chart table contract.
 Read the chart image again; do not reformat or summarize the previous answer.
 Return one or more Markdown tables and nothing else. Every table must have at least two
 columns. Put labels/categories/series in separate cells and every visible numeric value in
-its own numeric cell. Use one observation per row. Do not emit prose, bullets, JSON,
-one-column tables, ranges, commentary, or visual estimates of unprinted values. Preserve
-exact printed footnote markers. Never invent a value that is not visible in the chart.
+its own numeric cell. Use one observation per row. Transcribe printed values exactly. A value
+read from a plotted mark is allowed only when a visible labelled axis and tick scale bound it;
+prefix that cell with ≈ and use no more precision than the ticks support. Do not emit prose,
+bullets, JSON, one-column tables, ranges, commentary, unmarked estimates, extrapolations, or
+values from an unlabelled/cropped/ambiguous/non-linear scale. Preserve exact printed footnote
+markers. Never invent a value that the chart does not visually support.
 The rejected output failed these checks: {failures}"""
 _MARKDOWN_SEPARATOR_CELL = re.compile(r"^:?-{3,}:?$")
 _NUMERIC_CHART_CELL = re.compile(
@@ -987,8 +993,6 @@ class PaddleOcrPdfProvider:
     @staticmethod
     def _is_numeric_chart_cell(value: str) -> bool:
         normalized = re.sub(r"\s+", " ", value).strip()
-        if normalized.startswith(("~", "≈")):
-            return False
         return bool(_NUMERIC_CHART_CELL.fullmatch(normalized))
 
     @staticmethod

@@ -64,11 +64,14 @@ date, year, or label columns. List every visible axis, legend, category, date,
 and series label in labels and also place each label in the caption, a header,
 or the associated row/column. A simple cell may be a string; a structured cell
 may use text,rowspan,colspan,header. Use at least two logical columns and one
-row, with every declared measure cell containing a printed numeric value.
-Transcribe printed values exactly. Never invent a value or emit a range. If a
-numeric value is not printed and can only be visually estimated, set estimated
-to true and prefix it with ~; such output is diagnostic and will not be accepted
-as structured repair. Return JSON only, without prose/commentary."""
+row, with every declared measure cell containing a numeric value.
+Transcribe printed values exactly. If a plotted mark has no printed value but a
+visible labelled axis and tick scale bound it, read it to no more precision than
+that scale supports, prefix that cell with ≈, and set estimated to true. Exact
+printed cells remain unprefixed even in a table that also contains estimates.
+Never estimate from an unlabelled, cropped, ambiguous, or non-linear scale;
+never extrapolate beyond visible ticks, invent a value, or emit a range. Return
+JSON only, without prose/commentary."""
 
 
 class BlockRepairError(ValueError):
@@ -357,11 +360,10 @@ def _validate_chart_table(
     )
     if not header_has_label and not row_has_label:
         raise BlockRepairError("filex_chart_repair_labels_missing")
-    if estimated:
-        raise BlockRepairError("filex_chart_repair_estimated_value_unverified")
     width, grid = _table_grid(columns, rows)
     if any(index < 0 or index >= width for index in value_columns):
         raise BlockRepairError("filex_chart_repair_value_columns_invalid")
+    contains_marked_estimate = False
     for row_index, row in enumerate(rows, start=1):
         for cell in row:
             value = re.sub(r"\s+", " ", cell.text).strip()
@@ -378,7 +380,7 @@ def _validate_chart_table(
             if _NUMERIC.fullmatch(value) is None:
                 raise BlockRepairError("filex_chart_repair_numeric_value_missing")
             if value.lstrip().startswith(("~", "≈")):
-                raise BlockRepairError("filex_chart_repair_estimated_value_unverified")
+                contains_marked_estimate = True
         category_count = sum(
             bool(grid[(row_index, column_index)].text.strip())
             for column_index in range(width)
@@ -386,6 +388,11 @@ def _validate_chart_table(
         )
         if category_count == 0 and len(value_columns) < 2:
             raise BlockRepairError("filex_chart_repair_row_labels_missing")
+
+    # The explicit flag and per-cell marker must agree. This makes visually read
+    # values transparent without rejecting legitimate chart-to-table extraction.
+    if estimated != contains_marked_estimate:
+        raise BlockRepairError("filex_chart_repair_estimated_value_unverified")
 
     if labels:
         visible = [
@@ -1254,10 +1261,8 @@ async def repair_parse_output(
                         if last_reason == (
                             "filex_chart_repair_estimated_value_unverified"
                         ):
-                            # A second pass over the same pixels cannot turn an
-                            # unprinted estimate into independently printed
-                            # source evidence. Do not let a retry launder it by
-                            # merely dropping the estimate marker.
+                            # Do not let a retry launder an estimate by merely
+                            # dropping its required marker or evidence flag.
                             break
                     except TimeoutError:
                         last_reason = "filex_block_repair_backend_timeout"
