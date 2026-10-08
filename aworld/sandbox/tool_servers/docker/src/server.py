@@ -2,6 +2,7 @@
 
 import asyncio
 import base64
+from collections import OrderedDict
 from dataclasses import replace
 import difflib
 import fnmatch
@@ -14,7 +15,7 @@ import re
 import sys
 import time
 from pathlib import Path, PurePosixPath
-from typing import Any, Literal, Optional
+from typing import Any, Literal, Mapping, Optional
 
 # Keep package discovery private to this companion process. In particular, do
 # not export PYTHONPATH to commands executed inside the attached task container.
@@ -28,10 +29,21 @@ from mcp.server import FastMCP
 from mcp.server.fastmcp import Context
 from mcp.types import TextContent
 from pydantic import Field
+from pydantic.fields import FieldInfo
 
 from aworld.sandbox.terminal_receipt import (
+    TerminalReadRange,
     build_terminal_execution_receipt,
     plan_terminal_execution,
+    terminal_command_sha256,
+)
+
+
+_READ_OBSERVATION_RECEIPT_KEY = "read_observation_receipt"
+_READ_OBSERVATION_SCHEMA = "aworld.read-observation/v1"
+_READ_FACT_CAPACITY = 256
+_READ_FACTS: "OrderedDict[tuple[tuple[str, str, str], str], dict[str, Any]]" = (
+    OrderedDict()
 )
 from aworld.sandbox.artifact_observation import (
     ArtifactObservationError,
@@ -164,18 +176,30 @@ class DockerBridge:
         self.container = _required_env("AWORLD_DOCKER_CONTAINER")
         self.docker_binary = _required_env("AWORLD_DOCKER_BINARY")
         self.workdir = os.environ.get("AWORLD_DOCKER_WORKDIR", "/").strip() or "/"
-        self.shell = os.environ.get("AWORLD_DOCKER_SHELL", "/bin/sh").strip() or "/bin/sh"
+        self.shell = (
+            os.environ.get("AWORLD_DOCKER_SHELL", "/bin/sh").strip() or "/bin/sh"
+        )
         raw_allowed = os.environ.get("AWORLD_DOCKER_ALLOWED_DIRECTORIES", "")
         try:
             parsed_allowed = json.loads(raw_allowed) if raw_allowed else [self.workdir]
         except json.JSONDecodeError as exc:
-            raise RuntimeError("AWORLD_DOCKER_ALLOWED_DIRECTORIES must be a JSON list") from exc
+            raise RuntimeError(
+                "AWORLD_DOCKER_ALLOWED_DIRECTORIES must be a JSON list"
+            ) from exc
         if not isinstance(parsed_allowed, list) or not parsed_allowed:
-            raise RuntimeError("AWORLD_DOCKER_ALLOWED_DIRECTORIES must be a non-empty JSON list")
-        self.allowed_directories = [self._normalize_absolute(str(path)) for path in parsed_allowed]
-        self.max_output_bytes = int(os.environ.get("AWORLD_DOCKER_MAX_OUTPUT_BYTES", "1048576"))
+            raise RuntimeError(
+                "AWORLD_DOCKER_ALLOWED_DIRECTORIES must be a non-empty JSON list"
+            )
+        self.allowed_directories = [
+            self._normalize_absolute(str(path)) for path in parsed_allowed
+        ]
+        self.max_output_bytes = int(
+            os.environ.get("AWORLD_DOCKER_MAX_OUTPUT_BYTES", "1048576")
+        )
         self.output_head_bytes = int(
-            os.environ.get("AWORLD_DOCKER_OUTPUT_HEAD_BYTES", str(self.max_output_bytes // 2))
+            os.environ.get(
+                "AWORLD_DOCKER_OUTPUT_HEAD_BYTES", str(self.max_output_bytes // 2)
+            )
         )
         if self.max_output_bytes < 1:
             raise RuntimeError("AWORLD_DOCKER_MAX_OUTPUT_BYTES must be positive")
@@ -183,8 +207,26 @@ class DockerBridge:
             raise RuntimeError(
                 "AWORLD_DOCKER_OUTPUT_HEAD_BYTES must be between 0 and AWORLD_DOCKER_MAX_OUTPUT_BYTES"
             )
-        artifact_directory = os.environ.get("AWORLD_DOCKER_ARTIFACT_DIRECTORY", "").strip()
-        self.artifact_directory = Path(artifact_directory).resolve() if artifact_directory else None
+        self.max_read_bytes = min(
+            max(
+                int(os.environ.get("AWORLD_FILESYSTEM_MAX_READ_BYTES", "1048576")),
+                4096,
+            ),
+            16 * 1024 * 1024,
+        )
+        self.max_binary_bytes = min(
+            max(
+                int(os.environ.get("AWORLD_FILESYSTEM_MAX_BINARY_BYTES", "1048576")),
+                4096,
+            ),
+            16 * 1024 * 1024,
+        )
+        artifact_directory = os.environ.get(
+            "AWORLD_DOCKER_ARTIFACT_DIRECTORY", ""
+        ).strip()
+        self.artifact_directory = (
+            Path(artifact_directory).resolve() if artifact_directory else None
+        )
         if self.artifact_directory:
             self.artifact_directory.mkdir(parents=True, exist_ok=True)
 
@@ -225,7 +267,9 @@ class DockerBridge:
             stderr=asyncio.subprocess.PIPE,
         )
         try:
-            stdout, stderr = await asyncio.wait_for(process.communicate(input_bytes), timeout=timeout)
+            stdout, stderr = await asyncio.wait_for(
+                process.communicate(input_bytes), timeout=timeout
+            )
             return process.returncode or 0, stdout, stderr, False
         except asyncio.TimeoutError:
             process.kill()
@@ -279,7 +323,9 @@ class DockerBridge:
             }
         )
         if self.artifact_directory:
-            safe_label = "".join(ch if ch.isalnum() or ch in "-_" else "-" for ch in label)[:48]
+            safe_label = "".join(
+                ch if ch.isalnum() or ch in "-_" else "-" for ch in label
+            )[:48]
             artifact_path = self.artifact_directory / f"{safe_label}-{digest}.bin"
             if not artifact_path.exists():
                 artifact_path.write_bytes(data)
@@ -304,7 +350,9 @@ class DockerBridge:
             raise ValueError("Tool output artifact storage is not configured")
         artifact = Path(artifact_ref).resolve()
         if artifact.parent != self.artifact_directory or not artifact.is_file():
-            raise ValueError("artifact_ref is not a Tool output artifact from this sandbox")
+            raise ValueError(
+                "artifact_ref is not a Tool output artifact from this sandbox"
+            )
         return artifact
 
     async def require_success(
@@ -421,10 +469,14 @@ mcp = FastMCP(
 )
 
 
-def _text(payload: Any) -> TextContent:
+def _text(
+    payload: Any,
+    *,
+    metadata: Optional[dict[str, Any]] = None,
+) -> TextContent:
     if not isinstance(payload, str):
         payload = json.dumps(payload, ensure_ascii=False)
-    return TextContent(type="text", text=payload)
+    return TextContent(type="text", text=payload, **{"metadata": metadata or {}})
 
 
 def _literal_container_write_paths(
@@ -475,6 +527,258 @@ async def _container_path_states(
     return states if len(states) == len(paths) else None
 
 
+def _framework_scope(env_content: Any) -> tuple[str, str, str]:
+    if not isinstance(env_content, Mapping):
+        return ("", "", "")
+    return (
+        str(env_content.get("task_id") or ""),
+        str(env_content.get("task_epoch") or ""),
+        str(env_content.get("session_id") or ""),
+    )
+
+
+def _container_epoch_authority() -> str:
+    return (
+        "docker:sha256:"
+        + hashlib.sha256(bridge.container.encode("utf-8", errors="replace")).hexdigest()
+    )
+
+
+def _plan_read_paths(plan: Any) -> list[str] | None:
+    if not plan.read_paths:
+        return []
+    if not plan.command_cwd_safe:
+        return None
+    workdir = bridge.workdir
+    if plan.command_cwd:
+        workdir = (
+            posixpath.normpath(plan.command_cwd)
+            if PurePosixPath(plan.command_cwd).is_absolute()
+            else posixpath.normpath(posixpath.join(workdir, plan.command_cwd))
+        )
+    try:
+        workdir = bridge.validate_path(workdir)
+    except ValueError:
+        return None
+    paths: list[str] = []
+    for raw_path in plan.read_paths:
+        if any(marker in raw_path for marker in ("\0", "\n", "\r")):
+            return None
+        candidate = (
+            posixpath.normpath(raw_path)
+            if PurePosixPath(raw_path).is_absolute()
+            else posixpath.normpath(posixpath.join(workdir, raw_path))
+        )
+        try:
+            paths.append(bridge.validate_path(candidate))
+        except ValueError:
+            return None
+    return paths
+
+
+async def _container_read_path_epochs(
+    paths: list[str] | None,
+    *,
+    timeout: int,
+) -> list[dict[str, Any]]:
+    """Capture bounded, provider-authoritative epochs for regular files."""
+
+    if paths is None:
+        return []
+    if not paths:
+        return []
+    script = (
+        'for p do resolved=$(readlink -f "$p") || exit 7; '
+        '[ -f "$resolved" ] || exit 7; '
+        "link=$(stat -c '%d|%i|%f|%s|%Y|%Z|%y|%z' \"$p\") || exit 8; "
+        "target=$(stat -c '%d|%i|%f|%s|%Y|%Z|%y|%z' \"$resolved\") || exit 9; "
+        'printf "%s\\000%s\\t%s\\000" "$resolved" "$link" "$target"; done'
+    )
+    return_code, stdout, _stderr, timed_out = await bridge.execute(
+        [bridge.shell, "-c", script, "aworld-read-epoch", *paths],
+        timeout=max(1, min(timeout, 5)),
+        workdir=bridge.workdir,
+    )
+    if timed_out or return_code != 0 or len(stdout) > 64 * 1024:
+        return []
+    fields = stdout.split(b"\0")
+    if not fields or fields[-1] != b"" or len(fields) != len(paths) * 2 + 1:
+        return []
+    authority = _container_epoch_authority()
+    epochs: list[dict[str, Any]] = []
+    try:
+        for index, path in enumerate(paths):
+            resolved_path = fields[index * 2].decode("utf-8", errors="strict")
+            if len(path) > 1024 or len(resolved_path) > 1024:
+                return []
+            if bridge.validate_path(resolved_path) != posixpath.normpath(resolved_path):
+                return []
+            record = fields[index * 2 + 1].decode("utf-8", errors="strict")
+            link_raw, target_raw = record.split("\t", 1)
+            link = link_raw.split("|", 7)
+            target = target_raw.split("|", 7)
+            if len(link) != 8 or len(target) != 8:
+                return []
+            fingerprint = "sha256:" + hashlib.sha256(record.encode("utf-8")).hexdigest()
+            epochs.append(
+                {
+                    "path": path,
+                    "resolved_path": resolved_path,
+                    "link_inode": int(link[1]),
+                    "link_mtime_ns": int(link[4]) * 1_000_000_000,
+                    "mode": int(target[2], 16),
+                    "size": int(target[3]),
+                    "mtime_ns": int(target[4]) * 1_000_000_000,
+                    "ctime_ns": int(target[5]) * 1_000_000_000,
+                    "inode": int(target[1]),
+                    "authority": authority,
+                    "fingerprint": fingerprint,
+                }
+            )
+    except (UnicodeDecodeError, ValueError, IndexError):
+        return []
+    return epochs
+
+
+def _plan_read_ranges(plan: Any) -> tuple[TerminalReadRange, ...]:
+    ranges = tuple(getattr(plan, "read_ranges", ()) or ())
+    if len(ranges) != len(plan.read_paths):
+        return tuple(TerminalReadRange("full") for _ in plan.read_paths)
+    return ranges
+
+
+def _coverage_contains(
+    stored: TerminalReadRange,
+    requested: TerminalReadRange,
+) -> bool:
+    if stored == requested:
+        return True
+    if stored.kind == "full" and requested.kind in {
+        "full",
+        "line_range",
+        "byte_range",
+        "tail_lines",
+        "tail_bytes",
+    }:
+        return True
+    if stored.kind != requested.kind:
+        return False
+    if stored.kind in {"line_range", "byte_range"}:
+        return (
+            stored.start is not None
+            and stored.end is not None
+            and requested.start is not None
+            and requested.end is not None
+            and stored.start <= requested.start
+            and stored.end >= requested.end
+        )
+    if stored.kind in {"tail_lines", "tail_bytes"}:
+        return (stored.start or 0) >= (requested.start or 0)
+    return False
+
+
+def _fact_operation_key(*, kind: str, value: Any) -> str:
+    encoded = json.dumps(
+        {"kind": kind, "value": value},
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    ).encode("utf-8")
+    return "sha256:" + hashlib.sha256(encoded).hexdigest()
+
+
+def _lookup_read_fact(
+    *,
+    scope: tuple[str, str, str],
+    operation_key: str,
+    paths: list[str],
+    ranges: tuple[TerminalReadRange, ...],
+    epochs: list[dict[str, Any]],
+    allow_overlap: bool,
+) -> dict[str, Any] | None:
+    if len(paths) != len(ranges) or len(paths) != len(epochs) or not paths:
+        return None
+    exact_key = (scope, operation_key)
+    exact = _READ_FACTS.get(exact_key)
+    if exact is not None and exact.get("epochs") == epochs:
+        _READ_FACTS.move_to_end(exact_key)
+        return exact
+    if not allow_overlap or len(paths) != 1:
+        return None
+    for key in reversed(_READ_FACTS):
+        candidate = _READ_FACTS[key]
+        if (
+            key[0] == scope
+            and candidate.get("coverage_complete") is True
+            and candidate.get("paths") == paths
+            and candidate.get("epochs") == epochs
+            and len(candidate.get("ranges") or ()) == 1
+            and _coverage_contains(candidate["ranges"][0], ranges[0])
+        ):
+            _READ_FACTS.move_to_end(key)
+            return candidate
+    return None
+
+
+def _store_read_fact(
+    *,
+    scope: tuple[str, str, str],
+    operation_key: str,
+    paths: list[str],
+    ranges: tuple[TerminalReadRange, ...],
+    epochs: list[dict[str, Any]],
+    content_sha256: str,
+    coverage_complete: bool,
+) -> dict[str, Any] | None:
+    if len(paths) != len(ranges) or len(paths) != len(epochs) or not paths:
+        return None
+    observation_id = (
+        "sha256:"
+        + hashlib.sha256(
+            json.dumps(
+                {
+                    "scope": scope,
+                    "operation": operation_key,
+                    "epochs": epochs,
+                    "ranges": [item.to_dict() for item in ranges],
+                    "content": content_sha256,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+    )
+    fact = {
+        "observation_id": observation_id,
+        "content_sha256": content_sha256,
+        "paths": list(paths),
+        "ranges": tuple(ranges),
+        "epochs": [dict(epoch) for epoch in epochs],
+        "coverage_complete": bool(coverage_complete),
+    }
+    key = (scope, operation_key)
+    _READ_FACTS[key] = fact
+    _READ_FACTS.move_to_end(key)
+    while len(_READ_FACTS) > _READ_FACT_CAPACITY:
+        _READ_FACTS.popitem(last=False)
+    return fact
+
+
+def _compact_read_fact_payload(
+    fact: Mapping[str, Any],
+    *,
+    coverage: TerminalReadRange,
+) -> dict[str, Any]:
+    return {
+        "type": "unchanged",
+        "observationId": fact["observation_id"],
+        "contentSha256": fact["content_sha256"],
+        "coverage": coverage.to_dict(),
+        "message": "unchanged since the referenced observation; reuse retained facts",
+    }
+
+
 @mcp.tool(
     description=(
         "Execute Shell commands, or explicit raw Python, inside the attached "
@@ -487,27 +791,35 @@ async def run_code(
         description="Shell command or raw Python source, according to language"
     ),
     timeout: int = Field(default=30, description="Command timeout in seconds"),
-    output_format: str = Field(default="markdown", description="markdown, json, or text"),
+    output_format: str = Field(
+        default="markdown", description="markdown, json, or text"
+    ),
     language: Literal["shell", "python"] = Field(
         default="shell",
         description="Use 'python' only when code itself is raw Python source",
     ),
+    env_content: Optional[dict[str, Any]] = Field(
+        default=None,
+        description="Framework-injected task scope; hidden from the model schema",
+    ),
 ) -> TextContent:
     del ctx, output_format
+    if isinstance(timeout, FieldInfo):
+        timeout = timeout.default
+    if isinstance(language, FieldInfo):
+        language = language.default
+    if isinstance(env_content, FieldInfo):
+        env_content = env_content.default
     started = time.monotonic()
     if language not in {"shell", "python"}:
         raise ValueError("language must be either 'shell' or 'python'")
     potential_plan = plan_terminal_execution(code, language=language)
     execution_plan = potential_plan
     effect_source = "parser_contract"
+    read_paths: list[str] = []
     if potential_plan.effect == "read_only":
-        try:
-            for value in potential_plan.read_paths:
-                candidate = value
-                if not PurePosixPath(candidate).is_absolute():
-                    candidate = posixpath.join(bridge.workdir, candidate)
-                bridge.validate_path(candidate)
-        except ValueError:
+        planned_paths = _plan_read_paths(potential_plan)
+        if planned_paths is None:
             execution_plan = replace(
                 potential_plan,
                 effect="unknown",
@@ -515,7 +827,72 @@ async def run_code(
             )
             effect_source = "untrusted_execution_context"
         else:
+            read_paths = planned_paths
             effect_source = "trusted_docker_command_contract"
+    read_ranges = _plan_read_ranges(execution_plan)
+    read_epochs_before = (
+        await _container_read_path_epochs(read_paths, timeout=timeout)
+        if execution_plan.effect == "read_only" and read_paths
+        else []
+    )
+    operation_key = _fact_operation_key(
+        kind="run_code",
+        value={
+            "command": terminal_command_sha256(code),
+            "language": language,
+        },
+    )
+    scope = _framework_scope(env_content)
+    cached_fact = _lookup_read_fact(
+        scope=scope,
+        operation_key=operation_key,
+        paths=read_paths,
+        ranges=read_ranges,
+        epochs=read_epochs_before,
+        allow_overlap=(
+            execution_plan.read_projection_reusable
+            and len(read_ranges) == 1
+            and read_ranges[0].kind
+            in {"full", "line_range", "byte_range", "tail_lines", "tail_bytes"}
+        ),
+    )
+    if cached_fact is not None:
+        confirmed_epochs = await _container_read_path_epochs(
+            read_paths,
+            timeout=timeout,
+        )
+        if confirmed_epochs == read_epochs_before:
+            compact = _compact_read_fact_payload(
+                cached_fact,
+                coverage=read_ranges[0],
+            )
+            return _text(
+                {
+                    "success": True,
+                    "message": json.dumps(compact, ensure_ascii=False),
+                    "metadata": {
+                        "command": code,
+                        "container": bridge.container,
+                        "working_directory": bridge.workdir,
+                        "return_code": 0,
+                        "timeout_seconds": timeout,
+                        "timed_out": False,
+                        "execution_time": time.monotonic() - started,
+                        "provider_observation_cache_hit": True,
+                        "terminal_execution_receipt": build_terminal_execution_receipt(
+                            code=code,
+                            plan=execution_plan,
+                            executed=True,
+                            exit_code=0,
+                            timed_out=False,
+                            potential_effect=potential_plan.effect,
+                            effect_source=effect_source,
+                            read_path_epochs=confirmed_epochs,
+                            requested_language=language,
+                        ),
+                    },
+                }
+            )
     write_paths = _literal_container_write_paths(code, potential_plan)
     before_write_states = await _container_path_states(
         write_paths,
@@ -541,11 +918,49 @@ async def run_code(
         if before_write_states is not None and after_write_states is not None
         else None
     )
+    read_epochs_after = (
+        await _container_read_path_epochs(read_paths, timeout=timeout)
+        if return_code == 0 and execution_plan.effect == "read_only" and read_paths
+        else []
+    )
+    read_path_epochs = (
+        read_epochs_after if read_epochs_before == read_epochs_after else []
+    )
+    raw_content_sha256 = (
+        "sha256:"
+        + hashlib.sha256(b"stdout\0" + stdout + b"\0stderr\0" + stderr).hexdigest()
+    )
     stdout, stdout_policy = bridge.bound_output(stdout, label="run-code-stdout")
     stderr, stderr_policy = bridge.bound_output(stderr, label="run-code-stderr")
     stdout_text = bridge.decode_inline_text(stdout, stdout_policy)
     stderr_text = bridge.decode_inline_text(stderr, stderr_policy)
     output = "\n".join(part for part in (stderr_text, stdout_text) if part)
+    terminal_receipt = build_terminal_execution_receipt(
+        code=code,
+        plan=execution_plan,
+        executed=True,
+        exit_code=return_code,
+        timed_out=timed_out,
+        mutation_observed=mutation_observed,
+        potential_effect=potential_plan.effect,
+        effect_source=effect_source,
+        read_path_epochs=read_path_epochs,
+        requested_language=language,
+    )
+    stored_fact = None
+    if terminal_receipt["cacheable"] and read_paths:
+        stored_fact = _store_read_fact(
+            scope=scope,
+            operation_key=operation_key,
+            paths=read_paths,
+            ranges=read_ranges,
+            epochs=read_path_epochs,
+            content_sha256=raw_content_sha256,
+            coverage_complete=not (
+                stdout_policy["output_truncated"] or stderr_policy["output_truncated"]
+            )
+            and execution_plan.read_projection_reusable,
+        )
     return _text(
         {
             "success": return_code == 0,
@@ -560,75 +975,348 @@ async def run_code(
                 "execution_time": time.monotonic() - started,
                 "stdout": stdout_text,
                 "stderr": stderr_text,
-                "output_truncated": stdout_policy["output_truncated"] or stderr_policy["output_truncated"],
+                "output_truncated": stdout_policy["output_truncated"]
+                or stderr_policy["output_truncated"],
                 "output_policy": {
                     "stdout": stdout_policy,
                     "stderr": stderr_policy,
                 },
-                "terminal_execution_receipt": build_terminal_execution_receipt(
-                    code=code,
-                    plan=execution_plan,
-                    executed=True,
-                    exit_code=return_code,
-                    timed_out=timed_out,
-                    mutation_observed=mutation_observed,
-                    potential_effect=potential_plan.effect,
-                    effect_source=effect_source,
-                    requested_language=language,
+                "provider_observation_id": (
+                    stored_fact["observation_id"] if stored_fact is not None else None
                 ),
+                "terminal_execution_receipt": terminal_receipt,
             },
         }
     )
 
 
-@mcp.tool(description="Read a text or binary file from the attached container.")
+def _read_observation_receipt(
+    *,
+    path: str,
+    epoch: Mapping[str, Any] | None,
+    coverage: TerminalReadRange,
+    content_sha256: str,
+    observation_id: str | None,
+    cache_hit: bool,
+    coverage_complete: bool,
+) -> dict[str, Any]:
+    return {
+        "schema_version": _READ_OBSERVATION_SCHEMA,
+        "authority": _container_epoch_authority(),
+        "path": path,
+        "epoch": dict(epoch) if epoch is not None else None,
+        "coverage": coverage.to_dict(),
+        "coverage_complete": bool(coverage_complete),
+        "content_sha256": content_sha256,
+        "observation_id": observation_id,
+        "cache_hit": bool(cache_hit),
+    }
+
+
+async def _bounded_container_file_read(
+    *,
+    path: str,
+    head: int | None,
+    tail: int | None,
+    output: str,
+    offset: int,
+    limit: int | None,
+    total_bytes: int,
+) -> tuple[bytes, TerminalReadRange, bool, dict[str, Any]]:
+    if head is not None and head < 1:
+        raise ValueError("head must be a positive line number/count")
+    if tail is not None and tail < 1:
+        raise ValueError("tail must be a positive line number/count")
+    if head is not None and tail is not None and head > tail:
+        raise ValueError("head must be <= tail when both are specified")
+    if offset < 0:
+        raise ValueError("offset must be non-negative")
+    if limit is not None and limit < 1:
+        raise ValueError("limit must be positive")
+    max_output = int(getattr(bridge, "max_output_bytes", 1024 * 1024))
+    if output == "base64" and head is None and tail is None:
+        hard_limit = min(
+            int(getattr(bridge, "max_binary_bytes", 1024 * 1024)),
+            max_output,
+        )
+        requested = hard_limit if limit is None else min(limit, hard_limit)
+        script = 'tail -c "+$2" "$1" | head -c "$3"'
+        return_code, data, stderr, timed_out = await bridge.execute(
+            [
+                bridge.shell,
+                "-c",
+                script,
+                "aworld-bounded-bytes",
+                path,
+                str(offset + 1),
+                str(requested),
+            ],
+            timeout=30,
+            workdir=bridge.workdir,
+        )
+        if timed_out or return_code != 0:
+            raise RuntimeError(stderr.decode("utf-8", errors="replace"))
+        effective_offset = min(offset, total_bytes)
+        next_offset = effective_offset + len(data)
+        return (
+            data,
+            TerminalReadRange("byte_range", effective_offset, next_offset),
+            next_offset >= total_bytes,
+            {
+                "offset": offset,
+                "nextOffset": next_offset,
+                "returnedBytes": len(data),
+                "totalBytes": total_bytes,
+                "truncated": next_offset < total_bytes,
+            },
+        )
+    if output == "text" and (offset != 0 or limit is not None):
+        raise ValueError("offset and limit are only supported with output='base64'")
+    if output == "base64" and (offset != 0 or limit is not None):
+        raise ValueError("offset/limit cannot be combined with head/tail")
+
+    hard_limit = min(
+        int(getattr(bridge, "max_read_bytes", 1024 * 1024)),
+        max_output,
+    )
+    if head is not None and tail is not None:
+        script = 'sed -n "$2,$3p" "$1" | head -c "$4"'
+        argv = [path, str(head), str(tail), str(hard_limit + 1)]
+        coverage = TerminalReadRange("line_range", head, tail)
+    elif head is not None:
+        script = 'sed -n "1,$2p" "$1" | head -c "$3"'
+        argv = [path, str(head), str(hard_limit + 1)]
+        coverage = TerminalReadRange("line_range", 1, head)
+    elif tail is not None:
+        script = 'tail -n "$2" "$1" | head -c "$3"'
+        argv = [path, str(tail), str(hard_limit + 1)]
+        coverage = TerminalReadRange("tail_lines", tail, None)
+    else:
+        script = 'head -c "$2" "$1"'
+        argv = [path, str(hard_limit + 1)]
+        coverage = (
+            TerminalReadRange("full")
+            if total_bytes <= hard_limit
+            else TerminalReadRange("byte_range", 0, hard_limit)
+        )
+    return_code, data, stderr, timed_out = await bridge.execute(
+        [bridge.shell, "-c", script, "aworld-bounded-read", *argv],
+        timeout=30,
+        workdir=bridge.workdir,
+    )
+    if timed_out or return_code != 0:
+        raise RuntimeError(stderr.decode("utf-8", errors="replace"))
+    selection_complete = len(data) <= hard_limit
+    if not selection_complete:
+        data = data[:hard_limit]
+    metadata: dict[str, Any] = {
+        "complete": selection_complete and coverage.kind == "full",
+        "returnedBytes": len(data),
+        "totalBytes": total_bytes,
+    }
+    if coverage.kind != "full":
+        # Complete describes the requested window for explicit ranges.
+        metadata["complete"] = selection_complete
+    if not selection_complete:
+        metadata["truncationReason"] = "read_bytes"
+    if head is None and tail is None and total_bytes > hard_limit:
+        metadata.update(
+            {
+                "complete": False,
+                "defaultBounded": True,
+                "truncationReason": "default_bytes",
+                "nextOffset": hard_limit,
+            }
+        )
+    return data, coverage, bool(metadata["complete"]), metadata
+
+
+@mcp.tool(
+    description="Read a text or binary file from the attached container using producer-bounded ranges."
+)
 async def read_file(
     ctx: Context,
     path: str = Field(description="Absolute container path"),
     head: Optional[int] = Field(default=None, description="First N lines"),
     tail: Optional[int] = Field(default=None, description="Last N lines"),
     output: str = Field(default="text", description="text or base64"),
+    offset: int = Field(default=0, description="Binary byte offset"),
+    limit: Optional[int] = Field(default=None, description="Bounded binary byte count"),
+    refresh: bool = Field(
+        default=False, description="Bypass retained observation facts"
+    ),
+    env_content: Optional[dict[str, Any]] = Field(
+        default=None,
+        description="Framework-injected task scope; hidden from the model schema",
+    ),
 ) -> TextContent:
     del ctx
+    if isinstance(head, FieldInfo):
+        head = head.default
+    if isinstance(tail, FieldInfo):
+        tail = tail.default
+    if isinstance(output, FieldInfo):
+        output = output.default
+    if isinstance(offset, FieldInfo):
+        offset = offset.default
+    if isinstance(limit, FieldInfo):
+        limit = limit.default
+    if isinstance(refresh, FieldInfo):
+        refresh = refresh.default
+    if isinstance(env_content, FieldInfo):
+        env_content = env_content.default
+    if isinstance(head, bool) or (head is not None and not isinstance(head, int)):
+        raise ValueError("head must be an integer or null")
+    if isinstance(tail, bool) or (tail is not None and not isinstance(tail, int)):
+        raise ValueError("tail must be an integer or null")
+    if isinstance(offset, bool) or not isinstance(offset, int):
+        raise ValueError("offset must be an integer")
+    if isinstance(limit, bool) or (limit is not None and not isinstance(limit, int)):
+        raise ValueError("limit must be an integer or null")
+    if not isinstance(refresh, bool):
+        refresh = False
     valid_path = bridge.validate_path(path)
-    data = await bridge.require_success(["cat", valid_path])
-    if output == "base64":
-        inline_data, output_policy = bridge.bound_output(data, label=f"read-file-{posixpath.basename(valid_path)}")
-        mime_type = mimetypes.guess_type(valid_path)[0] or "application/octet-stream"
-        return _text(
-            {
-                "type": "base64",
-                "base64": base64.b64encode(inline_data).decode("ascii"),
-                "mimeType": mime_type,
-                "fileName": posixpath.basename(valid_path),
-                "complete": not output_policy["output_truncated"],
-                "output_policy": output_policy,
-            }
-        )
-    if output != "text":
+    if output not in {"text", "base64"}:
         raise ValueError("output must be 'text' or 'base64'")
-    content = data.decode("utf-8")
-    lines = content.splitlines(keepends=True)
-    if head is not None and tail is not None:
-        if head > tail:
-            raise ValueError("head must be <= tail when both are specified")
-        content = "".join(lines[max(head - 1, 0) : tail])
-    elif head is not None:
-        content = "".join(lines[:head])
-    elif tail is not None:
-        content = "".join(lines[-tail:])
-    inline_content, output_policy = bridge.bound_output(
-        content.encode("utf-8"),
-        label=f"read-file-{posixpath.basename(valid_path)}",
+    epochs_before = await _container_read_path_epochs([valid_path], timeout=5)
+    if len(epochs_before) != 1:
+        raise ValueError("path must resolve to a regular file with a stable epoch")
+    total_bytes = int(epochs_before[0]["size"])
+    resolved_read_path = str(epochs_before[0]["resolved_path"])
+    binary_hard_limit = min(
+        int(getattr(bridge, "max_binary_bytes", 1024 * 1024)),
+        int(getattr(bridge, "max_output_bytes", 1024 * 1024)),
     )
-    return _text(
-        {
-            "type": "text",
-            "content": bridge.decode_inline_text(inline_content, output_policy),
-            "complete": not output_policy["output_truncated"],
-            "output_policy": output_policy,
+    binary_requested = (
+        binary_hard_limit if limit is None else min(limit, binary_hard_limit)
+    )
+    effective_offset = min(offset, total_bytes) if isinstance(offset, int) else offset
+    requested_coverage = (
+        TerminalReadRange(
+            "byte_range",
+            effective_offset,
+            min(total_bytes, effective_offset + binary_requested),
+        )
+        if output == "base64" and head is None and tail is None
+        else TerminalReadRange("line_range", head, tail)
+        if head is not None and tail is not None
+        else TerminalReadRange("line_range", 1, head)
+        if head is not None
+        else TerminalReadRange("tail_lines", tail, None)
+        if tail is not None
+        else TerminalReadRange("full")
+    )
+    if requested_coverage.kind == "full" and total_bytes > min(
+        int(getattr(bridge, "max_read_bytes", 1024 * 1024)),
+        int(getattr(bridge, "max_output_bytes", 1024 * 1024)),
+    ):
+        requested_coverage = TerminalReadRange(
+            "byte_range",
+            0,
+            min(
+                int(getattr(bridge, "max_read_bytes", 1024 * 1024)),
+                int(getattr(bridge, "max_output_bytes", 1024 * 1024)),
+            ),
+        )
+    operation_key = _fact_operation_key(
+        kind="read_file",
+        value={
+            "path": valid_path,
+            "output": output,
+            "coverage": requested_coverage.to_dict(),
+        },
+    )
+    scope = _framework_scope(env_content)
+    cached_fact = (
+        None
+        if refresh
+        else _lookup_read_fact(
+            scope=scope,
+            operation_key=operation_key,
+            paths=[valid_path],
+            ranges=(requested_coverage,),
+            epochs=epochs_before,
+            allow_overlap=True,
+        )
+    )
+    if cached_fact is not None:
+        confirmed_epochs = await _container_read_path_epochs([valid_path], timeout=5)
+        if confirmed_epochs == epochs_before:
+            payload = _compact_read_fact_payload(
+                cached_fact,
+                coverage=requested_coverage,
+            )
+            receipt = _read_observation_receipt(
+                path=valid_path,
+                epoch=confirmed_epochs[0],
+                coverage=requested_coverage,
+                content_sha256=str(cached_fact["content_sha256"]),
+                observation_id=str(cached_fact["observation_id"]),
+                cache_hit=True,
+                coverage_complete=bool(cached_fact.get("coverage_complete")),
+            )
+            return _text(payload, metadata={_READ_OBSERVATION_RECEIPT_KEY: receipt})
+
+    (
+        data,
+        coverage,
+        coverage_complete,
+        read_metadata,
+    ) = await _bounded_container_file_read(
+        path=resolved_read_path,
+        head=head,
+        tail=tail,
+        output=output,
+        offset=offset,
+        limit=limit,
+        total_bytes=total_bytes,
+    )
+    epochs_after = await _container_read_path_epochs([valid_path], timeout=5)
+    stable_epochs = epochs_after if epochs_after == epochs_before else []
+    content_sha256 = "sha256:" + hashlib.sha256(data).hexdigest()
+    fact = (
+        _store_read_fact(
+            scope=scope,
+            operation_key=operation_key,
+            paths=[valid_path],
+            ranges=(coverage,),
+            epochs=stable_epochs,
+            content_sha256=content_sha256,
+            coverage_complete=coverage_complete,
+        )
+        if stable_epochs
+        else None
+    )
+    payload: dict[str, Any]
+    if output == "base64":
+        payload = {
+            "type": "base64",
+            "base64": base64.b64encode(data).decode("ascii"),
+            "mimeType": mimetypes.guess_type(valid_path)[0]
+            or "application/octet-stream",
+            "fileName": posixpath.basename(valid_path),
+            **read_metadata,
         }
+    else:
+        payload = {
+            "type": "text",
+            "content": data.decode("utf-8", errors="replace"),
+            **read_metadata,
+        }
+    if fact is not None:
+        payload["observationId"] = fact["observation_id"]
+    payload["contentSha256"] = content_sha256
+    payload["coverage"] = coverage.to_dict()
+    receipt = _read_observation_receipt(
+        path=valid_path,
+        epoch=stable_epochs[0] if stable_epochs else None,
+        coverage=coverage,
+        content_sha256=content_sha256,
+        observation_id=fact["observation_id"] if fact is not None else None,
+        cache_hit=False,
+        coverage_complete=coverage_complete,
     )
+    return _text(payload, metadata={_READ_OBSERVATION_RECEIPT_KEY: receipt})
 
 
 async def _write_bytes(path: str, content: bytes) -> None:
@@ -643,7 +1331,9 @@ async def _write_bytes(path: str, content: bytes) -> None:
         raise RuntimeError(stderr.decode("utf-8", errors="replace"))
 
 
-@mcp.tool(description="Create or overwrite a UTF-8 text file in the attached container.")
+@mcp.tool(
+    description="Create or overwrite a UTF-8 text file in the attached container."
+)
 async def write_file(
     ctx: Context,
     path: str = Field(description="Absolute container path"),
@@ -699,7 +1389,9 @@ async def edit_file(
 
 
 @mcp.tool(description="Create a directory recursively in the attached container.")
-async def create_directory(ctx: Context, path: str = Field(description="Absolute container path")) -> TextContent:
+async def create_directory(
+    ctx: Context, path: str = Field(description="Absolute container path")
+) -> TextContent:
     del ctx
     valid_path = bridge.validate_path(path)
     await bridge.require_success(["mkdir", "-p", valid_path])
@@ -707,7 +1399,9 @@ async def create_directory(ctx: Context, path: str = Field(description="Absolute
 
 
 @mcp.tool(description="List direct children of a directory in the attached container.")
-async def list_directory(ctx: Context, path: str = Field(description="Absolute container path")) -> TextContent:
+async def list_directory(
+    ctx: Context, path: str = Field(description="Absolute container path")
+) -> TextContent:
     del ctx
     valid_path = bridge.validate_path(path)
     script = (
@@ -716,7 +1410,9 @@ async def list_directory(ctx: Context, path: str = Field(description="Absolute c
         'if [ -d "$entry" ]; then prefix="[DIR]"; else prefix="[FILE]"; fi; '
         'printf "%s %s\\n" "$prefix" "${entry##*/}"; done'
     )
-    data = await bridge.require_success([bridge.shell, "-c", script, "aworld-docker", valid_path])
+    data = await bridge.require_success(
+        [bridge.shell, "-c", script, "aworld-docker", valid_path]
+    )
     return _text(data.decode("utf-8", errors="replace"))
 
 
@@ -739,14 +1435,52 @@ async def list_allowed_directories(ctx: Context) -> TextContent:
     return _text("Allowed directories:\n" + "\n".join(bridge.allowed_directories))
 
 
-@mcp.tool(description="Download a container file as base64.")
-async def download_file(ctx: Context, path: str = Field(description="Absolute container path")) -> TextContent:
-    return await read_file(ctx, path, output="base64")
+@mcp.tool(description="Download one bounded container-file chunk as base64.")
+async def download_file(
+    ctx: Context,
+    path: str = Field(description="Absolute container path"),
+    offset: int = Field(default=0, description="Zero-based byte offset"),
+    limit: Optional[int] = Field(default=None, description="Bounded byte count"),
+    env_content: Optional[dict[str, Any]] = Field(
+        default=None,
+        description="Framework-injected task scope; hidden from the model schema",
+    ),
+) -> TextContent:
+    return await read_file(
+        ctx,
+        path,
+        head=None,
+        tail=None,
+        output="base64",
+        offset=offset,
+        limit=limit,
+        refresh=False,
+        env_content=env_content,
+    )
 
 
-@mcp.tool(description="Read image, audio, or other binary container file as base64.")
-async def read_media_file(ctx: Context, path: str = Field(description="Absolute container path")) -> TextContent:
-    return await read_file(ctx, path, output="base64")
+@mcp.tool(description="Read one bounded media-file chunk as base64.")
+async def read_media_file(
+    ctx: Context,
+    path: str = Field(description="Absolute container path"),
+    offset: int = Field(default=0, description="Zero-based byte offset"),
+    limit: Optional[int] = Field(default=None, description="Bounded byte count"),
+    env_content: Optional[dict[str, Any]] = Field(
+        default=None,
+        description="Framework-injected task scope; hidden from the model schema",
+    ),
+) -> TextContent:
+    return await read_file(
+        ctx,
+        path,
+        head=None,
+        tail=None,
+        output="base64",
+        offset=offset,
+        limit=limit,
+        refresh=False,
+        env_content=env_content,
+    )
 
 
 @mcp.tool(
@@ -775,12 +1509,18 @@ async def observe_artifact(
     return artifact_mcp_result(observed)
 
 
-@mcp.tool(description="Read a bounded chunk from a full Tool output artifact returned by this sandbox.")
+@mcp.tool(
+    description="Read a bounded chunk from a full Tool output artifact returned by this sandbox."
+)
 async def read_output_artifact(
     ctx: Context,
-    artifact_ref: str = Field(description="Artifact reference returned in output_policy.artifact_ref"),
+    artifact_ref: str = Field(
+        description="Artifact reference returned in output_policy.artifact_ref"
+    ),
     offset: int = Field(default=0, description="Zero-based byte offset"),
-    limit: Optional[int] = Field(default=None, description="Bytes to read; capped by the inline output policy"),
+    limit: Optional[int] = Field(
+        default=None, description="Bytes to read; capped by the inline output policy"
+    ),
     output: str = Field(default="text", description="text or base64"),
 ) -> TextContent:
     del ctx
@@ -832,19 +1572,34 @@ async def upload_file(
     return _text(f"Successfully copied {source_path} to {target_path}")
 
 
-@mcp.tool(description="Search file contents recursively with an extended regular expression.")
+@mcp.tool(
+    description="Search file contents recursively with an extended regular expression."
+)
 async def search_content(
     ctx: Context,
     path: str = Field(description="Absolute file or directory path"),
     pattern: str = Field(description="Extended regular expression"),
-    max_matches: Optional[int] = Field(default=None, description="Maximum total matching lines"),
-    max_per_file: Optional[int] = Field(default=None, description="Accepted for API compatibility"),
+    max_matches: Optional[int] = Field(
+        default=None, description="Maximum total matching lines"
+    ),
+    max_per_file: Optional[int] = Field(
+        default=None, description="Accepted for API compatibility"
+    ),
     before: int = Field(default=0, description="Context lines before each match"),
     after: int = Field(default=0, description="Context lines after each match"),
 ) -> TextContent:
     del ctx, max_per_file
     valid_path = bridge.validate_path(path)
-    command = ["grep", "-RInE", "-B", str(before), "-A", str(after), pattern, valid_path]
+    command = [
+        "grep",
+        "-RInE",
+        "-B",
+        str(before),
+        "-A",
+        str(after),
+        pattern,
+        valid_path,
+    ]
     return_code, stdout, stderr, _ = await bridge.execute(command, timeout=30)
     if return_code not in (0, 1):
         raise RuntimeError(stderr.decode("utf-8", errors="replace"))
@@ -859,7 +1614,9 @@ async def search_files(
     ctx: Context,
     path: str = Field(description="Absolute directory path"),
     pattern: str = Field(description="Glob pattern"),
-    excludePatterns: list[str] = Field(default_factory=list, description="Glob patterns to exclude"),
+    excludePatterns: list[str] = Field(
+        default_factory=list, description="Glob patterns to exclude"
+    ),
 ) -> TextContent:
     del ctx
     valid_path = bridge.validate_path(path)
@@ -867,7 +1624,10 @@ async def search_files(
     matches = []
     for candidate in data.decode("utf-8", errors="replace").splitlines():
         relative = posixpath.relpath(candidate, valid_path)
-        if not (fnmatch.fnmatch(relative, pattern) or fnmatch.fnmatch(posixpath.basename(candidate), pattern)):
+        if not (
+            fnmatch.fnmatch(relative, pattern)
+            or fnmatch.fnmatch(posixpath.basename(candidate), pattern)
+        ):
             continue
         if any(fnmatch.fnmatch(relative, excluded) for excluded in excludePatterns):
             continue
