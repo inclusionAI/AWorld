@@ -2172,7 +2172,10 @@ def project_execution_protocol_telemetry(value: Any) -> dict[str, Any] | None:
             "verification_failed",
             "iteration_limit_reached",
         },
-        "acceptance_continuation_suppressed": {"deadline_reserve"},
+        "acceptance_continuation_suppressed": {
+            "deadline_reserve",
+            "protocol_finalization",
+        },
     }
     booleans = {
         "armed",
@@ -3960,6 +3963,23 @@ def _record_tool_protocol_event_locked(
     transition = _apply_event(context, agent_id, event)
     if transition.decision.reason is DecisionReason.PERSISTENCE_ERROR:
         return transition
+    deadline_candidate_due = bool(
+        deadline_progress is not None
+        and deadline_progress[2] >= HARD_CONVERGENCE_MIN_DEADLINE_FRACTION
+        and event.candidate_present is False
+        and not transition.state.convergence_constraint_active
+        and execution_protocol_eligible(
+            transition.state,
+            public_deliverable_declared=event.public_deliverable_declared,
+        )
+    )
+    if deadline_candidate_due:
+        activated = _activate_convergence_constraint_locked(context, agent_id)
+        if (
+            activated is not None
+            and activated.state.convergence_constraint_active
+        ):
+            transition = activated
     _update_mutation_gate(context, agent_id, transition, semantic_state)
     _record_pending_checkpoint(context, agent_id, transition)
     _record_deadline_guidance(context, agent_id, transition)
@@ -4593,6 +4613,39 @@ def consume_execution_protocol_guidance(context, agent_id: str) -> str | None:
     policy = execution_protocol_policy(context, agent_id)
     if policy.mode is not ProtocolMode.GUIDE:
         return None
+    deadline_progress = _task_deadline_progress(context)
+
+    def deadline_suffix(*, produce_candidate: bool) -> str:
+        if deadline_progress is None:
+            return ""
+        _total, remaining, consumed = deadline_progress
+        if consumed >= 0.80:
+            return (
+                " The caller deadline has crossed its 80% delivery-only "
+                "checkpoint; use remaining actions only for delivery-impacting "
+                f"validation, repair, or submission ({remaining:.0f}s remaining)."
+            )
+        if consumed >= 0.65:
+            return (
+                " The caller deadline has crossed its 65% validation "
+                "checkpoint; do not expand the search space "
+                f"({remaining:.0f}s remaining)."
+            )
+        if consumed >= HARD_CONVERGENCE_MIN_DEADLINE_FRACTION:
+            return (
+                (
+                    " The caller deadline has crossed its 40% candidate "
+                    "checkpoint; produce the smallest honest candidate now "
+                )
+                if produce_candidate
+                else (
+                    " The caller deadline has crossed its 40% convergence "
+                    "checkpoint; stop broad exploration and validate, repair, "
+                    "or submit the current candidate "
+                )
+            ) + f"({remaining:.0f}s remaining)."
+        return ""
+
     mutation_gate = _read_runtime_value(
         context, agent_id, MUTATION_GATE_STATE_KEY
     )
@@ -4635,9 +4688,22 @@ def consume_execution_protocol_guidance(context, agent_id: str) -> str | None:
             "current result accurately. Unknown, helper, and unrelated mutations "
             "remain blocked."
             + exhausted_suffix
+            + deadline_suffix(produce_candidate=False)
         )
     state = load_execution_protocol_state(context, agent_id)
     if state.convergence_constraint_active:
+        deadline_stage = None
+        if deadline_progress is not None:
+            consumed = deadline_progress[2]
+            deadline_stage = (
+                "delivery_only"
+                if consumed >= 0.80
+                else "validation_due"
+                if consumed >= 0.65
+                else "candidate_due"
+                if consumed >= HARD_CONVERGENCE_MIN_DEADLINE_FRACTION
+                else None
+            )
         convergence_guidance_id = {
             "schema_version": "aworld.convergence-guidance/v1",
             "scope": _model_decision_scope(context, agent_id),
@@ -4647,6 +4713,7 @@ def consume_execution_protocol_guidance(context, agent_id: str) -> str | None:
                 if state.convergence_stage is not None
                 else None
             ),
+            "deadline_stage": deadline_stage,
         }
         if (
             _read_runtime_value(
@@ -4663,21 +4730,11 @@ def consume_execution_protocol_guidance(context, agent_id: str) -> str | None:
             EXECUTION_PROTOCOL_CONVERGENCE_GUIDANCE_KEY,
             convergence_guidance_id,
         )
-        progress = _task_deadline_progress(context)
-        deadline_suffix = ""
-        if progress is not None:
-            _total, remaining, consumed = progress
-            if consumed >= 0.80:
-                deadline_suffix = (
-                    " The caller deadline is in its delivery-only stage; use "
-                    "remaining actions only for delivery-impacting validation, "
-                    f"repair, or submission ({remaining:.0f}s remaining)."
-                )
-            elif consumed >= 0.65:
-                deadline_suffix = (
-                    " The caller deadline is in its validation stage; do not "
-                    f"expand the search space ({remaining:.0f}s remaining)."
-                )
+        convergence_deadline_suffix = deadline_suffix(
+            produce_candidate=(
+                state.convergence_stage is ConvergenceStage.PRODUCE_CANDIDATE
+            )
+        )
         if state.convergence_stage is ConvergenceStage.PRODUCE_CANDIDATE:
             return (
                 "AWorld convergence constraint: repeated planning checkpoints "
@@ -4687,7 +4744,7 @@ def consume_execution_protocol_guidance(context, agent_id: str) -> str | None:
                 "not resume broad read-only exploration. If no safe candidate "
                 "can be produced from current evidence, submit uncertainty "
                 "accurately instead of continuing reconnaissance."
-                + deadline_suffix
+                + convergence_deadline_suffix
             )
         return (
             "AWorld convergence constraint: an inspectable candidate exists. "
@@ -4709,7 +4766,7 @@ def consume_execution_protocol_guidance(context, agent_id: str) -> str | None:
             "output file, use a direct file write or an exact-file copy primitive; "
             "directory-ambiguous and recursive writers cannot cross this gate. "
             "Reuse retained evidence and unchanged observations."
-            + deadline_suffix
+            + convergence_deadline_suffix
         )
     if isinstance(mutation_gate, Mapping) and mutation_gate.get("active") is True:
         count = _bounded_counter(

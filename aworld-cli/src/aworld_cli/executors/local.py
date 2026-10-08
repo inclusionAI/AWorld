@@ -1423,6 +1423,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
             execution_protocol_policy,
             load_execution_protocol_state,
         )
+        from aworld.core.execution_protocol import ProtocolMode
 
         policy = execution_protocol_policy(task.context, root_id)
         protocol_state = load_execution_protocol_state(task.context, root_id)
@@ -1442,6 +1443,26 @@ class LocalAgentExecutor(BaseAgentExecutor):
         self.last_execution_protocol = current_telemetry
         if response is not None:
             response.execution_protocol = current_telemetry
+        if (
+            policy.mode is ProtocolMode.GUIDE
+            and (
+                protocol_state.finalization_entered
+                or getattr(protocol_state.phase, "value", None) == "finalize"
+            )
+        ):
+            # The execution protocol has already made its terminal, Tool-free
+            # decision for this task scope. Starting another implicit goal
+            # segment would resurrect ordinary Tool work after finalization,
+            # duplicate elapsed time, and contradict the monotonic terminal
+            # state. Preserve the incomplete/success status produced by the
+            # finalized segment and return it to the caller unchanged.
+            current_telemetry["acceptance_continuation_suppressed"] = (
+                "protocol_finalization"
+            )
+            self.last_execution_protocol = current_telemetry
+            if response is not None:
+                response.execution_protocol = current_telemetry
+            return None
         semantic_status = str(event.get("semantic_status") or "").strip().lower()
         if not semantic_status:
             semantic_status = (

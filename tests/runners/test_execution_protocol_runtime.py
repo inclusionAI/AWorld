@@ -20,6 +20,7 @@ from aworld.core.context.compiler import (
 )
 from aworld.core.execution_protocol import (
     action_signature,
+    ConvergenceStage,
     ControllerDecision,
     ControllerAction,
     DecisionReason,
@@ -1122,6 +1123,52 @@ def test_unapplied_replans_wait_until_caller_deadline_is_40_percent_consumed() -
     ).convergence_constraint_active is True
 
 
+def test_deadline_40_percent_requires_candidate_without_replan_counter() -> None:
+    context = _context("deadline-candidate-required")
+    configure_execution_protocol(
+        context,
+        "agent",
+        ExecutionProtocolPolicy(
+            mode=ProtocolMode.GUIDE,
+            activation_event_threshold=1,
+            model_activation_min_tool_actions=1,
+            repetition_threshold=99,
+            low_information_gain_threshold=99,
+            no_goal_progress_threshold=99,
+            stagnation_event_threshold=99,
+        ),
+    )
+    _declare_long_horizon(context)
+    _set_deadline_progress(context, 0.39)
+    before = record_tool_protocol_event(
+        context,
+        "agent",
+        _semantic_state(
+            current_agent_step=1,
+            candidate_present=False,
+            public_deliverable_declared=True,
+        ),
+    )
+    assert before.state.convergence_constraint_active is False
+
+    _set_deadline_progress(context, 0.40)
+    due = record_tool_protocol_event(
+        context,
+        "agent",
+        _semantic_state(
+            current_agent_step=2,
+            candidate_present=False,
+            public_deliverable_declared=True,
+        ),
+    )
+
+    assert due.state.convergence_constraint_active is True
+    assert due.state.convergence_stage.value == "produce_candidate"
+    assert build_execution_protocol_telemetry(context, "agent")[
+        "consecutive_unapplied_replans"
+    ] == 0
+
+
 def test_unapplied_replans_without_typed_deadline_preserve_compatibility() -> None:
     context = Context(task_id="deadline-unavailable-replan-convergence")
     configure_execution_protocol(
@@ -1400,6 +1447,53 @@ def test_deadline_guidance_moves_from_candidate_to_delivery_only() -> None:
     )
     assert "80%" in consume_execution_protocol_guidance(context, "agent")
     assert consume_execution_protocol_guidance(context, "agent") is None
+
+
+def test_40_percent_validate_guidance_never_requests_another_candidate() -> None:
+    context = _context("validate-deadline-guidance")
+    policy = ExecutionProtocolPolicy(mode=ProtocolMode.GUIDE)
+    configure_execution_protocol(context, "agent", policy)
+    store = ExecutionProtocolStore(context, "agent", policy)
+    store.save(
+        replace(
+            store.load(),
+            long_horizon_armed=True,
+            candidate_present=True,
+            candidate_checkpoint_recorded=True,
+            convergence_constraint_active=True,
+            convergence_stage=ConvergenceStage.VALIDATE_REPAIR_OR_SUBMIT,
+            convergence_constraint_activation_count=1,
+        )
+    )
+    _set_deadline_progress(context, 0.40)
+
+    guidance = consume_execution_protocol_guidance(context, "agent")
+
+    assert guidance is not None
+    assert "validate, repair, or submit the current candidate" in guidance
+    assert "produce the smallest honest candidate" not in guidance
+
+
+def test_validate_mutation_window_tracks_40_65_80_deadline_stages() -> None:
+    context = _context("validate-mutation-window-deadlines")
+    _activate_validate_repair_convergence(context)
+
+    _set_deadline_progress(context, 0.40)
+    at_40 = consume_execution_protocol_guidance(context, "agent")
+    _set_deadline_progress(context, 0.65)
+    at_65 = consume_execution_protocol_guidance(context, "agent")
+    _set_deadline_progress(context, 0.80)
+    at_80 = consume_execution_protocol_guidance(context, "agent")
+
+    assert "mutation validation window" in at_40
+    assert "40% convergence checkpoint" in at_40
+    assert "65% validation checkpoint" in at_65
+    assert "80% delivery-only checkpoint" in at_80
+    assert all("produce the smallest honest candidate" not in value for value in (
+        at_40,
+        at_65,
+        at_80,
+    ))
 
 
 def test_read_only_heuristic_is_advisory_before_typed_convergence() -> None:
