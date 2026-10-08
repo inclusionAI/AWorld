@@ -1291,6 +1291,142 @@ async def test_agent_memory_replay_appends_only_post_checkpoint_occurrences(
 
 
 @pytest.mark.asyncio
+async def test_public_deliverable_augmentation_preserves_adaptive_occurrence_cursor(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    import aworld.memory.main as memory_main
+
+    agent = Agent(
+        name="Aworld",
+        conf=AgentConfig(
+            llm_provider="openai",
+            llm_model_name="fake-model",
+            llm_api_key="fake-key",
+        ),
+    )
+    agent.llm._context_checkpoint_policy = "adaptive"
+    agent.llm._context_input_budget = 100_000
+    context = Context(
+        task_id="adaptive-public-deliverable",
+        session=Session(session_id="adaptive-public-session"),
+    )
+    context.set_task(
+        Task(
+            id="adaptive-public-deliverable",
+            name="adaptive-public-deliverable",
+            session_id="adaptive-public-session",
+            input="create result.json with jq",
+        )
+    )
+    context.context_info["public_deliverable_contract"] = {
+        "schema_version": "aworld.public-deliverables/v1",
+        "authority": "public_task_advisory",
+        "source": "public_task_text",
+        "artifacts": [
+            {
+                "deliverable_id": "result",
+                "path": str(tmp_path / "result.json"),
+                "display_path": "result.json",
+                "kind": "file",
+                "authority": "public_task_advisory",
+            }
+        ],
+    }
+    context.context_info["public_capability_hints"] = {
+        "schema_version": "aworld.public-capabilities/v1",
+        "authority": "public_task_advisory",
+        "source": "public_task_text",
+        "executables": [
+            {"executable": "jq", "authority": "public_task_advisory"}
+        ],
+    }
+    metadata = MessageMetadata(
+        agent_id=agent.id(),
+        agent_name=agent.name(),
+        session_id="adaptive-public-session",
+        task_id="adaptive-public-deliverable",
+        user_id="user",
+    )
+    prior_memory_holder = dict(memory_main.MEMORY_HOLDER)
+    memory_main.MEMORY_HOLDER.clear()
+    try:
+        MemoryFactory.init(
+            custom_memory_store=memory_main.InMemoryMemoryStore(),
+            config=MemoryConfig(provider="aworld"),
+        )
+        await MemoryFactory.instance().add(
+            MemoryHumanMessage(content="create result.json with jq", metadata=metadata),
+            agent_memory_config=agent.memory_config,
+        )
+        for index in range(12):
+            await MemoryFactory.instance().add(
+                MemoryAIMessage(content=f"old {index}", metadata=metadata),
+                agent_memory_config=agent.memory_config,
+            )
+
+        async def skip_memory(*args, **kwargs):
+            return None
+
+        async def skip_desc(*args, **kwargs):
+            return None
+
+        async def snapshot(**kwargs):
+            context.advance_context_lifecycle("checkpoint")
+            return SimpleNamespace(id="public-deliverable-checkpoint")
+
+        monkeypatch.setattr(agent, "_add_message_to_memory", skip_memory)
+        monkeypatch.setattr(agent, "async_desc_transform", skip_desc)
+        monkeypatch.setattr(context, "snapshot", snapshot)
+        message = Message(category=Constants.AGENT, headers={"context": context})
+        first_raw = await agent.build_llm_input(
+            Observation(content="create result.json with jq"),
+            message=message,
+        )
+        assert "AWorld public deliverable milestones" in first_raw[0]["content"]
+        assert "__aworld_internal_memory_occurrence_id" not in repr(first_raw)
+        projection = context.context_info[
+            f"adaptive_memory_projection:{agent.id()}"
+        ]
+        assert projection["messages_hash"] == canonical_json_hash(first_raw)
+        assert all(entry["index"] > 0 for entry in projection["occurrences"])
+        context.context_info["context_semantic_progress"] = {
+            agent.id(): {"repetition_count": 3, "low_information_gain_count": 0}
+        }
+        capsule = await agent._apply_adaptive_context_policy(
+            context=context,
+            messages=first_raw,
+            context_compiler_mode="enforce",
+        )
+        assert not any(item.get("content") == "old 0" for item in capsule)
+
+        await MemoryFactory.instance().add(
+            MemoryAIMessage(content="fresh after checkpoint", metadata=metadata),
+            agent_memory_config=agent.memory_config,
+        )
+        second_raw = await agent.build_llm_input(
+            Observation(content="continue"),
+            message=message,
+        )
+        context.context_info["context_semantic_progress"] = {
+            agent.id(): {"repetition_count": 0, "low_information_gain_count": 0}
+        }
+        continued = await agent._apply_adaptive_context_policy(
+            context=context,
+            messages=second_raw,
+            context_compiler_mode="enforce",
+        )
+
+        assert continued[: len(capsule)] == capsule
+        assert continued[-1]["content"] == "fresh after checkpoint"
+        assert not any(item.get("content") == "old 0" for item in continued)
+        assert "__aworld_internal_memory_occurrence_id" not in repr(continued)
+    finally:
+        memory_main.MEMORY_HOLDER.clear()
+        memory_main.MEMORY_HOLDER.update(prior_memory_holder)
+
+
+@pytest.mark.asyncio
 async def test_adaptive_state_rejects_cross_task_context_fallback():
     agent = LLMAgent.__new__(LLMAgent)
     agent._id = "agent"

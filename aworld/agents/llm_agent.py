@@ -3,6 +3,7 @@
 import time
 
 import asyncio
+import contextvars
 import copy
 import inspect
 import json
@@ -184,6 +185,10 @@ SEMANTIC_PROGRESS_LEDGER_ENV = "AWORLD_SEMANTIC_PROGRESS_LEDGER"
 _PREPARED_TOOLS_UNSET = object()
 _ADAPTIVE_MEMORY_OCCURRENCE_KEY = "__aworld_internal_memory_occurrence_id"
 _ADAPTIVE_MEMORY_PROJECTION_LIMIT = 128
+_DEFER_ADAPTIVE_MEMORY_PROJECTION = contextvars.ContextVar(
+    "aworld_defer_adaptive_memory_projection",
+    default=False,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -3011,6 +3016,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         Returns:
             Message list for LLM.
         """
+        defer_adaptive_projection = _DEFER_ADAPTIVE_MEMORY_PROJECTION.get()
         messages = []
         track_occurrences = self._adaptive_occurrence_tracking_enabled()
 
@@ -3259,6 +3265,8 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             include_internal_occurrence_ids=track_occurrences,
         )
         messages = self._prepend_task_input_messages(messages, message.context)
+        if defer_adaptive_projection:
+            return messages
         return self._finalize_adaptive_memory_projection(messages, message.context)
 
     def _restore_current_tool_turn(
@@ -7716,9 +7724,15 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         images = observation.images if self.conf.use_vision else None
         if self.conf.use_vision and not images and observation.image:
             images = [observation.image]
-        messages = await self.async_messages_transform(
-            image_urls=images, observation=observation, message=message
-        )
+        projection_token = _DEFER_ADAPTIVE_MEMORY_PROJECTION.set(True)
+        try:
+            messages = await self.async_messages_transform(
+                image_urls=images,
+                observation=observation,
+                message=message,
+            )
+        finally:
+            _DEFER_ADAPTIVE_MEMORY_PROJECTION.reset(projection_token)
         # truncate and other process
         try:
             messages = self._process_messages(
@@ -7727,7 +7741,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         except Exception as e:
             logger.warning(f"Failed to process messages in messages_transform: {e}")
             logger.debug(f"Process messages error details: {traceback.format_exc()}")
-        return messages
+        return self._finalize_adaptive_memory_projection(messages, message.context)
 
     @staticmethod
     def _amni_system_section_messages(
