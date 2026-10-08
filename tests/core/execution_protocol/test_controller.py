@@ -1027,6 +1027,57 @@ def test_explicit_short_horizon_still_protects_named_public_deliverable():
     assert debt.state.candidate_decision_count == 1
 
 
+def test_public_contract_without_model_profile_cannot_activate_delivery_control():
+    policy = ExecutionProtocolPolicy(
+        mode="guide",
+        delivery_debt_observation_threshold=1,
+        post_candidate_read_only_threshold=1,
+        finalization_reserve_seconds=60,
+        candidate_decision_reserve_seconds=180,
+        repetition_threshold=99,
+        low_information_gain_threshold=99,
+        no_goal_progress_threshold=99,
+        stagnation_event_threshold=99,
+    )
+    missing = transition_execution_protocol(
+        _state(),
+        _tool(
+            remaining_seconds=150,
+            public_deliverable_declared=True,
+            candidate_present=False,
+            workspace_mutated=False,
+        ),
+        policy,
+    )
+    candidate = transition_execution_protocol(
+        missing.state,
+        _tool(
+            public_deliverable_declared=True,
+            candidate_present=True,
+            candidate_advanced=True,
+            public_candidate_mutated=True,
+        ),
+        policy,
+    )
+    stagnant = transition_execution_protocol(
+        candidate.state,
+        _tool(
+            public_deliverable_declared=True,
+            candidate_present=True,
+            public_candidate_mutated=True,
+            read_only_observed=True,
+        ),
+        policy,
+    )
+
+    assert missing.decision.action is ControllerAction.CONTINUE
+    assert missing.state.delivery_debt_observations == 0
+    assert missing.state.candidate_decision_count == 0
+    assert stagnant.decision.action is ControllerAction.CONTINUE
+    assert stagnant.state.post_candidate_no_delivery_progress_observations == 0
+    assert stagnant.state.convergence_constraint_active is False
+
+
 def test_explicit_zero_replan_limit_suppresses_all_new_checkpoint_paths():
     policy = ExecutionProtocolPolicy(
         mode="guide",
@@ -1323,7 +1374,7 @@ def test_continue_checkpoint_acknowledges_request_without_claiming_replan_applie
 def test_convergence_constraint_stops_future_replan_requests_and_advances_stage():
     policy = ExecutionProtocolPolicy(mode="guide", repetition_threshold=1)
     requested = transition_execution_protocol(
-        _state(), _tool(current_step=1, repetition_count=1), policy
+        _armed_state(), _tool(current_step=1, repetition_count=1), policy
     )
     constrained = transition_execution_protocol(
         requested.state,
@@ -1367,6 +1418,21 @@ def test_convergence_constraint_stops_future_replan_requests_and_advances_stage(
     )
 
 
+def test_unprofiled_constraint_event_cannot_activate_a_gate():
+    transition = transition_execution_protocol(
+        _state(),
+        ExecutionProtocolEvent(
+            kind=EventKind.REPLAN_UNACKNOWLEDGED,
+            convergence_stage=ConvergenceStage.PRODUCE_CANDIDATE,
+        ),
+        ExecutionProtocolPolicy(mode="guide"),
+    )
+
+    assert transition.decision.action is ControllerAction.CONTINUE
+    assert transition.decision.reason is DecisionReason.MODEL_PROFILE_INSUFFICIENT
+    assert transition.state.convergence_constraint_active is False
+
+
 def test_repeated_post_candidate_reads_activate_convergence_without_replan():
     policy = ExecutionProtocolPolicy(
         mode="guide",
@@ -1377,7 +1443,7 @@ def test_repeated_post_candidate_reads_activate_convergence_without_replan():
         stagnation_event_threshold=99,
     )
     existing = transition_execution_protocol(
-        _state(),
+        _armed_state(),
         _tool(candidate_present=True, read_only_observed=True),
         policy,
     )
@@ -1433,7 +1499,7 @@ def test_post_candidate_counter_tracks_all_no_delivery_progress_effects():
         stagnation_event_threshold=99,
     )
     candidate = transition_execution_protocol(
-        _state(),
+        _armed_state(),
         _tool(
             candidate_present=True,
             candidate_advanced=True,
@@ -1473,7 +1539,7 @@ def test_only_new_delivery_high_water_resets_post_candidate_counter():
         stagnation_event_threshold=99,
     )
     first = transition_execution_protocol(
-        _state(),
+        _armed_state(),
         _tool(
             candidate_present=True,
             candidate_advanced=True,
@@ -1658,7 +1724,7 @@ def test_runtime_can_request_model_review_for_an_unarmed_candidate():
     assert transition.state.long_horizon_armed is False
 
 
-def test_structurally_unavailable_review_boundary_is_controller_bypass():
+def test_structurally_unavailable_requested_review_is_unverified():
     transition = transition_execution_protocol(
         _state(),
         ExecutionProtocolEvent(
@@ -1673,7 +1739,7 @@ def test_structurally_unavailable_review_boundary_is_controller_bypass():
         ),
     )
 
-    assert transition.decision.action is ControllerAction.SUBMIT_CURRENT_RESULT
+    assert transition.decision.action is ControllerAction.STOP_INCOMPLETE
     assert transition.decision.reason is DecisionReason.REVIEW_BOUNDARY_UNAVAILABLE
     assert transition.state.phase is ProtocolPhase.COMPLETE
     assert transition.state.review_pending is False
@@ -1825,22 +1891,15 @@ def test_default_policy_bounds_evidence_driven_review_repairs():
     )
 
     assert second_review.decision.action is ControllerAction.REQUEST_FINAL_REVIEW
-    assert second_repair.decision.action is ControllerAction.SUBMIT_CURRENT_RESULT
+    assert second_repair.decision.action is ControllerAction.STOP_INCOMPLETE
     assert second_repair.decision.reason is DecisionReason.REPAIR_LIMIT_REACHED
     assert second_repair.state.final_review_count == 2
     assert second_repair.state.repair_count == 1
 
 
-@pytest.mark.parametrize(
-    ("independent", "expected_action"),
-    [
-        (False, ControllerAction.SUBMIT_CURRENT_RESULT),
-        (True, ControllerAction.STOP_INCOMPLETE),
-    ],
-)
+@pytest.mark.parametrize("independent", [False, True])
 def test_unchanged_candidate_evidence_basis_stops_before_second_review(
     independent,
-    expected_action,
 ):
     policy = ExecutionProtocolPolicy(
         mode="guide",
@@ -1870,7 +1929,7 @@ def test_unchanged_candidate_evidence_basis_stops_before_second_review(
         policy,
     )
 
-    assert unchanged.decision.action is expected_action
+    assert unchanged.decision.action is ControllerAction.STOP_INCOMPLETE
     assert unchanged.decision.reason is DecisionReason.REVIEW_BASIS_UNCHANGED
     assert unchanged.state.phase is ProtocolPhase.COMPLETE
     assert unchanged.state.final_review_count == 1
@@ -1955,7 +2014,7 @@ def test_finalization_reserve_is_generic_and_emitted_once():
     assert second.decision.action is ControllerAction.CONTINUE
 
 
-def test_candidate_final_in_finalization_reserve_bypasses_review():
+def test_candidate_final_in_finalization_reserve_is_unverified():
     policy = ExecutionProtocolPolicy(
         mode="guide",
         finalization_reserve_seconds=60,
@@ -1971,7 +2030,7 @@ def test_candidate_final_in_finalization_reserve_bypasses_review():
         policy,
     )
 
-    assert submitted.decision.action is ControllerAction.SUBMIT_CURRENT_RESULT
+    assert submitted.decision.action is ControllerAction.STOP_INCOMPLETE
     assert submitted.decision.reason is DecisionReason.FINALIZATION_RESERVE
     assert submitted.state.final_review_count == 0
     assert submitted.state.phase is ProtocolPhase.COMPLETE
@@ -2101,7 +2160,7 @@ def test_explicit_limits_keep_one_bounded_review_and_repair_compatibility():
 
     assert review.decision.action is ControllerAction.REQUEST_FINAL_REVIEW
     assert repair.decision.action is ControllerAction.REQUEST_REPAIR
-    assert final.decision.action is ControllerAction.SUBMIT_CURRENT_RESULT
+    assert final.decision.action is ControllerAction.STOP_INCOMPLETE
     assert final.state.final_review_count == 1
     assert final.state.repair_count == 1
 
@@ -2124,7 +2183,7 @@ def test_ordinary_tool_observation_during_review_does_not_enter_repair():
     assert observed.state.repair_count == 0
 
 
-def test_uncertain_and_error_reviews_fail_open_to_current_result():
+def test_uncertain_and_error_reviews_preserve_candidate_without_success():
     policy = ExecutionProtocolPolicy(mode="guide", independent_acceptance_enabled=False)
     for outcome, reason in (
         (ReviewOutcome.UNKNOWN, DecisionReason.REVIEW_UNCERTAIN),
@@ -2143,7 +2202,7 @@ def test_uncertain_and_error_reviews_fail_open_to_current_result():
             ),
             policy,
         )
-        assert transition.decision.action is ControllerAction.SUBMIT_CURRENT_RESULT
+        assert transition.decision.action is ControllerAction.STOP_INCOMPLETE
         assert transition.decision.reason is reason
 
 
@@ -2157,17 +2216,17 @@ def test_unsolicited_review_result_cannot_force_a_repair():
         ExecutionProtocolPolicy(mode="guide", independent_acceptance_enabled=False),
     )
 
-    assert transition.decision.action is ControllerAction.SUBMIT_CURRENT_RESULT
+    assert transition.decision.action is ControllerAction.STOP_INCOMPLETE
     assert transition.decision.reason is DecisionReason.INVALID_EVENT
     assert transition.state.repair_count == 0
 
 
-def test_controller_exception_fails_open_at_candidate_boundary():
+def test_controller_exception_fails_closed_at_candidate_boundary():
     transition = safe_transition_execution_protocol(
         _state(),
         ExecutionProtocolEvent(kind=EventKind.CANDIDATE_FINAL),
         None,
     )
 
-    assert transition.decision.action is ControllerAction.SUBMIT_CURRENT_RESULT
+    assert transition.decision.action is ControllerAction.STOP_INCOMPLETE
     assert transition.decision.reason is DecisionReason.CONTROLLER_ERROR

@@ -37,6 +37,7 @@ from aworld.core.execution_protocol import (
     ReviewOutcome,
     action_signature,
     compare_action_semantic_shape,
+    execution_protocol_eligible,
 )
 from aworld.sandbox.tool_observation import (
     actions_are_provably_read_only,
@@ -57,6 +58,9 @@ EXECUTION_PROTOCOL_HYPOTHESES_KEY = "execution_protocol_hypotheses"
 EXECUTION_PROTOCOL_CRITIC_KEY = "execution_protocol_acceptance_critic"
 EXECUTION_PROTOCOL_PUBLIC_PROBES_KEY = "execution_protocol_public_probes"
 EXECUTION_PROTOCOL_DEADLINE_GUIDANCE_KEY = "execution_protocol_deadline_guidance"
+EXECUTION_PROTOCOL_CONVERGENCE_GUIDANCE_KEY = (
+    "execution_protocol_convergence_guidance"
+)
 MUTATION_GATE_SCHEMA = "aworld.mutation-gate/v3"
 _LEGACY_MUTATION_GATE_SCHEMAS = frozenset(
     {"aworld.mutation-gate/v1", "aworld.mutation-gate/v2"}
@@ -1581,6 +1585,19 @@ def load_execution_protocol_state(context, agent_id: str):
     return ExecutionProtocolStore(context, agent_id, policy).load()
 
 
+def execution_protocol_control_eligible(context, agent_id: str) -> bool:
+    """Project the core eligibility predicate against the current contract."""
+
+    state = load_execution_protocol_state(context, agent_id)
+    status = _public_delivery_status(state_context(context))
+    return execution_protocol_eligible(
+        state,
+        public_deliverable_declared=bool(
+            status.get("public_deliverable_declared")
+        ),
+    )
+
+
 def project_execution_protocol_telemetry(value: Any) -> dict[str, Any] | None:
     """Validate and bound the only public execution-protocol projection."""
     if not isinstance(value, Mapping) or value.get("schema_version") not in {
@@ -1965,9 +1982,16 @@ def _update_mutation_gate(
     public_deliverable_declared = bool(
         delivery_status["public_deliverable_declared"]
     )
+    protocol_eligible = execution_protocol_eligible(
+        transition.state,
+        public_deliverable_declared=public_deliverable_declared,
+    )
     mutation_required = bool(
-        public_deliverable_declared
-        or (profile is not None and profile.workspace_mutation_required)
+        protocol_eligible
+        and (
+            public_deliverable_declared
+            or (profile is not None and profile.workspace_mutation_required)
+        )
     )
     candidate_present = transition.state.candidate_present is True
     public_candidate_mutated = bool(
@@ -2025,6 +2049,8 @@ def _update_mutation_gate(
         transition.state.post_candidate_read_only_observations,
     )
     post_candidate_convergence_due = bool(
+        protocol_eligible
+        and
         transition.state.convergence_constraint_active
         and convergence_stage is ConvergenceStage.VALIDATE_REPAIR_OR_SUBMIT
         and no_delivery_progress_count
@@ -2121,6 +2147,7 @@ def _update_mutation_gate(
     validation_window_open = repair_authorization is not None
     active = bool(
         execution_protocol_policy(context, agent_id).mode is ProtocolMode.GUIDE
+        and protocol_eligible
         and transition.state.convergence_constraint_active
         and convergence_stage is not None
     )
@@ -2509,6 +2536,8 @@ def _record_deadline_guidance(
 
     if execution_protocol_policy(context, agent_id).mode is not ProtocolMode.GUIDE:
         return
+    if not execution_protocol_control_eligible(context, agent_id):
+        return
     progress = _task_deadline_progress(context)
     if progress is None:
         return
@@ -2704,6 +2733,8 @@ def _activate_convergence_constraint(
         return None
     store = ExecutionProtocolStore(context, agent_id, policy)
     state = store.load()
+    if not execution_protocol_control_eligible(context, agent_id):
+        return None
     if state.convergence_constraint_active:
         return None
     delivery = _public_delivery_status(state_context(context))
@@ -3002,12 +3033,11 @@ def record_pre_generation_delivery_decision(
     state = ExecutionProtocolStore(context, agent_id, policy).load()
     remaining = _remaining_task_seconds(context)
     status = _public_delivery_status(state_context(context))
-    delivery_reserve_armed = bool(
-        state.long_horizon_armed
-        or (
-            state.model_execution_profile is not None
-            and status["public_deliverable_declared"]
-        )
+    delivery_reserve_armed = execution_protocol_eligible(
+        state,
+        public_deliverable_declared=bool(
+            status["public_deliverable_declared"]
+        ),
     )
     if (
         not delivery_reserve_armed
@@ -3502,6 +3532,31 @@ def consume_execution_protocol_guidance(context, agent_id: str) -> str | None:
         )
     state = load_execution_protocol_state(context, agent_id)
     if state.convergence_constraint_active:
+        convergence_guidance_id = {
+            "schema_version": "aworld.convergence-guidance/v1",
+            "scope": _model_decision_scope(context, agent_id),
+            "activation_count": state.convergence_constraint_activation_count,
+            "stage": (
+                state.convergence_stage.value
+                if state.convergence_stage is not None
+                else None
+            ),
+        }
+        if (
+            _read_runtime_value(
+                context,
+                agent_id,
+                EXECUTION_PROTOCOL_CONVERGENCE_GUIDANCE_KEY,
+            )
+            == convergence_guidance_id
+        ):
+            return None
+        _write_runtime_value(
+            context,
+            agent_id,
+            EXECUTION_PROTOCOL_CONVERGENCE_GUIDANCE_KEY,
+            convergence_guidance_id,
+        )
         progress = _task_deadline_progress(context)
         deadline_suffix = ""
         if progress is not None:
@@ -3684,7 +3739,16 @@ def record_candidate_final(
         transition = store.apply(
             ExecutionProtocolEvent(
                 kind=EventKind.REVIEW_RESULT,
-                review_outcome=ReviewOutcome.UNKNOWN,
+                # Reaching this boundary means the model-owned reviewer
+                # returned a complete candidate response.  Infrastructure
+                # errors and budget stops are handled before this call and may
+                # never be reclassified as acceptance.  Independent review
+                # still requires its separate probe-backed typed decision.
+                review_outcome=(
+                    ReviewOutcome.UNKNOWN
+                    if policy.independent_acceptance_enabled
+                    else ReviewOutcome.ACCEPT
+                ),
             )
         )
         _record_transition_metrics(context, transition)
@@ -3899,6 +3963,7 @@ __all__ = [
     "EXECUTION_PROTOCOL_MODEL_DECISIONS_KEY",
     "EXECUTION_PROTOCOL_HYPOTHESES_KEY",
     "EXECUTION_PROTOCOL_CRITIC_KEY",
+    "EXECUTION_PROTOCOL_CONVERGENCE_GUIDANCE_KEY",
     "EXECUTION_PROTOCOL_PENDING_KEY",
     "EXECUTION_PROTOCOL_POLICY_KEY",
     "EXECUTION_PROTOCOL_PUBLIC_PROBES_KEY",
@@ -3909,6 +3974,7 @@ __all__ = [
     "consume_execution_protocol_guidance",
     "build_execution_protocol_telemetry",
     "execution_protocol_policy",
+    "execution_protocol_control_eligible",
     "execution_protocol_accepts_model_profile",
     "execution_protocol_model_decision_boundary",
     "execution_protocol_requires_tool_free_finalization",

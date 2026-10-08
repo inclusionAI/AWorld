@@ -16,6 +16,8 @@ from aworld.core.execution_protocol import (
     ExecutionProtocolStore,
 )
 from aworld.core.task import Task
+from aworld.runners.execution_protocol import configure_execution_protocol
+from aworld.sandbox.task_budget import FrameworkTaskBudget, resolve_tool_lease
 
 
 def test_coalesce_tool_result_content_returns_plain_string_for_single_item():
@@ -227,6 +229,80 @@ def test_hidden_task_budget_uses_monotonic_tight_remaining_snapshot(monkeypatch)
     assert budget["captured_at_epoch_seconds"] == 1000.0
 
 
+def test_hidden_task_budget_uses_llm_agent_protocol_reserve(monkeypatch):
+    servers = object.__new__(McpServers)
+    servers._env_content_param_mapping = {"terminal__run_code": "env_content"}
+    servers.sandbox = SimpleNamespace(env_content={})
+    task = Task(
+        id="reserve-authority",
+        timeout=3753.0,
+        completion_reserve_seconds=60.0,
+    )
+    context = Context(task_id=task.id)
+    context.set_task(task)
+    context.agent_info.current_agent_id = "agent"
+    configure_execution_protocol(
+        context,
+        "agent",
+        ExecutionProtocolPolicy(
+            finalization_reserve_seconds=105.0,
+            candidate_decision_reserve_seconds=405.0,
+        ),
+    )
+    monkeypatch.setattr("aworld.sandbox.task_budget.time.time", lambda: 1000.0)
+    task.deadline_epoch_seconds = 4753.0
+    task._bound_deadline_epoch_seconds = 4753.0
+    task.remaining_seconds = lambda: 3753.0
+    parameter = {}
+
+    servers._inject_env_content_parameter(
+        "terminal__run_code", parameter, context
+    )
+
+    budget = parameter["env_content"]["task_budget"]
+    assert budget["completion_reserve_seconds"] == 105.0
+    assert budget["remaining_seconds"] == 3753.0
+    decision = resolve_tool_lease(
+        3700.0,
+        budget=FrameworkTaskBudget.from_hidden_dict(budget),
+        maximum_seconds=86410.0,
+        now_epoch=1000.0,
+    )
+    assert decision.effective_seconds == 3648.0
+    assert decision.limited_by == "task_deadline"
+
+
+@pytest.mark.parametrize(
+    ("remaining", "expected_stage"),
+    [
+        (59.0, "candidate_due"),
+        (34.0, "validation_due"),
+        (19.0, "delivery_only"),
+    ],
+)
+def test_hidden_task_budget_uses_live_deadline_fraction(
+    remaining: float,
+    expected_stage: str,
+) -> None:
+    servers = object.__new__(McpServers)
+    servers._env_content_param_mapping = {"terminal__run_code": "env_content"}
+    servers.sandbox = SimpleNamespace(env_content={})
+    task = Task(id=f"stage-{expected_stage}", timeout=100.0)
+    context = Context(task_id=task.id)
+    context.set_task(task)
+    task.remaining_seconds = lambda: remaining
+
+    parameter = {}
+    servers._inject_env_content_parameter(
+        "terminal__run_code", parameter, context
+    )
+
+    budget = parameter["env_content"]["task_budget"]
+    assert budget["stage"] == "deadline"
+    assert budget["deadline_stage"] == expected_stage
+    assert FrameworkTaskBudget.from_hidden_dict(budget).stage.value == expected_stage
+
+
 def test_hidden_task_budget_projects_typed_convergence_stage():
     servers = object.__new__(McpServers)
     servers._env_content_param_mapping = {"terminal__run_code": "env_content"}
@@ -252,7 +328,7 @@ def test_hidden_task_budget_projects_typed_convergence_stage():
     assert parameter["env_content"]["task_budget"]["stage"] == "convergence"
 
 
-def test_hidden_task_budget_projects_typed_deadline_stage():
+def test_hidden_task_budget_derives_typed_deadline_stage_from_live_task():
     from aworld.runners.execution_protocol import (
         EXECUTION_PROTOCOL_DEADLINE_GUIDANCE_KEY,
     )
@@ -263,6 +339,7 @@ def test_hidden_task_budget_projects_typed_deadline_stage():
     task = Task(timeout=300)
     context = Context(task_id=task.id)
     context.set_task(task)
+    task.remaining_seconds = lambda: 90.0
     context.agent_info.current_agent_id = "agent"
     context.write_task_runtime_state(
         "agent",
@@ -278,7 +355,9 @@ def test_hidden_task_budget_projects_typed_deadline_stage():
         "terminal__run_code", parameter, context
     )
 
-    assert parameter["env_content"]["task_budget"]["stage"] == "deadline"
+    budget = parameter["env_content"]["task_budget"]
+    assert budget["stage"] == "deadline"
+    assert budget["deadline_stage"] == "validation_due"
 
 
 def _terminal_tool(tool_name: str, param_name: str) -> dict[str, object]:

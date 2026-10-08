@@ -17,6 +17,7 @@ from .models import (
     ControllerAction,
     ControllerDecision,
     DecisionReason,
+    EventKind,
     ExecutionProtocolEvent,
     ExecutionProtocolPolicy,
     ExecutionProtocolState,
@@ -27,6 +28,32 @@ from .models import (
 
 EXECUTION_PROTOCOL_POLICY_KEY = "execution_protocol_policy"
 EXECUTION_PROTOCOL_STATE_KEY = "execution_protocol_state"
+
+
+def _persistence_failure_transition(
+    state: ExecutionProtocolState,
+    event: ExecutionProtocolEvent,
+    transition: ProtocolTransition,
+) -> ProtocolTransition:
+    """Never let an unpersisted semantic boundary authorize submission."""
+
+    terminal_boundary = event.kind in {
+        EventKind.CANDIDATE_FINAL,
+        EventKind.REVIEW_RESULT,
+    }
+    action = (
+        ControllerAction.STOP_INCOMPLETE
+        if terminal_boundary
+        or transition.decision.action is ControllerAction.SUBMIT_CURRENT_RESULT
+        else ControllerAction.CONTINUE
+    )
+    return ProtocolTransition(
+        state=(state if terminal_boundary else transition.state),
+        decision=ControllerDecision(
+            action=action,
+            reason=DecisionReason.PERSISTENCE_ERROR,
+        ),
+    )
 
 
 class ExecutionProtocolStore:
@@ -119,16 +146,22 @@ class ExecutionProtocolStore:
         state = state.bounded(self._policy.history_limit)
         payload = state.to_dict()
         writer = getattr(self._context, "write_task_runtime_state", None)
+        writer_error: Exception | None = None
         if callable(writer):
             try:
                 writer(self._agent_id, EXECUTION_PROTOCOL_STATE_KEY, payload)
-            except Exception:
-                pass
+            except Exception as exc:
+                writer_error = exc
         owner_resolver = getattr(self._context, "_task_runtime_registry_owner", None)
         durable_owner = owner_resolver() if callable(owner_resolver) else self._context
         self._project(state, context=durable_owner)
         if self._context is not durable_owner:
             self._project(state)
+        if writer_error is not None:
+            # A local projection keeps ordinary execution observable, but it
+            # cannot replace the task-scoped runtime registry as completion
+            # authority across transported Context copies.
+            raise writer_error
         return state
 
     def apply(self, event: ExecutionProtocolEvent) -> ProtocolTransition:
@@ -201,18 +234,12 @@ class ExecutionProtocolStore:
         try:
             saved = self.save(transition.state)
         except Exception:
-            # Control-state persistence must not fail the user's execution.
-            return ProtocolTransition(
-                state=transition.state,
-                decision=ControllerDecision(
-                    action=(
-                        ControllerAction.SUBMIT_CURRENT_RESULT
-                        if transition.decision.action
-                        is ControllerAction.SUBMIT_CURRENT_RESULT
-                        else ControllerAction.CONTINUE
-                    ),
-                    reason=DecisionReason.CONTROLLER_ERROR,
-                ),
+            # Ordinary Tool work remains fail-open, but a semantic completion
+            # decision that was not durably recorded has no submit authority.
+            return _persistence_failure_transition(
+                state,
+                event,
+                transition,
             )
         return ProtocolTransition(saved, transition.decision)
 

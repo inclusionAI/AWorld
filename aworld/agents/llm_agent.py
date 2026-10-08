@@ -1034,7 +1034,10 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         state, and already-entered review/finalization phases remain intact.
         """
 
-        from aworld.runners.execution_protocol import execution_protocol_policy
+        from aworld.runners.execution_protocol import (
+            execution_protocol_control_eligible,
+            execution_protocol_policy,
+        )
 
         try:
             policy = execution_protocol_policy(context, self.id())
@@ -1051,10 +1054,11 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             or state.long_horizon_armed
             or policy.review_unarmed_candidates
             or policy.independent_acceptance_enabled
-            or state.model_execution_profile is not None
         ):
             return True
-        return self._long_horizon_skill_active() and bool(tools)
+        return execution_protocol_control_eligible(
+            context, self.id()
+        ) and bool(tools)
 
     @staticmethod
     def _long_horizon_execution_profile_schema() -> dict[str, Any]:
@@ -1430,7 +1434,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
     ) -> tuple[List[Dict[str, Any]] | None, _LongHorizonControlOffer]:
         """Expose an explicit planning boundary or optional per-Tool probes."""
         empty_offer = _LongHorizonControlOffer()
-        if not tools or not self._long_horizon_skill_active():
+        if not tools:
             return tools, empty_offer
         from aworld.runners.execution_protocol import (
             acceptance_critic_active,
@@ -1448,6 +1452,33 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             return tools, empty_offer
 
         boundary = execution_protocol_model_decision_boundary(context, self.id())
+        if boundary == "initial" and not self._long_horizon_skill_active():
+            try:
+                state = ExecutionProtocolStore(
+                    context,
+                    self.id(),
+                    execution_protocol_policy(context, self.id()),
+                ).load()
+            except Exception:
+                state = None
+            contract = getattr(context, "context_info", {}).get(
+                "public_deliverable_contract"
+            )
+            contract_declared = bool(
+                isinstance(contract, dict)
+                and contract.get("schema_version") == _PUBLIC_DELIVERABLE_SCHEMA
+                and contract.get("authority") == _PUBLIC_DELIVERABLE_AUTHORITY
+                and contract.get("source") == "public_task_text"
+            )
+            # Default GUIDE stays prompt-inert for genuinely short/unprofiled
+            # work.  Once runtime observations arm the task, or the public task
+            # declares a delivery contract, the framework-owned checkpoint is
+            # reachable even without the optional long-running Skill.
+            if not (
+                state is not None
+                and (state.long_horizon_armed or contract_declared)
+            ):
+                return tools, empty_offer
         if boundary is not None:
             # This internal control action consumes no user Tool authority and
             # selects no task strategy. The model must own both classification
@@ -1571,8 +1602,6 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         offer: _LongHorizonControlOffer,
     ) -> str:
         """Consume a decision boundary or strip optional per-Tool metadata."""
-        if not self._long_horizon_skill_active():
-            return "not_offered"
         profiles: list[Any] = []
         plan_updates: list[Any] = []
         hypotheses: dict[str, str] = {}
@@ -1667,8 +1696,6 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         offer: _LongHorizonControlOffer,
     ) -> int:
         """Strip and bind optional public self-check metadata before dispatch."""
-        if not self._long_horizon_skill_active():
-            return 0
         from aworld.runners.execution_protocol import record_public_probe_plan
 
         recorded = 0
@@ -4551,15 +4578,18 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
     ) -> float | None:
         """Return solve time left before the protocol/caller finalization reserve."""
 
-        if not self._long_horizon_skill_active():
-            return None
         try:
+            from aworld.runners.execution_protocol import (
+                execution_protocol_control_eligible,
+            )
+
             policy = self._resolve_execution_protocol_policy(context)
             state = ExecutionProtocolStore(context, self.id(), policy).load()
         except Exception:
             return None
         if (
-            not state.long_horizon_armed and not allow_unarmed_decision_fail_open
+            not execution_protocol_control_eligible(context, self.id())
+            and not allow_unarmed_decision_fail_open
         ) or state.phase not in {
             ProtocolPhase.EXECUTE,
             ProtocolPhase.REPAIR,
@@ -5360,9 +5390,9 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                     record_execution_state(
                         message.context,
                         self.id(),
-                        "succeeded",
-                        "long_horizon_review_fail_open",
-                        recoverable=False,
+                        "incomplete",
+                        "model_owned_review_error_unverified",
+                        recoverable=True,
                     )
                     self._finished = True
                     return list(review_fallback)
@@ -5618,9 +5648,9 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                     record_execution_state(
                         message.context,
                         self.id(),
-                        "succeeded",
-                        "long_horizon_review_budget_fail_open",
-                        recoverable=False,
+                        "incomplete",
+                        "model_owned_review_budget_stop_unverified",
+                        recoverable=True,
                     )
                     self._finished = True
                     return list(review_fallback)
@@ -6916,26 +6946,38 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                             from aworld.core.context.execution_state import (
                                 record_execution_state,
                             )
-
-                            incomplete_text = (
-                                "Independent acceptance evidence is missing and "
-                                "the bounded review budget is exhausted. Completion "
-                                "is unverified."
+                            from aworld.runners.execution_protocol import (
+                                load_candidate_fallback,
                             )
-                            llm_response.content = incomplete_text
+
+                            reason = protocol_transition.decision.reason.value
+                            fallback = load_candidate_fallback(
+                                message.context, self.id()
+                            )
+                            preserved_actions = (
+                                list(fallback)
+                                if fallback is not None
+                                else list(agent_result.actions)
+                            )
+                            preserved_text = next(
+                                (
+                                    str(action.policy_info)
+                                    for action in preserved_actions
+                                    if str(
+                                        getattr(action, "policy_info", "") or ""
+                                    ).strip()
+                                ),
+                                "Completion is unverified.",
+                            )
+                            llm_response.content = preserved_text
                             if isinstance(llm_response.message, dict):
                                 llm_response.message = dict(llm_response.message)
-                                llm_response.message["content"] = incomplete_text
+                                llm_response.message["content"] = preserved_text
                                 llm_response.message["aworld_incomplete_reason"] = (
-                                    "acceptance_evidence_missing"
+                                    reason
                                 )
                             agent_result = AgentResult(
-                                actions=[
-                                    ActionModel(
-                                        agent_name=self.id(),
-                                        policy_info=incomplete_text,
-                                    )
-                                ],
+                                actions=preserved_actions,
                                 current_state=agent_result.current_state,
                                 is_call_tool=False,
                             )
@@ -6944,8 +6986,14 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                                 message.context,
                                 self.id(),
                                 "incomplete",
-                                "independent_acceptance_evidence_missing",
-                                recoverable=False,
+                                f"execution_protocol_{reason}_unverified",
+                                recoverable=reason
+                                in {
+                                    "controller_error",
+                                    "protocol_persistence_error",
+                                    "review_error",
+                                    "invalid_event",
+                                },
                             )
                         long_horizon_review_feedback = final_review_guidance(
                             protocol_transition,
@@ -7996,9 +8044,11 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
     def _pre_generation_caller_reserve_reached(self, context: Context) -> bool:
         """Avoid starting ordinary long generation inside caller reserve."""
 
-        if not self._long_horizon_skill_active():
-            return False
         try:
+            from aworld.runners.execution_protocol import (
+                execution_protocol_control_eligible,
+            )
+
             policy = self._resolve_execution_protocol_policy(context)
             state = ExecutionProtocolStore(context, self.id(), policy).load()
             task = context.get_task()
@@ -8006,7 +8056,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         except Exception:
             return False
         if (
-            not state.long_horizon_armed
+            not execution_protocol_control_eligible(context, self.id())
             or state.phase not in {ProtocolPhase.EXECUTE, ProtocolPhase.REPAIR}
             or isinstance(remaining, bool)
             or not isinstance(remaining, (int, float))
@@ -8034,22 +8084,18 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             return None
         if self._generation_budget_explicit_fields:
             return None
-        skill = (self.skill_configs or {}).get("long-running-agent")
-        if not (isinstance(skill, dict) and skill.get("active") is True):
-            return None
         context = context or getattr(self, "context", None)
         if context is None:
             return None
         try:
+            from aworld.runners.execution_protocol import (
+                execution_protocol_control_eligible,
+            )
+
             protocol_policy = self._resolve_execution_protocol_policy(context)
-            protocol_state = ExecutionProtocolStore(
-                context,
-                self.id(),
-                protocol_policy,
-            ).load()
         except Exception:
             return None
-        if not protocol_state.long_horizon_armed:
+        if not execution_protocol_control_eligible(context, self.id()):
             return None
 
         # The caller-owned Task deadline is the only active-generation wall
@@ -8094,8 +8140,15 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         """Bound one tool-free finalization turn at the caller reserve."""
         if context is None:
             return None
-        skill = (self.skill_configs or {}).get("long-running-agent")
-        if not (isinstance(skill, dict) and skill.get("active") is True):
+        try:
+            from aworld.runners.execution_protocol import (
+                execution_protocol_control_eligible,
+            )
+
+            eligible = execution_protocol_control_eligible(context, self.id())
+        except Exception:
+            eligible = False
+        if not eligible:
             return None
         timeout = self._remaining_before_completion_reserve(
             context,

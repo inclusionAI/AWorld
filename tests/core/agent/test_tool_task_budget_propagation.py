@@ -134,3 +134,14 @@ def test_framework_budget_preserves_unspecified_completion_reserve():
     budget = snapshot_task_budget(task)
 
     assert budget.completion_reserve_seconds is None
+
+
+def test_current_agent_protocol_reserve_is_not_reduced_by_ancestor_applied_amount():
+    task = Task(
+        timeout=120,
+        completion_reserve_applied_seconds=30,
+    )
+
+    budget = snapshot_task_budget(task, completion_reserve_seconds=18)
+
+    assert budget.completion_reserve_seconds == 18

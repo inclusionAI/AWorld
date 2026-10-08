@@ -745,7 +745,16 @@ def test_normal_execution_can_use_all_time_remaining_after_reserve() -> None:
     assert decision.limited_by == "task_deadline"
 
 
-@pytest.mark.parametrize("stage", ["convergence", "deadline"])
+@pytest.mark.parametrize(
+    "stage",
+    [
+        "convergence",
+        "deadline",
+        "candidate_due",
+        "validation_due",
+        "delivery_only",
+    ],
+)
 def test_typed_convergence_stages_apply_fractional_tool_lease(stage) -> None:
     decision = _resolve_command_timeout(
         300,

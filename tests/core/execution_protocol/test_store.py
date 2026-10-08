@@ -235,3 +235,62 @@ def test_model_plan_update_survives_core_only_checkpoint_round_trip():
 
     assert restored_state.model_plan_update == update
     assert restored_state.long_horizon_armed is True
+
+
+def test_terminal_transition_persistence_failure_cannot_authorize_submit(
+    monkeypatch,
+):
+    context = SimpleNamespace(
+        task_id="persist-failure",
+        task_epoch=1,
+        context_info={},
+    )
+    policy = ExecutionProtocolPolicy(
+        mode="guide",
+        independent_acceptance_enabled=False,
+    )
+    store = ExecutionProtocolStore(context, "agent", policy)
+
+    def fail_save(_state):
+        raise OSError("checkpoint unavailable")
+
+    monkeypatch.setattr(store, "save", fail_save)
+    transition = store.apply(
+        ExecutionProtocolEvent(
+            kind=EventKind.CANDIDATE_FINAL,
+            review_boundary_available=False,
+        )
+    )
+
+    assert transition.decision.action is ControllerAction.STOP_INCOMPLETE
+    assert transition.decision.reason.value == "protocol_persistence_error"
+    assert transition.state.revision == 0
+
+
+def test_runtime_writer_failure_cannot_fall_back_to_terminal_submit():
+    class FailingWriterContext:
+        task_id = "writer-failure"
+        task_epoch = 1
+
+        def __init__(self):
+            self.context_info = {}
+
+        def write_task_runtime_state(self, _namespace, _key, _value):
+            raise OSError("runtime registry unavailable")
+
+    policy = ExecutionProtocolPolicy(
+        mode="guide",
+        independent_acceptance_enabled=False,
+    )
+    store = ExecutionProtocolStore(FailingWriterContext(), "agent", policy)
+
+    transition = store.apply(
+        ExecutionProtocolEvent(
+            kind=EventKind.CANDIDATE_FINAL,
+            review_boundary_available=False,
+        )
+    )
+
+    assert transition.decision.action is ControllerAction.STOP_INCOMPLETE
+    assert transition.decision.reason.value == "protocol_persistence_error"
+    assert transition.state.revision == 0

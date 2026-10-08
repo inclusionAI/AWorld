@@ -332,6 +332,7 @@ class DecisionReason(str, Enum):
     REVIEW_BOUNDARY_UNAVAILABLE = "review_boundary_unavailable"
     ACCEPTANCE_EVIDENCE_MISSING = "acceptance_evidence_missing"
     CONTROLLER_ERROR = "controller_error"
+    PERSISTENCE_ERROR = "protocol_persistence_error"
     INVALID_EVENT = "invalid_event"
 
 
@@ -2091,6 +2092,34 @@ class ProtocolTransition:
     decision: ControllerDecision
 
 
+def execution_protocol_eligible(
+    state: ExecutionProtocolState,
+    *,
+    public_deliverable_declared: bool | None = None,
+) -> bool:
+    """Return whether framework convergence control may affect this task.
+
+    Operationally observed long work is sufficient on its own.  Before that
+    point, a model-owned execution profile must be paired with a public
+    deliverable contract.  The explicit override lets callers project a
+    freshly extracted contract before the first Tool observation has copied it
+    into protocol state; it may only strengthen the public-contract fact, not
+    replace the model profile.
+    """
+
+    if not isinstance(state, ExecutionProtocolState):
+        raise TypeError("state must be ExecutionProtocolState")
+    declared = state.public_deliverable_declared
+    if public_deliverable_declared is not None:
+        if not isinstance(public_deliverable_declared, bool):
+            raise TypeError("public_deliverable_declared must be boolean or None")
+        declared = declared or public_deliverable_declared
+    return bool(
+        state.long_horizon_armed
+        or (state.model_execution_profile is not None and declared)
+    )
+
+
 __all__ = [
     "ActionSemanticReceipt",
     "CompletionAssessment",
@@ -2106,6 +2135,7 @@ __all__ = [
     "ExecutionHorizon",
     "ExecutionProtocolPolicy",
     "ExecutionProtocolState",
+    "execution_protocol_eligible",
     "ModelExecutionProfile",
     "ModelPlanUpdate",
     "NextActionAlignment",

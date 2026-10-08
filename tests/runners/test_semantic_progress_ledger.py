@@ -43,6 +43,7 @@ from aworld.runners.execution_protocol import (
     configure_execution_protocol,
     consume_execution_protocol_guidance,
     load_execution_protocol_state,
+    record_model_execution_profile,
     record_model_plan_update,
 )
 from aworld.runners.post_tool_progress import (
@@ -621,6 +622,18 @@ def test_failed_declared_mutations_do_not_reset_candidate_convergence(tmp_path):
             stagnation_event_threshold=99,
         ),
     )
+    assert record_model_execution_profile(
+        context,
+        "agent",
+        {
+            "horizon": "long",
+            "confidence": 0.9,
+            "milestone_count": 2,
+            "expected_tool_actions": 4,
+            "verification_required": True,
+            "workspace_mutation_required": True,
+        },
+    ) is not None
     capture_public_deliverable_baseline(context)
 
     def observe(content: str, *, success: bool, index: int):

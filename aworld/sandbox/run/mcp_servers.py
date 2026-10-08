@@ -306,7 +306,7 @@ def _tool_lease_stage(
     event_message: Message | None,
     task: Any,
 ) -> ToolLeaseStage:
-    """Project only a typed, generic protocol stage into the hidden budget."""
+    """Derive the live Tool stage from Task time, never stale guidance."""
 
     source_context = context
     parent_task = getattr(task, "parent_task", None)
@@ -319,46 +319,118 @@ def _tool_lease_stage(
     agent_id = getattr(event_message, "sender", None)
     if not isinstance(agent_id, str) or not agent_id.strip():
         agent_info = getattr(source_context, "agent_info", None)
-        agent_id = getattr(agent_info, "current_agent_id", None)
-    if not isinstance(agent_id, str) or not agent_id.strip() or source_context is None:
-        return ToolLeaseStage.EXECUTE
+        try:
+            agent_id = getattr(agent_info, "current_agent_id", None)
+        except (AttributeError, KeyError, TypeError):
+            agent_id = None
+    deadline_stage = ToolLeaseStage.EXECUTE
     try:
-        from aworld.runners.execution_protocol import (
-            EXECUTION_PROTOCOL_DEADLINE_GUIDANCE_KEY,
-            load_execution_protocol_state,
-        )
+        remaining = task.remaining_seconds() if task is not None else None
+        total = getattr(task, "timeout", None) if task is not None else None
+    except Exception:
+        remaining = total = None
+    if (
+        isinstance(total, (int, float))
+        and not isinstance(total, bool)
+        and math.isfinite(float(total))
+        and total > 0
+        and isinstance(remaining, (int, float))
+        and not isinstance(remaining, bool)
+        and math.isfinite(float(remaining))
+    ):
+        bounded_remaining = min(float(total), max(0.0, float(remaining)))
+        consumed = min(1.0, max(0.0, 1.0 - bounded_remaining / float(total)))
+        if consumed >= 0.80:
+            deadline_stage = ToolLeaseStage.DELIVERY_ONLY
+        elif consumed >= 0.65:
+            deadline_stage = ToolLeaseStage.VALIDATION_DUE
+        elif consumed >= 0.40:
+            deadline_stage = ToolLeaseStage.CANDIDATE_DUE
+    if not isinstance(agent_id, str) or not agent_id.strip() or source_context is None:
+        return deadline_stage
+    try:
+        from aworld.runners.execution_protocol import load_execution_protocol_state
 
         state = load_execution_protocol_state(source_context, agent_id.strip())
     except Exception:
-        return ToolLeaseStage.EXECUTE
+        return deadline_stage
+    phase = getattr(getattr(state, "phase", None), "value", None)
+    if phase in {"finalize", "review", "complete"}:
+        return ToolLeaseStage.DELIVERY_ONLY
+    if phase == "repair" and deadline_stage is ToolLeaseStage.EXECUTE:
+        return ToolLeaseStage.CONVERGENCE
+    if deadline_stage is not ToolLeaseStage.EXECUTE:
+        return deadline_stage
     if getattr(state, "convergence_constraint_active", False):
         return ToolLeaseStage.CONVERGENCE
-    deadline_guidance = None
-    reader = getattr(source_context, "read_task_runtime_state", None)
-    if callable(reader):
+    return deadline_stage
+
+
+def _configured_protocol_reserve(
+    context: Context | None,
+    event_message: Message | None,
+) -> float | None:
+    """Load the exact policy reserve configured by the current LLMAgent."""
+
+    task = _safe_context_task(context)
+    candidates = [context]
+    parent_context = getattr(getattr(task, "parent_task", None), "context", None)
+    root = getattr(context, "root", None) if context is not None else None
+    candidates.extend((parent_context, root))
+    sender = getattr(event_message, "sender", None)
+    seen_sources: set[int] = set()
+    for source in candidates:
+        if source is None:
+            continue
+        if id(source) in seen_sources:
+            continue
+        seen_sources.add(id(source))
+        agent_id = sender
+        if not isinstance(agent_id, str) or not agent_id.strip():
+            try:
+                agent_id = getattr(
+                    getattr(source, "agent_info", None), "current_agent_id", None
+                )
+            except (AttributeError, KeyError, TypeError):
+                agent_id = None
+        if not isinstance(agent_id, str) or not agent_id.strip():
+            continue
+        value = None
+        reader = getattr(source, "read_task_runtime_state", None)
+        if callable(reader):
+            try:
+                value = reader(agent_id.strip(), "execution_protocol_policy")
+            except Exception:
+                value = None
+        if not isinstance(value, Mapping):
+            context_info = getattr(source, "context_info", None)
+            if isinstance(context_info, Mapping):
+                value = context_info.get(
+                    f"execution_protocol_policy:{agent_id.strip()}"
+                )
+        if not isinstance(value, Mapping):
+            continue
         try:
-            deadline_guidance = reader(
-                agent_id.strip(), EXECUTION_PROTOCOL_DEADLINE_GUIDANCE_KEY
-            )
-        except Exception:
-            deadline_guidance = None
-    if not isinstance(deadline_guidance, Mapping):
-        context_info = getattr(source_context, "context_info", None)
-        if isinstance(context_info, Mapping):
-            deadline_guidance = context_info.get(
-                f"{EXECUTION_PROTOCOL_DEADLINE_GUIDANCE_KEY}:{agent_id.strip()}"
-            )
-    if (
-        isinstance(deadline_guidance, Mapping)
-        and deadline_guidance.get("schema_version") == "aworld.deadline-guidance/v1"
-        and deadline_guidance.get("last_stage")
-        in {"candidate_due", "validation_due", "delivery_only"}
-    ):
-        return ToolLeaseStage.DEADLINE
-    phase = getattr(getattr(state, "phase", None), "value", None)
-    if phase in {"finalize", "review", "repair", "complete"}:
-        return ToolLeaseStage.DEADLINE
-    return ToolLeaseStage.EXECUTE
+            from aworld.core.execution_protocol import ExecutionProtocolPolicy
+
+            policy = ExecutionProtocolPolicy.from_dict(value)
+        except (TypeError, ValueError, KeyError):
+            continue
+        reserve = float(policy.finalization_reserve_seconds)
+        if source is not context:
+            # A parent policy is only a fallback for a nested Task that has no
+            # policy of its own.  Its reserve may already have been removed
+            # when the child deadline was materialized.
+            applied = getattr(task, "completion_reserve_applied_seconds", 0.0)
+            if (
+                isinstance(applied, (int, float))
+                and not isinstance(applied, bool)
+                and math.isfinite(float(applied))
+                and applied > 0
+            ):
+                reserve = max(0.0, reserve - float(applied))
+        return reserve
+    return None
 
 
 def _framework_task_budget(
@@ -369,6 +441,9 @@ def _framework_task_budget(
     return snapshot_task_budget(
         task,
         stage=_tool_lease_stage(context, event_message, task),
+        completion_reserve_seconds=_configured_protocol_reserve(
+            context, event_message
+        ),
     )
 
 

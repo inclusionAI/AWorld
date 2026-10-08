@@ -24,6 +24,7 @@ from .models import (
     ProtocolTransition,
     ReviewOutcome,
     compare_action_semantic_shape,
+    execution_protocol_eligible,
 )
 
 
@@ -453,6 +454,10 @@ def transition_execution_protocol(
                 )
             )
         )
+        protocol_eligible = execution_protocol_eligible(
+            next_state,
+            public_deliverable_declared=public_deliverable_declared,
+        )
         post_candidate_no_delivery_progress_observations = (
             max(
                 next_state.post_candidate_no_delivery_progress_observations,
@@ -465,7 +470,7 @@ def transition_execution_protocol(
             # framework-owned delivery high-water mark.  Workspace churn,
             # unknown effects, cache hits, and merely repeated validation no
             # longer reopen broad exploration.
-            if candidate_convergence_ready and not (
+            if protocol_eligible and candidate_convergence_ready and not (
                 event.delivery_progress_advanced or event.candidate_advanced
             ):
                 post_candidate_no_delivery_progress_observations = min(
@@ -501,6 +506,8 @@ def transition_execution_protocol(
             reason = DecisionReason.OBSERVATION_RECORDED
         else:
             candidate_missing = bool(
+                protocol_eligible
+                and
                 event.public_deliverable_declared and event.candidate_present is False
             )
             next_state = replace(
@@ -584,6 +591,8 @@ def transition_execution_protocol(
             )
 
         post_candidate_constraint_due = bool(
+            protocol_eligible
+            and
             event.kind is EventKind.TOOL_OBSERVATION
             and candidate_convergence_ready
             and not next_state.convergence_constraint_active
@@ -627,13 +636,11 @@ def transition_execution_protocol(
             )
 
         model_long = next_state.long_horizon_armed
-        # A named public deliverable is an observable delivery obligation even
-        # when the model classified the task as short.  Activate the existing
-        # delivery checkpoints without changing the model-owned horizon or
-        # introducing task- or benchmark-specific validation rules.
-        delivery_protocol_active = bool(
-            model_long or event.public_deliverable_declared
-        )
+        # A named deliverable becomes a protocol obligation only after the
+        # model has explicitly profiled the task.  This preserves short-profile
+        # tasks with concrete contracts while preventing contract extraction by
+        # itself from activating replans or admission gates.
+        delivery_protocol_active = protocol_eligible
         candidate_decision_due = bool(
             delivery_protocol_active
             and next_state.candidate_decision_count == 0
@@ -754,6 +761,14 @@ def transition_execution_protocol(
 
     if event.kind is EventKind.REPLAN_UNACKNOWLEDGED:
         if event.convergence_stage is not None:
+            if not execution_protocol_eligible(next_state):
+                return ProtocolTransition(
+                    next_state,
+                    _decision(
+                        ControllerAction.CONTINUE,
+                        DecisionReason.MODEL_PROFILE_INSUFFICIENT,
+                    ),
+                )
             newly_active = not next_state.convergence_constraint_active
             next_state = replace(
                 next_state,
@@ -827,14 +842,12 @@ def transition_execution_protocol(
                 phase=ProtocolPhase.COMPLETE,
                 review_pending=False,
             )
-            action = (
-                ControllerAction.STOP_INCOMPLETE
-                if policy.independent_acceptance_enabled
-                else ControllerAction.SUBMIT_CURRENT_RESULT
-            )
             return ProtocolTransition(
                 next_state,
-                _decision(action, DecisionReason.REVIEW_BASIS_UNCHANGED),
+                _decision(
+                    ControllerAction.STOP_INCOMPLETE,
+                    DecisionReason.REVIEW_BASIS_UNCHANGED,
+                ),
             )
         if (
             event.review_boundary_available is False
@@ -842,34 +855,27 @@ def transition_execution_protocol(
         ):
             # The caller reached a textual candidate without any structural
             # path to the typed profile/review boundary (for example, a bare
-            # no-Tool agent).  Keep this decision in the controller so direct
-            # and LLMAgent callers share the same state transition.
+            # no-Tool agent). An explicitly requested or eligible review stays
+            # unverified; only a genuinely ineligible bare response bypasses.
             next_state = replace(
                 next_state,
                 phase=ProtocolPhase.COMPLETE,
                 review_pending=False,
             )
+            action = (
+                ControllerAction.STOP_INCOMPLETE
+                if policy.review_unarmed_candidates
+                or execution_protocol_eligible(next_state)
+                else ControllerAction.SUBMIT_CURRENT_RESULT
+            )
             return ProtocolTransition(
                 next_state,
                 _decision(
-                    ControllerAction.SUBMIT_CURRENT_RESULT,
+                    action,
                     DecisionReason.REVIEW_BOUNDARY_UNAVAILABLE,
                 ),
             )
         if next_state.phase is ProtocolPhase.FINALIZE:
-            if policy.independent_acceptance_enabled:
-                next_state = replace(
-                    next_state,
-                    phase=ProtocolPhase.COMPLETE,
-                    review_pending=False,
-                )
-                return ProtocolTransition(
-                    next_state,
-                    _decision(
-                        ControllerAction.STOP_INCOMPLETE,
-                        DecisionReason.ACCEPTANCE_EVIDENCE_MISSING,
-                    ),
-                )
             next_state = replace(
                 next_state,
                 phase=ProtocolPhase.COMPLETE,
@@ -878,8 +884,12 @@ def transition_execution_protocol(
             return ProtocolTransition(
                 next_state,
                 _decision(
-                    ControllerAction.SUBMIT_CURRENT_RESULT,
-                    DecisionReason.FINALIZATION_RESERVE,
+                    ControllerAction.STOP_INCOMPLETE,
+                    (
+                        DecisionReason.ACCEPTANCE_EVIDENCE_MISSING
+                        if policy.independent_acceptance_enabled
+                        else DecisionReason.FINALIZATION_RESERVE
+                    ),
                 ),
             )
         if (
@@ -925,34 +935,25 @@ def transition_execution_protocol(
             phase=ProtocolPhase.COMPLETE,
             review_pending=False,
         )
-        if policy.independent_acceptance_enabled:
-            return ProtocolTransition(
-                next_state,
-                _decision(
-                    ControllerAction.STOP_INCOMPLETE,
-                    DecisionReason.ACCEPTANCE_EVIDENCE_MISSING,
-                ),
-            )
         return ProtocolTransition(
             next_state,
             _decision(
-                ControllerAction.SUBMIT_CURRENT_RESULT,
-                DecisionReason.FINAL_REVIEW_ALREADY_USED,
+                ControllerAction.STOP_INCOMPLETE,
+                (
+                    DecisionReason.ACCEPTANCE_EVIDENCE_MISSING
+                    if policy.independent_acceptance_enabled
+                    else DecisionReason.FINAL_REVIEW_ALREADY_USED
+                ),
             ),
         )
 
     if event.kind is EventKind.REVIEW_RESULT:
         if not next_state.review_pending:
             next_state = replace(next_state, phase=ProtocolPhase.COMPLETE)
-            action = (
-                ControllerAction.STOP_INCOMPLETE
-                if policy.independent_acceptance_enabled
-                else ControllerAction.SUBMIT_CURRENT_RESULT
-            )
             return ProtocolTransition(
                 next_state,
                 _decision(
-                    action,
+                    ControllerAction.STOP_INCOMPLETE,
                     DecisionReason.INVALID_EVENT,
                 ),
             )
@@ -1000,7 +1001,6 @@ def transition_execution_protocol(
         action = (
             ControllerAction.SUBMIT_CURRENT_RESULT
             if event.review_outcome is ReviewOutcome.ACCEPT
-            or not policy.independent_acceptance_enabled
             else ControllerAction.STOP_INCOMPLETE
         )
         return ProtocolTransition(next_state, _decision(action, reason))
@@ -1013,7 +1013,7 @@ def safe_transition_execution_protocol(
     event: ExecutionProtocolEvent,
     policy: ExecutionProtocolPolicy,
 ) -> ProtocolTransition:
-    """Fail open if protocol control code cannot process an event."""
+    """Fail open for ordinary work and fail closed for semantic completion."""
     try:
         return transition_execution_protocol(state, event, policy)
     except Exception:
@@ -1023,12 +1023,7 @@ def safe_transition_execution_protocol(
         }
         action = ControllerAction.CONTINUE
         if final_boundary:
-            action = (
-                ControllerAction.STOP_INCOMPLETE
-                if isinstance(policy, ExecutionProtocolPolicy)
-                and policy.independent_acceptance_enabled
-                else ControllerAction.SUBMIT_CURRENT_RESULT
-            )
+            action = ControllerAction.STOP_INCOMPLETE
         return ProtocolTransition(
             state=state,
             decision=_decision(action, DecisionReason.CONTROLLER_ERROR),

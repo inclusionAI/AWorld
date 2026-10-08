@@ -25,6 +25,9 @@ class ToolLeaseStage(str, Enum):
     EXECUTE = "execute"
     CONVERGENCE = "convergence"
     DEADLINE = "deadline"
+    CANDIDATE_DUE = "candidate_due"
+    VALIDATION_DUE = "validation_due"
+    DELIVERY_ONLY = "delivery_only"
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,12 +67,26 @@ class FrameworkTaskBudget:
             raise ValueError("bounded task budget requires deadline and remaining time")
 
     def to_hidden_dict(self) -> dict[str, Any]:
+        deadline_stages = {
+            ToolLeaseStage.CANDIDATE_DUE,
+            ToolLeaseStage.VALIDATION_DUE,
+            ToolLeaseStage.DELIVERY_ONLY,
+        }
         payload: dict[str, Any] = {
             "authority": TASK_BUDGET_AUTHORITY,
             "schema_version": TASK_BUDGET_SCHEMA,
             "bounded": self.bounded,
-            "stage": self.stage.value,
+            # Older task-budget/v1 readers understand only ``deadline``.  The
+            # additive detail preserves wire compatibility while current
+            # readers recover the precise 40/65/80 stage.
+            "stage": (
+                ToolLeaseStage.DEADLINE.value
+                if self.stage in deadline_stages
+                else self.stage.value
+            ),
         }
+        if self.stage in deadline_stages:
+            payload["deadline_stage"] = self.stage.value
         if self.bounded:
             payload.update(
                 {
@@ -103,9 +120,17 @@ class FrameworkTaskBudget:
         ):
             return None
         try:
+            stage = value.get("stage", ToolLeaseStage.EXECUTE.value)
+            deadline_stage = value.get("deadline_stage")
+            if deadline_stage in {
+                ToolLeaseStage.CANDIDATE_DUE.value,
+                ToolLeaseStage.VALIDATION_DUE.value,
+                ToolLeaseStage.DELIVERY_ONLY.value,
+            }:
+                stage = deadline_stage
             return cls(
                 bounded=value["bounded"],
-                stage=value.get("stage", ToolLeaseStage.EXECUTE.value),
+                stage=stage,
                 deadline_epoch_seconds=value.get("deadline_epoch_seconds"),
                 remaining_seconds=value.get("remaining_seconds"),
                 completion_reserve_seconds=value.get(
@@ -177,6 +202,7 @@ def snapshot_task_budget(
     task: Any,
     *,
     stage: ToolLeaseStage = ToolLeaseStage.EXECUTE,
+    completion_reserve_seconds: float | None = None,
     now_epoch: float | None = None,
 ) -> FrameworkTaskBudget:
     """Capture a monotonic-tight Task budget without serializing Task state."""
@@ -204,12 +230,19 @@ def snapshot_task_budget(
     if declared_deadline is not None:
         snapshot_deadline = min(declared_deadline, snapshot_deadline)
         remaining = min(remaining, max(0.0, declared_deadline - now))
+    reserve = _finite_non_negative(completion_reserve_seconds)
+    if completion_reserve_seconds is not None and reserve is None:
+        raise ValueError(
+            "completion_reserve_seconds must be a finite non-negative number or None"
+        )
+    if reserve is None:
+        reserve = _task_completion_reserve(task)
     return FrameworkTaskBudget(
         bounded=True,
         stage=stage,
         deadline_epoch_seconds=snapshot_deadline,
         remaining_seconds=remaining,
-        completion_reserve_seconds=_task_completion_reserve(task),
+        completion_reserve_seconds=reserve,
         captured_at_epoch_seconds=now,
     )
 
@@ -274,10 +307,7 @@ def resolve_tool_lease(
         if available < effective:
             effective = available
             limited_by = "task_deadline"
-        constrained = budget.stage in {
-            ToolLeaseStage.CONVERGENCE,
-            ToolLeaseStage.DEADLINE,
-        }
+        constrained = budget.stage is not ToolLeaseStage.EXECUTE
         if constrained or explicit_fraction_policy:
             fraction = float(constrained_fraction)
             if not math.isfinite(fraction) or not 0 < fraction <= 1:

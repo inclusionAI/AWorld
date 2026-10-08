@@ -901,6 +901,7 @@ def test_deadline_guidance_moves_from_candidate_to_delivery_only() -> None:
     context = _context("deadline-convergence")
     policy = ExecutionProtocolPolicy(
         mode=ProtocolMode.GUIDE,
+        candidate_decision_reserve_seconds=0,
         delivery_debt_observation_threshold=99,
         repetition_threshold=99,
         low_information_gain_threshold=99,
@@ -908,6 +909,7 @@ def test_deadline_guidance_moves_from_candidate_to_delivery_only() -> None:
         stagnation_event_threshold=99,
     )
     configure_execution_protocol(context, "agent", policy)
+    _declare_long_horizon(context)
     task = context.get_task()
 
     task.remaining_seconds = lambda: 350
@@ -1222,6 +1224,7 @@ async def test_post_candidate_read_only_loop_converges_to_validate_repair_or_sub
             stagnation_event_threshold=99,
         ),
     )
+    _declare_long_horizon(context)
 
     record_tool_protocol_event(
         context,
@@ -1374,6 +1377,7 @@ async def test_post_candidate_gate_requires_evidence_before_contractless_repair(
             stagnation_event_threshold=99,
         ),
     )
+    _declare_long_horizon(context)
     record_tool_protocol_event(
         context,
         "agent",
@@ -2123,6 +2127,7 @@ async def test_validate_convergence_requires_typed_validation_or_one_bound_repai
             stagnation_event_threshold=99,
         ),
     )
+    _declare_long_horizon(context)
     record_tool_protocol_event(
         context,
         "agent",
@@ -2329,6 +2334,7 @@ def test_repair_authorization_becomes_stale_after_candidate_change(tmp_path) -> 
             stagnation_event_threshold=99,
         ),
     )
+    _declare_long_horizon(context)
     first_hash = semantic_fingerprint("candidate-a")
     for step, progress in ((1, True), (2, False)):
         record_tool_protocol_event(
@@ -3221,7 +3227,7 @@ def test_invalid_model_profile_stays_unknown_and_can_be_reoffered() -> None:
     assert state.long_horizon_armed is False
 
 
-def test_final_review_is_requested_once_and_unknown_submits_current_result() -> None:
+def test_final_review_is_requested_once_and_completed_review_submits() -> None:
     context = _context("final")
     policy = ExecutionProtocolPolicy(
         mode=ProtocolMode.GUIDE, activation_event_threshold=1
@@ -3395,7 +3401,7 @@ def test_runtime_stops_review_loop_when_candidate_and_evidence_are_unchanged() -
     unchanged = record_candidate_final(context, "agent", actions=[candidate])
 
     assert unchanged is not None
-    assert unchanged.decision.action is ControllerAction.SUBMIT_CURRENT_RESULT
+    assert unchanged.decision.action is ControllerAction.STOP_INCOMPLETE
     assert unchanged.decision.reason is DecisionReason.REVIEW_BASIS_UNCHANGED
     assert unchanged.state.final_review_count == 1
     assert unchanged.state.phase is ProtocolPhase.COMPLETE

@@ -37,9 +37,11 @@ from aworld.models.reasoning_policy import (
 from aworld.runners.execution_protocol import (
     build_execution_protocol_telemetry,
     configure_execution_protocol,
+    consume_execution_protocol_guidance,
     execution_protocol_model_decision_boundary,
     execution_protocol_policy,
     load_acceptance_critic_state,
+    load_execution_protocol_state,
     record_acceptance_probe_observation,
     record_acceptance_probe_plan,
     record_candidate_final,
@@ -203,7 +205,7 @@ def test_model_owned_review_is_not_solver_resolution_authority(values, expected)
 
 
 @pytest.mark.asyncio
-async def test_review_model_error_returns_original_candidate_as_successful_execution() -> (
+async def test_review_model_error_returns_original_candidate_as_incomplete() -> (
     None
 ):
     context = Context(task_id="review-error")
@@ -247,8 +249,10 @@ async def test_review_model_error_returns_original_candidate_as_successful_execu
 
     assert result == [fallback]
     assert agent.finished is True
-    assert get_execution_state(context)["status"] == "succeeded"
-    assert get_execution_state(context)["reason"] == "long_horizon_review_fail_open"
+    assert get_execution_state(context)["status"] == "incomplete"
+    assert get_execution_state(context)["reason"] == (
+        "model_owned_review_error_unverified"
+    )
 
 
 @pytest.mark.asyncio
@@ -285,7 +289,9 @@ async def test_review_timeout_returns_original_candidate() -> None:
 
     assert result == [fallback]
     assert calls == 2
-    assert get_execution_state(context)["reason"] == "long_horizon_review_fail_open"
+    assert get_execution_state(context)["reason"] == (
+        "model_owned_review_error_unverified"
+    )
 
 
 @pytest.mark.asyncio
@@ -331,7 +337,9 @@ async def test_review_deadline_is_shared_across_continuation_calls(
     assert result == [fallback]
     assert calls == 3
     assert agent.finished is True
-    assert get_execution_state(context)["reason"] == "long_horizon_review_fail_open"
+    assert get_execution_state(context)["reason"] == (
+        "model_owned_review_error_unverified"
+    )
 
 
 @pytest.mark.asyncio
@@ -374,7 +382,7 @@ async def test_effectively_disabled_independent_review_budget_stop_keeps_candida
     assert result == [fallback]
     assert agent.finished is True
     assert get_execution_state(context)["reason"] == (
-        "long_horizon_review_budget_fail_open"
+        "model_owned_review_budget_stop_unverified"
     )
     assert agent._load_long_horizon_review_deadline(context) is None
 
@@ -1679,6 +1687,97 @@ def test_default_convergence_avoids_extra_profile_turn_without_skill() -> None:
 
     assert offer.carrier_function_name is None
     assert augmented == tools
+
+
+def test_default_guide_exposes_profile_after_observed_long_work_without_skill() -> None:
+    context = Context(task_id="profile-observed-long")
+    context.set_task(Task(id="profile-observed-long", timeout=600))
+    policy = ExecutionProtocolPolicy(
+        mode=ProtocolMode.GUIDE,
+        activation_event_threshold=6,
+        model_activation_min_tool_actions=6,
+        repetition_threshold=99,
+    )
+    agent = _agent(context, policy)
+    agent.skill_configs = {"long-running-agent": {"active": False}}
+    configure_execution_protocol(context, agent.id(), policy)
+    for step in range(1, 7):
+        record_tool_protocol_event(
+            context,
+            agent.id(),
+            {"current_agent_step": step, "completion_advanced": True},
+        )
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "terminal__execute",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }
+    ]
+
+    augmented, offer = agent._with_long_horizon_execution_profile(tools, context)
+
+    assert offer.decision_boundary == "initial"
+    assert offer.profile_schema_offered is True
+    assert [item["function"]["name"] for item in augmented] == [
+        "aworld__execution_decision"
+    ]
+
+
+def test_default_guide_constrains_after_two_unapplied_replans_without_skill() -> None:
+    context = Context(task_id="replan-default-guide")
+    context.set_task(Task(id="replan-default-guide", timeout=600))
+    policy = ExecutionProtocolPolicy(mode=ProtocolMode.GUIDE, repetition_threshold=1)
+    agent = _agent(context, policy)
+    agent.skill_configs = {"long-running-agent": {"active": False}}
+    configure_execution_protocol(context, agent.id(), policy)
+    _declare_long_horizon(context, agent.id())
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "terminal__execute",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }
+    ]
+
+    for step in (1, 2):
+        transition = record_tool_protocol_event(
+            context,
+            agent.id(),
+            {"current_agent_step": step, "repetition_count": 1},
+        )
+        assert transition.decision.action is ControllerAction.REQUEST_REPLAN
+        _, first_offer = agent._with_long_horizon_execution_profile(tools, context)
+        assert first_offer.decision_boundary == "replan"
+        malformed = AgentResult(
+            current_state=None,
+            actions=[],
+            is_call_tool=False,
+        )
+        assert agent._consume_long_horizon_execution_profile(
+            malformed, context, offer=first_offer
+        ) == "retry"
+        _, retry_offer = agent._with_long_horizon_execution_profile(tools, context)
+        assert agent._consume_long_horizon_execution_profile(
+            malformed, context, offer=retry_offer
+        ) == "fail_open"
+
+    state = load_execution_protocol_state(context, agent.id())
+    assert state.convergence_constraint_active is True
+    augmented, offer = agent._with_long_horizon_execution_profile(tools, context)
+    assert offer.decision_boundary is None
+    assert all(
+        item["function"]["name"] != "aworld__execution_decision"
+        for item in augmented
+    )
+    first_guidance = consume_execution_protocol_guidance(context, agent.id())
+    assert first_guidance is not None
+    assert "convergence constraint" in first_guidance.lower()
+    assert consume_execution_protocol_guidance(context, agent.id()) is None
 
 
 def test_no_user_tools_records_structurally_unavailable_review_boundary() -> None:
