@@ -500,6 +500,425 @@ def test_repeated_recovery_keeps_working_set_bounded_and_cache_prefix_stable(tmp
     assert len(calls) == len(checkpoints) == 12
 
 
+def test_tool_free_finalization_uses_verified_bounded_archive_projection(
+    tmp_path, monkeypatch,
+):
+    import copy
+
+    from aworld.core.context.budget_recovery import READ_TOOL
+
+    context, checkpoints = _recovery_context(tmp_path, monkeypatch)
+    provider, calls = _azure_without_transport()
+    model = LLMModel(
+        conf=ModelConfig(context_compiler={"context_limit": 16000}),
+        custom_provider=provider,
+    )
+    model.provider_name = "azure_openai"
+    messages = _long_tool_exchange()
+    tools = _recovery_tools()
+
+    # The ordinary interactive request archives the completed exchange and
+    # retains the reversible capsule backed by its bounded read Tool.
+    model.completion(messages, context=context, tools=tools)
+    interactive_messages = copy.deepcopy(provider._test_sent_params[-1]["messages"])
+    assert READ_TOOL in json.dumps(interactive_messages, ensure_ascii=False)
+    assert len(checkpoints) == 1
+
+    # A protocol finalization call deliberately clears its Tool catalog. The
+    # same replayed raw history must become a compact evidence projection, not
+    # be restored and not fail merely because the read Tool is unavailable.
+    model.completion(messages, context=context, tools=None)
+    assert len(calls) == 2
+    final_params = provider._test_sent_params[-1]
+    assert not final_params.get("tools")
+    final_messages = final_params["messages"]
+    serialized = json.dumps(final_messages, ensure_ascii=False)
+    assert "context-history-finalization-v1" in serialized
+    assert "archive_storage_readback_verified" in serialized
+    assert "evidence_digest" in serialized
+    assert "written" in serialized
+    assert READ_TOOL not in serialized
+    assert serialized.count("report data") < 50
+    assert "omitted_chars" in serialized
+    assert estimate_canonical_json_tokens(final_messages).value < 2000
+    rollout = context.get_llm_calls()[-1]["context_rollout"]
+    assert rollout["candidate_applied"] is True
+    assert rollout["amni_prompt_session"]["lane_switched"] is True
+    assert rollout["amni_prompt_session"]["rollover_reason"] == "lane_start"
+
+    # Repeated finalization remains byte-stable in its own cache lane.
+    model.completion(messages, context=context, tools=None)
+    assert provider._test_sent_params[-1]["messages"] == final_messages
+    repeated_session = context.get_llm_calls()[-1]["context_rollout"][
+        "amni_prompt_session"
+    ]
+    assert repeated_session["epoch_rollover"] is False
+    assert repeated_session["rollover_reason"] is None
+
+    # Restoring the ordinary catalog returns to the exact reversible capsule;
+    # the existing READ_TOOL recovery semantics are unchanged.
+    model.completion(messages, context=context, tools=tools)
+    assert provider._test_sent_params[-1]["messages"] == interactive_messages
+    restored_session = context.get_llm_calls()[-1]["context_rollout"][
+        "amni_prompt_session"
+    ]
+    assert restored_session["lane_restored"] is True
+    assert restored_session["epoch_rollover"] is False
+    assert len(checkpoints) == 1
+
+
+def test_tool_free_finalization_fails_closed_without_verified_bounded_evidence(
+    tmp_path, monkeypatch,
+):
+    from aworld.core.context.budget_recovery import RECOVERY_STATE_KEY
+
+    context, checkpoints = _recovery_context(tmp_path, monkeypatch)
+    provider, calls = _azure_without_transport()
+    model = LLMModel(
+        conf=ModelConfig(context_compiler={"context_limit": 16000}),
+        custom_provider=provider,
+    )
+    model.provider_name = "azure_openai"
+    messages = _long_tool_exchange()
+    messages[-2]["content"] = None
+    messages[-1]["content"] = None
+
+    model.completion(messages, context=context, tools=_recovery_tools())
+    assert len(calls) == 1
+    assert len(checkpoints) == 1
+    agent_id = model._context_agent_identity(context)
+    state = context.read_task_runtime_state(agent_id, RECOVERY_STATE_KEY)
+    state["replacements"][-1]["finalization_evidence"] = None
+    context.write_task_runtime_state(agent_id, RECOVERY_STATE_KEY, state)
+
+    with pytest.raises(
+        CandidateRequestNotEnforceable,
+        match="context_history_finalization_evidence_unavailable",
+    ):
+        model.completion(messages, context=context, tools=None)
+    assert len(calls) == 1
+    failed = context.get_llm_calls()[-1]
+    assert failed["status"] == "blocked_before_provider"
+    assert failed["provider_invoked"] is False
+    assert failed["error"]["code"] == (
+        "context_history_finalization_evidence_unavailable"
+    )
+
+
+def test_empty_tool_result_projects_exact_causal_action_without_tool_catalog(
+    tmp_path, monkeypatch,
+):
+    from aworld.core.context.budget_recovery import READ_TOOL
+
+    context, _ = _recovery_context(tmp_path, monkeypatch)
+    provider, calls = _azure_without_transport()
+    model = LLMModel(
+        conf=ModelConfig(context_compiler={"context_limit": 16000}),
+        custom_provider=provider,
+    )
+    model.provider_name = "azure_openai"
+    messages = _long_tool_exchange()
+    messages[2]["content"] = ""
+    messages[2]["tool_calls"][0]["id"] = "call-gcode"
+    messages[2]["tool_calls"][0]["function"] = {
+        "name": "render_gcode",
+        "arguments": json.dumps({
+            "path": "/workspace/input.gcode",
+            "program": "G1 X1 Y1\n" * 8000,
+        }),
+    }
+    messages[3] = {
+        "role": "tool",
+        "tool_call_id": "call-gcode",
+        "content": "",
+    }
+
+    model.completion(messages, context=context, tools=_recovery_tools())
+    model.completion(messages, context=context, tools=None)
+
+    assert len(calls) == 2
+    final_params = provider._test_sent_params[-1]
+    assert not final_params.get("tools")
+    serialized = json.dumps(final_params["messages"], ensure_ascii=False)
+    assert "render_gcode" in serialized
+    assert "call-gcode" in serialized
+    assert "/workspace/input.gcode" in serialized
+    assert "empty" in serialized
+    assert READ_TOOL not in serialized
+    assert "KNOWLEDGE__get_knowledge_by_lines" not in serialized
+    assert "G1 X1 Y1" in serialized
+    assert len(serialized) < 10000
+
+
+def test_parallel_empty_results_retain_newest_action_arguments_atomically(
+    tmp_path, monkeypatch,
+):
+    from aworld.core.context.budget_recovery import READ_TOOL
+
+    context, _ = _recovery_context(tmp_path, monkeypatch)
+    provider, calls = _azure_without_transport()
+    model = LLMModel(
+        conf=ModelConfig(context_compiler={"context_limit": 16000}),
+        custom_provider=provider,
+    )
+    model.provider_name = "azure_openai"
+    tool_calls = []
+    tool_results = []
+    for index in range(4):
+        call_id = f"call-part-{index}"
+        tool_calls.append({
+            "id": call_id,
+            "type": "function",
+            "function": {
+                "name": "run_code",
+                "arguments": json.dumps({
+                    "path": f"/workspace/part-{index}.txt",
+                    "content": "x" * 20000,
+                }),
+            },
+        })
+        tool_results.append({
+            "role": "tool",
+            "tool_call_id": call_id,
+            "content": "",
+        })
+    messages = [
+        {"role": "system", "content": "Preserve causal execution evidence."},
+        {"role": "user", "content": "Write every requested output file."},
+        {"role": "assistant", "content": "", "tool_calls": tool_calls},
+        *tool_results,
+    ]
+
+    model.completion(messages, context=context, tools=_recovery_tools())
+    model.completion(messages, context=context, tools=None)
+
+    assert len(calls) == 2
+    final_params = provider._test_sent_params[-1]
+    assert not final_params.get("tools")
+    serialized = json.dumps(final_params["messages"], ensure_ascii=False)
+    assert "run_code" in serialized
+    assert "call-part-3" in serialized
+    assert "/workspace/part-3.txt" in serialized
+    assert READ_TOOL not in serialized
+    assert serialized.count("x" * 100) < 10
+    assert len(serialized) < 10000
+
+
+@pytest.mark.asyncio
+async def test_finalization_projection_shrinks_json_escaped_exact_evidence(
+    tmp_path, monkeypatch,
+):
+    from aworld.core.context.budget_recovery import (
+        MAX_FINALIZATION_PROJECTION_CHARS,
+        RECOVERY_STATE_KEY,
+        project_recovered_history_for_finalization,
+        recover_context_budget,
+    )
+
+    context, _ = _recovery_context(tmp_path, monkeypatch)
+    messages = [
+        {"role": "system", "content": "Keep exact evidence bounded."},
+        {"role": "user", "content": "Finalize from observed evidence."},
+    ]
+    for index in range(4):
+        call_id = f"call-control-{index}"
+        messages.extend([
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [{
+                    "id": call_id,
+                    "type": "function",
+                    "function": {"name": "inspect", "arguments": "{}"},
+                }],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": call_id,
+                "content": ("\n\u0000\t" * 334)[:1000],
+            },
+        ])
+
+    recovered, receipt = await recover_context_budget(
+        context=context,
+        agent_id="agent",
+        messages=messages,
+        tools=_recovery_tools(),
+    )
+    assert receipt["status"] == "offloaded"
+    assert len(recovered) == 3
+    state = context.read_task_runtime_state("agent", RECOVERY_STATE_KEY)
+    retained = state["replacements"][-1]["finalization_evidence"][
+        "retained_evidence"
+    ]
+    assert 1 <= len(retained) < 4
+
+    projected = project_recovered_history_for_finalization(
+        context,
+        "agent",
+        messages,
+        tools=None,
+    )
+    assert len(projected) == 3
+    assert len(projected[-1]["content"]) <= MAX_FINALIZATION_PROJECTION_CHARS
+    assert "context-history-finalization-v1" in projected[-1]["content"]
+
+
+@pytest.mark.asyncio
+async def test_budget_recovery_preserves_undelivered_media_then_archives_chain_atomically(
+    tmp_path, monkeypatch,
+):
+    import base64
+    import copy
+
+    from mcp.types import CallToolResult
+
+    from aworld.core.context.budget_recovery import recover_context_budget
+    from aworld.mcp_client.utils import lower_mcp_call_result
+    from aworld.sandbox.artifact_observation import (
+        ARTIFACT_RETAINED_MESSAGE,
+        artifact_mcp_content,
+        artifact_memory_descriptor,
+        artifact_prompt_message,
+        observe_artifact_bytes,
+    )
+
+    png = base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4"
+        "z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC"
+    )
+    context, checkpoints = _recovery_context(tmp_path, monkeypatch)
+    provider, calls = _azure_without_transport()
+    model = LLMModel(
+        conf=ModelConfig(context_compiler={"context_limit": 16000}),
+        custom_provider=provider,
+    )
+    model.provider_name = "azure_openai"
+    agent_id = model._context_agent_identity(context)
+    call_id = "call-observe-artifact"
+    observed = observe_artifact_bytes(
+        png,
+        suffix=".png",
+        path_key="sha256:path",
+        file_epoch="sha256:" + ("0" * 64),
+        framework_scope={
+            "task_id": context.task_id,
+            "session_id": context.session_id,
+            "task_epoch": context.task_epoch,
+            "tool_call_id": call_id,
+        },
+    )
+    result = lower_mcp_call_result(
+        CallToolResult(content=artifact_mcp_content(observed)),
+        server_name="terminal",
+        tool_name="observe_artifact",
+        trusted_artifact_observation=True,
+    )
+    result.tool_call_id = call_id
+    descriptor = artifact_memory_descriptor(
+        result,
+        context=context,
+        tool_call_id=call_id,
+    )
+    marker = artifact_prompt_message([descriptor])
+    assert marker is not None
+    artifact_group = [
+        {
+            "role": "assistant",
+            "content": "Inspecting the rendered result.",
+            "tool_calls": [{
+                "id": call_id,
+                "type": "function",
+                "function": {
+                    "name": "observe_artifact",
+                    "arguments": '{"path":"pixel.png"}',
+                },
+            }],
+        },
+        {"role": "tool", "tool_call_id": call_id, "content": result.content},
+        marker,
+    ]
+    messages = [*_long_tool_exchange(), *artifact_group]
+
+    # Context pressure archives the older large exchange, but the newest
+    # undelivered media chain remains intact through compilation and hydration.
+    recovered_messages, recovery_receipt = await recover_context_budget(
+        context=context,
+        agent_id=agent_id,
+        messages=messages,
+        tools=_recovery_tools(),
+    )
+    assert recovery_receipt["status"] == "offloaded"
+    assert recovered_messages[-3:] == artifact_group
+    model.completion(
+        recovered_messages,
+        context=context,
+        tools=_recovery_tools(),
+        _aworld_artifact_vision_enabled=True,
+        _aworld_artifact_agent_id=agent_id,
+    )
+    assert len(calls) == 1
+    first_wire = json.dumps(provider._test_sent_params[-1]["messages"])
+    assert "data:image/png;base64," in first_wire
+    assert "report data" not in first_wire
+
+    # Delivery is one-shot; replay preserves only the stable text marker.
+    model.completion(
+        recovered_messages,
+        context=context,
+        tools=_recovery_tools(),
+        _aworld_artifact_vision_enabled=True,
+        _aworld_artifact_agent_id=agent_id,
+    )
+    second_wire = json.dumps(provider._test_sent_params[-1]["messages"])
+    assert "data:image" not in second_wire
+    assert ARTIFACT_RETAINED_MESSAGE in second_wire
+
+    # Once delivered, even a large causal group is archived together with its
+    # framework marker. No standalone marker can survive as an orphan.
+    delivered_history = [
+        copy.deepcopy(messages[0]),
+        copy.deepcopy(messages[1]),
+        *copy.deepcopy(artifact_group),
+    ]
+    delivered_history[2]["tool_calls"][0]["function"]["arguments"] = (
+        json.dumps({"path": "pixel.png", "bounded_padding": "x" * 70000})
+    )
+    delivered_history = provider.context_model_boundary_messages(
+        delivered_history
+    )
+    recovered, receipt = await recover_context_budget(
+        context=context,
+        agent_id=agent_id,
+        messages=delivered_history,
+        tools=_recovery_tools(),
+    )
+    assert receipt["status"] == "offloaded"
+    assert [message["role"] for message in recovered] == ["system", "user", "user"]
+    assert all(
+        message.get("content") != ARTIFACT_RETAINED_MESSAGE
+        for message in recovered
+    )
+
+    # The same raw history can now enter a bounded no-Tool finalization turn;
+    # the marker appears only as exact evidence inside the archive projection.
+    model.completion(
+        delivered_history,
+        context=context,
+        tools=None,
+        _aworld_artifact_vision_enabled=True,
+        _aworld_artifact_agent_id=agent_id,
+    )
+    final_messages = provider._test_sent_params[-1]["messages"]
+    assert estimate_canonical_json_tokens(final_messages).value < 2000
+    assert all(
+        message.get("content") != ARTIFACT_RETAINED_MESSAGE
+        for message in final_messages
+    )
+    assert "data:image" not in json.dumps(final_messages)
+    assert len(checkpoints) == 2
+
+
 def test_recovery_retains_anthropic_native_prefix_cache_control(tmp_path, monkeypatch):
     context, checkpoints = _recovery_context(tmp_path, monkeypatch)
     provider, calls = _anthropic_without_transport()

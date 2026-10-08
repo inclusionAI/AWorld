@@ -715,6 +715,17 @@ def artifact_prompt_message(
     return {"role": "user", "content": ARTIFACT_RETAINED_MESSAGE}
 
 
+def _is_artifact_retained_content(content: Any) -> bool:
+    return content == ARTIFACT_RETAINED_MESSAGE or (
+        isinstance(content, list)
+        and len(content) == 1
+        and isinstance(content[0], Mapping)
+        and set(content[0]) == {"type", "text"}
+        and content[0].get("type") == "text"
+        and content[0].get("text") == ARTIFACT_RETAINED_MESSAGE
+    )
+
+
 def mark_artifact_rollout_late_bound(
     value: Any,
     receipt: Mapping[str, Any] | None = None,
@@ -801,6 +812,7 @@ def _artifact_candidates(
     messages: list[dict[str, Any]],
     *,
     task_scope_hash: str,
+    newest_only: bool = True,
 ) -> list[dict[str, Any]]:
     """Return only complete assistant-call/result/framework-marker chains."""
 
@@ -813,7 +825,7 @@ def _artifact_candidates(
             observed = {}
             continue
         role = message.get("role")
-        if role == "assistant":
+        if role == "assistant" and newest_only:
             # Any later assistant response proves that an earlier media suffix
             # already reached a complete model turn. Only the newest causal
             # Tool group remains eligible for attachment.
@@ -859,14 +871,7 @@ def _artifact_candidates(
             observed[call_id] = receipt
             continue
         content = message.get("content")
-        framework_marker = content == ARTIFACT_RETAINED_MESSAGE or (
-            isinstance(content, list)
-            and len(content) == 1
-            and isinstance(content[0], Mapping)
-            and set(content[0]) == {"type", "text"}
-            and content[0].get("type") == "text"
-            and content[0].get("text") == ARTIFACT_RETAINED_MESSAGE
-        )
+        framework_marker = _is_artifact_retained_content(content)
         if (
             role == "user"
             and framework_marker
@@ -896,6 +901,71 @@ def _artifact_candidates(
         declared = None
         observed = {}
     return candidates
+
+
+def artifact_marker_recovery_states(
+    messages: list[dict[str, Any]],
+    *,
+    context: Any,
+    agent_id: str,
+) -> dict[int, str]:
+    """Classify causal artifact markers for atomic Context recovery.
+
+    An undelivered marker keeps its whole assistant/Tool group in the working
+    set so provider-bound hydration gets one opportunity. Once the projection
+    has been committed, or a later assistant turn proves the marker reached a
+    completed provider call, recovery may archive the group and marker as one
+    unit. User text that merely resembles the marker has no validated causal
+    chain and is intentionally absent from this result.
+    """
+
+    task_scope_hash = artifact_task_scope_hash(
+        task_id=getattr(context, "task_id", None),
+        session_id=getattr(context, "session_id", None),
+        task_epoch=getattr(context, "task_epoch", 0),
+    )
+    candidates = _artifact_candidates(
+        messages,
+        task_scope_hash=task_scope_hash,
+        newest_only=False,
+    )
+    grouped: dict[int, list[dict[str, Any]]] = {}
+    for candidate in candidates:
+        grouped.setdefault(int(candidate["message_index"]), []).append(candidate)
+    if not grouped:
+        return {}
+    delivered = _projection_state(context, agent_id).get("delivered", {})
+    if not isinstance(delivered, Mapping):
+        delivered = {}
+    assistant_indexes = [
+        index
+        for index, message in enumerate(messages)
+        if isinstance(message, Mapping) and message.get("role") == "assistant"
+    ]
+    result: dict[int, str] = {}
+    for marker_index, marker_candidates in grouped.items():
+        later_assistant = any(index > marker_index for index in assistant_indexes)
+        pending_candidates = [
+            candidate
+            for candidate in marker_candidates
+            if _delivery_key(candidate) not in delivered
+        ]
+        if later_assistant or not pending_candidates:
+            result[marker_index] = "delivered"
+            continue
+        media_available = any(
+            _hydrate_artifact_observation(
+                task_scope_hash=task_scope_hash,
+                observation_id=str(candidate["observation_id"]),
+                call_id_hash=str(candidate["call_id_hash"]),
+            )
+            is not None
+            for candidate in pending_candidates
+        )
+        result[marker_index] = (
+            "undelivered" if media_available else "unavailable"
+        )
+    return result
 
 
 def _hydrate_artifact_observation(

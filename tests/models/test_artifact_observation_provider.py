@@ -231,11 +231,15 @@ class _NoneThenSuccessParser:
         return None if self.calls == 1 else response
 
 
-def _causal_messages(context: Context, call_id: str = "call-1"):
+def _causal_messages(
+    context: Context,
+    call_id: str = "call-1",
+    path_key: str = "sha256:path",
+):
     observed = observe_artifact_bytes(
         _PNG_1X1,
         suffix=".png",
-        path_key="sha256:path",
+        path_key=path_key,
         file_epoch=_FILE_EPOCH,
         framework_scope={
             "task_id": context.task_id,
@@ -1175,6 +1179,89 @@ def test_provider_projection_recovers_receipt_from_sanitized_tool_text() -> None
 
     assert receipt["hydrated_count"] == 1
     assert "data:image/png;base64," in json.dumps(projected)
+
+
+def test_budget_recovery_does_not_pin_an_expired_artifact_sidecar() -> None:
+    context = Context(task_id="artifact-task")
+    messages = _causal_messages(context)
+
+    assert artifact_module.artifact_marker_recovery_states(
+        messages,
+        context=context,
+        agent_id="agent-1",
+    ) == {2: "undelivered"}
+
+    clear_artifact_observation_state()
+
+    assert artifact_module.artifact_marker_recovery_states(
+        messages,
+        context=context,
+        agent_id="agent-1",
+    ) == {2: "unavailable"}
+
+
+def test_budget_recovery_does_not_consume_a_spoofed_artifact_marker() -> None:
+    context = Context(task_id="artifact-task")
+    messages = _causal_messages(context)
+    messages[1]["content"] = "not a valid scoped artifact receipt"
+
+    assert messages[2]["content"] == ARTIFACT_RETAINED_MESSAGE
+    assert artifact_module.artifact_marker_recovery_states(
+        messages,
+        context=context,
+        agent_id="agent-1",
+    ) == {}
+
+
+def test_budget_recovery_preserves_partially_available_media_group() -> None:
+    context = Context(task_id="artifact-task")
+    first = _causal_messages(
+        context,
+        call_id="call-expired",
+        path_key="sha256:path-expired",
+    )
+    second = _causal_messages(
+        context,
+        call_id="call-available",
+        path_key="sha256:path-available",
+    )
+    messages = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                first[0]["tool_calls"][0],
+                second[0]["tool_calls"][0],
+            ],
+        },
+        first[1],
+        second[1],
+        {"role": "user", "content": ARTIFACT_RETAINED_MESSAGE},
+    ]
+
+    def expire_sidecar(tool_message: dict[str, Any]) -> None:
+        receipt = artifact_module.artifact_receipt_from_tool_content(
+            tool_message["content"]
+        )
+        identity = (receipt["task_scope_hash"], receipt["observation_id"])
+        with artifact_module._state_lock:
+            token = artifact_module._sidecar_identity.pop(identity)
+            entry = artifact_module._sidecars.pop(token)
+            artifact_module._sidecar_bytes -= len(entry.data)
+
+    expire_sidecar(first[1])
+    assert artifact_module.artifact_marker_recovery_states(
+        messages,
+        context=context,
+        agent_id="agent-1",
+    ) == {3: "undelivered"}
+
+    expire_sidecar(second[1])
+    assert artifact_module.artifact_marker_recovery_states(
+        messages,
+        context=context,
+        agent_id="agent-1",
+    ) == {3: "unavailable"}
 
 
 @pytest.mark.asyncio

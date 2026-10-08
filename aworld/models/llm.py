@@ -1456,11 +1456,20 @@ class LLMModel:
             and self._context_checkpoint_policy in {"adaptive", "budget_pressure"}
             and self._context_artifact_offload
         ):
-            from aworld.core.context.budget_recovery import restore_recovered_history
-
-            values = restore_recovered_history(
-                context, self._context_agent_identity(context), values, tools,
+            from aworld.core.context.budget_recovery import (
+                project_recovered_history_for_finalization,
+                restore_recovered_history,
             )
+
+            agent_id = self._context_agent_identity(context)
+            if tools:
+                values = restore_recovered_history(
+                    context, agent_id, values, tools,
+                )
+            else:
+                values = project_recovered_history_for_finalization(
+                    context, agent_id, values, tools,
+                )
         from aworld.agents.final_context_adapter import adapt_agent_final_request
 
         agent_id = self._context_agent_identity(context)
@@ -1547,12 +1556,23 @@ class LLMModel:
                     f"without enforcement; error_type={type(exc).__name__}"
                 )
                 return messages
+            from aworld.core.context.budget_recovery import (
+                ContextHistoryFinalizationEvidenceUnavailable,
+            )
+
+            error_code = (
+                exc.code
+                if isinstance(
+                    exc, ContextHistoryFinalizationEvidenceUnavailable
+                )
+                else "model_boundary_finalize_failed"
+            )
             rollout = {
                 "mode": ContextCompilerMode.ENFORCE.value,
                 "candidate_status": "blocked",
                 "candidate_applied": False,
                 "provider_lowering_ready": False,
-                "error": {"code": "model_boundary_finalize_failed"},
+                "error": {"code": error_code},
             }
             self._begin_llm_call_record(
                 context=context,
@@ -1573,11 +1593,9 @@ class LLMModel:
                 request_id=request_id,
                 status="blocked_before_provider",
                 finished_at=time.time(),
-                error_code="model_boundary_finalize_failed",
+                error_code=error_code,
             )
-            raise CandidateRequestNotEnforceable(
-                "model_boundary_finalize_failed"
-            ) from None
+            raise CandidateRequestNotEnforceable(error_code) from None
 
     def _commit_amni_prompt_session_at_provider_boundary(
         self,
