@@ -1394,6 +1394,37 @@ class McpServers:
                 env_content_value["session_id"] = context.session_id
             if hasattr(context, 'task_epoch') and context.task_epoch is not None:
                 env_content_value["task_epoch"] = context.task_epoch
+            get_task = getattr(context, "get_task", None)
+            try:
+                task = get_task() if callable(get_task) else None
+            except Exception:
+                task = None
+            if task is not None:
+                bind_deadline = getattr(task, "bind_deadline", None)
+                try:
+                    if callable(bind_deadline):
+                        bind_deadline()
+                    deadline = getattr(task, "deadline_epoch_seconds", None)
+                    reserve = getattr(task, "completion_reserve_seconds", None)
+                except Exception:
+                    deadline = reserve = None
+                budget: dict[str, Any] = {"authority": "aworld_task"}
+                if (
+                    isinstance(deadline, (int, float))
+                    and not isinstance(deadline, bool)
+                    and math.isfinite(float(deadline))
+                    and deadline >= 0
+                ):
+                    budget["deadline_epoch_seconds"] = float(deadline)
+                if (
+                    isinstance(reserve, (int, float))
+                    and not isinstance(reserve, bool)
+                    and math.isfinite(float(reserve))
+                    and reserve >= 0
+                ):
+                    budget["completion_reserve_seconds"] = float(reserve)
+                if len(budget) > 1:
+                    env_content_value["task_budget"] = budget
 
         # 3. Dynamically add additional context from event_message
         if event_message:

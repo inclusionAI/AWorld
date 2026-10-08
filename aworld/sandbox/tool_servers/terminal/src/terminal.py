@@ -270,6 +270,8 @@ def _resolve_command_timeout(
     requested: float,
     *,
     now_epoch: float | None = None,
+    task_deadline_epoch_seconds: float | None = None,
+    completion_reserve_seconds: float | None = None,
 ) -> CommandTimeoutDecision:
     """Clamp a Tool timeout to framework policy and an optional task deadline."""
 
@@ -296,7 +298,9 @@ def _resolve_command_timeout(
     effective = min(requested_seconds, configured_max)
     limited_by = "terminal_maximum" if effective < requested_seconds else None
 
-    raw_deadline = os.environ.get(_TASK_DEADLINE_ENV)
+    raw_deadline: Any = task_deadline_epoch_seconds
+    if raw_deadline is None:
+        raw_deadline = os.environ.get(_TASK_DEADLINE_ENV)
     if raw_deadline is None:
         return CommandTimeoutDecision(
             requested_seconds=requested_seconds,
@@ -318,10 +322,18 @@ def _resolve_command_timeout(
 
     now = time.time() if now_epoch is None else float(now_epoch)
     remaining = max(0.0, deadline - now)
-    reserve = _positive_env_float(
-        _COMPLETION_RESERVE_ENV,
-        _DEFAULT_COMPLETION_RESERVE_SECONDS,
-    )
+    reserve = completion_reserve_seconds
+    if (
+        isinstance(reserve, bool)
+        or not isinstance(reserve, (int, float))
+        or not math.isfinite(float(reserve))
+        or reserve < 0
+    ):
+        reserve = _positive_env_float(
+            _COMPLETION_RESERVE_ENV,
+            _DEFAULT_COMPLETION_RESERVE_SECONDS,
+        )
+    reserve = float(reserve)
     available = max(0.0, remaining - reserve)
     if available <= 0:
         return CommandTimeoutDecision(
@@ -757,7 +769,22 @@ async def run_code(
     read_epochs_before: list[dict[str, Any]] = []
 
     try:
-        timeout_decision = _resolve_command_timeout(timeout)
+        task_budget = (
+            env_content.get("task_budget")
+            if isinstance(env_content, Mapping)
+            and isinstance(env_content.get("task_budget"), Mapping)
+            and env_content["task_budget"].get("authority") == "aworld_task"
+            else {}
+        )
+        timeout_decision = _resolve_command_timeout(
+            timeout,
+            task_deadline_epoch_seconds=task_budget.get(
+                "deadline_epoch_seconds"
+            ),
+            completion_reserve_seconds=task_budget.get(
+                "completion_reserve_seconds"
+            ),
+        )
         working_directory = _resolve_working_directory(cwd)
         command_environment = _resolve_environment(
             env,

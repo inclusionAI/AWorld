@@ -96,6 +96,42 @@ def test_hidden_env_content_keeps_framework_task_scope_authoritative():
     }
 
 
+def test_hidden_env_content_carries_framework_owned_task_budget():
+    servers = object.__new__(McpServers)
+    servers._env_content_param_mapping = {"terminal__run_code": "env_content"}
+    servers.sandbox = SimpleNamespace(env_content={})
+    task = SimpleNamespace(
+        deadline_epoch_seconds=2000.0,
+        completion_reserve_seconds=30.0,
+        bind_deadline=lambda: 2000.0,
+    )
+    parameter = {
+        "env_content": {
+            "task_budget": {
+                "authority": "caller",
+                "deadline_epoch_seconds": 9999.0,
+            }
+        }
+    }
+
+    servers._inject_env_content_parameter(
+        "terminal__run_code",
+        parameter,
+        SimpleNamespace(
+            task_id="task",
+            session_id="session",
+            task_epoch=2,
+            get_task=lambda: task,
+        ),
+    )
+
+    assert parameter["env_content"]["task_budget"] == {
+        "authority": "aworld_task",
+        "deadline_epoch_seconds": 2000.0,
+        "completion_reserve_seconds": 30.0,
+    }
+
+
 def _terminal_tool(tool_name: str, param_name: str) -> dict[str, object]:
     return {
         "type": "function",

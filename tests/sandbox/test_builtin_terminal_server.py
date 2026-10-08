@@ -712,6 +712,24 @@ def test_command_timeout_lease_never_lengthens_a_short_request(
     assert decision.limited_by is None
 
 
+def test_framework_task_budget_precedes_process_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AWORLD_TASK_DEADLINE_EPOCH_SECONDS", "9999")
+    monkeypatch.setenv("AWORLD_TERMINAL_COMPLETION_RESERVE_SECONDS", "1")
+
+    decision = _resolve_command_timeout(
+        300,
+        now_epoch=1000,
+        task_deadline_epoch_seconds=1120,
+        completion_reserve_seconds=30,
+    )
+
+    assert decision.remaining_task_seconds == 120
+    assert decision.effective_seconds == 22.5
+    assert decision.limited_by == "task_lease"
+
+
 def test_command_timeout_reports_exhausted_completion_reserve(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
