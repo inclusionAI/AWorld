@@ -11,6 +11,7 @@ import hashlib
 import inspect
 import json
 import re
+import uuid
 from typing import Any
 
 EXECUTION_STATE_KEY = "agent_execution_state"
@@ -28,6 +29,15 @@ _REASON_CODE = re.compile(r"^[A-Za-z0-9_.:-]{1,128}$")
 _MAX_BLOCKERS = 8
 _MAX_RESOLUTION_IDS = 8
 _MAX_RESOLUTION_EVENTS = 16
+_BLOCKER_CATEGORIES = {
+    "model_response",
+    "acceptance_review",
+    "completion_contract",
+    "validation",
+    "candidate",
+    "work",
+    "budget",
+}
 
 _MODEL_RESPONSE_REASONS = {
     "model_output_truncated",
@@ -37,6 +47,7 @@ _MODEL_RESPONSE_REASONS = {
     "incomplete_tool_arguments",
     "invalid_tool_arguments",
     "reasoning_only_response",
+    "empty_model_response",
     "context_window_exceeded",
     "transient_model_recovery_deadline_exhausted",
 }
@@ -45,10 +56,10 @@ _RESOLUTION_CATEGORIES = {
     "complete_provider_final_action": frozenset({"model_response"}),
     "accepted_critic": frozenset({"acceptance_review"}),
     "completion_contract_satisfied": frozenset(
-        {"completion_contract", "validation", "work"}
+        {"completion_contract", "validation", "candidate"}
     ),
-    "candidate_advanced": frozenset({"work"}),
-    "validation_passed": frozenset({"validation", "work"}),
+    "candidate_advanced": frozenset({"candidate"}),
+    "validation_passed": frozenset({"validation"}),
 }
 
 
@@ -90,11 +101,26 @@ def _blocker_category(status: str, reason: str) -> str:
         return "completion_contract"
     if reason.startswith("validation_"):
         return "validation"
+    if reason.startswith(
+        (
+            "candidate_",
+            "delivery_candidate_",
+            "public_candidate_",
+            "public_deliverable_",
+            "required_artifact_",
+        )
+    ):
+        return "candidate"
     return "work"
 
 
 def _blocker_id(
-    scope: dict[str, Any], *, revision: int, status: str, reason: str
+    scope: dict[str, Any],
+    *,
+    revision: int,
+    status: str,
+    reason: str,
+    occurrence_id: str,
 ) -> str:
     encoded = json.dumps(
         {
@@ -102,12 +128,34 @@ def _blocker_id(
             "revision": revision,
             "status": status,
             "reason": reason,
+            "occurrence_id": occurrence_id,
         },
         ensure_ascii=True,
         sort_keys=True,
         separators=(",", ":"),
     )
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()[:24]
+
+
+def _new_occurrence_id() -> str:
+    return uuid.uuid4().hex[:24]
+
+
+def _event_source_id(context, agent_id: str) -> str:
+    stream_id = getattr(context, "_llm_call_journal_stream_id", None)
+    if isinstance(stream_id, str) and stream_id:
+        source = f"journal:{stream_id}:{agent_id}"
+        return hashlib.sha256(source.encode("utf-8")).hexdigest()[:16]
+    key = f"execution_state_source:{agent_id}"
+    context_info = getattr(context, "context_info", None)
+    if hasattr(context_info, "get"):
+        source_id = context_info.get(key)
+        if isinstance(source_id, str) and _REASON_CODE.fullmatch(source_id):
+            return source_id
+        source_id = _new_occurrence_id()[:16]
+        context_info[key] = source_id
+        return source_id
+    return _new_occurrence_id()[:16]
 
 
 def _normalized_revision(value: Any, fallback: Any = 0) -> int:
@@ -141,7 +189,7 @@ def _normalize_record(value: Any) -> dict[str, Any] | None:
     blockers: list[dict[str, Any]] = []
     raw_blockers = value.get("unresolved_blockers")
     if schema == EXECUTION_STATE_SCHEMA and isinstance(raw_blockers, list):
-        for item in raw_blockers[: _MAX_BLOCKERS * 2]:
+        for item in raw_blockers[-(_MAX_BLOCKERS * 2) :]:
             if not isinstance(item, dict):
                 continue
             status = item.get("status")
@@ -152,25 +200,51 @@ def _normalize_record(value: Any) -> dict[str, Any] | None:
             )
             blocker_revision = _normalized_revision(item.get("revision"), revision)
             category, _ = _bounded_code(item.get("category"), "work")
-            if category not in {
-                "model_response",
-                "acceptance_review",
-                "completion_contract",
-                "validation",
-                "work",
-                "budget",
-            }:
+            if category not in _BLOCKER_CATEGORIES:
                 category = "work"
+            occurrence_id, _ = _bounded_code(item.get("occurrence_id"), "")
             blocker_identifier, _ = _bounded_code(item.get("blocker_id"), "")
+            if not occurrence_id:
+                occurrence_id = (
+                    "legacy-"
+                    + hashlib.sha256(
+                        (
+                            blocker_identifier
+                            or json.dumps(
+                                {
+                                    "scope": scope,
+                                    "revision": blocker_revision,
+                                    "status": status,
+                                    "reason": blocker_reason,
+                                },
+                                sort_keys=True,
+                            )
+                        ).encode("utf-8")
+                    ).hexdigest()[:16]
+                )
+            source_id, _ = _bounded_code(item.get("source_id"), "")
+            if not source_id:
+                source_id = (
+                    occurrence_id.split(":", 1)[0]
+                    if ":" in occurrence_id
+                    else "legacy-source"
+                )
+            source_sequence = _normalized_revision(
+                item.get("source_sequence"), blocker_revision
+            )
             if not blocker_identifier:
                 blocker_identifier = _blocker_id(
                     scope,
                     revision=blocker_revision,
                     status=status,
                     reason=blocker_reason,
+                    occurrence_id=occurrence_id,
                 )
             blocker = {
                 "blocker_id": blocker_identifier,
+                "occurrence_id": occurrence_id,
+                "source_id": source_id,
+                "source_sequence": source_sequence,
                 "category": category,
                 "status": status,
                 "reason": blocker_reason,
@@ -182,10 +256,31 @@ def _normalize_record(value: Any) -> dict[str, Any] | None:
             blockers.append(blocker)
     elif requested_status in _BLOCKING_STATUSES:
         category = _blocker_category(requested_status, reason)
+        occurrence_id = (
+            "legacy-"
+            + hashlib.sha256(
+                json.dumps(
+                    {
+                        "scope": scope,
+                        "revision": revision,
+                        "status": requested_status,
+                        "reason": reason,
+                    },
+                    sort_keys=True,
+                ).encode("utf-8")
+            ).hexdigest()[:16]
+        )
         blocker = {
             "blocker_id": _blocker_id(
-                scope, revision=revision, status=requested_status, reason=reason
+                scope,
+                revision=revision,
+                status=requested_status,
+                reason=reason,
+                occurrence_id=occurrence_id,
             ),
+            "occurrence_id": occurrence_id,
+            "source_id": "legacy-source",
+            "source_sequence": revision,
             "category": category,
             "status": requested_status,
             "reason": reason,
@@ -199,7 +294,7 @@ def _normalize_record(value: Any) -> dict[str, Any] | None:
     resolutions: list[dict[str, Any]] = []
     raw_resolutions = value.get("resolution_evidence")
     if schema == EXECUTION_STATE_SCHEMA and isinstance(raw_resolutions, list):
-        for item in raw_resolutions[:_MAX_RESOLUTION_EVENTS]:
+        for item in raw_resolutions[-(_MAX_RESOLUTION_EVENTS * 2) :]:
             if not isinstance(item, dict):
                 continue
             evidence_kind = item.get("evidence_kind")
@@ -214,15 +309,60 @@ def _normalize_record(value: Any) -> dict[str, Any] | None:
                 blocker_id, _ = _bounded_code(blocker_id, "")
                 if blocker_id and blocker_id not in blocker_ids:
                     blocker_ids.append(blocker_id)
+            occurrence_id, _ = _bounded_code(item.get("occurrence_id"), "")
+            if not occurrence_id:
+                occurrence_id = (
+                    "legacy-"
+                    + hashlib.sha256(
+                        json.dumps(item, sort_keys=True, default=str).encode("utf-8")
+                    ).hexdigest()[:16]
+                )
+            blocker_refs = []
+            for ref in item.get("blocker_refs", ()):
+                if not isinstance(ref, dict):
+                    continue
+                blocker_id, _ = _bounded_code(ref.get("blocker_id"), "")
+                source_id, _ = _bounded_code(ref.get("source_id"), "")
+                source_sequence = _normalized_revision(ref.get("source_sequence"))
+                if blocker_id and source_id:
+                    blocker_refs.append(
+                        {
+                            "blocker_id": blocker_id,
+                            "source_id": source_id,
+                            "source_sequence": source_sequence,
+                        }
+                    )
             resolutions.append(
                 {
                     "category": category,
                     "evidence_kind": evidence_kind,
+                    "occurrence_id": occurrence_id,
                     "revision": _normalized_revision(item.get("revision"), revision),
                     "watermark_revision": _normalized_revision(
                         item.get("watermark_revision"), revision
                     ),
                     "blocker_ids": blocker_ids[-_MAX_RESOLUTION_IDS:],
+                    "blocker_refs": blocker_refs[-_MAX_RESOLUTION_IDS:],
+                }
+            )
+
+    resolution_watermarks: list[dict[str, Any]] = []
+    raw_watermarks = value.get("resolution_watermarks")
+    if schema == EXECUTION_STATE_SCHEMA and isinstance(raw_watermarks, list):
+        for item in raw_watermarks[-(_MAX_RESOLUTION_EVENTS * 2) :]:
+            if not isinstance(item, dict):
+                continue
+            category = item.get("category")
+            source_id, _ = _bounded_code(item.get("source_id"), "")
+            if category not in _BLOCKER_CATEGORIES or not source_id:
+                continue
+            resolution_watermarks.append(
+                {
+                    "category": category,
+                    "source_id": source_id,
+                    "through_sequence": _normalized_revision(
+                        item.get("through_sequence")
+                    ),
                 }
             )
 
@@ -235,9 +375,22 @@ def _normalize_record(value: Any) -> dict[str, Any] | None:
             else "state",
             "requested_status": requested_status,
             "reason": reason,
+            "occurrence_id": "legacy-event-"
+            + hashlib.sha256(
+                json.dumps(
+                    {
+                        "scope": scope,
+                        "revision": revision,
+                        "status": requested_status,
+                        "reason": reason,
+                    },
+                    sort_keys=True,
+                ).encode("utf-8")
+            ).hexdigest()[:12],
         }
     else:
         raw_evidence_kind = last_event.get("evidence_kind")
+        raw_occurrence_id, _ = _bounded_code(last_event.get("occurrence_id"), "")
         event_reason, _ = _bounded_code(
             last_event.get("reason"), "unclassified_execution_state"
         )
@@ -250,6 +403,7 @@ def _normalize_record(value: Any) -> dict[str, Any] | None:
             "kind": event_kind,
             "requested_status": event_status,
             "reason": event_reason,
+            "occurrence_id": raw_occurrence_id or "legacy-event",
         }
         if raw_evidence_kind in _RESOLUTION_CATEGORIES:
             last_event["evidence_kind"] = raw_evidence_kind
@@ -268,6 +422,7 @@ def _normalize_record(value: Any) -> dict[str, Any] | None:
         ),
         "unresolved_blockers": blockers,
         "resolution_evidence": resolutions,
+        "resolution_watermarks": resolution_watermarks,
         "last_event": last_event,
         "work_state_revision": _normalized_revision(
             value.get("work_state_revision"), 0
@@ -330,12 +485,24 @@ def reconcile_execution_states(
         for resolution in record["resolution_evidence"]:
             event = dict(resolution)
             event["blocker_ids"] = list(resolution["blocker_ids"])
+            event["blocker_refs"] = [
+                dict(ref) for ref in resolution.get("blocker_refs", ())
+            ]
             key = (
                 event["category"],
                 event["evidence_kind"],
+                event["occurrence_id"],
                 event["revision"],
                 event["watermark_revision"],
                 tuple(event["blocker_ids"]),
+                tuple(
+                    (
+                        ref["blocker_id"],
+                        ref["source_id"],
+                        ref["source_sequence"],
+                    )
+                    for ref in event["blocker_refs"]
+                ),
             )
             if key not in resolution_event_keys:
                 resolution_event_keys.add(key)
@@ -346,11 +513,19 @@ def reconcile_execution_states(
             item["watermark_revision"],
             item["category"],
             item["evidence_kind"],
+            item["occurrence_id"],
         )
     )
-    resolution_events = resolution_events[-_MAX_RESOLUTION_EVENTS:]
+    resolution_watermarks_by_key: dict[tuple[str, str], int] = {}
+    for record in normalized:
+        for watermark in record.get("resolution_watermarks", ()):
+            key = (watermark["category"], watermark["source_id"])
+            resolution_watermarks_by_key[key] = max(
+                resolution_watermarks_by_key.get(key, 0),
+                watermark["through_sequence"],
+            )
 
-    blockers_by_category: dict[str, dict[str, Any]] = {}
+    blockers_by_id: dict[str, dict[str, Any]] = {}
     for record in normalized:
         for blocker in record["unresolved_blockers"]:
             resolved = any(
@@ -359,10 +534,15 @@ def reconcile_execution_states(
                 and resolution["revision"] > blocker["revision"]
                 and resolution["watermark_revision"] >= blocker["revision"]
                 for resolution in resolution_events
+            ) or (
+                resolution_watermarks_by_key.get(
+                    (blocker["category"], blocker["source_id"]), -1
+                )
+                >= blocker["source_sequence"]
             )
             if resolved:
                 continue
-            current = blockers_by_category.get(blocker["category"])
+            current = blockers_by_id.get(blocker["blocker_id"])
             if current is None or (
                 _STATUS_SEVERITY[blocker["status"]],
                 blocker["revision"],
@@ -374,22 +554,75 @@ def reconcile_execution_states(
                 not current["recoverable"],
                 current["reason"],
             ):
-                blockers_by_category[blocker["category"]] = dict(blocker)
+                blockers_by_id[blocker["blocker_id"]] = dict(blocker)
 
-    blockers = sorted(
-        blockers_by_category.values(),
+    all_blockers = sorted(
+        blockers_by_id.values(),
         key=lambda item: (
             -_STATUS_SEVERITY[item["status"]],
             -item["revision"],
             item["category"],
+            item["blocker_id"],
         ),
-    )[:_MAX_BLOCKERS]
+    )
+    retained_resolution_events = resolution_events[-_MAX_RESOLUTION_EVENTS:]
+    dropped_resolution_events = resolution_events[:-_MAX_RESOLUTION_EVENTS]
+    for resolution in dropped_resolution_events:
+        for ref in resolution.get("blocker_refs", ()):
+            if any(
+                blocker["category"] == resolution["category"]
+                and blocker["source_id"] == ref["source_id"]
+                and blocker["source_sequence"] <= ref["source_sequence"]
+                for blocker in all_blockers
+            ):
+                # A lower unresolved occurrence creates a gap, so a high-water
+                # compaction would be unsafe. Dropping the tombstone is
+                # deliberately fail-closed in this rare branch.
+                continue
+            key = (resolution["category"], ref["source_id"])
+            resolution_watermarks_by_key[key] = max(
+                resolution_watermarks_by_key.get(key, 0),
+                ref["source_sequence"],
+            )
+    blockers = all_blockers[:_MAX_BLOCKERS]
+    if len(all_blockers) > _MAX_BLOCKERS:
+        retained = blockers[: _MAX_BLOCKERS - 1]
+        compacted = all_blockers[_MAX_BLOCKERS - 1 :]
+        compacted_ids = sorted(item["blocker_id"] for item in compacted)
+        occurrence_id = (
+            "overflow-"
+            + hashlib.sha256("|".join(compacted_ids).encode("utf-8")).hexdigest()[:16]
+        )
+        categories = {item["category"] for item in compacted}
+        overflow_status = max(
+            (item["status"] for item in compacted),
+            key=_STATUS_SEVERITY.__getitem__,
+        )
+        overflow = {
+            "blocker_id": _blocker_id(
+                {"task_id": task_id, "task_epoch": task_epoch, "agent_id": agent_id},
+                revision=max(item["revision"] for item in compacted),
+                status=overflow_status,
+                reason="execution_blocker_overflow",
+                occurrence_id=occurrence_id,
+            ),
+            "occurrence_id": occurrence_id,
+            "source_id": occurrence_id,
+            "source_sequence": max(item["revision"] for item in compacted),
+            "category": next(iter(categories)) if len(categories) == 1 else "work",
+            "status": overflow_status,
+            "reason": "execution_blocker_overflow",
+            "revision": max(item["revision"] for item in compacted),
+            "recoverable": False,
+        }
+        blockers = [*retained, overflow]
     last_event = max(
         (record["last_event"] for record in normalized),
         key=lambda item: (
             item["revision"],
             _STATUS_SEVERITY[item["requested_status"]],
             item["reason"],
+            item.get("occurrence_id", ""),
         ),
     )
     if blockers:
@@ -413,7 +646,17 @@ def reconcile_execution_states(
         "reason": reason,
         "recoverable": recoverable,
         "unresolved_blockers": blockers,
-        "resolution_evidence": resolution_events,
+        "resolution_evidence": retained_resolution_events,
+        "resolution_watermarks": [
+            {
+                "category": category,
+                "source_id": source_id,
+                "through_sequence": through_sequence,
+            }
+            for (category, source_id), through_sequence in sorted(
+                resolution_watermarks_by_key.items()
+            )
+        ][-_MAX_RESOLUTION_EVENTS:],
         "last_event": deepcopy(last_event),
         "work_state_revision": max(
             record["work_state_revision"] for record in normalized
@@ -518,6 +761,7 @@ def _record_event(
         ),
     )
     existing = _context_records(context, agent_id)
+    source_id = _event_source_id(context, agent_id)
 
     def update(current):
         records = [*existing, current]
@@ -528,13 +772,56 @@ def _record_event(
             agent_id=agent_id,
         )
         revision = (base["revision"] if base is not None else 0) + 1
+        event_occurrence_id = f"{source_id}:{revision}"
         blockers = list(base["unresolved_blockers"] if base is not None else [])
         resolutions = list(base["resolution_evidence"] if base is not None else [])
+        resolution_watermarks = list(
+            base["resolution_watermarks"] if base is not None else []
+        )
         if status in _BLOCKING_STATUSES:
             category = _blocker_category(status, reason)
+            repeated_blocker = max(
+                (
+                    blocker
+                    for blocker in blockers
+                    if blocker["category"] == category
+                    and blocker["status"] == status
+                    and blocker["reason"] == reason
+                ),
+                key=lambda blocker: blocker["revision"],
+                default=None,
+            )
+            blocker_occurrence_id = (
+                repeated_blocker["occurrence_id"]
+                if repeated_blocker is not None
+                else event_occurrence_id
+            )
+            blocker_id = (
+                repeated_blocker["blocker_id"]
+                if repeated_blocker is not None
+                else _blocker_id(
+                    scope,
+                    revision=revision,
+                    status=status,
+                    reason=reason,
+                    occurrence_id=blocker_occurrence_id,
+                )
+            )
+            blockers = [
+                blocker for blocker in blockers if blocker["blocker_id"] != blocker_id
+            ]
             blocker = {
-                "blocker_id": _blocker_id(
-                    scope, revision=revision, status=status, reason=reason
+                "blocker_id": blocker_id,
+                "occurrence_id": blocker_occurrence_id,
+                "source_id": (
+                    repeated_blocker["source_id"]
+                    if repeated_blocker is not None
+                    else source_id
+                ),
+                "source_sequence": (
+                    repeated_blocker["source_sequence"]
+                    if repeated_blocker is not None
+                    else revision
                 ),
                 "category": category,
                 "status": status,
@@ -564,8 +851,8 @@ def _record_event(
                 else 0
             )
             for category in sorted(allowed_categories):
-                observed_ids = [
-                    blocker["blocker_id"]
+                compatible_blockers = [
+                    blocker
                     for blocker in blockers
                     if blocker["category"] == category
                     and blocker["revision"] <= watermark_revision
@@ -573,14 +860,44 @@ def _record_event(
                         explicitly_observed is None
                         or blocker["blocker_id"] in explicitly_observed
                     )
-                ][-_MAX_RESOLUTION_IDS:]
+                ]
+                # One evidence event resolves one causal blocker per typed
+                # requirement category. A later B action must never erase an
+                # independent earlier A blocker merely because both are, for
+                # example, model-response failures.
+                bound_blocker = (
+                    max(
+                        compatible_blockers,
+                        key=lambda blocker: (
+                            blocker["revision"],
+                            blocker["blocker_id"],
+                        ),
+                    )
+                    if compatible_blockers
+                    else None
+                )
+                observed_ids = (
+                    [bound_blocker["blocker_id"]] if bound_blocker is not None else []
+                )
                 resolutions.append(
                     {
                         "category": category,
                         "evidence_kind": evidence_kind,
+                        "occurrence_id": event_occurrence_id,
                         "revision": revision,
                         "watermark_revision": watermark_revision,
                         "blocker_ids": observed_ids,
+                        "blocker_refs": (
+                            [
+                                {
+                                    "blocker_id": bound_blocker["blocker_id"],
+                                    "source_id": bound_blocker["source_id"],
+                                    "source_sequence": bound_blocker["source_sequence"],
+                                }
+                            ]
+                            if bound_blocker is not None
+                            else []
+                        ),
                     }
                 )
         raw = {
@@ -595,11 +912,13 @@ def _record_event(
             "recoverable": bool(recoverable and status in _BLOCKING_STATUSES),
             "unresolved_blockers": blockers,
             "resolution_evidence": resolutions,
+            "resolution_watermarks": resolution_watermarks,
             "last_event": {
                 "revision": revision,
                 "kind": "resolution" if evidence_kind is not None else "state",
                 "requested_status": status,
                 "reason": reason,
+                "occurrence_id": event_occurrence_id,
                 **({"evidence_kind": evidence_kind} if evidence_kind else {}),
             },
             "work_state_revision": 0,
@@ -654,7 +973,7 @@ def record_execution_resolution(
     evidence_kind: str,
     status: str = "running",
     reason: str,
-    observation: dict[str, Any] | None = None,
+    observation: dict[str, Any],
 ) -> dict[str, Any]:
     """Resolve only blockers causally observed by allowlisted typed evidence."""
 
@@ -662,20 +981,17 @@ def record_execution_resolution(
         raise ValueError("unsupported execution resolution evidence")
     if status not in {"running", "succeeded"}:
         raise ValueError("resolution status must be running or succeeded")
-    observed_revision = None
-    observed_blocker_ids = None
-    if observation is not None:
-        if not isinstance(observation, dict):
-            raise ValueError("execution resolution observation must be a mapping")
-        observed_revision = _normalized_revision(observation.get("revision"))
-        raw_ids = observation.get("blocker_ids")
-        if not isinstance(raw_ids, (list, tuple)):
-            raise ValueError("execution resolution observation is missing blocker IDs")
-        observed_blocker_ids = [
-            blocker_id
-            for blocker_id in raw_ids[:_MAX_RESOLUTION_IDS]
-            if isinstance(blocker_id, str) and _REASON_CODE.fullmatch(blocker_id)
-        ]
+    if not isinstance(observation, dict):
+        raise ValueError("execution resolution observation must be a mapping")
+    observed_revision = _normalized_revision(observation.get("revision"))
+    raw_ids = observation.get("blocker_ids")
+    if not isinstance(raw_ids, (list, tuple)):
+        raise ValueError("execution resolution observation is missing blocker IDs")
+    observed_blocker_ids = [
+        blocker_id
+        for blocker_id in raw_ids[:_MAX_RESOLUTION_IDS]
+        if isinstance(blocker_id, str) and _REASON_CODE.fullmatch(blocker_id)
+    ]
     return _record_event(
         context,
         agent_id,

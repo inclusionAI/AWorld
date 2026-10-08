@@ -1420,7 +1420,9 @@ def _record_semantic_tool_progress_locked(
         from aworld.core.context.compiler import CompletionStatus
         from aworld.core.context.execution_state import record_execution_resolution
 
-        if (
+        if not isinstance(resolution_observation, dict):
+            pass
+        elif (
             completion_assessment is not None
             and completion_assessment.status is CompletionStatus.SATISFIED
         ):

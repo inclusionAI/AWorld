@@ -115,14 +115,41 @@ class DefaultTaskHandler(TaskHandler):
         else:
             expected_task_epoch = None
 
+        message_task_id = getattr(message.context, "task_id", None)
+        message_task_epoch = getattr(message.context, "task_epoch", None)
+        if (
+            topic == TopicType.FINISHED
+            and (
+                (
+                    message_task_id is not None
+                    and expected_task_id is not None
+                    and message_task_id != expected_task_id
+                )
+                or (
+                    message_task_id == expected_task_id
+                    and expected_task_epoch is not None
+                    and message_task_epoch is not None
+                    and message_task_epoch != expected_task_epoch
+                )
+            )
+        ):
+            logger.warning(
+                "Ignoring stale FINISHED event: "
+                f"event_task={message_task_id} event_epoch={message_task_epoch} "
+                f"current_task={expected_task_id} current_epoch={expected_task_epoch}"
+            )
+            return
+
         event_agent_id = (
             message.sender.strip()
             if isinstance(message.sender, str) and message.sender.strip()
             else None
         )
 
-        def scoped_execution_state(context, agent_id=event_agent_id):
-            value = get_execution_state(context, agent_id=agent_id)
+        def scoped_execution_state(context):
+            # The task-scoped execution record owns its Agent identity. Event
+            # senders are often handlers or Tools and are not state namespaces.
+            value = get_execution_state(context)
             if not isinstance(value, dict):
                 return None
             if value.get("task_id") != expected_task_id:
@@ -318,7 +345,10 @@ class DefaultTaskHandler(TaskHandler):
                 execution_state = {**execution_state, "reason": "completion_not_confirmed", "recoverable": True}
             incomplete = semantic_status in {"incomplete", "budget_exhausted"}
             reason = execution_state.get("reason") if incomplete else None
-            if completion_blocked:
+            completion_blocked_is_primary = bool(
+                completion_blocked and semantic_status != "budget_exhausted"
+            )
+            if completion_blocked_is_primary:
                 semantic_status = "incomplete"
                 reason = "completion_contract_unsatisfied"
             completion_infrastructure_failure = self.runner.context.context_info.get(
@@ -327,12 +357,13 @@ class DefaultTaskHandler(TaskHandler):
             if not isinstance(completion_infrastructure_failure, dict):
                 completion_infrastructure_failure = {}
             completion_failure_is_infrastructure = bool(
-                completion_blocked
+                completion_blocked_is_primary
                 and completion_infrastructure_failure.get("failure_code")
             )
             unsuccessful = completion_blocked or incomplete
             status = (
-                TaskStatusValue.BUDGET_EXHAUSTED if semantic_status == "budget_exhausted"
+                TaskStatusValue.BUDGET_EXHAUSTED
+                if semantic_status == "budget_exhausted"
                 else TaskStatusValue.INCOMPLETE if unsuccessful
                 else "running" if message.headers.get("step_interrupt", False)
                 else "finished"
@@ -350,7 +381,7 @@ class DefaultTaskHandler(TaskHandler):
                                                       msg=(
                                                           "completion_contract_unsatisfied:"
                                                           + ",".join(completion.reason_codes)
-                                                          if completion_blocked else reason
+                                                          if completion_blocked_is_primary else reason
                                                       ),
                                                       failure_origin=(
                                                           TaskFailureOrigin.INFRASTRUCTURE.value
@@ -362,7 +393,7 @@ class DefaultTaskHandler(TaskHandler):
                                                           completion_infrastructure_failure.get("failure_code")
                                                           if completion_failure_is_infrastructure
                                                           else "completion_contract_unsatisfied"
-                                                          if completion_blocked else reason
+                                                          if completion_blocked_is_primary else reason
                                                       ),
                                                       error_type=(
                                                           completion_infrastructure_failure.get("error_type")

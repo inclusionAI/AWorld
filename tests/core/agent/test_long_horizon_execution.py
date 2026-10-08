@@ -175,6 +175,33 @@ def test_reasoning_phase_covers_every_execution_boundary(kwargs, expected):
     assert Agent._reasoning_phase_for_turn(**values) == expected
 
 
+@pytest.mark.parametrize(
+    ("values", "expected"),
+    [
+        (
+            {
+                "tool_free_finalization": False,
+                "independent_acceptance_review": False,
+                "model_owned_review": False,
+                "decision_boundary": None,
+            },
+            "ordinary",
+        ),
+        (
+            {
+                "tool_free_finalization": False,
+                "independent_acceptance_review": False,
+                "model_owned_review": True,
+                "decision_boundary": None,
+            },
+            "control",
+        ),
+    ],
+)
+def test_model_owned_review_is_not_solver_resolution_authority(values, expected):
+    assert Agent._execution_state_resolution_mode_for_turn(**values) == expected
+
+
 @pytest.mark.asyncio
 async def test_review_model_error_returns_original_candidate_as_successful_execution() -> (
     None

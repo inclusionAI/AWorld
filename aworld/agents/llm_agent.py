@@ -2329,6 +2329,23 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             return role_reasoning_phase
         return "execute"
 
+    @staticmethod
+    def _execution_state_resolution_mode_for_turn(
+        *,
+        decision_boundary: str | None,
+        independent_acceptance_review: bool,
+        model_owned_review: bool,
+        tool_free_finalization: bool,
+    ) -> str:
+        if (
+            decision_boundary is not None
+            or independent_acceptance_review
+            or model_owned_review
+            or tool_free_finalization
+        ):
+            return "control"
+        return "ordinary"
+
     def _context_compiler_mode_value(self) -> str:
         """Read optional compiler capability without assuming an LLMModel."""
         llm = getattr(self, "llm", None)
@@ -6329,13 +6346,12 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             # reviews, and bounded finalization prose are control-plane turns;
             # accepting one must not erase task blockers.
             kwargs["_execution_state_resolution_mode"] = (
-                "ordinary"
-                if (
-                    not tool_free_finalization
-                    and not independent_acceptance_review
-                    and execution_control_offer.decision_boundary is None
+                self._execution_state_resolution_mode_for_turn(
+                    tool_free_finalization=tool_free_finalization,
+                    independent_acceptance_review=independent_acceptance_review,
+                    model_owned_review=model_owned_review,
+                    decision_boundary=execution_control_offer.decision_boundary,
                 )
-                else "control"
             )
             if context_compiler_mode != "off":
                 try:
@@ -8602,7 +8618,11 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         if response.tool_calls:
             return None
         if not str(response.content or "").strip():
-            return "reasoning_only_response" if response.reasoning_content else None
+            return (
+                "reasoning_only_response"
+                if response.reasoning_content
+                else "empty_model_response"
+            )
         return None
 
     @staticmethod
@@ -9561,12 +9581,19 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                     )
                 return False
             completion_satisfied = False
+            completion_resolution_observation = None
             if not reason and getattr(self, "context", None) is not None:
                 from aworld.core.context.compiler import (
                     CompletionMode,
                     CompletionStatus,
                 )
+                from aworld.core.context.execution_state import (
+                    execution_resolution_observation,
+                )
 
+                completion_resolution_observation = execution_resolution_observation(
+                    self.context, self.id()
+                )
                 assessment = self.context.assess_completion_contract(
                     agent_claimed_finished=True
                 )
@@ -9614,6 +9641,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                         evidence_kind="completion_contract_satisfied",
                         status="running",
                         reason="completion_contract_satisfied",
+                        observation=completion_resolution_observation,
                     )
                 record_execution_state(
                     self.context,

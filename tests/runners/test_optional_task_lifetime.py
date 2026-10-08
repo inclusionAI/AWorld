@@ -498,6 +498,137 @@ async def test_finished_reconciles_runner_blocker_against_newer_stale_terminal_s
 
 
 @pytest.mark.asyncio
+async def test_completion_contract_failure_does_not_downgrade_budget_exhaustion():
+    from aworld.core.context.base import Context
+    from aworld.core.context.compiler import (
+        ArtifactRequirement,
+        CompletionContract,
+        CompletionMode,
+    )
+    from aworld.core.context.execution_state import record_execution_state
+    from aworld.core.event.base import Message, Constants, TopicType
+    from aworld.runners.handler.task import DefaultTaskHandler
+
+    task = Task(id="budget-contract")
+    context = Context(task_id=task.id)
+    context.configure_completion_contract(
+        CompletionContract(
+            required_artifacts=(
+                ArtifactRequirement(
+                    requirement_id="result", path="/missing/result.json"
+                ),
+            ),
+            immutable_inputs=(),
+            validation_commands=(),
+            max_evidence_age_seconds=None,
+            required_final_evidence=(),
+        ),
+        mode=CompletionMode.ENFORCE,
+    )
+    record_execution_state(
+        context,
+        "solver",
+        "budget_exhausted",
+        "agent_loop_budget_exhausted",
+    )
+    runner = SimpleNamespace(
+        task=task, context=context, start_time=0, stop=AsyncMock()
+    )
+    message = Message(
+        category=Constants.TASK,
+        topic=TopicType.FINISHED,
+        payload="bounded handoff",
+        sender="solver",
+        headers={"context": context},
+    )
+
+    response = [
+        event
+        async for event in DefaultTaskHandler(runner)._do_handle(message)
+    ][-1].payload
+
+    assert response.status == TaskStatusValue.BUDGET_EXHAUSTED
+    assert response.semantic_status == "budget_exhausted"
+    assert response.completion_reason == "agent_loop_budget_exhausted"
+    assert response.failure_code == "agent_loop_budget_exhausted"
+
+
+@pytest.mark.asyncio
+async def test_stale_epoch_finished_event_is_ignored_without_projection():
+    from aworld.core.context.base import Context
+    from aworld.core.context.execution_state import record_execution_state
+    from aworld.core.event.base import Message, Constants, TopicType
+    from aworld.runners.handler.task import DefaultTaskHandler
+
+    task = Task(id="epoch-finish")
+    runner_context = Context(task_id=task.id, task_epoch=2)
+    terminal_context = Context(task_id=task.id, task_epoch=1)
+    record_execution_state(
+        terminal_context,
+        "solver",
+        "incomplete",
+        "model_output_truncated",
+    )
+    runner = SimpleNamespace(
+        task=task,
+        context=runner_context,
+        start_time=0,
+        stop=AsyncMock(),
+    )
+    message = Message(
+        category=Constants.TASK,
+        topic=TopicType.FINISHED,
+        payload="stale finish",
+        sender="solver",
+        headers={"context": terminal_context},
+    )
+
+    events = [
+        event
+        async for event in DefaultTaskHandler(runner)._do_handle(message)
+    ]
+
+    assert events == []
+    runner.stop.assert_not_awaited()
+    assert runner_context.context_info.get("agent_execution_state") is None
+
+
+@pytest.mark.asyncio
+async def test_finished_discovers_state_owner_when_sender_is_handler_identity():
+    from aworld.core.context.base import Context
+    from aworld.core.context.execution_state import record_execution_state
+    from aworld.core.event.base import Message, Constants, TopicType
+    from aworld.runners.handler.task import DefaultTaskHandler
+
+    task = Task(id="sender-scope")
+    context = Context(task_id=task.id)
+    record_execution_state(
+        context,
+        "solver",
+        "incomplete",
+        "model_output_truncated",
+    )
+    runner = SimpleNamespace(
+        task=task, context=context, start_time=0, stop=AsyncMock()
+    )
+    message = Message(
+        category=Constants.TASK,
+        topic=TopicType.FINISHED,
+        payload="forwarded finish",
+        sender="_agent_handler",
+        headers={"context": context},
+    )
+
+    response = [
+        event
+        async for event in DefaultTaskHandler(runner)._do_handle(message)
+    ][-1].payload
+
+    assert response.success is False
+    assert response.completion_reason == "model_output_truncated"
+
+
+@pytest.mark.asyncio
 async def test_finished_event_classifies_validator_errors_as_infrastructure():
     from aworld.core.context.compiler import CompletionMode, CompletionStatus
     from aworld.core.event.base import Message, Constants, TopicType

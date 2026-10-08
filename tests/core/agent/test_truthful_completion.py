@@ -198,6 +198,80 @@ async def test_internal_control_provider_action_does_not_resolve_solver_blocker(
 
 
 @pytest.mark.asyncio
+async def test_whitespace_only_provider_response_is_incomplete(monkeypatch):
+    async def response(*args, **kwargs):
+        return ModelResponse(
+            id="whitespace",
+            model="fake",
+            content="  \n\t  ",
+            finish_reason="stop",
+        )
+
+    monkeypatch.setattr(module, "acall_llm_model", response)
+    agent = _agent(policy=GenerationBudgetPolicy(total_timeout_seconds=5), attempts=1)
+    message = _message("whitespace-response")
+
+    result = await agent.invoke_model(
+        [{"role": "user", "content": "finish"}], message=message, stream=False
+    )
+
+    assert result.message["aworld_incomplete_reason"] == "empty_model_response"
+    assert get_execution_state(message.context)["status"] == "incomplete"
+    agent.context = message.context
+    parsed = await LlmOutputParser().parse(result, agent_id=agent.id())
+    assert agent.is_agent_finished(result, parsed) is False
+
+
+def test_contract_resolution_uses_pre_assessment_watermark() -> None:
+    from aworld.core.agent.base import AgentResult
+    from aworld.core.common import ActionModel
+    from aworld.core.context.compiler import CompletionContract, CompletionMode
+    from aworld.core.context.execution_state import record_execution_state
+
+    agent = _agent(policy=GenerationBudgetPolicy(total_timeout_seconds=5), attempts=1)
+    context = _message("assessment-watermark").context
+    context.configure_completion_contract(
+        CompletionContract(
+            required_artifacts=(),
+            immutable_inputs=(),
+            validation_commands=(),
+            max_evidence_age_seconds=None,
+            required_final_evidence=(),
+        ),
+        mode=CompletionMode.ENFORCE,
+    )
+    original_assessment = context.assess_completion_contract
+
+    def assess(**kwargs):
+        record_execution_state(
+            context,
+            agent.id(),
+            "incomplete",
+            "completion_contract_unsatisfied",
+        )
+        return original_assessment(**kwargs)
+
+    context.assess_completion_contract = assess
+    agent.context = context
+    response = ModelResponse(
+        id="complete",
+        model="fake",
+        content="done",
+        finish_reason="stop",
+    )
+    parsed = AgentResult(
+        actions=[ActionModel(agent_name=agent.id(), policy_info="done")],
+        current_state=None,
+        is_call_tool=False,
+    )
+
+    assert agent.is_agent_finished(response, parsed) is True
+    state = get_execution_state(context)
+    assert state["status"] == "incomplete"
+    assert state["reason"] == "completion_contract_unsatisfied"
+
+
+@pytest.mark.asyncio
 async def test_reasoning_only_recovery_retains_a_bounded_working_tail(monkeypatch):
     calls = []
     reasoning = "discarded-prefix-" + "R" * 9000

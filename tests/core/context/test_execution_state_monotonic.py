@@ -3,6 +3,8 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 import json
 
+import pytest
+
 from aworld.core.context.base import Context
 from aworld.core.context.execution_state import (
     EXECUTION_STATE_SCHEMA,
@@ -64,6 +66,7 @@ def test_fresh_complete_provider_actions_resolve_only_model_response_blockers() 
             "incomplete",
             "model_output_truncated",
         )
+        observation = execution_resolution_observation(context, "solver")
 
         recovered = record_execution_resolution(
             context,
@@ -71,6 +74,7 @@ def test_fresh_complete_provider_actions_resolve_only_model_response_blockers() 
             evidence_kind=evidence_kind,
             status="running",
             reason="model_response_accepted",
+            observation=observation,
         )
 
         assert recovered["status"] == "running"
@@ -90,12 +94,14 @@ def test_budget_stop_is_sticky_without_positive_budget_resolution() -> None:
         "budget_exhausted",
         "long_horizon_generation_budget_exhausted",
     )
+    observation = execution_resolution_observation(context, "solver")
     record_execution_resolution(
         context,
         "solver",
         evidence_kind="complete_provider_final_action",
         status="succeeded",
         reason="agent_final_response",
+        observation=observation,
     )
     state = record_execution_state(context, "solver", "succeeded", "summary_fallback")
 
@@ -111,12 +117,14 @@ def test_uncertain_reviewer_requires_typed_critic_acceptance() -> None:
         "incomplete",
         "independent_acceptance_review_error",
     )
+    provider_observation = execution_resolution_observation(context, "solver")
     still_blocked = record_execution_resolution(
         context,
         "solver",
         evidence_kind="complete_provider_final_action",
         status="succeeded",
         reason="agent_final_response",
+        observation=provider_observation,
     )
     assert still_blocked["status"] == "incomplete"
 
@@ -126,6 +134,7 @@ def test_uncertain_reviewer_requires_typed_critic_acceptance() -> None:
         evidence_kind="accepted_critic",
         status="succeeded",
         reason="independent_acceptance_accepted",
+        observation=execution_resolution_observation(context, "solver"),
     )
     assert accepted["status"] == "succeeded"
     assert accepted["unresolved_blockers"] == []
@@ -194,6 +203,7 @@ def test_resolution_is_causal_and_does_not_clear_unobserved_tied_blocker() -> No
         evidence_kind="complete_provider_tool_action",
         status="running",
         reason="model_response_accepted",
+        observation=execution_resolution_observation(left, "solver"),
     )
     divergent = record_execution_state(
         right, "solver", "incomplete", "incomplete_tool_arguments"
@@ -243,6 +253,130 @@ def test_out_of_order_provider_response_cannot_clear_newer_blocker() -> None:
     assert recovered["status"] == "running"
 
 
+def test_newest_resolution_is_retained_after_bounded_ledger_fills() -> None:
+    context = _context("resolution-ledger")
+    state = None
+    stale_first_blocker = None
+    for index in range(24):
+        blocked = record_execution_state(
+            context,
+            "solver",
+            "incomplete",
+            f"delivery_candidate_missing_{index}",
+        )
+        if stale_first_blocker is None:
+            stale_first_blocker = json.loads(json.dumps(blocked))
+        observation = execution_resolution_observation(context, "solver")
+        state = record_execution_resolution(
+            context,
+            "solver",
+            evidence_kind="candidate_advanced",
+            reason="public_candidate_advanced",
+            observation=observation,
+        )
+        assert state["status"] == "running"
+
+    assert state is not None
+    assert len(state["resolution_evidence"]) <= 16
+    assert state["resolution_evidence"][-1]["revision"] == state["revision"]
+    assert state["resolution_watermarks"]
+    reconciled = reconcile_execution_states(
+        [state, stale_first_blocker],
+        task_id="resolution-ledger",
+        task_epoch=context.task_epoch,
+        agent_id="solver",
+    )
+    assert reconciled is not None
+    assert reconciled["status"] == "running"
+
+
+def test_same_category_blockers_remain_independent_until_each_is_resolved() -> None:
+    context = _context("same-category")
+    record_execution_state(context, "solver", "incomplete", "model_output_truncated")
+    record_execution_state(context, "solver", "incomplete", "incomplete_tool_arguments")
+    state = get_execution_state(context, agent_id="solver")
+    assert state is not None
+    assert len(state["unresolved_blockers"]) == 2
+    blocker_by_reason = {
+        blocker["reason"]: blocker for blocker in state["unresolved_blockers"]
+    }
+    assert (
+        blocker_by_reason["incomplete_tool_arguments"]["revision"]
+        > (blocker_by_reason["model_output_truncated"]["revision"])
+    )
+
+    partially_resolved = record_execution_resolution(
+        context,
+        "solver",
+        evidence_kind="complete_provider_tool_action",
+        reason="model_response_accepted",
+        observation=execution_resolution_observation(context, "solver"),
+    )
+
+    assert partially_resolved["status"] == "incomplete"
+    assert [
+        blocker["reason"] for blocker in partially_resolved["unresolved_blockers"]
+    ] == ["model_output_truncated"]
+
+
+def test_independent_tied_events_have_distinct_stable_blocker_ids() -> None:
+    left = _context("independent-events")
+    right = _context("independent-events")
+    left_state = record_execution_state(
+        left, "solver", "incomplete", "model_output_truncated"
+    )
+    right_state = record_execution_state(
+        right, "solver", "incomplete", "model_output_truncated"
+    )
+    left_id = left_state["unresolved_blockers"][0]["blocker_id"]
+    right_id = right_state["unresolved_blockers"][0]["blocker_id"]
+
+    assert left_state["revision"] == right_state["revision"]
+    assert left_id != right_id
+    transported_left = json.loads(json.dumps(left_state))
+    merged = reconcile_execution_states(
+        [left_state, transported_left, right_state],
+        task_id="independent-events",
+        task_epoch=left.task_epoch,
+        agent_id="solver",
+    )
+    assert merged is not None
+    assert {item["blocker_id"] for item in merged["unresolved_blockers"]} == {
+        left_id,
+        right_id,
+    }
+
+
+def test_candidate_evidence_does_not_resolve_unbound_external_dependency() -> None:
+    context = _context("bound-resolution")
+    record_execution_state(
+        context, "solver", "incomplete", "external_dependency_missing"
+    )
+    observation = execution_resolution_observation(context, "solver")
+
+    state = record_execution_resolution(
+        context,
+        "solver",
+        evidence_kind="candidate_advanced",
+        reason="public_candidate_advanced",
+        observation=observation,
+    )
+
+    assert state["status"] == "incomplete"
+    assert state["reason"] == "external_dependency_missing"
+
+
+def test_resolution_api_requires_action_start_observation() -> None:
+    context = _context("required-observation")
+    with pytest.raises(TypeError):
+        record_execution_resolution(
+            context,
+            "solver",
+            evidence_kind="candidate_advanced",
+            reason="public_candidate_advanced",
+        )
+
+
 def test_execution_state_is_task_scoped_and_migrates_v1() -> None:
     current = _context("current")
     current.context_info["agent_execution_state"] = {
@@ -288,6 +422,7 @@ def test_execution_state_is_bounded_json_and_does_not_retain_raw_reason() -> Non
             "solver",
             evidence_kind="candidate_advanced",
             reason="public_candidate_advanced",
+            observation=execution_resolution_observation(context, "solver"),
         )
     assert len(json.dumps(state, sort_keys=True)) < 8_000
     assert len(state["resolution_evidence"]) <= 16

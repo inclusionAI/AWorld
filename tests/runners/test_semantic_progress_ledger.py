@@ -52,7 +52,12 @@ from aworld.runners.post_tool_progress import (
 )
 
 
-def _record_failure(context: Context, index: int):
+def _record_failure(
+    context: Context,
+    index: int,
+    *,
+    resolution_observation: dict | None = None,
+):
     return record_semantic_tool_progress(
         context,
         tool_name="terminal",
@@ -73,6 +78,7 @@ def _record_failure(context: Context, index: int):
                 )
             ]
         ),
+        resolution_observation=resolution_observation,
     )
 
 
@@ -377,7 +383,11 @@ def test_public_deliverable_creation_is_one_durable_milestone(tmp_path):
     assert get_execution_state(context, agent_id="agent")["status"] == "incomplete"
 
     output.write_text("{}")
-    created = _record_failure(context, 1)
+    created = _record_failure(
+        context,
+        1,
+        resolution_observation=execution_resolution_observation(context, "agent"),
+    )
     assert created["completion_advanced"] is False
     assert created["public_delivery_count"] == 1
     assert created["public_delivery_advanced"] is True
@@ -903,6 +913,7 @@ def test_contract_bound_completion_advance_resets_durable_stagnation():
             observed_at=datetime.now(timezone.utc),
         )
     )
+    resolution_observation = execution_resolution_observation(context, "agent")
     advanced = record_semantic_tool_progress(
         context,
         tool_name="filesystem",
@@ -918,6 +929,7 @@ def test_contract_bound_completion_advance_resets_durable_stagnation():
         observation=Observation(
             action_result=[ActionResult(content="candidate written", success=True)]
         ),
+        resolution_observation=resolution_observation,
     )
 
     assert advanced["completion_advanced"] is True
