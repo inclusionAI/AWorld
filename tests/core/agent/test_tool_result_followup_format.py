@@ -23,7 +23,7 @@ from aworld.memory.models import (
     MemoryToolMessage,
     MessageMetadata,
 )
-from aworld.models.model_response import ModelResponse
+from aworld.models.model_response import Function, ModelResponse, ToolCall
 from aworld.runners.post_tool_progress import arm_post_tool_progress_watchdog
 from aworld.core.context.compiler import (
     ADAPTIVE_WORK_STATE_PREFIX,
@@ -42,7 +42,6 @@ def test_agent_defaults_to_two_llm_attempts():
             llm_api_key="fake-key",
         ),
     )
-
     assert agent.llm_max_attempts == 2
 
 
@@ -321,6 +320,96 @@ def test_current_tool_turn_does_not_duplicate_complete_memory_group():
         )
         == complete
     )
+
+
+@pytest.mark.asyncio
+async def test_execution_decision_memory_pair_replays_without_incomplete_warning(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    import aworld.memory.main as memory_main
+
+    agent = Agent(
+        name="Aworld",
+        conf=AgentConfig(
+            llm_provider="openai",
+            llm_model_name="fake-model",
+            llm_api_key="fake-key",
+            context_compiler={"checkpoint_policy": "explicit"},
+        ),
+    )
+    context = Context(
+        task_id="decision-causal-replay",
+        session=Session(session_id="session"),
+    )
+    context.set_task(
+        Task(
+            id="decision-causal-replay",
+            name="decision-causal-replay",
+            session_id="session",
+            input="continue",
+        )
+    )
+    metadata = MessageMetadata(
+        agent_id=agent.id(),
+        agent_name=agent.name(),
+        session_id="session",
+        task_id="decision-causal-replay",
+        user_id="user",
+    )
+    prior_memory_holder = dict(memory_main.MEMORY_HOLDER)
+    memory_main.MEMORY_HOLDER.clear()
+    try:
+        MemoryFactory.init(
+            custom_memory_store=FileSystemMemoryStore(memory_root=str(tmp_path)),
+            config=MemoryConfig(provider="aworld"),
+        )
+        await MemoryFactory.instance().add(
+            MemoryAIMessage(
+                content="",
+                tool_calls=[
+                    ToolCall(
+                        id="decision-call",
+                        function=Function(
+                            name="aworld__execution_decision",
+                            arguments="{}",
+                        ),
+                    )
+                ],
+                metadata=metadata,
+            ),
+            agent_memory_config=agent.memory_config,
+        )
+        await MemoryFactory.instance().add(
+            MemoryToolMessage(
+                tool_call_id="decision-call",
+                content='{"status":"acknowledged"}',
+                metadata=metadata,
+            ),
+            agent_memory_config=agent.memory_config,
+        )
+
+        async def skip_memory(*args, **kwargs):
+            return None
+
+        monkeypatch.setattr(agent, "_add_message_to_memory", skip_memory)
+        message = Message(
+            category=Constants.AGENT,
+            headers={"context": context},
+        )
+        replay = await agent.async_messages_transform(
+            observation=Observation(content="continue"),
+            message=message,
+        )
+
+        assert [item["role"] for item in replay[-2:]] == ["assistant", "tool"]
+        assert replay[-2]["tool_calls"][0]["id"] == "decision-call"
+        assert replay[-1]["tool_call_id"] == "decision-call"
+        assert "Skip incomplete tool-call turn" not in caplog.text
+    finally:
+        memory_main.MEMORY_HOLDER.clear()
+        memory_main.MEMORY_HOLDER.update(prior_memory_holder)
 
 
 def test_adaptive_current_tool_turn_carries_working_state_across_transport_copy():

@@ -85,6 +85,98 @@ def _message(task_id: str = "generation-budget") -> Message:
     )
 
 
+@pytest.mark.asyncio
+async def test_explicit_tool_free_request_reaches_provider_without_filtering(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent = _ToolAgent(
+        name="Aworld",
+        conf=AgentConfig(
+            llm_provider="openai",
+            llm_model_name="fake-model",
+            llm_api_key="fake-key",
+        ),
+        llm_max_attempts=1,
+    )
+    filter_calls = 0
+    provider_tools = object()
+
+    async def count_filter(context=None):
+        nonlocal filter_calls
+        filter_calls += 1
+        return await _ToolAgent._filter_tools(agent, context)
+
+    async def capture_provider(*args, **kwargs):
+        nonlocal provider_tools
+        provider_tools = kwargs.get("tools")
+        return ModelResponse(
+            id="tool-free",
+            model="fake-model",
+            content="final",
+            usage={"prompt_tokens": 1, "completion_tokens": 1},
+        )
+
+    monkeypatch.setattr(agent, "_filter_tools", count_filter)
+    monkeypatch.setattr(llm_agent_module, "acall_llm_model", capture_provider)
+    message = _message("explicit-tool-free")
+
+    response = await agent.invoke_model(
+        messages=[{"role": "user", "content": "finalize"}],
+        message=message,
+        prepared_tools=None,
+        stream=False,
+    )
+
+    assert response.content == "final"
+    assert filter_calls == 0
+    assert provider_tools is None
+
+
+@pytest.mark.asyncio
+async def test_missing_prepared_tools_loads_agent_catalog(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent = _ToolAgent(
+        name="Aworld",
+        conf=AgentConfig(
+            llm_provider="openai",
+            llm_model_name="fake-model",
+            llm_api_key="fake-key",
+        ),
+        llm_max_attempts=1,
+    )
+    filter_calls = 0
+    provider_tools = None
+
+    async def count_filter(context=None):
+        nonlocal filter_calls
+        filter_calls += 1
+        return await _ToolAgent._filter_tools(agent, context)
+
+    async def capture_provider(*args, **kwargs):
+        nonlocal provider_tools
+        provider_tools = kwargs.get("tools")
+        return ModelResponse(
+            id="catalog-loaded",
+            model="fake-model",
+            content="continue",
+            usage={"prompt_tokens": 1, "completion_tokens": 1},
+        )
+
+    monkeypatch.setattr(agent, "_filter_tools", count_filter)
+    monkeypatch.setattr(llm_agent_module, "acall_llm_model", capture_provider)
+
+    response = await agent.invoke_model(
+        messages=[{"role": "user", "content": "continue"}],
+        message=_message("missing-prepared-tools"),
+        stream=False,
+    )
+
+    assert response.content == "continue"
+    assert filter_calls == 1
+    assert provider_tools[0]["function"]["name"] == "workspace__write"
+
+
 def test_default_agent_uses_max_steps_without_generation_deadlines() -> None:
     agent = _ToolAgent(
         name="Aworld",

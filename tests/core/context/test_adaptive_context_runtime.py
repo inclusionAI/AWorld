@@ -3,10 +3,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from aworld.agents.llm_agent import LLMAgent
+from aworld.agents.llm_agent import Agent, LLMAgent
+from aworld.config.conf import AgentConfig
 from aworld.core.common import ActionModel, ActionResult, Observation
 from aworld.core.context.amni import ApplicationContext
 from aworld.core.context.base import Context
+from aworld.core.context.session import Session
 from aworld.core.context.compiler import (
     ADAPTIVE_WORK_STATE_KEY,
     ADAPTIVE_WORK_STATE_MAX_TOKENS,
@@ -24,6 +26,7 @@ from aworld.core.context.compiler import (
     attach_adaptive_work_state,
     compact_duplicate_tool_results,
     compact_message_history,
+    advance_adaptive_continuation_sequence,
     evaluate_adaptive_checkpoint,
     restore_adaptive_continuation,
     semantic_fingerprint,
@@ -34,6 +37,11 @@ from aworld.runners.post_tool_progress import (
     record_semantic_tool_progress,
     semantic_progress_for_agent,
 )
+from aworld.core.event.base import Constants, Message
+from aworld.core.memory import MemoryConfig
+from aworld.core.task import Task
+from aworld.memory.main import MemoryFactory
+from aworld.memory.models import MemoryAIMessage, MemoryHumanMessage, MessageMetadata
 
 
 @pytest.fixture(autouse=True)
@@ -965,11 +973,191 @@ def test_adaptive_continuation_preserves_committed_prefix_with_new_occurrences()
     restored = restore_adaptive_continuation(
         current,
         previous,
+        continuation_delta=[new_system, new_result],
         keep_recent=None,
     )
 
     assert restored[: len(previous)] == previous
     assert restored[len(previous) :] == [new_system, new_result]
+
+
+def test_adaptive_continuation_uses_sequence_high_water_for_duplicate_occurrence():
+    raw_at_checkpoint = [
+        {"role": "system", "content": "rules"},
+        {"role": "user", "content": "task"},
+        {"role": "assistant", "content": "same observation"},
+        {"role": "assistant", "content": "old work"},
+    ]
+    capsule = [
+        raw_at_checkpoint[0],
+        raw_at_checkpoint[1],
+        {"role": "user", "content": "AWorld compacted earlier messages."},
+        raw_at_checkpoint[-1],
+    ]
+    _, sequence_state = advance_adaptive_continuation_sequence(
+        raw_at_checkpoint,
+        None,
+    )
+    raw_after_checkpoint = [
+        *raw_at_checkpoint,
+        # This is a new occurrence, even though its bytes equal an old message.
+        {"role": "assistant", "content": "same observation"},
+        {"role": "tool", "tool_call_id": "new-call", "content": "new result"},
+    ]
+
+    delta, next_state = advance_adaptive_continuation_sequence(
+        raw_after_checkpoint,
+        sequence_state,
+    )
+    restored = restore_adaptive_continuation(
+        raw_after_checkpoint,
+        capsule,
+        continuation_delta=delta,
+        keep_recent=None,
+    )
+
+    assert delta == raw_after_checkpoint[-2:]
+    assert restored == [*capsule, *raw_after_checkpoint[-2:]]
+    assert restored.count({"role": "assistant", "content": "same observation"}) == 1
+    assert next_state["source_message_high_water"] == len(raw_after_checkpoint)
+    assert len(next_state["consumed_tail_fingerprints"]) <= 32
+
+
+def test_adaptive_sequence_tail_survives_sliding_memory_window():
+    previous_raw = [
+        {"role": "assistant", "content": f"observation {index}"}
+        for index in range(100)
+    ]
+    _, previous_state = advance_adaptive_continuation_sequence(previous_raw, None)
+    appended_duplicate = dict(previous_raw[42])
+    # Mirror get_last_n(history_rounds): the oldest occurrence falls out while
+    # the newest occurrence may have byte-identical content.
+    current_window = [*previous_raw[1:], appended_duplicate]
+
+    delta, next_state = advance_adaptive_continuation_sequence(
+        current_window,
+        previous_state,
+    )
+
+    assert delta == [appended_duplicate]
+    assert next_state["source_message_high_water"] == 100
+    assert len(next_state["consumed_tail_fingerprints"]) == 32
+
+
+@pytest.mark.asyncio
+async def test_agent_memory_replay_appends_only_post_checkpoint_occurrences(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import aworld.memory.main as memory_main
+
+    agent = Agent(
+        name="Aworld",
+        conf=AgentConfig(
+            llm_provider="openai",
+            llm_model_name="fake-model",
+            llm_api_key="fake-key",
+        ),
+    )
+    agent.llm._context_checkpoint_policy = "adaptive"
+    agent.llm._context_input_budget = 100_000
+    context = Context(
+        task_id="adaptive-memory-sequence",
+        session=Session(session_id="adaptive-memory-session"),
+    )
+    context.set_task(
+        Task(
+            id="adaptive-memory-sequence",
+            name="adaptive-memory-sequence",
+            session_id="adaptive-memory-session",
+            input="task",
+        )
+    )
+    metadata = MessageMetadata(
+        agent_id=agent.id(),
+        agent_name=agent.name(),
+        session_id="adaptive-memory-session",
+        task_id="adaptive-memory-sequence",
+        user_id="user",
+    )
+    prior_memory_holder = dict(memory_main.MEMORY_HOLDER)
+    memory_main.MEMORY_HOLDER.clear()
+    try:
+        MemoryFactory.init(
+            custom_memory_store=memory_main.InMemoryMemoryStore(),
+            config=MemoryConfig(provider="aworld"),
+        )
+        await MemoryFactory.instance().add(
+            MemoryHumanMessage(content="task", metadata=metadata),
+            agent_memory_config=agent.memory_config,
+        )
+        for index in range(12):
+            await MemoryFactory.instance().add(
+                MemoryAIMessage(content=f"old {index}", metadata=metadata),
+                agent_memory_config=agent.memory_config,
+            )
+
+        async def skip_memory(*args, **kwargs):
+            return None
+
+        async def snapshot(**kwargs):
+            context.advance_context_lifecycle("checkpoint")
+            return SimpleNamespace(id="memory-sequence-checkpoint")
+
+        monkeypatch.setattr(agent, "_add_message_to_memory", skip_memory)
+        monkeypatch.setattr(context, "snapshot", snapshot)
+        message = Message(category=Constants.AGENT, headers={"context": context})
+        raw = await agent.async_messages_transform(
+            observation=Observation(content="task"),
+            message=message,
+        )
+        context.context_info["context_semantic_progress"] = {
+            agent.id(): {"repetition_count": 3, "low_information_gain_count": 0}
+        }
+        capsule = await agent._apply_adaptive_context_policy(
+            context=context,
+            messages=raw,
+            context_compiler_mode="enforce",
+        )
+        assert not any(item.get("content") == "old 0" for item in capsule)
+
+        await MemoryFactory.instance().add(
+            MemoryAIMessage(content="old 0", metadata=metadata),
+            agent_memory_config=agent.memory_config,
+        )
+        await MemoryFactory.instance().add(
+            MemoryHumanMessage(
+                content="fresh delta",
+                metadata=metadata,
+                memory_type="message",
+            ),
+            agent_memory_config=agent.memory_config,
+        )
+        replayed_raw = await agent.async_messages_transform(
+            observation=Observation(content="task"),
+            message=message,
+        )
+        context.context_info["context_semantic_progress"] = {
+            agent.id(): {"repetition_count": 0, "low_information_gain_count": 0}
+        }
+        continued = await agent._apply_adaptive_context_policy(
+            context=context,
+            messages=replayed_raw,
+            context_compiler_mode="enforce",
+        )
+
+        assert continued[: len(capsule)] == capsule
+        assert [item.get("content") for item in continued[-2:]] == [
+            "old 0",
+            "fresh delta",
+        ]
+        assert not any(item.get("content") == "old 1" for item in continued)
+        state = context.context_info[f"adaptive_context_state:{agent.id()}"]
+        assert state["continuation_sequence"]["source_message_high_water"] == len(
+            replayed_raw
+        )
+    finally:
+        memory_main.MEMORY_HOLDER.clear()
+        memory_main.MEMORY_HOLDER.update(prior_memory_holder)
 
 
 @pytest.mark.asyncio

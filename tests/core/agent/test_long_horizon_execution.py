@@ -10,7 +10,7 @@ import aworld.agents.llm_agent as llm_agent_module
 from aworld.agents.llm_agent import Agent, _LongHorizonReviewContinuation
 from aworld.config.conf import AgentConfig
 from aworld.core.agent.base import AgentResult
-from aworld.core.common import ActionModel, Observation
+from aworld.core.common import ActionModel, ActionResult, Observation
 from aworld.core.context.base import Context
 from aworld.core.context.compiler import (
     CompletionContract,
@@ -1990,10 +1990,11 @@ async def test_production_policy_path_records_one_decision_then_exposes_real_too
 @pytest.mark.asyncio
 async def test_initial_short_submit_current_completes_tool_free() -> None:
     requests = []
+    memory_writes = []
 
     class SubmitCurrentAgent(Agent):
         async def _add_message_to_memory(self, *args, **kwargs):
-            return None
+            memory_writes.append(kwargs)
 
         async def build_llm_input(self, observation, info=None, message=None, **kwargs):
             return [{"role": "user", "content": str(observation.content or "")}]
@@ -2095,6 +2096,22 @@ async def test_initial_short_submit_current_completes_tool_free() -> None:
     assert requests[1]["prepared_tools"] is None
     assert result[0].policy_info == "ready answer"
     assert result[0].tool_name is None
+    decision_ai = next(
+        write
+        for write in memory_writes
+        if getattr(write["payload"], "id", None) == "submit-current-decision"
+    )
+    decision_result = next(
+        write
+        for write in memory_writes
+        if isinstance(write["payload"], ActionResult)
+        and write["payload"].tool_call_id == "call-submit-current"
+    )
+    assert decision_ai["message_type"].value == "AI"
+    assert decision_ai["skip_summary"] is True
+    assert decision_result["message_type"].value == "TOOL"
+    assert decision_result["payload"].success is True
+    assert "acknowledged" in str(decision_result["payload"].content)
     state = ExecutionProtocolStore(context, agent.id(), policy).load()
     assert state.finalization_entered is True
     assert state.model_plan_update.delivery_intent.value == "submit_current"

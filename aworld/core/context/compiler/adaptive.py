@@ -273,6 +273,7 @@ def semantic_result_fingerprint(value: Any) -> str:
 
 _DUPLICATE_TOOL_RESULT_MIN_CHARS = 512
 _DUPLICATE_TOOL_RESULT_MARKER = "AWorld cached duplicate tool observation"
+_ADAPTIVE_CONTINUATION_TOMBSTONE_LIMIT = 32
 
 
 def compact_duplicate_tool_results(
@@ -445,87 +446,112 @@ def compact_message_history(
     return compacted, receipt
 
 
+def advance_adaptive_continuation_sequence(
+    messages: Sequence[Mapping[str, Any]],
+    previous_state: Mapping[str, Any] | None,
+    *,
+    tombstone_limit: int = _ADAPTIVE_CONTINUATION_TOMBSTONE_LIMIT,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Return only occurrences after the last consumed raw-Memory sequence.
+
+    Adaptive compaction retains a bounded provider capsule while Memory remains
+    append-only and may replay the complete pre-checkpoint history on every
+    turn.  Content set-difference is not a sequence cursor: it resurrects
+    compacted messages and drops a legitimate new occurrence when its bytes
+    equal an old one.  This cursor instead stores a numeric high-water mark, a
+    digest of the consumed prefix, and a bounded ordered fingerprint tail.
+
+    The tail acts as a tombstone when a transport copy changes the amount of
+    visible prefix.  If neither the exact high-water prefix nor its ordered tail
+    can be found, the function fails closed and advances nothing; it never
+    guesses that stale history is new.  State is bounded and JSON serializable.
+    """
+    if (
+        isinstance(tombstone_limit, bool)
+        or not isinstance(tombstone_limit, int)
+        or tombstone_limit < 1
+    ):
+        raise ValueError("tombstone_limit must be a positive integer")
+
+    current = [dict(message) for message in messages]
+    fingerprints = [semantic_fingerprint(message) for message in current]
+
+    def sequence_hash(values: Sequence[str]) -> str:
+        return canonical_json_hash({"message_fingerprints": list(values)})
+
+    def build_state() -> dict[str, Any]:
+        return {
+            "schema_version": "aworld.context.adaptive-continuation-sequence/v1",
+            "source_message_high_water": len(current),
+            "source_prefix_hash": sequence_hash(fingerprints),
+            "consumed_tail_fingerprints": fingerprints[-tombstone_limit:],
+        }
+
+    if not isinstance(previous_state, Mapping):
+        return current, build_state()
+
+    raw_high_water = previous_state.get("source_message_high_water")
+    high_water = (
+        raw_high_water
+        if isinstance(raw_high_water, int)
+        and not isinstance(raw_high_water, bool)
+        and raw_high_water >= 0
+        else None
+    )
+    prior_prefix_hash = previous_state.get("source_prefix_hash")
+    raw_tail = previous_state.get("consumed_tail_fingerprints")
+    tail = (
+        [value for value in raw_tail if isinstance(value, str) and value]
+        if isinstance(raw_tail, list)
+        else []
+    )[-tombstone_limit:]
+
+    delta_start: int | None = None
+    if high_water is not None and high_water <= len(current):
+        prefix_hash = sequence_hash(fingerprints[:high_water])
+        if isinstance(prior_prefix_hash, str) and prefix_hash == prior_prefix_hash:
+            delta_start = high_water
+
+    if delta_start is None and tail and len(tail) <= len(fingerprints):
+        for start in range(len(fingerprints) - len(tail), -1, -1):
+            if fingerprints[start : start + len(tail)] == tail:
+                delta_start = start + len(tail)
+                break
+
+    if delta_start is None:
+        # Preserve the last trusted cursor. A compacted capsule or a partial
+        # stale replay is not evidence that every visible message is new.
+        return [], dict(previous_state)
+    return current[delta_start:], build_state()
+
+
 def restore_adaptive_continuation(
     messages: Sequence[Mapping[str, Any]],
     capsule: Sequence[Mapping[str, Any]] | None,
     *,
+    continuation_delta: Sequence[Mapping[str, Any]] | None = None,
     keep_recent: int | None = 8,
 ) -> list[dict[str, Any]]:
     """Merge a prior verified continuation capsule with newly replayed history.
 
     Event-driven Memory/Amni persistence may be observed through different
-    Context transport copies.  A compacted request must not forget already
-    verified work merely because one copy temporarily exposes only the stable
-    prefix.  The capsule is runtime-only; this function never adds its content
-    to receipts or checkpoint metadata.
+    Context transport copies. ``continuation_delta`` must come from
+    :func:`advance_adaptive_continuation_sequence`; raw replay is not merged by
+    content identity. The capsule is runtime-only and this function never adds
+    its content to receipts or checkpoint metadata.
     """
     current = [dict(message) for message in messages]
     previous = [dict(message) for message in (capsule or ())]
     if not previous:
         return current
 
-    def identity(message: Mapping[str, Any]) -> tuple[Any, ...]:
-        role = str(message.get("role") or "")
-        if role == "tool" and message.get("tool_call_id"):
-            return role, str(message.get("tool_call_id"))
-        tool_calls = message.get("tool_calls")
-        if role == "assistant" and isinstance(tool_calls, list) and tool_calls:
-            call_ids = tuple(
-                str(call.get("id"))
-                for call in tool_calls
-                if isinstance(call, Mapping) and call.get("id")
-            )
-            if call_ids:
-                return role, "tool_calls", call_ids
-        return role, semantic_fingerprint(message)
-
+    # A caller without a trusted sequence delta cannot distinguish stale replay
+    # from a new byte-identical occurrence. Preserve the capsule and fail
+    # closed instead of falling back to content set-difference.
+    delta = [dict(message) for message in (continuation_delta or ())]
+    merged = [*previous, *delta]
     if keep_recent is None:
-        # The capsule is the exact provider prefix already committed for this
-        # epoch. Preserve it byte-for-byte and append only unseen replay
-        # occurrences. Rebuilding a fresh system/task prefix here would turn
-        # an append-only Amni event stream back into a mutable wire prompt.
-        merged = [dict(message) for message in previous]
-        seen = {identity(message) for message in previous}
-        for message in current:
-            message_identity = identity(message)
-            if message_identity in seen:
-                continue
-            seen.add(message_identity)
-            merged.append(dict(message))
         return merged
-
-    def split_prefix(
-        values: list[dict[str, Any]],
-    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-        first_user = next(
-            (index for index, item in enumerate(values) if item.get("role") == "user"),
-            None,
-        )
-        prefix_indexes = {
-            index
-            for index, item in enumerate(values)
-            if item.get("role") == "system"
-        }
-        if first_user is not None:
-            prefix_indexes.add(first_user)
-        return (
-            [item for index, item in enumerate(values) if index in prefix_indexes],
-            [item for index, item in enumerate(values) if index not in prefix_indexes],
-        )
-
-    current_prefix, current_body = split_prefix(current)
-    _, previous_body = split_prefix(previous)
-
-    body: list[dict[str, Any]] = []
-    seen: set[tuple[Any, ...]] = set()
-    for message in [*previous_body, *current_body]:
-        message_identity = identity(message)
-        if message_identity in seen:
-            continue
-        seen.add(message_identity)
-        body.append(message)
-
-    merged = [*current_prefix, *body]
     compacted, _ = compact_message_history(merged, keep_recent=keep_recent)
     return compacted
 
@@ -537,6 +563,7 @@ __all__ = [
     "AdaptiveEscalationDecision",
     "AdaptiveEscalationStage",
     "adaptive_escalation_message",
+    "advance_adaptive_continuation_sequence",
     "advance_adaptive_escalation",
     "compact_duplicate_tool_results",
     "compact_message_history",

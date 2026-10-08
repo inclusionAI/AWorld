@@ -181,6 +181,7 @@ _ACCEPTANCE_PROBE_PARAM = "__aworld_acceptance_probe"
 _REVIEW_DECISION_PARAM = "__aworld_review_decision"
 INDEPENDENT_ACCEPTANCE_CRITIC_ENV = "AWORLD_INDEPENDENT_ACCEPTANCE_CRITIC"
 SEMANTIC_PROGRESS_LEDGER_ENV = "AWORLD_SEMANTIC_PROGRESS_LEDGER"
+_PREPARED_TOOLS_UNSET = object()
 
 
 @dataclass(frozen=True, slots=True)
@@ -3580,6 +3581,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             AdaptiveCheckpointPolicy,
             AdaptiveEscalationStage,
             adaptive_escalation_message,
+            advance_adaptive_continuation_sequence,
             advance_adaptive_escalation,
             attach_adaptive_work_state,
             compact_duplicate_tool_results,
@@ -3622,6 +3624,25 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 adaptive_state = None
         if not isinstance(adaptive_state, dict):
             adaptive_state = {}
+
+        source_messages = [dict(message) for message in messages]
+        previous_continuation_sequence = adaptive_state.get(
+            "continuation_sequence"
+        )
+        continuation_delta, next_continuation_sequence = (
+            advance_adaptive_continuation_sequence(
+                source_messages,
+                previous_continuation_sequence,
+            )
+        )
+        if (
+            adaptive_state.get("compaction_active") is True
+            and not isinstance(previous_continuation_sequence, Mapping)
+        ):
+            # Upgrade a pre-sequence checkpoint without interpreting its full
+            # stale Memory replay as a new append. The next occurrence advances
+            # from the durable cursor established by this request.
+            continuation_delta = []
 
         def save_adaptive_state() -> None:
             state_context.context_info[state_key] = adaptive_state
@@ -3679,8 +3700,9 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
 
         if adaptive_state.get("compaction_active") is True:
             messages = restore_adaptive_continuation(
-                messages,
+                source_messages,
                 continuation_capsule,
+                continuation_delta=continuation_delta,
                 # The previous capsule is the committed prefix for this
                 # checkpoint epoch.  Merge only newly replayed occurrences;
                 # never trim or replace it between explicit checkpoints.
@@ -3737,7 +3759,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         if escalation.progress_reset:
             adaptive_state.update(
                 {
-                    "schema_version": "aworld.context.adaptive-state/v2",
+                    "schema_version": "aworld.context.adaptive-state/v3",
                     "no_progress_checkpoint_count": 0,
                     "escalation_stage": AdaptiveEscalationStage.NONE.value,
                     "goal_progress_reset_count": adaptive_state_count(
@@ -3757,6 +3779,9 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 adaptive_state["last_effective_prompt_tokens"] = effective_prompt_tokens
                 adaptive_state["last_estimated_saved_prompt_tokens"] = max(
                     0, prompt_tokens - effective_prompt_tokens
+                )
+                adaptive_state["continuation_sequence"] = (
+                    next_continuation_sequence
                 )
                 save_continuation_capsule(messages)
                 save_adaptive_state()
@@ -3806,7 +3831,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         }
         adaptive_state.update(
             {
-                "schema_version": "aworld.context.adaptive-state/v2",
+                "schema_version": "aworld.context.adaptive-state/v3",
                 "last_checkpoint_turn": turn_coordinate,
                 # The checkpoint cannot contain its own repository id.  Mark
                 # the prepared state explicitly, persist all continuity data,
@@ -3818,6 +3843,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 "last_input_budget": input_budget,
                 "last_compaction_receipt": receipt,
                 "compaction_active": receipt is not None,
+                "continuation_sequence": next_continuation_sequence,
                 "work_state_revision": (
                     int(adaptive_work_state.get("revision", 0) or 0)
                     if isinstance(adaptive_work_state, dict)
@@ -3938,6 +3964,63 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             sanitized.message["content"] = content
             sanitized.message.pop("tool_calls", None)
         return sanitized
+
+    async def _close_execution_decision_memory_turn(
+        self,
+        *,
+        response: ModelResponse,
+        context: Context,
+        boundary: str,
+        outcome: str | None,
+    ) -> None:
+        """Persist compact synthetic results for framework-consumed Tool calls.
+
+        The provider emits ``aworld__execution_decision`` as a Tool call, but
+        the framework consumes it internally instead of dispatching a user
+        Tool. If the assistant call is retained in ordinary Memory, provider
+        replay still requires a same-ID Tool result. Keep that causal pair
+        complete without copying plan payloads into the solver transcript.
+        """
+        status = outcome or "unavailable"
+        receipt = json.dumps(
+            {
+                "schema_version": "aworld.execution-decision-result/v1",
+                "boundary": boundary,
+                "status": status,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        for tool_call in response.tool_calls or ():
+            call_id = (
+                tool_call.get("id")
+                if isinstance(tool_call, Mapping)
+                else getattr(tool_call, "id", None)
+            )
+            if not isinstance(call_id, str) or not call_id:
+                continue
+            function = (
+                tool_call.get("function")
+                if isinstance(tool_call, Mapping)
+                else getattr(tool_call, "function", None)
+            )
+            function_name = (
+                function.get("name")
+                if isinstance(function, Mapping)
+                else getattr(function, "name", None)
+            )
+            await self._add_message_to_memory(
+                payload=ActionResult(
+                    content=receipt,
+                    success=status == "acknowledged",
+                    tool_call_id=call_id,
+                    tool_name="aworld",
+                    action_name=str(function_name or "execution_decision"),
+                ),
+                message_type=MemoryType.TOOL,
+                context=context,
+            )
 
     @staticmethod
     def _remaining_before_completion_reserve(
@@ -5922,6 +6005,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         validation_feedback = None
         long_horizon_review_feedback = None
         execution_decision_feedback = None
+        execution_decision_outcome = None
         critic_probe_planned = False
         critic_decision_handled = False
         review_repair_requested = False
@@ -6582,8 +6666,18 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                         payload=llm_response,
                         message_type=MemoryType.AI,
                         context=message.context,
-                        skip_summary=candidate_finished and not validation_feedback,
+                        skip_summary=(
+                            execution_control_offer.decision_boundary is not None
+                            or (candidate_finished and not validation_feedback)
+                        ),
                     )
+                    if execution_control_offer.decision_boundary is not None:
+                        await self._close_execution_decision_memory_turn(
+                            response=llm_response,
+                            context=message.context,
+                            boundary=execution_control_offer.decision_boundary,
+                            outcome=execution_decision_outcome,
+                        )
 
                     try:
                         events = []
@@ -8465,8 +8559,8 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
 
         # Prepare parameters once before retry loop
         try:
-            tools = kwargs.pop("prepared_tools", None)
-            if tools is None:
+            tools = kwargs.pop("prepared_tools", _PREPARED_TOOLS_UNSET)
+            if tools is _PREPARED_TOOLS_UNSET:
                 tools = await self._await_generation_operation(
                     self._filter_tools(message.context),
                     controller=controller,
