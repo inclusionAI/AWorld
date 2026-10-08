@@ -2036,7 +2036,7 @@ async def test_initial_short_submit_current_completes_tool_free() -> None:
                         "completion_assessment": "candidate_ready",
                         "delivery_intent": "submit_current",
                         "delivery_rationale": "no Tool call is needed",
-                        "assumptions": [],
+                        "assumptions": ["private-plan-payload-must-not-enter-memory"],
                         "retired_approaches": [],
                         "evidence_refs": [],
                         "selected_candidate_id": None,
@@ -2096,22 +2096,12 @@ async def test_initial_short_submit_current_completes_tool_free() -> None:
     assert requests[1]["prepared_tools"] is None
     assert result[0].policy_info == "ready answer"
     assert result[0].tool_name is None
-    decision_ai = next(
-        write
+    assert all(
+        getattr(write["payload"], "id", None) != "submit-current-decision"
         for write in memory_writes
-        if getattr(write["payload"], "id", None) == "submit-current-decision"
     )
-    decision_result = next(
-        write
-        for write in memory_writes
-        if isinstance(write["payload"], ActionResult)
-        and write["payload"].tool_call_id == "call-submit-current"
-    )
-    assert decision_ai["message_type"].value == "AI"
-    assert decision_ai["skip_summary"] is True
-    assert decision_result["message_type"].value == "TOOL"
-    assert decision_result["payload"].success is True
-    assert "acknowledged" in str(decision_result["payload"].content)
+    assert not any(isinstance(write["payload"], ActionResult) for write in memory_writes)
+    assert "private-plan-payload-must-not-enter-memory" not in repr(memory_writes)
     state = ExecutionProtocolStore(context, agent.id(), policy).load()
     assert state.finalization_entered is True
     assert state.model_plan_update.delivery_intent.value == "submit_current"
@@ -2267,10 +2257,11 @@ async def test_decision_contract_pins_a_progressively_filtered_custom_tool() -> 
 async def test_malformed_decision_cannot_loop_past_one_retry() -> None:
     calls = 0
     tool_catalogs = []
+    memory_writes = []
 
     class InvalidDecisionAgent(Agent):
         async def _add_message_to_memory(self, *args, **kwargs):
-            return None
+            memory_writes.append(kwargs)
 
         async def build_llm_input(self, observation, info=None, message=None, **kwargs):
             return [{"role": "user", "content": str(observation.content or "")}]
@@ -2294,7 +2285,10 @@ async def test_malformed_decision_cannot_loop_past_one_retry() -> None:
             nonlocal calls
             calls += 1
             tool_catalogs.append(kwargs["prepared_tools"])
-            if calls <= 2:
+            if calls == 1:
+                name = "terminal__execute"
+                arguments = {"command": "must-not-run"}
+            elif calls == 2:
                 name = "aworld__execution_decision"
                 arguments = {"__aworld_plan_update": {"decision": "continue"}}
             else:
@@ -2343,6 +2337,12 @@ async def test_malformed_decision_cannot_loop_past_one_retry() -> None:
     assert telemetry["initial_decision_status"] == "fail_open_unknown"
     assert telemetry["initial_decision_attempt_count"] == 2
     assert telemetry.get("model_horizon") is None
+    assert all(
+        getattr(write["payload"], "id", None)
+        not in {"invalid-decision-1", "invalid-decision-2"}
+        for write in memory_writes
+    )
+    assert not any(isinstance(write["payload"], ActionResult) for write in memory_writes)
 
 
 @pytest.mark.parametrize(

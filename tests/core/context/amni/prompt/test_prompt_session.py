@@ -110,26 +110,7 @@ def test_prompt_session_restores_solver_lane_after_control_catalog_call():
         decision.state,
         [
             *solver_messages,
-            {
-                "role": "assistant",
-                "content": "",
-                "tool_calls": [
-                    {
-                        "id": "decision-call",
-                        "type": "function",
-                        "function": {
-                            "name": "aworld__execution_decision",
-                            "arguments": "{}",
-                        },
-                    }
-                ],
-            },
-            {
-                "role": "tool",
-                "tool_call_id": "decision-call",
-                "content": '{"status":"acknowledged"}',
-            },
-            {"role": "user", "content": "continue"},
+            {"role": "user", "content": "bounded decision feedback"},
         ],
     )
 
@@ -139,7 +120,7 @@ def test_prompt_session_restores_solver_lane_after_control_catalog_call():
     assert resumed.receipt["lane_restored"] is True
     assert resumed.receipt["epoch_id"] == solver.receipt["epoch_id"]
     assert resumed.receipt["epoch_rollover"] is False
-    assert resumed.receipt["appended_message_count"] == 3
+    assert resumed.receipt["appended_message_count"] == 1
     assert resumed.messages[: len(solver.messages)] == solver.messages
     assert resumed.state["total_request_count"] == 3
     assert resumed.state["lane_total_request_count"] == 2

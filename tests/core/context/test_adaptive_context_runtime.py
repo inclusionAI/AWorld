@@ -24,6 +24,7 @@ from aworld.core.context.compiler import (
     advance_adaptive_escalation,
     advance_adaptive_work_state,
     attach_adaptive_work_state,
+    canonical_json_hash,
     compact_duplicate_tool_results,
     compact_message_history,
     advance_adaptive_continuation_sequence,
@@ -997,6 +998,8 @@ def test_adaptive_continuation_uses_sequence_high_water_for_duplicate_occurrence
     _, sequence_state = advance_adaptive_continuation_sequence(
         raw_at_checkpoint,
         None,
+        occurrence_ids=[f"memory-{index}" for index in range(4)],
+        scope={"task_id": "task", "task_epoch": 0},
     )
     raw_after_checkpoint = [
         *raw_at_checkpoint,
@@ -1008,6 +1011,8 @@ def test_adaptive_continuation_uses_sequence_high_water_for_duplicate_occurrence
     delta, next_state = advance_adaptive_continuation_sequence(
         raw_after_checkpoint,
         sequence_state,
+        occurrence_ids=[f"memory-{index}" for index in range(6)],
+        scope={"task_id": "task", "task_epoch": 0},
     )
     restored = restore_adaptive_continuation(
         raw_after_checkpoint,
@@ -1019,16 +1024,23 @@ def test_adaptive_continuation_uses_sequence_high_water_for_duplicate_occurrence
     assert delta == raw_after_checkpoint[-2:]
     assert restored == [*capsule, *raw_after_checkpoint[-2:]]
     assert restored.count({"role": "assistant", "content": "same observation"}) == 1
-    assert next_state["source_message_high_water"] == len(raw_after_checkpoint)
-    assert len(next_state["consumed_tail_fingerprints"]) <= 32
+    assert next_state["high_water_occurrence_id"] == "memory-5"
+    assert len(next_state["recent_occurrence_ids"]) <= 32
 
 
 def test_adaptive_sequence_tail_survives_sliding_memory_window():
     previous_raw = [
-        {"role": "assistant", "content": f"observation {index}"}
-        for index in range(100)
+        {"role": "assistant", "content": "byte-identical observation"}
+        for _ in range(100)
     ]
-    _, previous_state = advance_adaptive_continuation_sequence(previous_raw, None)
+    previous_ids = [f"memory-{index}" for index in range(100)]
+    scope = {"task_id": "task", "task_epoch": 0}
+    _, previous_state = advance_adaptive_continuation_sequence(
+        previous_raw,
+        None,
+        occurrence_ids=previous_ids,
+        scope=scope,
+    )
     appended_duplicate = dict(previous_raw[42])
     # Mirror get_last_n(history_rounds): the oldest occurrence falls out while
     # the newest occurrence may have byte-identical content.
@@ -1037,11 +1049,122 @@ def test_adaptive_sequence_tail_survives_sliding_memory_window():
     delta, next_state = advance_adaptive_continuation_sequence(
         current_window,
         previous_state,
+        occurrence_ids=[*previous_ids[1:], "memory-100"],
+        scope=scope,
     )
 
     assert delta == [appended_duplicate]
-    assert next_state["source_message_high_water"] == 100
-    assert len(next_state["consumed_tail_fingerprints"]) == 32
+    assert next_state["high_water_occurrence_id"] == "memory-100"
+    assert len(next_state["recent_occurrence_ids"]) == 32
+
+
+def test_adaptive_sequence_resyncs_after_rewrite_then_resumes_appends():
+    scope = {"task_id": "task", "task_epoch": 0}
+    old_messages = [
+        {"role": "assistant", "content": f"old {index}"} for index in range(10)
+    ]
+    _, previous_state = advance_adaptive_continuation_sequence(
+        old_messages,
+        None,
+        occurrence_ids=[f"old-{index}" for index in range(10)],
+        scope=scope,
+    )
+    rewritten = [
+        {"role": "assistant", "content": f"summary {index}"}
+        for index in range(3)
+    ]
+
+    delta, recovered_state = advance_adaptive_continuation_sequence(
+        rewritten,
+        previous_state,
+        occurrence_ids=[f"rewrite-{index}" for index in range(3)],
+        scope=scope,
+    )
+    resumed = [*rewritten, {"role": "assistant", "content": "fresh"}]
+    resumed_delta, resumed_state = advance_adaptive_continuation_sequence(
+        resumed,
+        recovered_state,
+        occurrence_ids=["rewrite-0", "rewrite-1", "rewrite-2", "rewrite-3"],
+        scope=scope,
+    )
+
+    assert delta == []
+    assert recovered_state["reset_reason"] == "source_rewrite"
+    assert resumed_delta == [resumed[-1]]
+    assert resumed_state["high_water_occurrence_id"] == "rewrite-3"
+
+
+def test_adaptive_sequence_migrates_v2_from_retained_causal_occurrence():
+    scope = {"task_id": "task", "task_epoch": 0}
+    retained = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "checkpoint-call",
+                    "type": "function",
+                    "function": {"name": "run_code", "arguments": "{}"},
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "checkpoint-call",
+            "content": "checkpoint result",
+        },
+    ]
+    current = [
+        {"role": "user", "content": "old task"},
+        *retained,
+        {"role": "user", "content": "new user delta"},
+        {
+            "role": "tool",
+            "tool_call_id": "new-call",
+            "content": "new tool delta",
+        },
+    ]
+
+    delta, state = advance_adaptive_continuation_sequence(
+        current,
+        {"schema_version": "aworld.context.adaptive-state/v2"},
+        occurrence_ids=[f"memory-{index}" for index in range(len(current))],
+        scope=scope,
+        legacy_retained_messages=retained,
+    )
+
+    assert delta == current[-2:]
+    assert state["reset_reason"] == "legacy_causal_migration"
+    assert state["high_water_occurrence_id"] == "memory-4"
+
+
+def test_adaptive_sequence_sanitizes_untrusted_cursor_state():
+    scope = {"task_id": "task", "task_epoch": 0}
+    previous = {
+        "schema_version": "aworld.context.adaptive-continuation-sequence/v2",
+        "scope": scope,
+        "high_water_occurrence_id": "missing",
+        "recent_occurrence_ids": ["x" * 10_000] * 100_000,
+        "arbitrary": object(),
+    }
+
+    delta, state = advance_adaptive_continuation_sequence(
+        [{"role": "assistant", "content": "rewrite"}],
+        previous,
+        occurrence_ids=["current-1"],
+        scope=scope,
+    )
+
+    assert delta == []
+    assert set(state) == {
+        "schema_version",
+        "scope",
+        "high_water_occurrence_id",
+        "recent_occurrence_ids",
+        "reset_reason",
+    }
+    assert state["recent_occurrence_ids"] == ["current-1"]
+    assert len(__import__("json").dumps(state)) < 2_000
 
 
 @pytest.mark.asyncio
@@ -1110,6 +1233,12 @@ async def test_agent_memory_replay_appends_only_post_checkpoint_occurrences(
             observation=Observation(content="task"),
             message=message,
         )
+        assert "__aworld_internal_memory_occurrence_id" not in repr(raw)
+        projection = context.context_info[
+            f"adaptive_memory_projection:{agent.id()}"
+        ]
+        assert projection["occurrences"]
+        assert len(projection["occurrences"]) <= 128
         context.context_info["context_semantic_progress"] = {
             agent.id(): {"repetition_count": 3, "low_information_gain_count": 0}
         }
@@ -1136,6 +1265,7 @@ async def test_agent_memory_replay_appends_only_post_checkpoint_occurrences(
             observation=Observation(content="task"),
             message=message,
         )
+        assert "__aworld_internal_memory_occurrence_id" not in repr(replayed_raw)
         context.context_info["context_semantic_progress"] = {
             agent.id(): {"repetition_count": 0, "low_information_gain_count": 0}
         }
@@ -1152,12 +1282,64 @@ async def test_agent_memory_replay_appends_only_post_checkpoint_occurrences(
         ]
         assert not any(item.get("content") == "old 1" for item in continued)
         state = context.context_info[f"adaptive_context_state:{agent.id()}"]
-        assert state["continuation_sequence"]["source_message_high_water"] == len(
-            replayed_raw
-        )
+        assert state["continuation_sequence"][
+            "high_water_occurrence_id"
+        ].startswith("memory:")
     finally:
         memory_main.MEMORY_HOLDER.clear()
         memory_main.MEMORY_HOLDER.update(prior_memory_holder)
+
+
+@pytest.mark.asyncio
+async def test_adaptive_state_rejects_cross_task_context_fallback():
+    agent = LLMAgent.__new__(LLMAgent)
+    agent._id = "agent"
+    agent._llm = SimpleNamespace(
+        _context_checkpoint_policy="adaptive",
+        _context_input_budget=100_000,
+    )
+    context = Context(task_id="new-task")
+    context.context_info["adaptive_context_state:agent"] = {
+        "schema_version": "aworld.context.adaptive-state/v3",
+        "scope": {
+            "session_id": None,
+            "task_id": "old-task",
+            "task_epoch": 0,
+            "agent_id": "agent",
+        },
+        "compaction_active": True,
+        "continuation_sequence": {
+            "schema_version": "aworld.context.adaptive-continuation-sequence/v2",
+            "scope": {"task_id": "old-task", "task_epoch": 0},
+            "high_water_occurrence_id": "old-id",
+            "recent_occurrence_ids": ["old-id"],
+        },
+    }
+    context.context_info["adaptive_continuation_capsule:agent"] = {
+        "schema_version": "aworld.context.adaptive-continuation-capsule/v2",
+        "scope": {
+            "session_id": None,
+            "task_id": "old-task",
+            "task_epoch": 0,
+            "agent_id": "agent",
+        },
+        "messages": [{"role": "assistant", "content": "old task secret"}],
+    }
+    context.context_info["context_semantic_progress"] = {
+        "agent": {"repetition_count": 0, "low_information_gain_count": 0}
+    }
+    current = [{"role": "user", "content": "new task request"}]
+
+    result = await agent._apply_adaptive_context_policy(
+        context=context,
+        messages=current,
+        context_compiler_mode="enforce",
+    )
+
+    assert result == current
+    assert "old task secret" not in str(result)
+    assert "adaptive_context_state:agent" not in context.context_info
+    assert "adaptive_continuation_capsule:agent" not in context.context_info
 
 
 @pytest.mark.asyncio
@@ -1334,7 +1516,7 @@ async def test_agent_adaptive_policy_performs_checkpoint_and_compaction(monkeypa
         snapshot_state.append(
             {
                 "adaptive": dict(context.context_info["adaptive_context_state:agent"]),
-                "continuation": list(
+                "continuation": dict(
                     context.context_info["adaptive_continuation_capsule:agent"]
                 ),
             }
@@ -1355,6 +1537,21 @@ async def test_agent_adaptive_policy_performs_checkpoint_and_compaction(monkeypa
         {"role": "user", "content": "task"},
         *[{"role": "tool", "content": f"old {index}"} for index in range(12)],
     ]
+
+    def record_projection(values, occurrence_ids):
+        context.context_info["adaptive_memory_projection:agent"] = {
+            "schema_version": "aworld.context.adaptive-memory-projection/v2",
+            "scope": agent._adaptive_state_scope(context),
+            "messages_hash": canonical_json_hash(values),
+            "message_count": len(values),
+            "occurrences": [
+                {"index": index, "occurrence_id": occurrence_id}
+                for index, occurrence_id in enumerate(occurrence_ids)
+            ],
+        }
+
+    occurrence_ids = [f"memory-{index}" for index in range(len(messages))]
+    record_projection(messages, occurrence_ids)
     compacted = await agent._apply_adaptive_context_policy(
         context=context,
         messages=messages,
@@ -1373,23 +1570,29 @@ async def test_agent_adaptive_policy_performs_checkpoint_and_compaction(monkeypa
         "repeated_operation",
         "low_information_gain",
     ]
-    assert snapshot_state[0]["continuation"] == compacted
+    assert snapshot_state[0]["continuation"]["messages"] == compacted
+    assert snapshot_state[0]["continuation"]["scope"]["task_id"] == (
+        "adaptive-runtime"
+    )
     assert context.context_lifecycle_state.checkpoint_revision == 1
 
     # Once compaction is active, later turns append to the same cache epoch
     # until another checkpoint decision is justified.
+    record_projection(messages, occurrence_ids)
     reused = await agent._apply_adaptive_context_policy(
         context=context,
-        messages=compacted,
+        messages=messages,
         context_compiler_mode="enforce",
     )
     assert reused
     assert checkpoint_calls == [True]
     assert context.context_lifecycle_state.checkpoint_revision == 1
 
+    extended_messages = [*messages, {"role": "assistant", "content": "new delta"}]
+    record_projection(extended_messages, [*occurrence_ids, "memory-new"])
     extended = await agent._apply_adaptive_context_policy(
         context=context,
-        messages=[*messages, {"role": "assistant", "content": "new delta"}],
+        messages=extended_messages,
         context_compiler_mode="enforce",
     )
     assert extended[: len(reused)] == reused
@@ -1535,6 +1738,17 @@ async def test_adaptive_compaction_restores_verified_continuation_from_sidecar(
             "content": "verified result",
         },
     ]
+    scope = agent._adaptive_state_scope(context)
+    context.context_info["adaptive_memory_projection:agent"] = {
+        "schema_version": "aworld.context.adaptive-memory-projection/v2",
+        "scope": scope,
+        "messages_hash": canonical_json_hash(messages),
+        "message_count": len(messages),
+        "occurrences": [
+            {"index": index, "occurrence_id": f"memory-{index}"}
+            for index in range(len(messages))
+        ],
+    }
     await agent._apply_adaptive_context_policy(
         context=context,
         messages=messages,
@@ -1548,12 +1762,23 @@ async def test_adaptive_compaction_restores_verified_continuation_from_sidecar(
             "no_goal_progress_count": 0,
         }
     )
+    rewritten = [
+        {"role": "system", "content": "policy"},
+        {"role": "user", "content": "task"},
+    ]
+    context.context_info["adaptive_memory_projection:agent"] = {
+        "schema_version": "aworld.context.adaptive-memory-projection/v2",
+        "scope": scope,
+        "messages_hash": canonical_json_hash(rewritten),
+        "message_count": len(rewritten),
+        "occurrences": [
+            {"index": 0, "occurrence_id": "rewrite-system"},
+            {"index": 1, "occurrence_id": "rewrite-task"},
+        ],
+    }
     restored = await agent._apply_adaptive_context_policy(
         context=context,
-        messages=[
-            {"role": "system", "content": "policy"},
-            {"role": "user", "content": "task"},
-        ],
+        messages=rewritten,
         context_compiler_mode="enforce",
     )
 

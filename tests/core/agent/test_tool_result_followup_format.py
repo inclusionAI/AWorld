@@ -323,7 +323,7 @@ def test_current_tool_turn_does_not_duplicate_complete_memory_group():
 
 
 @pytest.mark.asyncio
-async def test_execution_decision_memory_pair_replays_without_incomplete_warning(
+async def test_complete_legacy_decision_pair_replays_without_incomplete_warning(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
     caplog: pytest.LogCaptureFixture,

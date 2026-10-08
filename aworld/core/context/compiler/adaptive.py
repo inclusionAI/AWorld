@@ -274,6 +274,7 @@ def semantic_result_fingerprint(value: Any) -> str:
 _DUPLICATE_TOOL_RESULT_MIN_CHARS = 512
 _DUPLICATE_TOOL_RESULT_MARKER = "AWorld cached duplicate tool observation"
 _ADAPTIVE_CONTINUATION_TOMBSTONE_LIMIT = 32
+_ADAPTIVE_WORK_STATE_MESSAGE_PREFIX = "AWorld verified continuation state"
 
 
 def compact_duplicate_tool_results(
@@ -450,21 +451,23 @@ def advance_adaptive_continuation_sequence(
     messages: Sequence[Mapping[str, Any]],
     previous_state: Mapping[str, Any] | None,
     *,
+    occurrence_ids: Sequence[str | None] | None = None,
+    scope: Mapping[str, Any] | None = None,
+    legacy_retained_messages: Sequence[Mapping[str, Any]] | None = None,
     tombstone_limit: int = _ADAPTIVE_CONTINUATION_TOMBSTONE_LIMIT,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Return only occurrences after the last consumed raw-Memory sequence.
 
     Adaptive compaction retains a bounded provider capsule while Memory remains
     append-only and may replay the complete pre-checkpoint history on every
-    turn.  Content set-difference is not a sequence cursor: it resurrects
-    compacted messages and drops a legitimate new occurrence when its bytes
-    equal an old one.  This cursor instead stores a numeric high-water mark, a
-    digest of the consumed prefix, and a bounded ordered fingerprint tail.
+    turn. Content is never cursor authority: every projected Memory occurrence
+    has a private ID derived from its durable ``MemoryItem.id``. The bounded ID
+    tail survives a sliding history window even when every message is byte
+    identical. IDs are carried out-of-band and are stripped before the provider.
 
-    The tail acts as a tombstone when a transport copy changes the amount of
-    visible prefix.  If neither the exact high-water prefix nor its ordered tail
-    can be found, the function fails closed and advances nothing; it never
-    guesses that stale history is new.  State is bounded and JSON serializable.
+    When a rewrite removes every known anchor, this turn fails closed and the
+    current bounded sequence becomes a recovery anchor. A later append can then
+    resume instead of freezing the continuation forever.
     """
     if (
         isinstance(tombstone_limit, bool)
@@ -474,55 +477,131 @@ def advance_adaptive_continuation_sequence(
         raise ValueError("tombstone_limit must be a positive integer")
 
     current = [dict(message) for message in messages]
-    fingerprints = [semantic_fingerprint(message) for message in current]
+    if occurrence_ids is None:
+        occurrence_ids = [None] * len(current)
+    if len(occurrence_ids) != len(current):
+        raise ValueError("occurrence_ids must align one-to-one with messages")
 
-    def sequence_hash(values: Sequence[str]) -> str:
-        return canonical_json_hash({"message_fingerprints": list(values)})
+    def valid_id(value: Any) -> str | None:
+        if not isinstance(value, str):
+            return None
+        value = value.strip()
+        return value if 0 < len(value) <= 256 else None
 
-    def build_state() -> dict[str, Any]:
-        return {
-            "schema_version": "aworld.context.adaptive-continuation-sequence/v1",
-            "source_message_high_water": len(current),
-            "source_prefix_hash": sequence_hash(fingerprints),
-            "consumed_tail_fingerprints": fingerprints[-tombstone_limit:],
+    normalized_ids = [valid_id(value) for value in occurrence_ids]
+    present_ids = [value for value in normalized_ids if value is not None]
+    if len(present_ids) != len(set(present_ids)):
+        raise ValueError("occurrence_ids must be unique")
+
+    allowed_scope_keys = ("session_id", "task_id", "task_epoch", "agent_id")
+    normalized_scope: dict[str, Any] = {}
+    for key in allowed_scope_keys:
+        value = scope.get(key) if isinstance(scope, Mapping) else None
+        if isinstance(value, str):
+            normalized_scope[key] = value[:256]
+        elif isinstance(value, int) and not isinstance(value, bool):
+            normalized_scope[key] = value
+        elif value is None:
+            normalized_scope[key] = None
+
+    def build_state(reset_reason: str | None = None) -> dict[str, Any]:
+        state: dict[str, Any] = {
+            "schema_version": "aworld.context.adaptive-continuation-sequence/v2",
+            "scope": normalized_scope,
+            "high_water_occurrence_id": present_ids[-1] if present_ids else None,
+            "recent_occurrence_ids": present_ids[-tombstone_limit:],
         }
+        if reset_reason:
+            state["reset_reason"] = reset_reason
+        return state
 
-    if not isinstance(previous_state, Mapping):
-        return current, build_state()
+    def causal_key(message: Mapping[str, Any]) -> tuple[str, tuple[str, ...]] | None:
+        if message.get("role") == "tool":
+            call_id = valid_id(message.get("tool_call_id"))
+            return ("tool", (call_id,)) if call_id else None
+        if message.get("role") != "assistant":
+            return None
+        calls = message.get("tool_calls")
+        if not isinstance(calls, list):
+            return None
+        call_ids = tuple(
+            call_id
+            for call in calls
+            if isinstance(call, Mapping)
+            for call_id in (valid_id(call.get("id")),)
+            if call_id is not None
+        )
+        return ("assistant", call_ids) if call_ids else None
 
-    raw_high_water = previous_state.get("source_message_high_water")
-    high_water = (
-        raw_high_water
-        if isinstance(raw_high_water, int)
-        and not isinstance(raw_high_water, bool)
-        and raw_high_water >= 0
+    if not present_ids:
+        return current, build_state("no_occurrence_authority")
+
+    previous_scope = (
+        previous_state.get("scope") if isinstance(previous_state, Mapping) else None
+    )
+    scope_mismatch = isinstance(previous_scope, Mapping) and {
+        key: previous_scope.get(key) for key in allowed_scope_keys
+    } != normalized_scope
+    if scope_mismatch:
+        return current, build_state("scope_mismatch")
+
+    sequence_schema = (
+        previous_state.get("schema_version")
+        if isinstance(previous_state, Mapping)
         else None
     )
-    prior_prefix_hash = previous_state.get("source_prefix_hash")
-    raw_tail = previous_state.get("consumed_tail_fingerprints")
-    tail = (
-        [value for value in raw_tail if isinstance(value, str) and value]
-        if isinstance(raw_tail, list)
+    if sequence_schema != "aworld.context.adaptive-continuation-sequence/v2":
+        retained = [
+            dict(message) for message in (legacy_retained_messages or ())
+        ]
+        retained_key = next(
+            (
+                key
+                for message in reversed(retained)
+                for key in (causal_key(message),)
+                if key is not None
+            ),
+            None,
+        )
+        if retained_key is not None:
+            matches = [
+                index
+                for index, message in enumerate(current)
+                if causal_key(message) == retained_key
+                and normalized_ids[index] is not None
+            ]
+            if len(matches) == 1:
+                return current[matches[0] + 1 :], build_state(
+                    "legacy_causal_migration"
+                )
+        # No retained occurrence proves a safe boundary. Do not replay raw
+        # history, but establish a bounded anchor so the next append can resume.
+        return [], build_state("legacy_unanchored_recovery")
+
+    high_water = valid_id(previous_state.get("high_water_occurrence_id"))
+    raw_recent = previous_state.get("recent_occurrence_ids")
+    recent = (
+        [
+            occurrence_id
+            for value in raw_recent[-tombstone_limit:]
+            for occurrence_id in (valid_id(value),)
+            if occurrence_id is not None
+        ]
+        if isinstance(raw_recent, list)
         else []
-    )[-tombstone_limit:]
-
-    delta_start: int | None = None
-    if high_water is not None and high_water <= len(current):
-        prefix_hash = sequence_hash(fingerprints[:high_water])
-        if isinstance(prior_prefix_hash, str) and prefix_hash == prior_prefix_hash:
-            delta_start = high_water
-
-    if delta_start is None and tail and len(tail) <= len(fingerprints):
-        for start in range(len(fingerprints) - len(tail), -1, -1):
-            if fingerprints[start : start + len(tail)] == tail:
-                delta_start = start + len(tail)
-                break
-
-    if delta_start is None:
-        # Preserve the last trusted cursor. A compacted capsule or a partial
-        # stale replay is not evidence that every visible message is new.
-        return [], dict(previous_state)
-    return current[delta_start:], build_state()
+    )
+    index_by_id = {
+        occurrence_id: index
+        for index, occurrence_id in enumerate(normalized_ids)
+        if occurrence_id is not None
+    }
+    anchor = high_water if high_water in index_by_id else next(
+        (value for value in reversed(recent) if value in index_by_id),
+        None,
+    )
+    if anchor is None:
+        return [], build_state("source_rewrite")
+    return current[index_by_id[anchor] + 1 :], build_state()
 
 
 def restore_adaptive_continuation(
@@ -549,6 +628,23 @@ def restore_adaptive_continuation(
     # from a new byte-identical occurrence. Preserve the capsule and fail
     # closed instead of falling back to content set-difference.
     delta = [dict(message) for message in (continuation_delta or ())]
+    if any(
+        message.get("role") == "user"
+        and isinstance(message.get("content"), str)
+        and message["content"].startswith(_ADAPTIVE_WORK_STATE_MESSAGE_PREFIX)
+        for message in delta
+    ):
+        previous = [
+            message
+            for message in previous
+            if not (
+                message.get("role") == "user"
+                and isinstance(message.get("content"), str)
+                and message["content"].startswith(
+                    _ADAPTIVE_WORK_STATE_MESSAGE_PREFIX
+                )
+            )
+        ]
     merged = [*previous, *delta]
     if keep_recent is None:
         return merged

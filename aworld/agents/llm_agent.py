@@ -182,6 +182,8 @@ _REVIEW_DECISION_PARAM = "__aworld_review_decision"
 INDEPENDENT_ACCEPTANCE_CRITIC_ENV = "AWORLD_INDEPENDENT_ACCEPTANCE_CRITIC"
 SEMANTIC_PROGRESS_LEDGER_ENV = "AWORLD_SEMANTIC_PROGRESS_LEDGER"
 _PREPARED_TOOLS_UNSET = object()
+_ADAPTIVE_MEMORY_OCCURRENCE_KEY = "__aworld_internal_memory_occurrence_id"
+_ADAPTIVE_MEMORY_PROJECTION_LIMIT = 128
 
 
 @dataclass(frozen=True, slots=True)
@@ -2890,6 +2892,75 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
 
         return filters
 
+    def _adaptive_occurrence_tracking_enabled(self) -> bool:
+        return (
+            self._context_compiler_mode_value() != "off"
+            and getattr(self.llm, "_context_checkpoint_policy", "explicit")
+            in {"adaptive", "budget_pressure"}
+        )
+
+    def _adaptive_state_scope(self, context: Context) -> dict[str, Any]:
+        get_task = getattr(context, "get_task", None)
+        task = get_task() if callable(get_task) else None
+        values = {
+            "session_id": getattr(context, "session_id", None)
+            or getattr(task, "session_id", None),
+            "task_id": getattr(context, "task_id", None)
+            or getattr(task, "id", None),
+            "task_epoch": getattr(context, "task_epoch", 0),
+            "agent_id": self.id(),
+        }
+        return {
+            key: value[:256]
+            if isinstance(value, str)
+            else value
+            if isinstance(value, int) and not isinstance(value, bool)
+            else None
+            for key, value in values.items()
+        }
+
+    def _finalize_adaptive_memory_projection(
+        self,
+        messages: List[Dict[str, Any]],
+        context: Context,
+    ) -> List[Dict[str, Any]]:
+        """Strip private Memory occurrence IDs and retain an aligned sidecar."""
+        occurrence_ids: list[str | None] = []
+        cleaned: List[Dict[str, Any]] = []
+        for message in messages:
+            value = dict(message)
+            occurrence_id = value.pop(_ADAPTIVE_MEMORY_OCCURRENCE_KEY, None)
+            occurrence_ids.append(
+                occurrence_id
+                if isinstance(occurrence_id, str) and 0 < len(occurrence_id) <= 256
+                else None
+            )
+            cleaned.append(value)
+
+        event_manager = getattr(context, "event_manager", None)
+        owner = (
+            getattr(event_manager, "context", None)
+            if event_manager is not None
+            else None
+        ) or context
+        sidecar_key = f"adaptive_memory_projection:{self.id()}"
+        if self._adaptive_occurrence_tracking_enabled():
+            occurrences = [
+                {"index": index, "occurrence_id": occurrence_id}
+                for index, occurrence_id in enumerate(occurrence_ids)
+                if occurrence_id is not None
+            ][-_ADAPTIVE_MEMORY_PROJECTION_LIMIT:]
+            owner.context_info[sidecar_key] = {
+                "schema_version": "aworld.context.adaptive-memory-projection/v2",
+                "scope": self._adaptive_state_scope(context),
+                "messages_hash": canonical_json_hash(cleaned),
+                "message_count": len(cleaned),
+                "occurrences": occurrences,
+            }
+        else:
+            owner.context_info.pop(sidecar_key, None)
+        return cleaned
+
     def _clean_redundant_tool_call_messages(self, histories: List[MemoryItem]) -> None:
         try:
             for i in range(len(histories) - 1, -1, -1):
@@ -2941,6 +3012,21 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             Message list for LLM.
         """
         messages = []
+        track_occurrences = self._adaptive_occurrence_tracking_enabled()
+
+        def projected_memory_message(
+            history: MemoryItem,
+            value: Mapping[str, Any],
+            *,
+            suffix: int = 0,
+        ) -> Dict[str, Any]:
+            projected = dict(value)
+            memory_id = getattr(history, "id", None)
+            if track_occurrences and isinstance(memory_id, str) and memory_id:
+                projected[_ADAPTIVE_MEMORY_OCCURRENCE_KEY] = (
+                    f"memory:{memory_id}:{suffix}"
+                )
+            return projected
         # append sys_prompt to memory
         content = await self.custom_system_prompt(
             context=message.context, content=observation.content, tool_list=self.tools
@@ -3058,7 +3144,10 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                     if isinstance(history, MemoryToolMessage):
                         if last_tool_calls and history.tool_call_id in last_tool_calls:
                             tool_calls_map[history.tool_call_id] = (
-                                history.to_openai_message()
+                                projected_memory_message(
+                                    history,
+                                    history.to_openai_message(),
+                                )
                             )
                         elif history.tool_call_id in matched_tool_call_ids:
                             logger.warning(
@@ -3073,9 +3162,21 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                     else:
                         system_sections = self._amni_system_section_messages(history)
                         if system_sections is not None:
-                            messages.extend(system_sections)
+                            messages.extend(
+                                projected_memory_message(
+                                    history,
+                                    section,
+                                    suffix=index,
+                                )
+                                for index, section in enumerate(system_sections)
+                            )
                         else:
-                            messages.append(history.to_openai_message())
+                            messages.append(
+                                projected_memory_message(
+                                    history,
+                                    history.to_openai_message(),
+                                )
+                            )
                         if isinstance(history, MemoryAIMessage) and history.tool_calls:
                             last_tool_calls.extend(
                                 [tool_call.id for tool_call in history.tool_calls]
@@ -3090,7 +3191,10 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                                 "content": history.content,
                                 "tool_call_id": tool_call_id,
                             }
-                            tool_calls_map[tool_call_id] = msg
+                            tool_calls_map[tool_call_id] = projected_memory_message(
+                                history,
+                                msg,
+                            )
                         elif tool_call_id in matched_tool_call_ids:
                             logger.warning(
                                 f"Skip duplicate tool result in memory replay: "
@@ -3106,11 +3210,16 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                             "tool_calls"
                         ):
                             messages.append(
-                                {
-                                    "role": history.metadata["role"],
-                                    "content": history.content,
-                                    "tool_calls": [history.metadata["tool_calls"]],
-                                }
+                                projected_memory_message(
+                                    history,
+                                    {
+                                        "role": history.metadata["role"],
+                                        "content": history.content,
+                                        "tool_calls": [
+                                            history.metadata["tool_calls"]
+                                        ],
+                                    },
+                                )
                             )
                             last_tool_calls.extend(
                                 [
@@ -3120,13 +3229,16 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                             )
                         else:
                             messages.append(
-                                {
-                                    "role": history.metadata["role"],
-                                    "content": history.content,
-                                    "tool_call_id": history.metadata.get(
-                                        "tool_call_id"
-                                    ),
-                                }
+                                projected_memory_message(
+                                    history,
+                                    {
+                                        "role": history.metadata["role"],
+                                        "content": history.content,
+                                        "tool_call_id": history.metadata.get(
+                                            "tool_call_id"
+                                        ),
+                                    },
+                                )
                             )
                 if len(last_tool_calls) > 0 and len(tool_calls_map) == len(
                     last_tool_calls
@@ -3144,8 +3256,10 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             messages,
             observation=observation,
             message=message,
+            include_internal_occurrence_ids=track_occurrences,
         )
-        return self._prepend_task_input_messages(messages, message.context)
+        messages = self._prepend_task_input_messages(messages, message.context)
+        return self._finalize_adaptive_memory_projection(messages, message.context)
 
     def _restore_current_tool_turn(
         self,
@@ -3153,6 +3267,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         *,
         observation: Observation,
         message: Message,
+        include_internal_occurrence_ids: bool = False,
     ) -> List[Dict[str, Any]]:
         """Provide read-your-write consistency for the current Tool turn.
 
@@ -3179,12 +3294,32 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             policy_name = getattr(self.llm, "_context_checkpoint_policy", "explicit")
             if policy_name == "explicit":
                 return values
-            from aworld.core.context.compiler import attach_adaptive_work_state
+            from aworld.core.context.compiler import (
+                ADAPTIVE_WORK_STATE_PREFIX,
+                attach_adaptive_work_state,
+            )
 
-            return attach_adaptive_work_state(
+            projected = attach_adaptive_work_state(
                 values,
                 turn.get("adaptive_work_state"),
             )
+            work_state = turn.get("adaptive_work_state")
+            revision = (
+                work_state.get("revision")
+                if isinstance(work_state, Mapping)
+                else None
+            )
+            if include_internal_occurrence_ids and isinstance(revision, int):
+                for item in projected:
+                    if (
+                        item.get("role") == "user"
+                        and isinstance(item.get("content"), str)
+                        and item["content"].startswith(ADAPTIVE_WORK_STATE_PREFIX)
+                    ):
+                        item[_ADAPTIVE_MEMORY_OCCURRENCE_KEY] = (
+                            f"adaptive-work-state:{revision}"
+                        )
+            return projected
 
         actions = turn.get("actions")
         observation_value = turn.get("followup_observation")
@@ -3272,7 +3407,18 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             )
         if not tool_calls:
             return messages
-        repaired.append({"role": "assistant", "content": "", "tool_calls": tool_calls})
+        assistant_message = {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": tool_calls,
+        }
+        if include_internal_occurrence_ids and isinstance(
+            continuation_token, str
+        ):
+            assistant_message[_ADAPTIVE_MEMORY_OCCURRENCE_KEY] = (
+                f"continuation:{continuation_token}:assistant"
+            )
+        repaired.append(assistant_message)
 
         results_by_id = {
             value.get("tool_call_id"): value
@@ -3300,13 +3446,18 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 content = self._format_tool_result_for_followup(result)
             except Exception:
                 content = str(value.get("content", ""))
-            repaired.append(
-                {
-                    "role": "tool",
-                    "tool_call_id": call_id,
-                    "content": content,
-                }
-            )
+            tool_message = {
+                "role": "tool",
+                "tool_call_id": call_id,
+                "content": content,
+            }
+            if include_internal_occurrence_ids and isinstance(
+                continuation_token, str
+            ):
+                tool_message[_ADAPTIVE_MEMORY_OCCURRENCE_KEY] = (
+                    f"continuation:{continuation_token}:tool:{call_id}"
+                )
+            repaired.append(tool_message)
         increment_watchdog_metric(message.context, "current_tool_turn_repaired_count")
         return attach_continuation_work_state(repaired)
 
@@ -3610,39 +3761,47 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         shared_writer = getattr(state_context, "write_task_runtime_state", None)
         get_working_state = getattr(state_context, "get", None)
         put_working_state = getattr(state_context, "put", None)
-        adaptive_state = (
-            shared_reader(self.id(), runtime_state_key)
-            if callable(shared_reader)
-            else None
-        )
+        current_scope = self._adaptive_state_scope(context)
+        adaptive_state_source = None
+        adaptive_state = None
+        if callable(shared_reader):
+            adaptive_state = shared_reader(self.id(), runtime_state_key)
+            if isinstance(adaptive_state, dict):
+                adaptive_state_source = "task_runtime"
         if not isinstance(adaptive_state, dict):
             adaptive_state = state_context.context_info.get(state_key)
+            if isinstance(adaptive_state, dict):
+                adaptive_state_source = "context_fallback"
         if not isinstance(adaptive_state, dict) and callable(get_working_state):
             try:
                 adaptive_state = get_working_state(state_key)
+                if isinstance(adaptive_state, dict):
+                    adaptive_state_source = "working_state_fallback"
             except Exception:
                 adaptive_state = None
         if not isinstance(adaptive_state, dict):
             adaptive_state = {}
-
-        source_messages = [dict(message) for message in messages]
-        previous_continuation_sequence = adaptive_state.get(
-            "continuation_sequence"
-        )
-        continuation_delta, next_continuation_sequence = (
-            advance_adaptive_continuation_sequence(
-                source_messages,
-                previous_continuation_sequence,
-            )
-        )
-        if (
-            adaptive_state.get("compaction_active") is True
-            and not isinstance(previous_continuation_sequence, Mapping)
-        ):
-            # Upgrade a pre-sequence checkpoint without interpreting its full
-            # stale Memory replay as a new append. The next occurrence advances
-            # from the durable cursor established by this request.
-            continuation_delta = []
+        stale_scope_state = False
+        stored_scope = adaptive_state.get("scope")
+        if isinstance(stored_scope, Mapping):
+            if dict(stored_scope) != current_scope:
+                stale_scope_state = True
+                adaptive_state = {}
+        elif adaptive_state and adaptive_state_source == "context_fallback":
+            # Legacy task-runtime and Amni WorkingState records are scoped by
+            # their owner. An unscoped ad-hoc context_info fallback may belong
+            # to another task and is never eligible for migration.
+            stale_scope_state = True
+            adaptive_state = {}
+        if stale_scope_state:
+            state_context.context_info.pop(state_key, None)
+            if adaptive_state_source == "task_runtime" and callable(shared_writer):
+                shared_writer(self.id(), runtime_state_key, None)
+            if callable(put_working_state):
+                try:
+                    put_working_state(state_key, None)
+                except Exception:
+                    pass
 
         def save_adaptive_state() -> None:
             state_context.context_info[state_key] = adaptive_state
@@ -3654,31 +3813,151 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 except Exception:
                     pass
 
-        continuation_capsule = (
+        continuation_capsule = None
+        shared_capsule = (
             shared_reader(self.id(), continuation_key)
             if callable(shared_reader)
             else None
         )
         continuation_state_key = f"{continuation_key}:{self.id()}"
-        if not isinstance(continuation_capsule, list):
-            continuation_capsule = state_context.context_info.get(
+
+        def capsule_messages(value: Any, *, allow_legacy: bool) -> list | None:
+            if isinstance(value, Mapping):
+                if (
+                    value.get("schema_version")
+                    == "aworld.context.adaptive-continuation-capsule/v2"
+                    and value.get("scope") == current_scope
+                    and isinstance(value.get("messages"), list)
+                ):
+                    return [
+                        dict(item)
+                        for item in value["messages"]
+                        if isinstance(item, Mapping)
+                    ]
+                return None
+            if allow_legacy and isinstance(value, list):
+                return [dict(item) for item in value if isinstance(item, Mapping)]
+            return None
+
+        continuation_capsule = capsule_messages(shared_capsule, allow_legacy=True)
+        stale_scope_capsule = (
+            isinstance(shared_capsule, Mapping)
+            and continuation_capsule is None
+        )
+        if continuation_capsule is None:
+            fallback_capsule = state_context.context_info.get(
                 continuation_state_key
             )
-        if not isinstance(continuation_capsule, list) and callable(get_working_state):
+            continuation_capsule = capsule_messages(
+                fallback_capsule,
+                allow_legacy=False,
+            )
+            stale_scope_capsule = stale_scope_capsule or (
+                isinstance(fallback_capsule, Mapping)
+                and continuation_capsule is None
+            )
+        if continuation_capsule is None and callable(get_working_state):
             try:
-                continuation_capsule = get_working_state(continuation_state_key)
+                continuation_capsule = capsule_messages(
+                    get_working_state(continuation_state_key),
+                    allow_legacy=True,
+                )
             except Exception:
                 continuation_capsule = None
-
-        def save_continuation_capsule(values: List[Dict[str, Any]]) -> None:
-            state_context.context_info[continuation_state_key] = values
+        if stale_scope_state or stale_scope_capsule:
+            state_context.context_info.pop(continuation_state_key, None)
+            continuation_capsule = None
             if callable(shared_writer):
-                shared_writer(self.id(), continuation_key, values)
+                shared_writer(self.id(), continuation_key, None)
             if callable(put_working_state):
                 try:
-                    put_working_state(continuation_state_key, values)
+                    put_working_state(continuation_state_key, None)
                 except Exception:
                     pass
+
+        def save_continuation_capsule(values: List[Dict[str, Any]]) -> None:
+            envelope = {
+                "schema_version": "aworld.context.adaptive-continuation-capsule/v2",
+                "scope": current_scope,
+                "messages": values,
+            }
+            state_context.context_info[continuation_state_key] = envelope
+            if callable(shared_writer):
+                shared_writer(self.id(), continuation_key, envelope)
+            if callable(put_working_state):
+                try:
+                    put_working_state(continuation_state_key, envelope)
+                except Exception:
+                    pass
+
+        if (
+            adaptive_state.get("compaction_active") is True
+            and continuation_capsule is None
+        ):
+            adaptive_state = {}
+
+        source_messages = [dict(message) for message in messages]
+        projection = state_context.context_info.get(
+            f"adaptive_memory_projection:{self.id()}"
+        )
+        occurrence_ids: list[str | None] = [None] * len(source_messages)
+        if (
+            isinstance(projection, Mapping)
+            and projection.get("schema_version")
+            == "aworld.context.adaptive-memory-projection/v2"
+            and projection.get("scope") == current_scope
+            and projection.get("messages_hash")
+            == canonical_json_hash(source_messages)
+            and projection.get("message_count") == len(source_messages)
+            and isinstance(projection.get("occurrences"), list)
+        ):
+            for entry in projection["occurrences"][-_ADAPTIVE_MEMORY_PROJECTION_LIMIT:]:
+                if not isinstance(entry, Mapping):
+                    continue
+                index = entry.get("index")
+                occurrence_id = entry.get("occurrence_id")
+                if (
+                    isinstance(index, int)
+                    and not isinstance(index, bool)
+                    and 0 <= index < len(occurrence_ids)
+                    and isinstance(occurrence_id, str)
+                ):
+                    occurrence_ids[index] = occurrence_id
+        previous_continuation_sequence = adaptive_state.get(
+            "continuation_sequence"
+        )
+        continuation_sequence_was_present = isinstance(
+            previous_continuation_sequence, Mapping
+        )
+        continuation_delta, next_continuation_sequence = (
+            advance_adaptive_continuation_sequence(
+                source_messages,
+                previous_continuation_sequence,
+                occurrence_ids=occurrence_ids,
+                scope=current_scope,
+                legacy_retained_messages=(
+                    continuation_capsule
+                    if (
+                        not isinstance(previous_continuation_sequence, Mapping)
+                        or previous_continuation_sequence.get("schema_version")
+                        != "aworld.context.adaptive-continuation-sequence/v2"
+                    )
+                    else None
+                ),
+            )
+        )
+        # Replace any legacy/untrusted cursor immediately so every later save
+        # path persists only the bounded, scoped v2 representation.
+        adaptive_state["continuation_sequence"] = next_continuation_sequence
+        if next_continuation_sequence.get("reset_reason") in {
+            "no_occurrence_authority",
+            "scope_mismatch",
+        }:
+            # Missing occurrence authority or a mismatched cursor scope cannot
+            # safely extend a compacted Memory capsule. Use the fresh scoped
+            # request as-is instead of freezing or resurrecting stale history.
+            continuation_capsule = None
+            adaptive_state["compaction_active"] = False
 
         work_state_key = f"{ADAPTIVE_WORK_STATE_KEY}:{self.id()}"
         adaptive_work_state = (
@@ -3760,6 +4039,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             adaptive_state.update(
                 {
                     "schema_version": "aworld.context.adaptive-state/v3",
+                    "scope": current_scope,
                     "no_progress_checkpoint_count": 0,
                     "escalation_stage": AdaptiveEscalationStage.NONE.value,
                     "goal_progress_reset_count": adaptive_state_count(
@@ -3786,6 +4066,15 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 save_continuation_capsule(messages)
                 save_adaptive_state()
                 return messages
+            if continuation_sequence_was_present:
+                adaptive_state.update(
+                    {
+                        "schema_version": "aworld.context.adaptive-state/v3",
+                        "scope": current_scope,
+                        "continuation_sequence": next_continuation_sequence,
+                    }
+                )
+                save_adaptive_state()
             return messages
 
         # Destructive compaction is legal only at the explicit Context
@@ -3832,6 +4121,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         adaptive_state.update(
             {
                 "schema_version": "aworld.context.adaptive-state/v3",
+                "scope": current_scope,
                 "last_checkpoint_turn": turn_coordinate,
                 # The checkpoint cannot contain its own repository id.  Mark
                 # the prepared state explicitly, persist all continuity data,
@@ -3964,63 +4254,6 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             sanitized.message["content"] = content
             sanitized.message.pop("tool_calls", None)
         return sanitized
-
-    async def _close_execution_decision_memory_turn(
-        self,
-        *,
-        response: ModelResponse,
-        context: Context,
-        boundary: str,
-        outcome: str | None,
-    ) -> None:
-        """Persist compact synthetic results for framework-consumed Tool calls.
-
-        The provider emits ``aworld__execution_decision`` as a Tool call, but
-        the framework consumes it internally instead of dispatching a user
-        Tool. If the assistant call is retained in ordinary Memory, provider
-        replay still requires a same-ID Tool result. Keep that causal pair
-        complete without copying plan payloads into the solver transcript.
-        """
-        status = outcome or "unavailable"
-        receipt = json.dumps(
-            {
-                "schema_version": "aworld.execution-decision-result/v1",
-                "boundary": boundary,
-                "status": status,
-            },
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-        )
-        for tool_call in response.tool_calls or ():
-            call_id = (
-                tool_call.get("id")
-                if isinstance(tool_call, Mapping)
-                else getattr(tool_call, "id", None)
-            )
-            if not isinstance(call_id, str) or not call_id:
-                continue
-            function = (
-                tool_call.get("function")
-                if isinstance(tool_call, Mapping)
-                else getattr(tool_call, "function", None)
-            )
-            function_name = (
-                function.get("name")
-                if isinstance(function, Mapping)
-                else getattr(function, "name", None)
-            )
-            await self._add_message_to_memory(
-                payload=ActionResult(
-                    content=receipt,
-                    success=status == "acknowledged",
-                    tool_call_id=call_id,
-                    tool_name="aworld",
-                    action_name=str(function_name or "execution_decision"),
-                ),
-                message_type=MemoryType.TOOL,
-                context=context,
-            )
 
     @staticmethod
     def _remaining_before_completion_reserve(
@@ -6662,21 +6895,14 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                         ] = True
                         validation_feedback = None
                     # skip summary on final round
-                    await self._add_message_to_memory(
-                        payload=llm_response,
-                        message_type=MemoryType.AI,
-                        context=message.context,
-                        skip_summary=(
-                            execution_control_offer.decision_boundary is not None
-                            or (candidate_finished and not validation_feedback)
-                        ),
-                    )
-                    if execution_control_offer.decision_boundary is not None:
-                        await self._close_execution_decision_memory_turn(
-                            response=llm_response,
+                    if execution_control_offer.decision_boundary is None:
+                        await self._add_message_to_memory(
+                            payload=llm_response,
+                            message_type=MemoryType.AI,
                             context=message.context,
-                            boundary=execution_control_offer.decision_boundary,
-                            outcome=execution_decision_outcome,
+                            skip_summary=(
+                                candidate_finished and not validation_feedback
+                            ),
                         )
 
                     try:
