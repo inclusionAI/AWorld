@@ -497,7 +497,10 @@ class ProviderLoweringReceipt:
             self.provider_request.capture_stage
             is not RequestCaptureStage.PROVIDER_PREPARED
             or self.provider_request.fidelity
-            is not ProviderRequestFidelity.PROVIDER_PREPARED
+            not in {
+                ProviderRequestFidelity.PROVIDER_PREPARED,
+                ProviderRequestFidelity.PROVIDER_PREPARED_MEDIA_REDACTED,
+            }
         ):
             raise ValueError("lowering receipt requires a provider-prepared snapshot")
         if self.serialized_prefix_evidence is not None and not isinstance(

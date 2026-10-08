@@ -15,7 +15,9 @@ from aworld.sandbox.artifact_observation import (
     ArtifactObservationError,
     artifact_task_scope_hash,
     clear_artifact_observation_state,
+    observe_artifact_bytes,
     observe_local_artifact,
+    register_artifact_sidecar,
 )
 
 
@@ -93,6 +95,27 @@ def test_artifact_task_scope_hashes_complete_opaque_epoch_without_collision() ->
     )
 
     assert first != second
+
+
+def test_sidecar_rejects_encoded_length_before_base64_decode(monkeypatch) -> None:
+    observed = observe_artifact_bytes(
+        _PNG_1X1,
+        suffix=".png",
+        path_key="sha256:path",
+        file_epoch="sha256:" + ("0" * 64),
+        framework_scope=_scope(),
+    )
+
+    def decode_must_not_run(*args, **kwargs):
+        raise AssertionError("oversized encoded payload reached decoder")
+
+    monkeypatch.setattr(artifact_module.base64, "b64decode", decode_must_not_run)
+    with pytest.raises(ArtifactObservationError, match="payload length"):
+        register_artifact_sidecar(
+            image_base64="A" * (len(_PNG_1X1) * 128),
+            mime_type="image/png",
+            receipt=observed.receipt,
+        )
 
 
 def test_observe_local_artifact_reuses_identity_until_content_changes(

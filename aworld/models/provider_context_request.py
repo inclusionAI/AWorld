@@ -27,6 +27,7 @@ from aworld.core.context.compiler.frozen_json import canonical_json_bytes
 from aworld.models.provider_media import (
     bind_provider_media_audit,
     consume_provider_media_audit,
+    merge_verified_media_suffix,
 )
 
 
@@ -114,6 +115,7 @@ def prepare_provider_context_request(
         provider,
         request_id=request_kwargs.get("llm_request_id"),
     )
+    media_active = isinstance(artifact_redacted_messages, list)
     envelope = request_kwargs.pop(AWORLD_PROVIDER_CANDIDATE_KWARG, None)
     observed_envelope = request_kwargs.pop(
         AWORLD_PROVIDER_OBSERVED_ATTRIBUTION_KWARG, None
@@ -129,7 +131,20 @@ def prepare_provider_context_request(
         stop=stop,
         reasoning_effort=request_kwargs.get("reasoning_effort"),
     )
+    audit_current = (
+        _standard_request(
+            messages=artifact_redacted_messages,
+            tools=request_kwargs.get("tools"),
+            temperature=temperature,
+            max_tokens=max_tokens,
+            stop=stop,
+            reasoning_effort=request_kwargs.get("reasoning_effort"),
+        )
+        if media_active
+        else current
+    )
     selected = current
+    selected_audit = audit_current
     capability = provider.context_candidate_lowering_capability()
     observed_reason = None
     if envelope is not None:
@@ -140,8 +155,21 @@ def prepare_provider_context_request(
         if request_kwargs.get("prompt_assembly_plan") is not None:
             raise CandidateRequestNotEnforceable("provider_transform_after_candidate")
         try:
-            selected = envelope.candidate_request.thaw()
-            _validate_candidate_payload(selected)
+            selected_audit = envelope.candidate_request.thaw()
+            _validate_candidate_payload(selected_audit)
+            selected = selected_audit
+            if media_active:
+                selected = dict(selected_audit)
+                selected["messages"] = merge_verified_media_suffix(
+                    candidate_messages=selected_audit["messages"],
+                    wire_messages=messages,
+                    audit_messages=artifact_redacted_messages,
+                    stable_message_count=(
+                        envelope.cache_plan.stable_message_count
+                        if envelope.cache_plan is not None
+                        else 0
+                    ),
+                )
         except Exception:
             raise CandidateRequestNotEnforceable(
                 "provider_candidate_schema_unsupported"
@@ -153,13 +181,16 @@ def prepare_provider_context_request(
                 or capability != observed_envelope.expected_lowering
             ):
                 raise ValueError("observed attribution adapter mismatch")
-            if observed_envelope.observed_request.thaw() != current:
+            if observed_envelope.observed_request.thaw() != audit_current:
                 raise ValueError("observed model-boundary request mismatch")
         except Exception:
             observed_reason = "observed_model_boundary_mismatch"
 
     try:
-        with bind_provider_media_audit(provider, artifact_redacted_messages):
+        with bind_provider_media_audit(
+            provider,
+            selected_audit["messages"] if media_active else None,
+        ):
             projection = lower(
                 selected,
                 request_kwargs,
@@ -170,15 +201,14 @@ def prepare_provider_context_request(
             raise TypeError("provider lowerer returned an invalid projection")
         canonical_json_bytes(projection.payload)
         snapshot_payload = projection.payload
-        if isinstance(artifact_redacted_messages, list):
-            redacted_selected = dict(selected)
-            redacted_selected["messages"] = artifact_redacted_messages
-            with bind_provider_media_audit(provider, artifact_redacted_messages):
+        attribution_projection = projection
+        if media_active:
+            with bind_provider_media_audit(provider, selected_audit["messages"]):
                 redacted_projection = lower(
-                    redacted_selected,
+                    selected_audit,
                     request_kwargs,
                     stream,
-                    None,
+                    envelope.cache_plan if envelope is not None else None,
                 )
             if not isinstance(redacted_projection, ProviderWireProjection):
                 raise TypeError(
@@ -186,6 +216,7 @@ def prepare_provider_context_request(
                 )
             canonical_json_bytes(redacted_projection.payload)
             snapshot_payload = redacted_projection.payload
+            attribution_projection = redacted_projection
         snapshot = ProviderRequestSnapshot(
             request_id=request_kwargs.get("llm_request_id"),
             provider_name=capability.provider_name,
@@ -193,7 +224,7 @@ def prepare_provider_context_request(
             capture_stage=RequestCaptureStage.PROVIDER_PREPARED,
             fidelity=(
                 ProviderRequestFidelity.PROVIDER_PREPARED_MEDIA_REDACTED
-                if isinstance(artifact_redacted_messages, list)
+                if media_active
                 else ProviderRequestFidelity.PROVIDER_PREPARED
             ),
         )
@@ -211,14 +242,16 @@ def prepare_provider_context_request(
         try:
             attribution = build_provider_attribution_receipt(
                 plan=envelope.attribution_plan,
-                provider_request=projection.payload,
+                provider_request=attribution_projection.payload,
                 serialization=AttributionSerialization.PROVIDER_PREPARED_CANONICAL_JSON,
                 tools_lowering=projection.tools_lowering,
-                source_request=selected,
-                provider_message_occurrences=projection.message_occurrences,
-                provider_tool_occurrences=projection.tool_occurrences,
+                source_request=selected_audit,
+                provider_message_occurrences=(
+                    attribution_projection.message_occurrences
+                ),
+                provider_tool_occurrences=attribution_projection.tool_occurrences,
                 provider_tools_shape_override=(
-                    projection.provider_tools_shape_override
+                    attribution_projection.provider_tools_shape_override
                 ),
             )
             receipt = ProviderLoweringReceipt.from_envelope(
@@ -251,14 +284,16 @@ def prepare_provider_context_request(
         try:
             attribution = build_provider_attribution_receipt(
                 plan=observed_envelope.attribution_plan,
-                provider_request=projection.payload,
+                provider_request=attribution_projection.payload,
                 serialization=AttributionSerialization.PROVIDER_PREPARED_CANONICAL_JSON,
                 tools_lowering=projection.tools_lowering,
-                source_request=selected,
-                provider_message_occurrences=projection.message_occurrences,
-                provider_tool_occurrences=projection.tool_occurrences,
+                source_request=selected_audit,
+                provider_message_occurrences=(
+                    attribution_projection.message_occurrences
+                ),
+                provider_tool_occurrences=attribution_projection.tool_occurrences,
                 provider_tools_shape_override=(
-                    projection.provider_tools_shape_override
+                    attribution_projection.provider_tools_shape_override
                 ),
             )
             observed_receipt = ProviderObservedAttributionReceipt(

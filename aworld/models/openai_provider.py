@@ -63,6 +63,7 @@ from aworld.models.provider_media import (
     AZURE_OPENAI_MEDIA_PROJECTION,
     OPENAI_MEDIA_PROJECTION,
     consume_provider_media_audit,
+    merge_verified_media_suffix,
 )
 from aworld.models.reasoning_policy import (
     AZURE_OPENAI_REASONING_CAPABILITY,
@@ -483,6 +484,8 @@ class OpenAIProvider(LLMProviderBase):
             self,
             request_id=request_kwargs.get("llm_request_id"),
         )
+        media_wire_messages = messages
+        provider_audit_messages = artifact_redacted_messages
         envelope = request_kwargs.pop(AWORLD_PROVIDER_CANDIDATE_KWARG, None)
         observed_envelope = request_kwargs.pop(
             AWORLD_PROVIDER_OBSERVED_ATTRIBUTION_KWARG, None
@@ -509,12 +512,18 @@ class OpenAIProvider(LLMProviderBase):
                 if reasoning_effort is not None:
                     observed_params["reasoning_effort"] = reasoning_effort
                 current_payload = {
-                    "messages": messages,
+                    "messages": (
+                        artifact_redacted_messages
+                        if isinstance(artifact_redacted_messages, list)
+                        else messages
+                    ),
                     "tools": request_kwargs.get("tools"),
                     "params": observed_params,
                 }
                 if observed_payload != current_payload:
                     raise ValueError("observed request changed before provider")
+                if isinstance(artifact_redacted_messages, list):
+                    provider_audit_messages = observed_payload["messages"]
             except Exception:
                 observed_reason = "observed_model_boundary_mismatch"
         if envelope is not None:
@@ -549,7 +558,21 @@ class OpenAIProvider(LLMProviderBase):
                     payload["tools"], list
                 ):
                     raise TypeError("candidate tools must be a list or null")
-                messages = payload["messages"]
+                provider_audit_messages = payload["messages"]
+                messages = (
+                    merge_verified_media_suffix(
+                        candidate_messages=payload["messages"],
+                        wire_messages=media_wire_messages,
+                        audit_messages=artifact_redacted_messages,
+                        stable_message_count=(
+                            envelope.cache_plan.stable_message_count
+                            if envelope.cache_plan is not None
+                            else 0
+                        ),
+                    )
+                    if isinstance(artifact_redacted_messages, list)
+                    else payload["messages"]
+                )
                 request_kwargs["tools"] = payload["tools"]
                 temperature = params["temperature"]
                 max_tokens = params["max_tokens"]
@@ -709,10 +732,10 @@ class OpenAIProvider(LLMProviderBase):
                 raise
 
         snapshot_params = openai_params
-        if isinstance(artifact_redacted_messages, list):
+        if isinstance(provider_audit_messages, list):
             snapshot_params = dict(openai_params)
             snapshot_params["messages"] = sanitize_openai_messages(
-                artifact_redacted_messages
+                provider_audit_messages
             )
         try:
             provider_request = ProviderRequestSnapshot(
@@ -747,15 +770,26 @@ class OpenAIProvider(LLMProviderBase):
             try:
                 if provider_request is None:
                     raise ValueError("provider request snapshot unavailable")
+                attribution_request = (
+                    snapshot_params
+                    if isinstance(artifact_redacted_messages, list)
+                    else openai_params
+                )
                 attribution = build_provider_attribution_receipt(
                     plan=envelope.attribution_plan,
-                    provider_request=openai_params,
+                    provider_request=attribution_request,
                     serialization=(
-                        AttributionSerialization.HTTP_SERIALIZED_CANONICAL_JSON
+                        AttributionSerialization.PROVIDER_PREPARED_CANONICAL_JSON
+                        if isinstance(artifact_redacted_messages, list)
+                        else AttributionSerialization.HTTP_SERIALIZED_CANONICAL_JSON
                         if serialized_body is not None
                         else AttributionSerialization.PROVIDER_PREPARED_CANONICAL_JSON
                     ),
-                    canonical_request_body=serialized_body,
+                    canonical_request_body=(
+                        None
+                        if isinstance(artifact_redacted_messages, list)
+                        else serialized_body
+                    ),
                     tools_lowering=ProviderToolsLowering.NULL_TO_ABSENT,
                 )
                 receipt = ProviderLoweringReceipt.from_envelope(
@@ -784,15 +818,26 @@ class OpenAIProvider(LLMProviderBase):
         ):
             try:
                 capability = self.context_candidate_lowering_capability()
+                attribution_request = (
+                    snapshot_params
+                    if isinstance(artifact_redacted_messages, list)
+                    else openai_params
+                )
                 observed_attribution = build_provider_attribution_receipt(
                     plan=observed_envelope.attribution_plan,
-                    provider_request=openai_params,
+                    provider_request=attribution_request,
                     serialization=(
-                        AttributionSerialization.HTTP_SERIALIZED_CANONICAL_JSON
+                        AttributionSerialization.PROVIDER_PREPARED_CANONICAL_JSON
+                        if isinstance(artifact_redacted_messages, list)
+                        else AttributionSerialization.HTTP_SERIALIZED_CANONICAL_JSON
                         if serialized_body is not None
                         else AttributionSerialization.PROVIDER_PREPARED_CANONICAL_JSON
                     ),
-                    canonical_request_body=serialized_body,
+                    canonical_request_body=(
+                        None
+                        if isinstance(artifact_redacted_messages, list)
+                        else serialized_body
+                    ),
                     tools_lowering=ProviderToolsLowering.NULL_TO_ABSENT,
                 )
                 observed_receipt = ProviderObservedAttributionReceipt(

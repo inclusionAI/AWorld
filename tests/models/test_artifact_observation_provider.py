@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+from copy import deepcopy
 from types import MethodType, SimpleNamespace
 from typing import Any
 
@@ -11,8 +12,10 @@ from mcp.types import CallToolResult, TextContent
 import aworld.sandbox.artifact_observation as artifact_module
 from aworld.core.context.base import Context
 from aworld.core.context.compiler import (
+    CandidateCompilePolicy,
     ProviderLoweringCapability,
     ProviderRequestFidelity,
+    VerifiedContextEntrypointParityReceipt,
 )
 from aworld.core.context.amni.prompt.assembly.provider import (
     DefaultPromptAssemblyProvider,
@@ -20,7 +23,7 @@ from aworld.core.context.amni.prompt.assembly.provider import (
 from aworld.core.llm_provider import LLMProviderBase
 from aworld.core.task import Task
 from aworld.agents.llm_agent import Agent
-from aworld.config import AgentConfig, AgentMemoryConfig
+from aworld.config import AgentConfig, AgentMemoryConfig, ModelConfig
 from aworld.mcp_client.utils import lower_mcp_call_result
 from aworld.models.llm import LLMModel
 from aworld.models.llm_http_handler import LLMHTTPHandler
@@ -38,7 +41,11 @@ from aworld.models.provider_media import (
     stage_provider_media_audit,
 )
 from aworld.runners.handler.memory import DefaultMemoryHandler
-from aworld.trace.instrumentation.openai.inout_parse import handle_openai_request
+from aworld.trace.instrumentation.openai.inout_parse import (
+    handle_openai_request,
+    record_stream_response_chunk,
+    record_stream_token_usage,
+)
 from aworld.sandbox.artifact_observation import (
     ARTIFACT_RETAINED_MESSAGE,
     artifact_memory_descriptor,
@@ -165,6 +172,35 @@ class _EmptyThenSuccessProvider(_CapturingProvider):
         yield self._response()
 
 
+class _UnfinishedThenSuccessProvider(_CapturingProvider):
+    def __init__(self) -> None:
+        super().__init__()
+        self.stream_attempts = 0
+
+    async def astream_completion(self, messages, **kwargs):
+        self.calls.append(messages)
+        self.kwargs_calls.append(dict(kwargs))
+        self.stream_attempts += 1
+        if self.stream_attempts == 1:
+            response = self._response()
+            response.finish_reason = None
+            yield response
+            return
+        yield self._response()
+
+
+class _NoneThenSuccessProvider(_CapturingProvider):
+    def __init__(self) -> None:
+        super().__init__()
+        self.attempts = 0
+
+    async def acompletion(self, messages, **kwargs):
+        self.calls.append(messages)
+        self.kwargs_calls.append(dict(kwargs))
+        self.attempts += 1
+        return None if self.attempts == 1 else self._response()
+
+
 class _AnthropicCapturingProvider(_CapturingProvider):
     def provider_media_projection_capability(self):
         return ANTHROPIC_MEDIA_PROJECTION
@@ -184,6 +220,15 @@ class _FailOnceParser:
         if self.calls == 1:
             raise RuntimeError("parser rejected response")
         return response
+
+
+class _NoneThenSuccessParser:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def parse(self, response, **kwargs):
+        self.calls += 1
+        return None if self.calls == 1 else response
 
 
 def _causal_messages(context: Context, call_id: str = "call-1"):
@@ -270,8 +315,8 @@ async def test_provider_receives_causal_image_once_without_persisting_base64() -
     rollout = mark_artifact_rollout_late_bound(
         {"candidate_applied": True, "candidate_status": "compiled"}
     )
-    assert rollout["candidate_applied"] is False
-    assert rollout["candidate_status"] == "late_bound_artifact_transport"
+    assert rollout["candidate_applied"] is True
+    assert rollout["candidate_status"] == "compiled"
     assert rollout["artifact_observation"]["provider_cache_eligible"] is True
 
     # Checkpoint compaction does not reactivate a delivered image. A new Tool
@@ -375,6 +420,360 @@ async def test_real_openai_lowering_records_redacted_media_fidelity() -> None:
         if isinstance(call, dict) and isinstance(call.get("provider_request"), dict)
     )
     assert provider_snapshot["fidelity"] == "provider_prepared_media_redacted"
+
+
+@pytest.mark.asyncio
+async def test_enforce_media_preserves_candidate_not_legacy_sync_and_async() -> None:
+    sync_calls: list[dict[str, Any]] = []
+    async_calls: list[dict[str, Any]] = []
+
+    class SyncCompletions:
+        def create(self, **kwargs):
+            sync_calls.append(kwargs)
+            return object()
+
+    class AsyncCompletions:
+        async def create(self, **kwargs):
+            async_calls.append(kwargs)
+            return object()
+
+    async def run_call(*, asynchronous: bool) -> Context:
+        context = Context(task_id=f"artifact-enforce-{'async' if asynchronous else 'sync'}")
+        context.trace_id = ""
+        legacy_messages = [
+            {"role": "system", "content": "LEGACY-STABLE"},
+            *_causal_messages(context),
+        ]
+        candidate_messages = deepcopy(legacy_messages)
+        candidate_messages[0]["content"] = "CANDIDATE-STABLE"
+        candidate_messages = sanitize_openai_messages(candidate_messages)
+        provider = object.__new__(OpenAIProvider)
+        provider.model_name = "gpt-test"
+        provider.kwargs = {}
+        provider.base_url = None
+        provider.provider = SimpleNamespace(
+            chat=SimpleNamespace(completions=SyncCompletions())
+        )
+        provider.async_provider = SimpleNamespace(
+            chat=SimpleNamespace(completions=AsyncCompletions())
+        )
+        provider.is_http_provider = False
+        provider.stream_tool_buffer = []
+        provider.postprocess_response = MethodType(
+            lambda self, response: _CapturingProvider._response(), provider
+        )
+        policy = CandidateCompilePolicy(
+            compiler_version="artifact-media-enforce-v1",
+            candidate_payload={
+                "messages": candidate_messages,
+                "tools": None,
+                "params": {
+                    "temperature": 0,
+                    "max_tokens": 128,
+                    "stop": None,
+                },
+            },
+            enforce_ready=True,
+        )
+        model = LLMModel(
+            conf=ModelConfig(
+                context_compiler={
+                    "mode": "enforce",
+                    "compiler_version": "artifact-media-enforce-v1",
+                }
+            ),
+            custom_provider=provider,
+            context_candidate_policy=policy,
+        )
+        model.provider_name = "openai"
+        call_kwargs = {
+            "context": context,
+            "max_tokens": 128,
+            "_aworld_artifact_vision_enabled": True,
+            "_aworld_artifact_agent_id": "agent-1",
+        }
+        if asynchronous:
+            await model.acompletion(legacy_messages, **call_kwargs)
+        else:
+            model.completion(legacy_messages, **call_kwargs)
+        return context
+
+    sync_context = await run_call(asynchronous=False)
+    async_context = await run_call(asynchronous=True)
+
+    for sent, context in zip((sync_calls[0], async_calls[0]), (sync_context, async_context)):
+        serialized = json.dumps(sent)
+        assert "CANDIDATE-STABLE" in serialized
+        assert "LEGACY-STABLE" not in serialized
+        assert "data:image/png;base64," in serialized
+        record = context.get_llm_calls()[0]
+        assert record["request_selection"] == "candidate"
+        assert record["context_rollout"]["candidate_applied"] is True
+        assert record["context_rollout"]["provider_lowering_ready"] is True
+        assert record["context_rollout"]["artifact_observation"][
+            "provider_cache_eligible"
+        ] is True
+        assert sent["messages"][0] == {
+            "role": "system",
+            "content": "CANDIDATE-STABLE",
+        }
+        provider_payload = record["provider_request"]["payload"]
+        provider_serialized = json.dumps(provider_payload)
+        assert "CANDIDATE-STABLE" in provider_serialized
+        assert "LEGACY-STABLE" not in provider_serialized
+        assert "data:image" not in provider_serialized
+        assert provider_payload["messages"][0] == sent["messages"][0]
+        assert record["provider_request"]["fidelity"] == (
+            "provider_prepared_media_redacted"
+        )
+
+
+@pytest.mark.asyncio
+async def test_observe_media_preserves_legacy_observed_attribution() -> None:
+    calls: list[dict[str, Any]] = []
+
+    class Completions:
+        async def create(self, **kwargs):
+            calls.append(kwargs)
+            return object()
+
+    provider = object.__new__(OpenAIProvider)
+    provider.model_name = "gpt-test"
+    provider.kwargs = {}
+    provider.base_url = None
+    provider.provider = None
+    provider.async_provider = SimpleNamespace(
+        chat=SimpleNamespace(completions=Completions())
+    )
+    provider.is_http_provider = False
+    provider.stream_tool_buffer = []
+    provider.postprocess_response = MethodType(
+        lambda self, response: _CapturingProvider._response(), provider
+    )
+    model = LLMModel(
+        conf=ModelConfig(context_compiler={"mode": "observe"}),
+        custom_provider=provider,
+    )
+    model.provider_name = "openai"
+    context = Context(task_id="artifact-observe-media")
+    context.trace_id = ""
+
+    await model.acompletion(
+        _causal_messages(context),
+        context=context,
+        _aworld_artifact_vision_enabled=True,
+        _aworld_artifact_agent_id="agent-1",
+    )
+
+    assert "data:image/png;base64," in json.dumps(calls[0])
+    record = context.get_llm_calls()[0]
+    evidence = record["context_rollout"]["provider_attribution"]
+    assert evidence["status"] == "available"
+    assert evidence["subject"] == "legacy_observed"
+    assert evidence["attribution"]["subject"] == "legacy_observed"
+    assert record["provider_request"]["fidelity"] == (
+        "provider_prepared_media_redacted"
+    )
+
+
+def test_shared_anthropic_enforce_applies_media_only_to_candidate_suffix() -> None:
+    calls: list[dict[str, Any]] = []
+
+    class Messages:
+        def create(self, **kwargs):
+            calls.append(kwargs)
+            return object()
+
+    context = Context(task_id="artifact-anthropic-enforce")
+    context.trace_id = ""
+    legacy_messages = [
+        {"role": "system", "content": "LEGACY-STABLE"},
+        *_causal_messages(context),
+    ]
+    candidate_messages = deepcopy(legacy_messages)
+    candidate_messages[0]["content"] = "CANDIDATE-STABLE"
+    provider = object.__new__(AnthropicProvider)
+    provider.model_name = "claude-test"
+    provider.kwargs = {}
+    provider.provider = SimpleNamespace(messages=Messages())
+    provider.async_provider = None
+    provider.stream_tool_buffer = []
+    provider.postprocess_response = MethodType(
+        lambda self, response: _CapturingProvider._response(), provider
+    )
+    policy = CandidateCompilePolicy(
+        compiler_version="artifact-anthropic-media-v1",
+        candidate_payload={
+            "messages": candidate_messages,
+            "tools": None,
+            "params": {
+                "temperature": 0,
+                "max_tokens": 128,
+                "stop": None,
+            },
+        },
+        enforce_ready=True,
+    )
+    model = LLMModel(
+        conf=ModelConfig(
+            context_compiler={
+                "mode": "enforce",
+                "compiler_version": "artifact-anthropic-media-v1",
+            }
+        ),
+        custom_provider=provider,
+        context_candidate_policy=policy,
+    )
+    model.provider_name = "anthropic"
+
+    model.completion(
+        legacy_messages,
+        context=context,
+        max_tokens=128,
+        _aworld_artifact_vision_enabled=True,
+        _aworld_artifact_agent_id="agent-1",
+    )
+
+    assert calls[0]["system"] == "CANDIDATE-STABLE"
+    serialized = json.dumps(calls[0])
+    assert "LEGACY-STABLE" not in serialized
+    assert '"type": "image"' in serialized
+    assert base64.b64encode(_PNG_1X1).decode("ascii") in serialized
+    record = context.get_llm_calls()[0]
+    assert record["request_selection"] == "candidate"
+    assert record["context_rollout"]["candidate_applied"] is True
+    snapshot = json.dumps(record["provider_request"]["payload"])
+    assert "CANDIDATE-STABLE" in snapshot
+    assert "LEGACY-STABLE" not in snapshot
+    assert base64.b64encode(_PNG_1X1).decode("ascii") not in snapshot
+
+
+def test_anthropic_media_preserves_universal_native_cache_prefix() -> None:
+    calls: list[dict[str, Any]] = []
+
+    class Messages:
+        def create(self, **kwargs):
+            calls.append(kwargs)
+            return object()
+
+    context = Context(task_id="artifact-anthropic-cache")
+    context.trace_id = ""
+    context.advance_context_lifecycle("checkpoint")
+    messages = [
+        {"role": "system", "content": "CACHE-STABLE"},
+        *_causal_messages(context),
+    ]
+    provider = object.__new__(AnthropicProvider)
+    provider.model_name = "claude-test"
+    provider.kwargs = {}
+    provider.provider = SimpleNamespace(messages=Messages())
+    provider.async_provider = None
+    provider.stream_tool_buffer = []
+    provider.postprocess_response = MethodType(
+        lambda self, response: _CapturingProvider._response(), provider
+    )
+    model = LLMModel(
+        conf=ModelConfig(
+            context_cache={"allow_provider_native_cache": True},
+            context_compiler={"mode": "enforce", "universal_final": True},
+        ),
+        custom_provider=provider,
+    )
+    model.provider_name = "anthropic"
+
+    model.completion(
+        messages,
+        context=context,
+        max_tokens=128,
+        _aworld_artifact_vision_enabled=True,
+        _aworld_artifact_agent_id="agent-1",
+    )
+
+    assert calls[0]["system"] == [
+        {
+            "type": "text",
+            "text": "CACHE-STABLE",
+            "cache_control": {"type": "ephemeral"},
+        }
+    ]
+    assert base64.b64encode(_PNG_1X1).decode("ascii") in json.dumps(calls[0])
+    record = context.get_llm_calls()[0]
+    cache_plan = record["context_rollout"]["final_compile"]["cache_plan"]
+    assert cache_plan["stable_message_count"] == 1
+    lowering = record["context_rollout"]["provider_lowering"]
+    assert lowering["cache_lowering_status"] == "applied"
+    assert lowering["cache_lowering_strategy"] == "anthropic_cache_control"
+    assert lowering["cache_plan_fingerprint"] == cache_plan["fingerprint"]
+    assert (
+        VerifiedContextEntrypointParityReceipt.from_llm_call_record(record)
+        .receipt.provider_bound
+        is True
+    )
+
+
+def test_openai_http_media_preserves_serialized_native_cache_prefix() -> None:
+    sent: list[tuple[dict[str, Any], bytes | None]] = []
+
+    class HTTP:
+        def sync_call(self, data, *, serialized_body=None):
+            sent.append((data, serialized_body))
+            return object()
+
+    context = Context(task_id="artifact-openai-http-cache")
+    context.trace_id = ""
+    context.advance_context_lifecycle("checkpoint")
+    messages = [
+        {"role": "system", "content": "CACHE-STABLE"},
+        *_causal_messages(context),
+    ]
+    provider = object.__new__(OpenAIProvider)
+    provider.model_name = "gpt-test"
+    provider.kwargs = {}
+    provider.base_url = None
+    provider.provider = SimpleNamespace()
+    provider.async_provider = None
+    provider.is_http_provider = True
+    provider.http_provider = HTTP()
+    provider.stream_tool_buffer = []
+    provider.postprocess_response = MethodType(
+        lambda self, response: _CapturingProvider._response(), provider
+    )
+    model = LLMModel(
+        conf=ModelConfig(
+            context_cache={"allow_provider_native_cache": True},
+            context_compiler={"mode": "enforce", "universal_final": True},
+        ),
+        custom_provider=provider,
+    )
+    model.provider_name = "openai"
+
+    model.completion(
+        messages,
+        context=context,
+        max_tokens=128,
+        _aworld_artifact_vision_enabled=True,
+        _aworld_artifact_agent_id="agent-1",
+    )
+
+    payload, serialized_body = sent[0]
+    assert payload["messages"][0] == {
+        "role": "system",
+        "content": "CACHE-STABLE",
+    }
+    assert "data:image/png;base64," in json.dumps(payload)
+    assert serialized_body is not None
+    record = context.get_llm_calls()[0]
+    snapshot = json.dumps(record["provider_request"]["payload"])
+    assert "CACHE-STABLE" in snapshot
+    assert "data:image" not in snapshot
+    lowering = record["context_rollout"]["provider_lowering"]
+    assert lowering["cache_lowering_status"] == "preserved"
+    assert lowering["cache_lowering_strategy"] == "exact_prefix_no_hint"
+    assert (
+        VerifiedContextEntrypointParityReceipt.from_llm_call_record(record)
+        .receipt.provider_bound
+        is True
+    )
 
 
 @pytest.mark.asyncio
@@ -505,6 +904,38 @@ async def test_empty_stream_does_not_consume_image_delivery() -> None:
 
 
 @pytest.mark.asyncio
+async def test_stream_without_terminal_finish_does_not_consume_image_delivery() -> (
+    None
+):
+    context = Context(task_id="artifact-task")
+    messages = _causal_messages(context)
+    provider = _UnfinishedThenSuccessProvider()
+    model = LLMModel(custom_provider=provider)
+
+    assert [
+        chunk
+        async for chunk in model.astream_completion(
+            messages,
+            context=context,
+            _aworld_artifact_vision_enabled=True,
+            _aworld_artifact_agent_id="agent-1",
+        )
+    ]
+    assert "data:image/png;base64," in json.dumps(provider.calls[0])
+
+    assert [
+        chunk
+        async for chunk in model.astream_completion(
+            messages,
+            context=context,
+            _aworld_artifact_vision_enabled=True,
+            _aworld_artifact_agent_id="agent-1",
+        )
+    ]
+    assert "data:image/png;base64," in json.dumps(provider.calls[1])
+
+
+@pytest.mark.asyncio
 async def test_response_parser_failure_does_not_consume_image_delivery() -> None:
     context = Context(task_id="artifact-task")
     messages = _causal_messages(context)
@@ -522,6 +953,61 @@ async def test_response_parser_failure_does_not_consume_image_delivery() -> None
     assert "data:image/png;base64," in json.dumps(provider.calls[0])
 
     await model.acompletion(
+        messages,
+        context=context,
+        _aworld_artifact_vision_enabled=True,
+        _aworld_artifact_agent_id="agent-1",
+    )
+    assert "data:image/png;base64," in json.dumps(provider.calls[1])
+
+
+@pytest.mark.asyncio
+async def test_none_provider_response_does_not_consume_image_delivery() -> None:
+    context = Context(task_id="artifact-task")
+    messages = _causal_messages(context)
+    provider = _NoneThenSuccessProvider()
+    model = LLMModel(custom_provider=provider)
+
+    assert (
+        await model.acompletion(
+            messages,
+            context=context,
+            _aworld_artifact_vision_enabled=True,
+            _aworld_artifact_agent_id="agent-1",
+        )
+        is None
+    )
+    assert "data:image/png;base64," in json.dumps(provider.calls[0])
+
+    assert await model.acompletion(
+        messages,
+        context=context,
+        _aworld_artifact_vision_enabled=True,
+        _aworld_artifact_agent_id="agent-1",
+    )
+    assert "data:image/png;base64," in json.dumps(provider.calls[1])
+
+
+@pytest.mark.asyncio
+async def test_none_parser_response_does_not_consume_image_delivery() -> None:
+    context = Context(task_id="artifact-task")
+    messages = _causal_messages(context)
+    provider = _CapturingProvider()
+    model = LLMModel(custom_provider=provider)
+    model.llm_response_parser = _NoneThenSuccessParser()
+
+    assert (
+        await model.acompletion(
+            messages,
+            context=context,
+            _aworld_artifact_vision_enabled=True,
+            _aworld_artifact_agent_id="agent-1",
+        )
+        is None
+    )
+    assert "data:image/png;base64," in json.dumps(provider.calls[0])
+
+    assert await model.acompletion(
         messages,
         context=context,
         _aworld_artifact_vision_enabled=True,
@@ -1044,3 +1530,86 @@ async def test_openai_trace_redacts_wire_image_payload(monkeypatch) -> None:
     assert sentinel not in serialized
     assert "data:image" not in serialized
     assert "payload_sha256" in serialized
+
+
+def test_openai_stream_token_estimate_counts_only_text_blocks(monkeypatch) -> None:
+    counted: list[str] = []
+
+    def count_text(value: str, model_name: str) -> int:
+        counted.append(value)
+        return len(value)
+
+    monkeypatch.setattr(
+        "aworld.trace.instrumentation.openai.inout_parse.get_token_count_from_string",
+        count_text,
+    )
+    sentinel = "PRIVATE-BASE64-" + ("x" * 4096)
+
+    prompt_tokens, completion_tokens = record_stream_token_usage(
+        {
+            "model": "gpt-test",
+            "choices": [
+                {
+                    "message": {
+                        "content": [
+                            {"type": "output_text", "text": "answer"},
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:image/png;base64,{sentinel}"
+                                },
+                            },
+                        ]
+                    }
+                }
+            ],
+        },
+        {
+            "model": "gpt-test",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "question"},
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/png;base64,{sentinel}"
+                            },
+                        },
+                    ],
+                }
+            ],
+        },
+    )
+
+    assert (prompt_tokens, completion_tokens) == (len("question"), len("answer"))
+    assert counted == ["question", "answer"]
+    assert sentinel not in repr(counted)
+
+    complete = {"choices": []}
+    record_stream_response_chunk(
+        {
+            "model": "gpt-test",
+            "id": "chunk-2",
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {
+                        "content": [
+                            {"type": "text", "text": "visible"},
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:image/png;base64,{sentinel}"
+                                },
+                            },
+                        ]
+                    },
+                }
+            ],
+        },
+        complete,
+    )
+    assert complete["choices"][0]["message"]["content"] == "visible"
+    assert sentinel not in repr(complete)

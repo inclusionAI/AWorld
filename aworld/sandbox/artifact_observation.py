@@ -567,6 +567,15 @@ def register_artifact_sidecar(
     parsed = parse_artifact_receipt(dict(receipt))
     if parsed is None:
         raise ArtifactObservationError("artifact receipt is incomplete")
+    if not isinstance(image_base64, str):
+        raise ArtifactObservationError("artifact image payload is invalid base64")
+    expected_encoded_length = 4 * ((int(parsed["byte_count"]) + 2) // 3)
+    hard_encoded_limit = 4 * ((_HARD_MAX_BYTES + 2) // 3)
+    if (
+        len(image_base64) != expected_encoded_length
+        or len(image_base64) > hard_encoded_limit
+    ):
+        raise ArtifactObservationError("artifact image payload length is invalid")
     try:
         data = base64.b64decode(image_base64, validate=True)
     except (ValueError, binascii.Error) as exc:
@@ -715,8 +724,6 @@ def mark_artifact_rollout_late_bound(
     if not isinstance(value, dict):
         return value
     updated = dict(value)
-    updated["candidate_applied"] = False
-    updated["candidate_status"] = "late_bound_artifact_transport"
     updated["artifact_observation"] = {
         "late_bound": True,
         "provider_cache_eligible": True,
@@ -782,6 +789,12 @@ def _tool_content_receipt(content: Any, *, depth: int = 0) -> dict[str, Any] | N
         if receipt is not None:
             return receipt
     return None
+
+
+def artifact_receipt_from_tool_content(content: Any) -> dict[str, Any] | None:
+    """Recover a validated artifact receipt from framework Tool-result text."""
+
+    return _tool_content_receipt(content)
 
 
 def _artifact_candidates(

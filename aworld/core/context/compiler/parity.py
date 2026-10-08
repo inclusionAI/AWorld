@@ -445,7 +445,11 @@ class VerifiedContextEntrypointParityReceipt:
         if (
             provider_snapshot.request_id != request_id
             or provider_snapshot.capture_stage is not RequestCaptureStage.PROVIDER_PREPARED
-            or provider_snapshot.fidelity is not ProviderRequestFidelity.PROVIDER_PREPARED
+            or provider_snapshot.fidelity
+            not in {
+                ProviderRequestFidelity.PROVIDER_PREPARED,
+                ProviderRequestFidelity.PROVIDER_PREPARED_MEDIA_REDACTED,
+            }
             or binding["capture_stage"] != provider_snapshot.capture_stage.value
             or binding["fidelity"] != provider_snapshot.fidelity.value
             or binding["candidate_content_hash"]
@@ -490,6 +494,8 @@ class VerifiedContextEntrypointParityReceipt:
                 attribution.get("serialization")
                 == "provider_prepared_canonical_json"
                 and provider_snapshot.serialized_checksum is not None
+                and provider_snapshot.fidelity
+                is not ProviderRequestFidelity.PROVIDER_PREPARED_MEDIA_REDACTED
             )
         ):
             raise ValueError("provider attribution does not match raw request")

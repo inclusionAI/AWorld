@@ -372,6 +372,30 @@ def _framework_task_budget(
     )
 
 
+def _bind_env_content_tool_call_id(
+    servers: Any,
+    tool_key: str,
+    parameter: Dict[str, Any],
+    tool_call_id: Any,
+) -> None:
+    """Bind call authority without widening the legacy injection override API."""
+
+    if not isinstance(tool_call_id, str) or not tool_call_id:
+        return
+    mapping = getattr(servers, "_env_content_param_mapping", None)
+    if not isinstance(mapping, Mapping):
+        return
+    env_content_name = mapping.get(tool_key)
+    if not isinstance(env_content_name, str) or not env_content_name:
+        return
+    env_content = parameter.get(env_content_name)
+    if isinstance(env_content, dict):
+        # This runs after the overridable compatibility hook. The framework
+        # call identifier therefore remains authoritative even for subclasses
+        # that still implement the historical four-argument method.
+        env_content["tool_call_id"] = tool_call_id
+
+
 def _transport_lease_decision(
     *,
     requested_timeout: float,
@@ -1539,7 +1563,12 @@ class McpServers:
                     parameter,
                     context,
                     event_message,
-                    tool_call_id=action_dict.get("tool_call_id"),
+                )
+                _bind_env_content_tool_call_id(
+                    self,
+                    result_key,
+                    parameter,
+                    action_dict.get("tool_call_id"),
                 )
 
                 # Check server type

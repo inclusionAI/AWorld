@@ -11,6 +11,7 @@ from aworld.utils import import_package
 import aworld.trace.instrumentation.semconv as semconv
 
 _PYDANTIC_VERSION = version("pydantic")
+tiktoken_encodings = {}
 
 
 def should_trace_prompts():
@@ -94,6 +95,25 @@ def parse_openai_response(response, request_kwargs, instance, is_streaming):
     }
 
 
+def _text_content_only(content) -> str:
+    """Project text blocks for estimates without touching media payloads."""
+
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, (list, tuple)):
+        return ""
+    text_parts = []
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        if block.get("type") not in {"text", "input_text", "output_text"}:
+            continue
+        text = block.get("text")
+        if isinstance(text, str):
+            text_parts.append(text)
+    return "".join(text_parts)
+
+
 def record_stream_token_usage(complete_response, request_kwargs) -> tuple[int, int]:
     '''
         return (prompt_usage, completion_usage)
@@ -107,8 +127,7 @@ def record_stream_token_usage(complete_response, request_kwargs) -> tuple[int, i
         model_name = complete_response.get(
             "model") or request_kwargs.get("model") or "gpt-4"
         for msg in request_kwargs.get("messages"):
-            if msg.get("content"):
-                prompt_content += msg.get("content")
+            prompt_content += _text_content_only(msg.get("content"))
         if model_name:
             prompt_usage = get_token_count_from_string(
                 prompt_content, model_name)
@@ -120,7 +139,9 @@ def record_stream_token_usage(complete_response, request_kwargs) -> tuple[int, i
 
         for choice in complete_response.get("choices"):
             if choice.get("message") and choice.get("message").get("content"):
-                completion_content += choice["message"]["content"]
+                completion_content += _text_content_only(
+                    choice["message"]["content"]
+                )
 
         if model_name:
             completion_usage = get_token_count_from_string(
@@ -183,7 +204,9 @@ def record_stream_response_chunk(chunk, complete_response):
         delta = choice.get("delta")
 
         if delta and delta.get("content"):
-            complete_choice["message"]["content"] += delta.get("content")
+            complete_choice["message"]["content"] += _text_content_only(
+                delta.get("content")
+            )
 
         if delta and delta.get("role"):
             complete_choice["message"]["role"] = delta.get("role")

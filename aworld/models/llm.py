@@ -1129,6 +1129,24 @@ class LLMModel:
             )
             return base_response
 
+    @classmethod
+    def _is_authoritative_stream_completion(
+        cls, response: Optional[ModelResponse]
+    ) -> bool:
+        """Return true only for an explicit successful terminal stream chunk."""
+
+        if response is None:
+            return False
+        finish_reason = getattr(response, "finish_reason", None)
+        if not isinstance(finish_reason, str) or not finish_reason.strip():
+            return False
+        return finish_reason.strip().lower() not in {
+            "cancelled",
+            "canceled",
+            "error",
+            "failed",
+        }
+
     def _resolve_request_model_name(self, **kwargs) -> Optional[str]:
         return kwargs.get("model_name") or getattr(self.provider, "model_name", None)
 
@@ -2948,8 +2966,6 @@ class LLMModel:
                 mark_artifact_rollout_late_bound,
             )
 
-            provider_candidate = None
-            observed_attribution = None
             context_rollout = mark_artifact_rollout_late_bound(
                 context_rollout, _artifact_projection
             )
@@ -3007,7 +3023,11 @@ class LLMModel:
                 response_parse_args = kwargs.get("response_parse_args") or {}
                 response_parse_args["tools"] = kwargs.get("tools")
                 resp = await self.llm_response_parser.parse(resp, **response_parse_args)
-            if artifact_media_active and context is not None:
+            if (
+                artifact_media_active
+                and context is not None
+                and isinstance(resp, ModelResponse)
+            ):
                 from aworld.sandbox.artifact_observation import (
                     commit_artifact_projection,
                 )
@@ -3266,8 +3286,6 @@ class LLMModel:
                 mark_artifact_rollout_late_bound,
             )
 
-            provider_candidate = None
-            observed_attribution = None
             context_rollout = mark_artifact_rollout_late_bound(
                 context_rollout, _artifact_projection
             )
@@ -3326,7 +3344,11 @@ class LLMModel:
                 resp = sync_exec(
                     self.llm_response_parser.parse, resp, **response_parse_args
                 )
-            if artifact_media_active and context is not None:
+            if (
+                artifact_media_active
+                and context is not None
+                and isinstance(resp, ModelResponse)
+            ):
                 from aworld.sandbox.artifact_observation import (
                     commit_artifact_projection,
                 )
@@ -3541,8 +3563,6 @@ class LLMModel:
                 mark_artifact_rollout_late_bound,
             )
 
-            provider_candidate = None
-            observed_attribution = None
             context_rollout = mark_artifact_rollout_late_bound(
                 context_rollout, _artifact_projection
             )
@@ -3613,7 +3633,7 @@ class LLMModel:
             if (
                 artifact_media_active
                 and context is not None
-                and record_chunk is not None
+                and self._is_authoritative_stream_completion(record_chunk)
             ):
                 from aworld.sandbox.artifact_observation import (
                     commit_artifact_projection,
@@ -3810,8 +3830,6 @@ class LLMModel:
                 mark_artifact_rollout_late_bound,
             )
 
-            provider_candidate = None
-            observed_attribution = None
             context_rollout = mark_artifact_rollout_late_bound(
                 context_rollout, _artifact_projection
             )
@@ -3880,7 +3898,7 @@ class LLMModel:
             if (
                 artifact_media_active
                 and context is not None
-                and record_chunk is not None
+                and self._is_authoritative_stream_completion(record_chunk)
             ):
                 from aworld.sandbox.artifact_observation import (
                     commit_artifact_projection,

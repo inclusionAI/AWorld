@@ -10,7 +10,7 @@ import sys
 import threading
 import weakref
 from pathlib import Path
-from types import SimpleNamespace
+from types import MethodType, SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -93,6 +93,33 @@ def test_context_parameter_enrichment_does_not_materialize_schema_defaults(runti
         )
         == 310
     )
+
+
+def test_legacy_env_injection_override_keeps_four_args_and_binds_call_id(runtime):
+    servers = runtime.Servers(_schema())
+    servers._env_content_param_mapping = {
+        "terminal__run_code": "env_content"
+    }
+
+    def legacy_override(self, tool_key, parameter, context, event_message):
+        parameter["env_content"] = {"legacy_override": True}
+
+    servers._inject_env_content_parameter = MethodType(legacy_override, servers)
+    action = {
+        "tool_name": "terminal",
+        "action_name": "run_code",
+        "tool_call_id": "call-authority",
+        "params": {"code": "print('ok')"},
+    }
+
+    (result,) = asyncio.run(servers.call(action_list=[action]))
+
+    assert result.success
+    sent = runtime.remote.await_args.kwargs["parameter"]
+    assert sent["env_content"] == {
+        "legacy_override": True,
+        "tool_call_id": "call-authority",
+    }
 
 
 @pytest.mark.parametrize("reuse", [False, True])
