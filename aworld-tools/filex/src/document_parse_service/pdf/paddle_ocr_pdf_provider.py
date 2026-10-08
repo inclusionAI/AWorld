@@ -40,7 +40,8 @@ precision than that scale supports and prefix the numeric cell with ≈. Do not 
 unlabelled, cropped, ambiguous, or non-linear scale, and never extrapolate beyond visible ticks.
 Preserve exact printed footnote markers. Preserve panel titles as a table column or a short
 heading immediately before the corresponding table. Never wrap a narrative sentence in a
-one-column table and never invent a value that the chart does not visually support."""
+one-column table and never invent a value that the chart does not visually support. Put a
+currency symbol or unit in the measure-column header, not after an estimate marker."""
 _CHART_CORRECTION_PROMPT = """Chart Recognition:
 CORRECTION ATTEMPT {attempt}: the previous response violated the chart table contract.
 Read the chart image again; do not reformat or summarize the previous answer.
@@ -51,7 +52,8 @@ read from a plotted mark is allowed only when a visible labelled axis and tick s
 prefix that cell with ≈ and use no more precision than the ticks support. Do not emit prose,
 bullets, JSON, one-column tables, ranges, commentary, unmarked estimates, extrapolations, or
 values from an unlabelled/cropped/ambiguous/non-linear scale. Preserve exact printed footnote
-markers. Never invent a value that the chart does not visually support.
+markers. Never invent a value that the chart does not visually support. Put a currency symbol
+or unit in the measure-column header, not after an estimate marker.
 The rejected output failed these checks: {failures}"""
 _MARKDOWN_SEPARATOR_CELL = re.compile(r"^:?-{3,}:?$")
 _NUMERIC_CHART_CELL = re.compile(
@@ -60,6 +62,7 @@ _NUMERIC_CHART_CELL = re.compile(
     r"(?:\*{1,3}|[⁰¹²³⁴⁵⁶⁷⁸⁹]+|[†‡])?$",
     re.IGNORECASE,
 )
+_MARKED_CURRENCY_VALUE = re.compile(r"^[~≈]\s*[$€£¥]")
 _CHART_CATEGORY_HEADER = re.compile(
     r"^(?:category|country|date|day|label|month|name|panel|period|quarter|"
     r"region|series|time|week|year|x(?:[- ]?axis)?)$",
@@ -993,6 +996,8 @@ class PaddleOcrPdfProvider:
     @staticmethod
     def _is_numeric_chart_cell(value: str) -> bool:
         normalized = re.sub(r"\s+", " ", value).strip()
+        if _MARKED_CURRENCY_VALUE.match(normalized):
+            return False
         return bool(_NUMERIC_CHART_CELL.fullmatch(normalized))
 
     @staticmethod

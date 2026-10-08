@@ -43,6 +43,7 @@ _NARRATIVE_ESTIMATE = re.compile(
     r"\b(?:about|approx(?:\.|imately)?|around|between|estimated|roughly)\b",
     re.IGNORECASE,
 )
+_MARKED_CURRENCY_VALUE = re.compile(r"^[~≈]\s*[$€£¥]")
 _SEMANTIC_HEADER = re.compile(r"[^\W\d_]", re.UNICODE)
 _HTML_TABLE_BLOCK = re.compile(r"<table\b[^>]*>.*?</table>", re.IGNORECASE | re.DOTALL)
 
@@ -70,8 +71,9 @@ visible labelled axis and tick scale bound it, read it to no more precision than
 that scale supports, prefix that cell with ≈, and set estimated to true. Exact
 printed cells remain unprefixed even in a table that also contains estimates.
 Never estimate from an unlabelled, cropped, ambiguous, or non-linear scale;
-never extrapolate beyond visible ticks, invent a value, or emit a range. Return
-JSON only, without prose/commentary."""
+never extrapolate beyond visible ticks, invent a value, or emit a range. Put a
+currency symbol or unit in the measure-column header, not after an estimate
+marker in a value cell. Return JSON only, without prose/commentary."""
 
 
 class BlockRepairError(ValueError):
@@ -377,6 +379,10 @@ def _validate_chart_table(
                 raise BlockRepairError("filex_chart_repair_range_invalid")
             if _NARRATIVE_ESTIMATE.search(value):
                 raise BlockRepairError("filex_chart_repair_narrative_value_invalid")
+            if _MARKED_CURRENCY_VALUE.match(value):
+                raise BlockRepairError(
+                    "filex_chart_repair_estimated_currency_inline"
+                )
             if _NUMERIC.fullmatch(value) is None:
                 raise BlockRepairError("filex_chart_repair_numeric_value_missing")
             if value.lstrip().startswith(("~", "≈")):
@@ -532,7 +538,77 @@ def _anchored_rewrite(
             raise BlockRepairError(f"filex_block_repair_{scope}_anchor_ambiguous")
         start, end = next(iter(positions))
         return content[:start] + replacement + content[end:]
+    visible_content, content_spans = _visible_projection_with_spans(content)
+    visible_positions: set[tuple[int, int]] = set()
+    for candidate in values:
+        visible_candidate, _candidate_spans = _visible_projection_with_spans(candidate)
+        if len(visible_candidate) < 32:
+            continue
+        start = 0
+        while True:
+            index = visible_content.find(visible_candidate, start)
+            if index < 0:
+                break
+            raw_start = content_spans[index][0]
+            raw_end = content_spans[index + len(visible_candidate) - 1][1]
+            visible_positions.add((raw_start, raw_end))
+            start = index + 1
+    if len(visible_positions) > 1:
+        raise BlockRepairError(f"filex_block_repair_{scope}_anchor_ambiguous")
+    if len(visible_positions) == 1:
+        start, end = next(iter(visible_positions))
+        return content[:start] + replacement + content[end:]
     raise BlockRepairError("filex_block_repair_anchor_missing")
+
+
+def _visible_projection_with_spans(value: str) -> tuple[str, list[tuple[int, int]]]:
+    """Project visible text while retaining raw spans for a unique rewrite."""
+
+    characters: list[str] = []
+    spans: list[tuple[int, int]] = []
+
+    def append(text: str, start: int, end: int) -> None:
+        for character in text.lower():
+            if character in "#>*_`":
+                continue
+            if character.isspace():
+                if not characters or characters[-1] == " ":
+                    if spans:
+                        spans[-1] = (spans[-1][0], end)
+                    continue
+                characters.append(" ")
+                spans.append((start, end))
+                continue
+            characters.append(character)
+            spans.append((start, end))
+
+    index = 0
+    while index < len(value):
+        if value[index] == "<":
+            closing = value.find(">", index + 1)
+            if closing >= 0:
+                append(" ", index, closing + 1)
+                index = closing + 1
+                continue
+        if value[index] == "&":
+            closing = value.find(";", index + 1, min(len(value), index + 32))
+            if closing >= 0:
+                encoded = value[index : closing + 1]
+                decoded = unescape(encoded)
+                if decoded != encoded:
+                    append(decoded, index, closing + 1)
+                    index = closing + 1
+                    continue
+        append(value[index], index, index + 1)
+        index += 1
+
+    while characters and characters[0] == " ":
+        characters.pop(0)
+        spans.pop(0)
+    while characters and characters[-1] == " ":
+        characters.pop()
+        spans.pop()
+    return "".join(characters), spans
 
 
 def _anchored_insert(
@@ -1126,6 +1202,10 @@ def apply_structured_repair(
     item["md"] = html
     item["html"] = html
     item["value"] = html
+    if render_table.value_columns:
+        item["filex_chart_value_columns"] = list(render_table.value_columns)
+    else:
+        item.pop("filex_chart_value_columns", None)
     items = page.get("items")
     if not isinstance(items, list):
         raise BlockRepairError("filex_block_repair_target_items_invalid")

@@ -1324,6 +1324,10 @@ def test_chart_contract_rejects_persistent_narrative_table() -> None:
             True,
         ),
         (
+            "| Country | Revenue ($) |\n| --- | ---: |\n| USA | ≈$38 |",
+            False,
+        ),
+        (
             "| Year | Value |\n| --- | --- |\n| 2021 | garbage |",
             False,
         ),

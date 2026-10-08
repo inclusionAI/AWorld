@@ -157,6 +157,12 @@ def test_chart_table_requires_explicit_evidence_contract(content: str) -> None:
             '"columns":["Month","Sales"],"rows":[["January","42"]]}',
             "filex_chart_repair_estimated_value_unverified",
         ),
+        (
+            '{"labels":["Month","Sales ($)","January"],"estimated":true,'
+            '"value_columns":[1],"columns":["Month","Sales ($)"],'
+            '"rows":[["January","≈$42"]]}',
+            "filex_chart_repair_estimated_currency_inline",
+        ),
     ],
 )
 def test_chart_table_rejects_unscorable_or_unbounded_values(
@@ -438,6 +444,67 @@ def test_apply_repair_fails_closed_when_document_anchor_is_repeated() -> None:
         )
 
     assert layout == original
+
+
+def test_apply_repair_uses_unique_visible_anchor_across_formatting_drift() -> None:
+    item_prose = (
+        "<table><tr><td>Smoking among 15-year-olds in 2014 across "
+        "European countries</td></tr></table>"
+    )
+    formatted_prose = (
+        "Smoking among 15-**year**-olds in **2014** across European countries"
+    )
+    layout = {
+        "layout_pages": [
+            {
+                "page_number": 1,
+                "md": formatted_prose,
+                "text": formatted_prose,
+                "items": [
+                    {
+                        "id": "chart-1",
+                        "type": "chart",
+                        "md": item_prose,
+                        "html": item_prose,
+                        "value": item_prose,
+                        "bbox": {
+                            "x": 1,
+                            "y": 1,
+                            "w": 10,
+                            "h": 10,
+                            "label": "picture",
+                        },
+                    }
+                ],
+            }
+        ],
+        "pages": [{"page_index": 0, "markdown": formatted_prose}],
+        "markdown": formatted_prose,
+    }
+    replacement = StructuredTable(
+        ("Country", "Value"),
+        (("A", "1"),),
+        value_columns=(1,),
+    )
+
+    document, repaired = apply_structured_repair(
+        document=formatted_prose,
+        layout=layout,
+        issue={
+            "reason": "filex_chart_content_unusable",
+            "page_number": 1,
+            "item_index": 0,
+            "block_id": "chart-1",
+        },
+        table=replacement,
+    )
+
+    assert document == replacement.to_html()
+    assert repaired["layout_pages"][0]["md"] == replacement.to_html()
+    assert repaired["pages"][0]["markdown"] == replacement.to_html()
+    assert repaired["layout_pages"][0]["items"][0][
+        "filex_chart_value_columns"
+    ] == [1]
 
 
 def test_apply_repair_requires_matching_page_item_and_block_identity() -> None:
@@ -1127,10 +1194,10 @@ async def test_axis_bounded_estimated_chart_value_is_applied_with_marker(
         async def transcribe(self, *_args, **_kwargs):
             self.calls += 1
             return _Response(
-                '{"caption":"Estimated chart","labels":["Year","Value"],'
-                '"estimated":true,"value_columns":[1],'
-                '"columns":["Year","Value"],'
-                '"rows":[["2024","~42"]]}'
+                '{"caption":"Estimated chart","labels":["Country","Gender",'
+                '"Value","Germany","Women"],"estimated":true,'
+                '"value_columns":[2],"columns":["Country","Gender","Value"],'
+                '"rows":[["Germany","Women","~42"]]}'
             )
 
     def render(_source_path, **kwargs):
@@ -1199,11 +1266,11 @@ async def test_axis_bounded_estimated_chart_value_is_applied_with_marker(
             "block_id": "chart-1",
         }
     ]
-    assert "<th>Year</th><th>Value</th>" in result["document"]
-    assert "<td>2024</td><td>~42</td>" in result["document"]
-    assert result["layout"]["layout_pages"][0]["items"][0]["html"] in result[
-        "document"
-    ]
+    assert "<th>Country</th><th>Gender</th><th>Value</th>" in result["document"]
+    assert "<td>Germany</td><td>Women</td><td>~42</td>" in result["document"]
+    repaired_item = result["layout"]["layout_pages"][0]["items"][0]
+    assert repaired_item["html"] in result["document"]
+    assert repaired_item["filex_chart_value_columns"] == [2]
     assert backend.calls == 1
 
 
