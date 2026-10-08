@@ -668,6 +668,7 @@ def _native_agent_step(
 
     tool_calls: list[dict[str, Any]] = []
     observation_results: list[dict[str, Any]] = []
+    missing_tool_results: list[dict[str, str]] = []
     for index, raw_call in enumerate(raw_calls, start=1):
         if not isinstance(raw_call, dict):
             continue
@@ -700,6 +701,16 @@ def _native_agent_step(
             if isinstance(result.get("extra"), dict):
                 observation["extra"] = result["extra"]
             observation_results.append(observation)
+        else:
+            # This is a trajectory diagnostic, not a synthetic Tool result.
+            # Keep the causal gap explicit without fabricating content,
+            # success, a receipt, or an ``observation.results`` entry.
+            missing_tool_results.append(
+                {
+                    "source_call_id": call_id[:256],
+                    "kind": "tool_result_missing",
+                }
+            )
 
     if response_kind is None:
         if tool_calls and visible_content_empty:
@@ -722,6 +733,8 @@ def _native_agent_step(
     }
     if response_kind:
         step["extra"]["assistant_response_kind"] = str(response_kind)
+    if missing_tool_results:
+        step["extra"]["missing_tool_results"] = missing_tool_results[:32]
     if isinstance(meta.get("llm_request_id"), str) and meta["llm_request_id"]:
         step["extra"]["aworld_llm_request_id"] = meta["llm_request_id"][:256]
     from aworld_cli.durable_scope import task_epoch as normalize_task_epoch

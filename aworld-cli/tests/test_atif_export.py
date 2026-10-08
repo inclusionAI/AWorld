@@ -813,6 +813,12 @@ def test_atif_does_not_recover_foreign_tool_result_without_task_scope(
     )
 
     assert "observation" not in trajectory["steps"][1]
+    assert trajectory["steps"][1]["extra"]["missing_tool_results"] == [
+        {
+            "source_call_id": "reused-call",
+            "kind": "tool_result_missing",
+        }
+    ]
     evidence = trajectory["extra"]["aworld"]["tool_action_journal"]
     assert evidence["status"] == "available"
     assert "foreign secret result" not in json.dumps(trajectory)
