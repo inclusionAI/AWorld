@@ -1480,7 +1480,7 @@ async def test_post_candidate_read_only_loop_converges_to_validate_repair_or_sub
         in guidance
     )
     assert "semantically unknown mutations remain blocked" in guidance
-    assert "at most two mechanically read-only diagnostic Tool calls" in guidance
+    assert "up to three mechanically read-only diagnostic Tool calls" in guidance
     assert "Do not return to broad" in guidance
 
     validation = ActionModel(
@@ -1532,8 +1532,8 @@ async def test_post_candidate_read_only_loop_converges_to_validate_repair_or_sub
     )
     assert intercepted is not None
     hook_message = intercepted.headers["tool_interception"]["message"]
-    assert "failed-validation or typed review-repair evidence" in hook_message
-    assert "at most two" in hook_message
+    assert "without verifier or repair authorization" in hook_message
+    assert "up to three" in hook_message
     assert "one per Tool batch" in hook_message
     assert "new for the current candidate" in hook_message
     assert "unknown mutations remain blocked" in hook_message
@@ -1973,6 +1973,98 @@ def test_stale_v3_gate_cannot_poison_new_scope_projection() -> None:
     assert projected["repair_failure_evidence_high_water"] == "0" * 128
 
 
+def test_active_v3_gate_is_scope_matched_but_diagnostics_fail_closed(
+    tmp_path,
+) -> None:
+    target = tmp_path / "result.txt"
+    target.write_text("candidate")
+    validation_code = f"cat {target}"
+    context = _context("active-v3-gate")
+    context.context_info["public_deliverable_contract"] = {
+        "schema_version": "aworld.public-deliverables/v1",
+        "authority": "public_task_advisory",
+        "source": "public_task_text",
+        "artifacts": [
+            {
+                "deliverable_id": "public-output-1",
+                "path": str(target),
+                "display_path": "result.txt",
+                "kind": "file",
+                "authority": "public_task_advisory",
+            }
+        ],
+    }
+    context.configure_completion_contract(
+        CompletionContract(
+            required_artifacts=(),
+            immutable_inputs=(),
+            validation_commands=(
+                ValidationCommand(
+                    command_id="validate-v3-candidate",
+                    argv=("sh", "-c", validation_code),
+                ),
+            ),
+            max_evidence_age_seconds=None,
+            required_final_evidence=(),
+        ),
+        mode=CompletionMode.ENFORCE,
+    )
+    candidate_fingerprint = _activate_validate_repair_convergence(context)
+    gate = context.read_task_runtime_state(
+        "agent", "execution_protocol_mutation_gate"
+    )
+    gate["schema_version"] = "aworld.mutation-gate/v3"
+    gate.pop("candidate_diagnostic_read_count")
+    gate.pop("candidate_diagnostic_high_water")
+    context.write_task_runtime_state(
+        "agent", "execution_protocol_mutation_gate", gate
+    )
+    registered_validation = ActionModel(
+        tool_name="terminal",
+        action_name="run_code",
+        params={"code": validation_code},
+        tool_call_id="v3-registered-validation",
+        agent_name="agent",
+    )
+    declared_revision = ActionModel(
+        tool_name="terminal",
+        action_name="run_code",
+        params={"code": f"printf revised > {target}"},
+        tool_call_id="v3-declared-revision",
+        agent_name="agent",
+    )
+    diagnostic = ActionModel(
+        tool_name="terminal",
+        action_name="run_code",
+        params={"code": "cat broad-v3-diagnostic.log"},
+        tool_call_id="v3-candidate-diagnostic",
+        agent_name="agent",
+    )
+
+    assert mutation_gate_interception(context, [registered_validation]) is None
+    assert mutation_gate_interception(context, [declared_revision]) is None
+    blocked = mutation_gate_interception(context, [diagnostic])
+    assert blocked is not None
+    assert blocked["tool_call_ids"] == ["v3-candidate-diagnostic"]
+
+    record_tool_protocol_event(
+        context,
+        "agent",
+        _semantic_state(
+            current_agent_step=3,
+            candidate_present=True,
+            public_candidate_mutated=True,
+            public_delivery_fingerprint=candidate_fingerprint,
+        ),
+    )
+    migrated = context.read_task_runtime_state(
+        "agent", "execution_protocol_mutation_gate"
+    )
+    assert migrated["schema_version"] == "aworld.mutation-gate/v4"
+    assert migrated["candidate_diagnostic_read_count"] == 3
+    assert migrated["candidate_diagnostic_high_water"] == "f" * 128
+
+
 @pytest.mark.parametrize(
     ("stored", "expected"),
     (
@@ -2019,7 +2111,14 @@ def test_declared_mutation_attempt_high_water_is_strict_and_canonical(
     assert len(projected["declared_mutation_attempt_high_water"]) == 128
 
 
-@pytest.mark.parametrize("schema", ("aworld.mutation-gate/v2", "aworld.mutation-gate/v3"))
+@pytest.mark.parametrize(
+    "schema",
+    (
+        "aworld.mutation-gate/v2",
+        "aworld.mutation-gate/v3",
+        "aworld.mutation-gate/v4",
+    ),
+)
 def test_constraint_activation_ignores_stale_gate_evidence(schema) -> None:
     from aworld.core.context.compiler import semantic_fingerprint
 
@@ -2802,7 +2901,7 @@ async def test_validate_convergence_admits_bounded_declared_revision_and_validat
     assert blocked_second["tool_call_ids"] == ["repair-once"]
 
 
-def test_failed_validation_allows_two_diagnostic_reads_then_repair(
+def test_candidate_allows_three_diagnostic_reads_then_repair(
     tmp_path,
 ) -> None:
     context = _context("failed-validation-diagnostic-window")
@@ -2832,14 +2931,13 @@ def test_failed_validation_allows_two_diagnostic_reads_then_repair(
     gate = context.read_task_runtime_state(
         "agent", "execution_protocol_mutation_gate"
     )
-    assert gate["repair_diagnostic_read_count"] == 0
+    assert gate["candidate_diagnostic_read_count"] == 0
     assert gate["repair_authorization"]["source"] == "validation_failure"
-    assert gate["repair_authorization"]["diagnostic_read_count"] == 0
     guidance = consume_execution_protocol_guidance(context, "agent")
     assert guidance is not None
-    assert "fresh failed-validation or typed review-repair evidence" in guidance
-    assert "at most two bounded" in guidance
-    assert "2 diagnostic call(s) remain" in guidance
+    assert "No verifier or repair authorization is required" in guidance
+    assert "up to three bounded" in guidance
+    assert "3 diagnostic call(s) remain" in guidance
     assert "Registered validation remains admitted" in guidance
 
     first_read = ActionModel(
@@ -2863,11 +2961,18 @@ def test_failed_validation_allows_two_diagnostic_reads_then_repair(
         tool_call_id="diagnostic-read-three",
         agent_name="agent",
     )
+    fourth_read = ActionModel(
+        tool_name="terminal",
+        action_name="run_code",
+        params={"code": "cat diagnostic-four.log"},
+        tool_call_id="diagnostic-read-four",
+        agent_name="agent",
+    )
     assert mutation_gate_interception(context, [first_read]) is None
     gate = context.read_task_runtime_state(
         "agent", "execution_protocol_mutation_gate"
     )
-    assert gate["repair_diagnostic_read_count"] == 1
+    assert gate["candidate_diagnostic_read_count"] == 1
     first_authorization_hash = gate["repair_authorization"][
         "failure_evidence_hash"
     ]
@@ -2885,7 +2990,7 @@ def test_failed_validation_allows_two_diagnostic_reads_then_repair(
     assert mutation_gate_interception(context, [registered_validation]) is None
     assert context.read_task_runtime_state(
         "agent", "execution_protocol_mutation_gate"
-    )["repair_diagnostic_read_count"] == 1
+    )["candidate_diagnostic_read_count"] == 1
 
     # Distinct failed evidence for the same candidate refreshes repair evidence,
     # but must not refresh the candidate-bound diagnostic allowance.
@@ -2901,19 +3006,18 @@ def test_failed_validation_allows_two_diagnostic_reads_then_repair(
     assert gate["repair_authorization"]["failure_evidence_hash"] != (
         first_authorization_hash
     )
-    assert gate["repair_diagnostic_read_count"] == 1
-    assert gate["repair_authorization"]["diagnostic_read_count"] == 1
+    assert gate["candidate_diagnostic_read_count"] == 1
 
     assert mutation_gate_interception(context, [second_read]) is None
-    blocked_third = mutation_gate_interception(context, [third_read])
-    assert blocked_third is not None
-    assert blocked_third["tool_call_ids"] == ["diagnostic-read-three"]
-    assert blocked_third["repair_diagnostic_read_count"] == 2
+    assert mutation_gate_interception(context, [third_read]) is None
+    blocked_fourth = mutation_gate_interception(context, [fourth_read])
+    assert blocked_fourth is not None
+    assert blocked_fourth["tool_call_ids"] == ["diagnostic-read-four"]
+    assert blocked_fourth["candidate_diagnostic_read_count"] == 3
     gate = context.read_task_runtime_state(
         "agent", "execution_protocol_mutation_gate"
     )
-    assert gate["repair_diagnostic_read_count"] == 2
-    assert gate["repair_authorization"]["diagnostic_read_count"] == 2
+    assert gate["candidate_diagnostic_read_count"] == 3
 
     repair = ActionModel(
         tool_name="filesystem",
@@ -2948,7 +3052,7 @@ def test_failed_validation_allows_two_diagnostic_reads_then_repair(
         "agent", "execution_protocol_mutation_gate"
     )
     assert repaired_gate["repair_authorization"] is None
-    assert repaired_gate["repair_diagnostic_read_count"] == 2
+    assert repaired_gate["candidate_diagnostic_read_count"] == 3
 
 
 def test_candidate_change_resets_diagnostic_reads_via_gate_projection() -> None:
@@ -2972,7 +3076,7 @@ def test_candidate_change_resets_diagnostic_reads_via_gate_projection() -> None:
     assert mutation_gate_interception(context, [first_read]) is None
     assert context.read_task_runtime_state(
         "agent", "execution_protocol_mutation_gate"
-    )["repair_diagnostic_read_count"] == 1
+    )["candidate_diagnostic_read_count"] == 1
 
     second_candidate = semantic_fingerprint("diagnostic-candidate-b")
     record_tool_protocol_event(
@@ -2991,7 +3095,7 @@ def test_candidate_change_resets_diagnostic_reads_via_gate_projection() -> None:
         "agent", "execution_protocol_mutation_gate"
     )
     assert changed_gate["candidate_fingerprint"] == second_candidate
-    assert changed_gate["repair_diagnostic_read_count"] == 0
+    assert changed_gate["candidate_diagnostic_read_count"] == 0
     assert changed_gate["repair_authorization"] is None
 
     _record_failed_candidate_validation(
@@ -3003,8 +3107,7 @@ def test_candidate_change_resets_diagnostic_reads_via_gate_projection() -> None:
     refreshed_gate = context.read_task_runtime_state(
         "agent", "execution_protocol_mutation_gate"
     )
-    assert refreshed_gate["repair_diagnostic_read_count"] == 0
-    assert refreshed_gate["repair_authorization"]["diagnostic_read_count"] == 0
+    assert refreshed_gate["candidate_diagnostic_read_count"] == 0
 
     reads = [
         ActionModel(
@@ -3014,14 +3117,85 @@ def test_candidate_change_resets_diagnostic_reads_via_gate_projection() -> None:
             tool_call_id=f"candidate-b-diagnostic-{index}",
             agent_name="agent",
         )
-        for index in range(1, 4)
+        for index in range(1, 5)
     ]
     assert mutation_gate_interception(context, [reads[0]]) is None
     assert mutation_gate_interception(context, [reads[1]]) is None
-    blocked_third = mutation_gate_interception(context, [reads[2]])
-    assert blocked_third is not None
-    assert blocked_third["tool_call_ids"] == ["candidate-b-diagnostic-3"]
-    assert blocked_third["repair_diagnostic_read_count"] == 2
+    assert mutation_gate_interception(context, [reads[2]]) is None
+    blocked_fourth = mutation_gate_interception(context, [reads[3]])
+    assert blocked_fourth is not None
+    assert blocked_fourth["tool_call_ids"] == ["candidate-b-diagnostic-4"]
+    assert blocked_fourth["candidate_diagnostic_read_count"] == 3
+
+
+def test_candidate_diagnostic_high_water_prevents_aba_refill() -> None:
+    from aworld.core.context.compiler import semantic_fingerprint
+
+    context = _context("candidate-diagnostic-aba")
+    candidate_a = _activate_validate_repair_convergence(context)
+
+    def read(candidate: str, index: int) -> ActionModel:
+        return ActionModel(
+            tool_name="terminal",
+            action_name="run_code",
+            params={"code": f"cat {candidate}-diagnostic-{index}.log"},
+            tool_call_id=f"{candidate}-diagnostic-{index}",
+            agent_name="agent",
+        )
+
+    for index in range(1, 4):
+        assert mutation_gate_interception(context, [read("a", index)]) is None
+    gate_a = context.read_task_runtime_state(
+        "agent", "execution_protocol_mutation_gate"
+    )
+    assert gate_a["candidate_diagnostic_read_count"] == 3
+    mask_a = int(gate_a["candidate_diagnostic_high_water"], 16)
+
+    candidate_b = semantic_fingerprint("candidate-diagnostic-b")
+    record_tool_protocol_event(
+        context,
+        "agent",
+        _semantic_state(
+            current_agent_step=3,
+            candidate_present=True,
+            candidate_advanced=True,
+            delivery_progress_advanced=True,
+            public_candidate_mutated=True,
+            public_delivery_fingerprint=candidate_b,
+        ),
+    )
+    assert context.read_task_runtime_state(
+        "agent", "execution_protocol_mutation_gate"
+    )["candidate_diagnostic_read_count"] == 0
+    for index in range(1, 4):
+        assert mutation_gate_interception(context, [read("b", index)]) is None
+    gate_b = context.read_task_runtime_state(
+        "agent", "execution_protocol_mutation_gate"
+    )
+    assert gate_b["candidate_diagnostic_read_count"] == 3
+    mask_b = int(gate_b["candidate_diagnostic_high_water"], 16)
+    assert mask_b & mask_a == mask_a
+
+    record_tool_protocol_event(
+        context,
+        "agent",
+        _semantic_state(
+            current_agent_step=4,
+            candidate_present=True,
+            candidate_advanced=True,
+            delivery_progress_advanced=True,
+            public_candidate_mutated=True,
+            public_delivery_fingerprint=candidate_a,
+        ),
+    )
+    returned_a = context.read_task_runtime_state(
+        "agent", "execution_protocol_mutation_gate"
+    )
+    assert returned_a["candidate_diagnostic_read_count"] == 3
+    assert int(returned_a["candidate_diagnostic_high_water"], 16) == mask_b
+    blocked_a = mutation_gate_interception(context, [read("a", 4)])
+    assert blocked_a is not None
+    assert blocked_a["tool_call_ids"] == ["a-diagnostic-4"]
 
 
 @pytest.mark.parametrize(
@@ -3052,7 +3226,7 @@ def test_advanced_candidate_without_fingerprint_fails_closed_then_recovers(
     assert mutation_gate_interception(context, [first_read]) is None
     assert context.read_task_runtime_state(
         "agent", "execution_protocol_mutation_gate"
-    )["repair_diagnostic_read_count"] == 1
+    )["candidate_diagnostic_read_count"] == 1
 
     advanced_state = {
         "current_agent_step": 4,
@@ -3074,7 +3248,7 @@ def test_advanced_candidate_without_fingerprint_fails_closed_then_recovers(
     assert unresolved_gate["candidate_fingerprint"] is None
     assert unresolved_gate["candidate_binding_unresolved"] is True
     assert unresolved_gate["repair_authorization"] is None
-    assert unresolved_gate["repair_diagnostic_read_count"] == 2
+    assert unresolved_gate["candidate_diagnostic_read_count"] == 3
     blocked = mutation_gate_interception(context, [first_read])
     assert blocked is not None
     assert blocked["tool_call_ids"] == ["unresolved-candidate-a-diagnostic"]
@@ -3093,7 +3267,7 @@ def test_advanced_candidate_without_fingerprint_fails_closed_then_recovers(
     )
     assert still_unresolved["candidate_fingerprint"] is None
     assert still_unresolved["candidate_binding_unresolved"] is True
-    assert still_unresolved["repair_diagnostic_read_count"] == 2
+    assert still_unresolved["candidate_diagnostic_read_count"] == 3
 
     second_candidate = semantic_fingerprint("resolved-candidate-b")
     record_tool_protocol_event(
@@ -3113,7 +3287,7 @@ def test_advanced_candidate_without_fingerprint_fails_closed_then_recovers(
     )
     assert resolved_gate["candidate_fingerprint"] == second_candidate
     assert resolved_gate["candidate_binding_unresolved"] is False
-    assert resolved_gate["repair_diagnostic_read_count"] == 0
+    assert resolved_gate["candidate_diagnostic_read_count"] == 0
     assert resolved_gate["repair_authorization"] is None
 
     _record_failed_candidate_validation(
@@ -3130,18 +3304,19 @@ def test_advanced_candidate_without_fingerprint_fails_closed_then_recovers(
             tool_call_id=f"resolved-candidate-b-diagnostic-{index}",
             agent_name="agent",
         )
-        for index in (1, 2)
+        for index in (1, 2, 3)
     ]
     assert mutation_gate_interception(context, [reads[0]]) is None
     assert mutation_gate_interception(context, [reads[1]]) is None
+    assert mutation_gate_interception(context, [reads[2]]) is None
     final_gate = context.read_task_runtime_state(
         "agent", "execution_protocol_mutation_gate"
     )
-    assert final_gate["repair_diagnostic_read_count"] == 2
+    assert final_gate["candidate_diagnostic_read_count"] == 3
 
 
 @pytest.mark.asyncio
-async def test_mutation_gate_hook_enforces_failed_validation_diagnostic_budget() -> None:
+async def test_mutation_gate_hook_enforces_candidate_diagnostic_budget() -> None:
     context = _context("hook-failed-validation-diagnostics")
     validation_code = "cat candidate.txt"
     context.configure_completion_contract(
@@ -3159,13 +3334,7 @@ async def test_mutation_gate_hook_enforces_failed_validation_diagnostic_budget()
         ),
         mode=CompletionMode.ENFORCE,
     )
-    candidate_fingerprint = _activate_validate_repair_convergence(context)
-    _record_failed_candidate_validation(
-        context,
-        candidate_fingerprint,
-        marker="hook",
-        step=3,
-    )
+    _activate_validate_repair_convergence(context)
     diagnostics = [
         ActionModel(
             tool_name="terminal",
@@ -3174,7 +3343,7 @@ async def test_mutation_gate_hook_enforces_failed_validation_diagnostic_budget()
             tool_call_id=f"hook-diagnostic-{index}",
             agent_name="agent",
         )
-        for index in range(1, 4)
+        for index in range(1, 5)
     ]
     registered_validation = ActionModel(
         tool_name="terminal",
@@ -3199,25 +3368,29 @@ async def test_mutation_gate_hook_enforces_failed_validation_diagnostic_budget()
     ) is None
     assert context.read_task_runtime_state(
         "agent", "execution_protocol_mutation_gate"
-    )["repair_diagnostic_read_count"] == 1
+    )["candidate_diagnostic_read_count"] == 1
     assert await hook.exec(
         Message(category="tool_call", payload=[diagnostics[1]], sender="agent"),
         context,
     ) is None
+    assert await hook.exec(
+        Message(category="tool_call", payload=[diagnostics[2]], sender="agent"),
+        context,
+    ) is None
 
     intercepted = await hook.exec(
-        Message(category="tool_call", payload=[diagnostics[2]], sender="agent"),
+        Message(category="tool_call", payload=[diagnostics[3]], sender="agent"),
         context,
     )
 
     assert intercepted is not None
     interception = intercepted.headers["tool_interception"]
-    assert interception["tool_call_ids"] == ["hook-diagnostic-3"]
+    assert interception["tool_call_ids"] == ["hook-diagnostic-4"]
     assert interception["block_all"] is False
-    assert interception["source_receipt"]["repair_diagnostic_read_count"] == 2
+    assert interception["source_receipt"]["candidate_diagnostic_read_count"] == 3
 
 
-def test_concurrent_diagnostic_preflights_admit_at_most_two(monkeypatch) -> None:
+def test_concurrent_diagnostic_preflights_admit_at_most_three(monkeypatch) -> None:
     context = _context("concurrent-diagnostic-preflights")
     candidate_fingerprint = _activate_validate_repair_convergence(context)
     _record_failed_candidate_validation(
@@ -3226,7 +3399,7 @@ def test_concurrent_diagnostic_preflights_admit_at_most_two(monkeypatch) -> None
         marker="concurrent",
         step=3,
     )
-    transported_contexts = [context.deep_copy() for _ in range(3)]
+    transported_contexts = [context.deep_copy() for _ in range(4)]
     actions = [
         ActionModel(
             tool_name="terminal",
@@ -3235,10 +3408,10 @@ def test_concurrent_diagnostic_preflights_admit_at_most_two(monkeypatch) -> None
             tool_call_id=f"concurrent-diagnostic-{index}",
             agent_name="agent",
         )
-        for index in range(3)
+        for index in range(4)
     ]
-    start_barrier = Barrier(3)
-    classification_barrier = Barrier(3)
+    start_barrier = Barrier(4)
+    classification_barrier = Barrier(4)
     original_classifier = execution_protocol_module.actions_are_provably_read_only
 
     def synchronized_classifier(batch):
@@ -3261,17 +3434,16 @@ def test_concurrent_diagnostic_preflights_admit_at_most_two(monkeypatch) -> None
             transported_contexts[index], [actions[index]]
         )
 
-    with ThreadPoolExecutor(max_workers=3) as executor:
-        results = list(executor.map(preflight, range(3)))
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        results = list(executor.map(preflight, range(4)))
 
-    assert sum(result is None for result in results) == 2
+    assert sum(result is None for result in results) == 3
     blocked = [result for result in results if result is not None]
     assert len(blocked) == 1
     gate = context.read_task_runtime_state(
         "agent", "execution_protocol_mutation_gate"
     )
-    assert gate["repair_diagnostic_read_count"] == 2
-    assert gate["repair_authorization"]["diagnostic_read_count"] == 2
+    assert gate["candidate_diagnostic_read_count"] == 3
 
 
 def test_gate_projection_cannot_overwrite_concurrent_diagnostic_count(
@@ -3351,8 +3523,7 @@ def test_gate_projection_cannot_overwrite_concurrent_diagnostic_count(
     gate = context.read_task_runtime_state(
         "agent", "execution_protocol_mutation_gate"
     )
-    assert gate["repair_diagnostic_read_count"] == 1
-    assert gate["repair_authorization"]["diagnostic_read_count"] == 1
+    assert gate["candidate_diagnostic_read_count"] == 1
 
     second_read = ActionModel(
         tool_name="terminal",
@@ -3368,20 +3539,27 @@ def test_gate_projection_cannot_overwrite_concurrent_diagnostic_count(
         tool_call_id="projection-race-diagnostic-three",
         agent_name="agent",
     )
+    fourth_read = ActionModel(
+        tool_name="terminal",
+        action_name="run_code",
+        params={"code": "cat projection-race-four.log"},
+        tool_call_id="projection-race-diagnostic-four",
+        agent_name="agent",
+    )
     assert mutation_gate_interception(context, [second_read]) is None
-    blocked_third = mutation_gate_interception(context, [third_read])
-    assert blocked_third is not None
-    assert blocked_third["tool_call_ids"] == [
-        "projection-race-diagnostic-three"
+    assert mutation_gate_interception(context, [third_read]) is None
+    blocked_fourth = mutation_gate_interception(context, [fourth_read])
+    assert blocked_fourth is not None
+    assert blocked_fourth["tool_call_ids"] == [
+        "projection-race-diagnostic-four"
     ]
     final_gate = context.read_task_runtime_state(
         "agent", "execution_protocol_mutation_gate"
     )
-    assert final_gate["repair_diagnostic_read_count"] == 2
-    assert final_gate["repair_authorization"]["diagnostic_read_count"] == 2
+    assert final_gate["candidate_diagnostic_read_count"] == 3
 
 
-def test_candidate_change_apply_to_projection_gap_blocks_old_authorization(
+def test_candidate_change_apply_to_projection_gap_uses_new_candidate_quota(
     monkeypatch,
 ) -> None:
     from aworld.core.context.compiler import semantic_fingerprint
@@ -3449,14 +3627,13 @@ def test_candidate_change_apply_to_projection_gap_blocks_old_authorization(
         projection_future.result(timeout=2)
         interception = interception_future.result(timeout=2)
 
-    assert interception is not None
-    assert interception["tool_call_ids"] == ["stale-candidate-a-diagnostic"]
+    assert interception is None
     gate = context.read_task_runtime_state(
         "agent", "execution_protocol_mutation_gate"
     )
     assert gate["candidate_fingerprint"] == second_candidate
     assert gate["repair_authorization"] is None
-    assert gate["repair_diagnostic_read_count"] == 0
+    assert gate["candidate_diagnostic_read_count"] == 1
 
 
 def test_mutation_gate_transaction_allows_nested_registry_updates() -> None:
@@ -3489,7 +3666,7 @@ def test_mutation_gate_transaction_allows_nested_registry_updates() -> None:
     ) == 1
     assert context.read_task_runtime_state(
         "agent", "execution_protocol_mutation_gate"
-    )["repair_diagnostic_read_count"] == 1
+    )["candidate_diagnostic_read_count"] == 1
 
 
 def test_diagnostic_read_is_single_per_mixed_batch_and_block_all_rolls_back(
@@ -3544,8 +3721,8 @@ def test_diagnostic_read_is_single_per_mixed_batch_and_block_all_rolls_back(
     gate = context.read_task_runtime_state(
         "agent", "execution_protocol_mutation_gate"
     )
-    assert gate["repair_diagnostic_read_count"] == 1
-    assert gate["repair_authorization"]["diagnostic_read_count"] == 1
+    assert gate["candidate_diagnostic_read_count"] == 1
+    high_water_after_mixed = gate["candidate_diagnostic_high_water"]
 
     block_all_read = ActionModel(
         tool_name="terminal",
@@ -3570,8 +3747,8 @@ def test_diagnostic_read_is_single_per_mixed_batch_and_block_all_rolls_back(
     gate = context.read_task_runtime_state(
         "agent", "execution_protocol_mutation_gate"
     )
-    assert gate["repair_diagnostic_read_count"] == 1
-    assert gate["repair_authorization"]["diagnostic_read_count"] == 1
+    assert gate["candidate_diagnostic_read_count"] == 1
+    assert gate["candidate_diagnostic_high_water"] == high_water_after_mixed
 
 
 def test_duplicate_call_ids_block_all_before_any_admission(tmp_path) -> None:
@@ -3636,8 +3813,10 @@ def test_duplicate_call_ids_block_all_before_any_admission(tmp_path) -> None:
     after = context.read_task_runtime_state(
         "agent", "execution_protocol_mutation_gate"
     )
-    assert after["repair_diagnostic_read_count"] == 0
-    assert after["repair_authorization"]["diagnostic_read_count"] == 0
+    assert after["candidate_diagnostic_read_count"] == 0
+    assert after["candidate_diagnostic_high_water"] == before[
+        "candidate_diagnostic_high_water"
+    ]
     assert after["repair_authorization"]["failure_evidence_hash"] == (
         before["repair_authorization"]["failure_evidence_hash"]
     )
@@ -3646,26 +3825,32 @@ def test_duplicate_call_ids_block_all_before_any_admission(tmp_path) -> None:
     )
 
 
-def test_diagnostic_and_repair_require_typed_repair_authorization() -> None:
+def test_candidate_diagnostics_do_not_require_typed_repair_authorization() -> None:
     context = _context("diagnostic-read-without-failure")
     _activate_validate_repair_convergence(context)
-    read = ActionModel(
-        tool_name="terminal",
-        action_name="run_code",
-        params={"code": "cat candidate.txt"},
-        tool_call_id="diagnostic-without-failure",
-        agent_name="agent",
-    )
+    reads = [
+        ActionModel(
+            tool_name="terminal",
+            action_name="run_code",
+            params={"code": f"cat candidate-{index}.txt"},
+            tool_call_id=f"diagnostic-without-authorization-{index}",
+            agent_name="agent",
+        )
+        for index in range(1, 5)
+    ]
 
-    blocked = mutation_gate_interception(context, [read])
+    assert mutation_gate_interception(context, [reads[0]]) is None
+    assert mutation_gate_interception(context, [reads[1]]) is None
+    assert mutation_gate_interception(context, [reads[2]]) is None
+    blocked = mutation_gate_interception(context, [reads[3]])
 
     assert blocked is not None
-    assert blocked["tool_call_ids"] == ["diagnostic-without-failure"]
+    assert blocked["tool_call_ids"] == ["diagnostic-without-authorization-4"]
     gate = context.read_task_runtime_state(
         "agent", "execution_protocol_mutation_gate"
     )
     assert gate["repair_authorization"] is None
-    assert gate["repair_diagnostic_read_count"] == 0
+    assert gate["candidate_diagnostic_read_count"] == 3
 
     repair = ActionModel(
         tool_name="filesystem",
@@ -3704,7 +3889,10 @@ def test_diagnostic_and_repair_require_typed_repair_authorization() -> None:
     ]
 
 
-@pytest.mark.parametrize("stored_count", (None, "1", -1, True, 3))
+@pytest.mark.parametrize(
+    "stored_count",
+    (None, "1", -1, False, 0.0, True, 3, 4),
+)
 def test_legacy_or_malformed_diagnostic_count_fails_closed(stored_count) -> None:
     context = _context(f"malformed-diagnostic-count-{stored_count!r}")
     candidate_fingerprint = _activate_validate_repair_convergence(context)
@@ -3718,10 +3906,9 @@ def test_legacy_or_malformed_diagnostic_count_fails_closed(stored_count) -> None
         "agent", "execution_protocol_mutation_gate"
     )
     if stored_count is None:
-        gate.pop("repair_diagnostic_read_count")
+        gate.pop("candidate_diagnostic_read_count")
     else:
-        gate["repair_diagnostic_read_count"] = stored_count
-    gate["repair_authorization"]["diagnostic_read_count"] = 0
+        gate["candidate_diagnostic_read_count"] = stored_count
     context.write_task_runtime_state(
         "agent", "execution_protocol_mutation_gate", gate
     )
@@ -3740,22 +3927,140 @@ def test_legacy_or_malformed_diagnostic_count_fails_closed(stored_count) -> None
     normalized = context.read_task_runtime_state(
         "agent", "execution_protocol_mutation_gate"
     )
-    assert normalized["repair_diagnostic_read_count"] == 2
-    assert normalized["repair_authorization"] is None
-    assert normalized["validation_window_open"] is False
+    assert normalized["candidate_diagnostic_read_count"] == 3
+    assert normalized["repair_authorization"] is not None
+    assert normalized["validation_window_open"] is True
+
+
+@pytest.mark.parametrize("stored_high_water", (None, "not-a-mask"))
+def test_malformed_candidate_diagnostic_high_water_is_scope_fail_closed(
+    stored_high_water,
+) -> None:
+    from aworld.core.context.compiler import semantic_fingerprint
+
+    context = _context(f"malformed-candidate-high-water-{stored_high_water}")
+    candidate_a = _activate_validate_repair_convergence(context)
+    gate = context.read_task_runtime_state(
+        "agent", "execution_protocol_mutation_gate"
+    )
+    if stored_high_water is None:
+        gate.pop("candidate_diagnostic_high_water")
+    else:
+        gate["candidate_diagnostic_high_water"] = stored_high_water
+    context.write_task_runtime_state(
+        "agent", "execution_protocol_mutation_gate", gate
+    )
+    read_a = ActionModel(
+        tool_name="terminal",
+        action_name="run_code",
+        params={"code": "cat malformed-high-water-a.log"},
+        tool_call_id="malformed-high-water-a",
+        agent_name="agent",
+    )
+    blocked_a = mutation_gate_interception(context, [read_a])
+    assert blocked_a is not None
+    failed_closed = context.read_task_runtime_state(
+        "agent", "execution_protocol_mutation_gate"
+    )
+    assert failed_closed["candidate_diagnostic_read_count"] == 3
+    assert failed_closed["candidate_diagnostic_high_water"] == "f" * 128
+
+    candidate_b = semantic_fingerprint("malformed-high-water-candidate-b")
+    record_tool_protocol_event(
+        context,
+        "agent",
+        _semantic_state(
+            current_agent_step=3,
+            candidate_present=True,
+            candidate_advanced=True,
+            delivery_progress_advanced=True,
+            public_candidate_mutated=True,
+            public_delivery_fingerprint=candidate_b,
+        ),
+    )
+    gate_b = context.read_task_runtime_state(
+        "agent", "execution_protocol_mutation_gate"
+    )
+    assert gate_b["candidate_diagnostic_read_count"] == 3
+    read_b = ActionModel(
+        tool_name="terminal",
+        action_name="run_code",
+        params={"code": "cat malformed-high-water-b.log"},
+        tool_call_id="malformed-high-water-b",
+        agent_name="agent",
+    )
+    assert mutation_gate_interception(context, [read_b]) is not None
+
+    context.advance_context_lifecycle(LifecycleAction.NEW_TASK)
+    fresh_candidate = _activate_validate_repair_convergence(context)
+    assert fresh_candidate == candidate_a
+    fresh_gate = context.read_task_runtime_state(
+        "agent", "execution_protocol_mutation_gate"
+    )
+    assert fresh_gate["candidate_diagnostic_read_count"] == 0
+    assert fresh_gate["candidate_diagnostic_high_water"] == "0" * 128
+
+
+def test_candidate_diagnostic_count_high_water_mismatch_fails_closed() -> None:
+    from aworld.core.context.compiler import semantic_fingerprint
+
+    context = _context("candidate-diagnostic-count-mask-mismatch")
+    candidate_a = _activate_validate_repair_convergence(context)
+    first_read = ActionModel(
+        tool_name="terminal",
+        action_name="run_code",
+        params={"code": "cat mismatch-a.log"},
+        tool_call_id="mismatch-a-diagnostic",
+        agent_name="agent",
+    )
+    assert mutation_gate_interception(context, [first_read]) is None
+    gate = context.read_task_runtime_state(
+        "agent", "execution_protocol_mutation_gate"
+    )
+    gate["candidate_diagnostic_read_count"] = 0
+    context.write_task_runtime_state(
+        "agent", "execution_protocol_mutation_gate", gate
+    )
+    guidance = consume_execution_protocol_guidance(context, "agent")
+    assert guidance is not None
+    assert "0 diagnostic call(s) remain" in guidance
+    blocked = mutation_gate_interception(context, [first_read])
+    assert blocked is not None
+    failed_closed = context.read_task_runtime_state(
+        "agent", "execution_protocol_mutation_gate"
+    )
+    assert failed_closed["candidate_diagnostic_read_count"] == 3
+
+    candidate_b = semantic_fingerprint("count-mask-mismatch-b")
+    record_tool_protocol_event(
+        context,
+        "agent",
+        _semantic_state(
+            current_agent_step=3,
+            candidate_present=True,
+            candidate_advanced=True,
+            delivery_progress_advanced=True,
+            public_candidate_mutated=True,
+            public_delivery_fingerprint=candidate_b,
+        ),
+    )
+    gate_b = context.read_task_runtime_state(
+        "agent", "execution_protocol_mutation_gate"
+    )
+    assert gate_b["candidate_diagnostic_read_count"] == 0
+    assert gate_b["candidate_fingerprint"] != candidate_a
 
 
 @pytest.mark.parametrize(
     "malformation",
     (
         "missing_schema",
+        "legacy_schema",
         "missing_source",
         "missing_failure_hash",
         "noncanonical_failure_hash",
         "unknown_source",
-        "count_mismatch",
-        "boolean_auth_count",
-        "float_auth_count",
+        "unexpected_legacy_field",
     ),
 )
 def test_malformed_repair_authorization_cannot_diagnose_or_repair(
@@ -3803,6 +4108,8 @@ def test_malformed_repair_authorization_cannot_diagnose_or_repair(
     authorization = gate["repair_authorization"]
     if malformation == "missing_schema":
         authorization.pop("schema_version")
+    elif malformation == "legacy_schema":
+        authorization["schema_version"] = "aworld.repair-authorization/v1"
     elif malformation == "missing_source":
         authorization.pop("source")
     elif malformation == "missing_failure_hash":
@@ -3811,12 +4118,8 @@ def test_malformed_repair_authorization_cannot_diagnose_or_repair(
         authorization["failure_evidence_hash"] = "sha256:NOT-CANONICAL"
     elif malformation == "unknown_source":
         authorization["source"] = "untyped_repair"
-    elif malformation == "count_mismatch":
-        authorization["diagnostic_read_count"] = 1
-    elif malformation == "boolean_auth_count":
-        authorization["diagnostic_read_count"] = False
     else:
-        authorization["diagnostic_read_count"] = 0.0
+        authorization["diagnostic_read_count"] = 0
     context.write_task_runtime_state(
         "agent", "execution_protocol_mutation_gate", gate
     )
@@ -3832,7 +4135,6 @@ def test_malformed_repair_authorization_cannot_diagnose_or_repair(
 
     assert blocked is not None
     assert blocked["tool_call_ids"] == [
-        f"malformed-auth-diagnostic-{malformation}",
         f"malformed-auth-repair-{malformation}",
     ]
     sanitized = context.read_task_runtime_state(
@@ -3840,11 +4142,20 @@ def test_malformed_repair_authorization_cannot_diagnose_or_repair(
     )
     assert sanitized["repair_authorization"] is None
     assert sanitized["validation_window_open"] is False
+    assert sanitized["candidate_diagnostic_read_count"] == 1
 
 
 def test_model_review_repair_mints_typed_source_and_diagnostic_window() -> None:
     context = _context("typed-model-review-repair")
     candidate_fingerprint = _activate_validate_repair_convergence(context)
+    pre_review_read = ActionModel(
+        tool_name="terminal",
+        action_name="run_code",
+        params={"code": "cat pre-review-diagnostic.log"},
+        tool_call_id="pre-review-diagnostic",
+        agent_name="agent",
+    )
+    assert mutation_gate_interception(context, [pre_review_read]) is None
     review = record_candidate_final(
         context,
         "agent",
@@ -3865,9 +4176,10 @@ def test_model_review_repair_mints_typed_source_and_diagnostic_window() -> None:
         "agent", "execution_protocol_mutation_gate"
     )
     authorization = gate["repair_authorization"]
+    assert authorization["schema_version"] == "aworld.repair-authorization/v2"
     assert authorization["source"] == "model_review_repair"
     assert authorization["candidate_fingerprint"] == candidate_fingerprint
-    assert authorization["diagnostic_read_count"] == 0
+    assert gate["candidate_diagnostic_read_count"] == 1
     read = ActionModel(
         tool_name="terminal",
         action_name="run_code",
@@ -3879,7 +4191,7 @@ def test_model_review_repair_mints_typed_source_and_diagnostic_window() -> None:
     admitted_gate = context.read_task_runtime_state(
         "agent", "execution_protocol_mutation_gate"
     )
-    assert admitted_gate["repair_diagnostic_read_count"] == 1
+    assert admitted_gate["candidate_diagnostic_read_count"] == 2
     assert admitted_gate["repair_authorization"]["source"] == (
         "model_review_repair"
     )
@@ -3959,16 +4271,16 @@ def test_stale_concurrent_model_review_cannot_mint_after_submission(
         "agent", "execution_protocol_mutation_gate"
     )
     assert gate["repair_authorization"] is None
-    diagnostic = ActionModel(
-        tool_name="terminal",
-        action_name="run_code",
-        params={"code": "cat stale-model-review.log"},
-        tool_call_id="stale-model-review-diagnostic",
+    unauthorized_repair = ActionModel(
+        tool_name="filesystem",
+        action_name="write_file",
+        params={"path": "candidate.txt", "content": "stale repair"},
+        tool_call_id="stale-model-review-repair",
         agent_name="agent",
     )
-    blocked = mutation_gate_interception(context, [diagnostic])
+    blocked = mutation_gate_interception(context, [unauthorized_repair])
     assert blocked is not None
-    assert blocked["tool_call_ids"] == ["stale-model-review-diagnostic"]
+    assert blocked["tool_call_ids"] == ["stale-model-review-repair"]
 
 
 def test_acceptance_critic_repair_without_pending_review_cannot_mint(
@@ -3995,16 +4307,16 @@ def test_acceptance_critic_repair_without_pending_review_cannot_mint(
         "agent", "execution_protocol_mutation_gate"
     )
     assert gate["repair_authorization"] is None
-    diagnostic = ActionModel(
-        tool_name="terminal",
-        action_name="run_code",
-        params={"code": "cat no-pending-review.log"},
-        tool_call_id="no-pending-review-diagnostic",
+    unauthorized_repair = ActionModel(
+        tool_name="filesystem",
+        action_name="write_file",
+        params={"path": "candidate.txt", "content": "unauthorized repair"},
+        tool_call_id="no-pending-review-repair",
         agent_name="agent",
     )
-    blocked = mutation_gate_interception(context, [diagnostic])
+    blocked = mutation_gate_interception(context, [unauthorized_repair])
     assert blocked is not None
-    assert blocked["tool_call_ids"] == ["no-pending-review-diagnostic"]
+    assert blocked["tool_call_ids"] == ["no-pending-review-repair"]
 
 
 def test_acceptance_repair_mint_is_atomic_with_candidate_change(
@@ -4084,7 +4396,7 @@ def test_acceptance_repair_mint_is_atomic_with_candidate_change(
     )
     assert gate["candidate_fingerprint"] == second_candidate
     assert gate["repair_authorization"] is None
-    assert gate["repair_diagnostic_read_count"] == 0
+    assert gate["candidate_diagnostic_read_count"] == 0
 
 
 def test_consumed_acceptance_review_cannot_refill_repair_authorization(
@@ -4182,9 +4494,9 @@ def test_consumed_acceptance_review_cannot_refill_repair_authorization(
         "agent", "execution_protocol_mutation_gate"
     )
     assert repeated_gate["repair_authorization"] is None
-    blocked_repeat = mutation_gate_interception(context, [diagnostic])
+    blocked_repeat = mutation_gate_interception(context, [repair])
     assert blocked_repeat is not None
-    assert blocked_repeat["tool_call_ids"] == ["acceptance-review-diagnostic"]
+    assert blocked_repeat["tool_call_ids"] == ["acceptance-review-repair"]
 
 
 def test_stale_repair_authorization_does_not_block_novel_declared_revision(

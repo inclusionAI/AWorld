@@ -62,9 +62,13 @@ EXECUTION_PROTOCOL_DEADLINE_GUIDANCE_KEY = "execution_protocol_deadline_guidance
 EXECUTION_PROTOCOL_CONVERGENCE_GUIDANCE_KEY = (
     "execution_protocol_convergence_guidance"
 )
-MUTATION_GATE_SCHEMA = "aworld.mutation-gate/v3"
+MUTATION_GATE_SCHEMA = "aworld.mutation-gate/v4"
 _LEGACY_MUTATION_GATE_SCHEMAS = frozenset(
-    {"aworld.mutation-gate/v1", "aworld.mutation-gate/v2"}
+    {
+        "aworld.mutation-gate/v1",
+        "aworld.mutation-gate/v2",
+        "aworld.mutation-gate/v3",
+    }
 )
 MUTATION_GATE_STATE_KEY = "execution_protocol_mutation_gate"
 MUTATION_GATE_ACTIVE_INDEX_KEY = "execution_protocol_mutation_gate_active_index"
@@ -80,8 +84,8 @@ _MAX_CONSECUTIVE_UNAPPLIED_REPLANS = 2
 _MUTATION_GATE_READ_ONLY_THRESHOLD = 8
 _MUTATION_GATE_DEADLINE_MIN_READS = 3
 _MUTATION_GATE_DEADLINE_FRACTION = 0.20
-_MAX_REPAIR_DIAGNOSTIC_READS = 2
-_REPAIR_AUTHORIZATION_SCHEMA = "aworld.repair-authorization/v1"
+_MAX_CANDIDATE_DIAGNOSTIC_READS = 3
+_REPAIR_AUTHORIZATION_SCHEMA = "aworld.repair-authorization/v2"
 _REPAIR_SOURCE_VALIDATION_FAILURE = "validation_failure"
 _REPAIR_SOURCE_MODEL_REVIEW = "model_review_repair"
 _REPAIR_SOURCE_ACCEPTANCE_CRITIC = "acceptance_critic_repair"
@@ -105,7 +109,6 @@ _REPAIR_AUTHORIZATION_FIELDS = frozenset(
         "candidate_fingerprint",
         "failure_evidence_hash",
         "source",
-        "diagnostic_read_count",
         "used",
     }
 )
@@ -115,6 +118,9 @@ _DEADLINE_STAGE_THRESHOLDS = (
     ("delivery_only", 0.80),
 )
 _REPAIR_EVIDENCE_HIGH_WATER_BITS = 512
+_CANDIDATE_DIAGNOSTIC_HIGH_WATER_FULL = (
+    1 << _REPAIR_EVIDENCE_HIGH_WATER_BITS
+) - 1
 
 
 def _repair_evidence_positions(fingerprint: str) -> tuple[int, ...]:
@@ -196,29 +202,11 @@ def _bounded_counter(value: Any) -> int:
     return min(_MAX_TELEMETRY_COUNTER, max(0, parsed))
 
 
-def _repair_diagnostic_read_count(value: Any) -> int:
-    """Normalize a candidate-bound diagnostic count without minting allowance.
-
-    Missing and malformed values may come from legacy or corrupted gate state.
-    Treat them as exhausted so restoring old state cannot create fresh Tool
-    authority. New candidate/scope projections initialize the counter explicitly.
-    """
-
-    if (
-        isinstance(value, bool)
-        or not isinstance(value, int)
-        or value < 0
-        or value > _MAX_REPAIR_DIAGNOSTIC_READS
-    ):
-        return _MAX_REPAIR_DIAGNOSTIC_READS
-    return value
-
-
-def _is_canonical_repair_diagnostic_read_count(value: Any) -> bool:
+def _is_canonical_candidate_diagnostic_read_count(value: Any) -> bool:
     return bool(
         not isinstance(value, bool)
         and isinstance(value, int)
-        and 0 <= value <= _MAX_REPAIR_DIAGNOSTIC_READS
+        and 0 <= value <= _MAX_CANDIDATE_DIAGNOSTIC_READS
     )
 
 
@@ -229,12 +217,98 @@ def _is_canonical_semantic_fingerprint(value: Any) -> bool:
     )
 
 
+def _candidate_diagnostic_high_water(value: Any) -> tuple[int, bool]:
+    if (
+        not isinstance(value, str)
+        or re.fullmatch(r"[0-9a-f]{128}", value) is None
+    ):
+        return 0, False
+    return int(value, 16), True
+
+
+def _candidate_diagnostic_slot_fingerprint(
+    candidate_fingerprint: str,
+    slot: int,
+) -> str:
+    from aworld.core.context.compiler import semantic_fingerprint
+
+    return semantic_fingerprint(
+        {
+            "candidate_fingerprint": candidate_fingerprint,
+            "kind": "candidate_diagnostic",
+            "slot": slot,
+        }
+    )
+
+
+def _candidate_diagnostic_count(mask: int, candidate_fingerprint: str) -> int:
+    return sum(
+        _repair_evidence_seen(
+            mask,
+            _candidate_diagnostic_slot_fingerprint(candidate_fingerprint, slot),
+        )
+        for slot in range(_MAX_CANDIDATE_DIAGNOSTIC_READS)
+    )
+
+
+def _candidate_diagnostic_fail_closed(
+    mask: int,
+    candidate_fingerprint: str,
+) -> int:
+    for slot in range(_MAX_CANDIDATE_DIAGNOSTIC_READS):
+        mask = _repair_evidence_add(
+            mask,
+            _candidate_diagnostic_slot_fingerprint(candidate_fingerprint, slot),
+        )
+    return mask
+
+
+def _normalized_candidate_diagnostic_state(
+    gate: Mapping[str, Any],
+) -> tuple[int, int, bool]:
+    candidate_fingerprint = gate.get("candidate_fingerprint")
+    mask, high_water_is_canonical = _candidate_diagnostic_high_water(
+        gate.get("candidate_diagnostic_high_water")
+    )
+    candidate_binding_is_canonical = _is_canonical_semantic_fingerprint(
+        candidate_fingerprint
+    )
+    expected_count = (
+        _candidate_diagnostic_count(mask, candidate_fingerprint)
+        if candidate_binding_is_canonical
+        else _MAX_CANDIDATE_DIAGNOSTIC_READS
+    )
+    state_is_canonical = bool(
+        gate.get("schema_version") == MUTATION_GATE_SCHEMA
+        and high_water_is_canonical
+        and candidate_binding_is_canonical
+        and gate.get("candidate_binding_unresolved") is not True
+        and _is_canonical_candidate_diagnostic_read_count(
+            gate.get("candidate_diagnostic_read_count")
+        )
+        and gate.get("candidate_diagnostic_read_count") == expected_count
+    )
+    if state_is_canonical:
+        return mask, expected_count, True
+    if (
+        gate.get("schema_version") != MUTATION_GATE_SCHEMA
+        or not high_water_is_canonical
+    ):
+        return (
+            _CANDIDATE_DIAGNOSTIC_HIGH_WATER_FULL,
+            _MAX_CANDIDATE_DIAGNOSTIC_READS,
+            False,
+        )
+    if candidate_binding_is_canonical:
+        mask = _candidate_diagnostic_fail_closed(mask, candidate_fingerprint)
+    return mask, _MAX_CANDIDATE_DIAGNOSTIC_READS, False
+
+
 def _normalized_repair_authorization(
     value: Any,
     *,
     scope_hash: Any,
     candidate_fingerprint: Any,
-    diagnostic_read_count: Any,
 ) -> dict[str, Any] | None:
     """Return only exact, current, typed repair authority.
 
@@ -256,13 +330,6 @@ def _normalized_repair_authorization(
         )
         or value.get("scope_hash") != scope_hash
         or value.get("candidate_fingerprint") != candidate_fingerprint
-        or not _is_canonical_repair_diagnostic_read_count(
-            diagnostic_read_count
-        )
-        or not _is_canonical_repair_diagnostic_read_count(
-            value.get("diagnostic_read_count")
-        )
-        or value.get("diagnostic_read_count") != diagnostic_read_count
     ):
         return None
     return {key: value[key] for key in _REPAIR_AUTHORIZATION_FIELDS}
@@ -276,13 +343,13 @@ def _gate_matches_current_scope(
     if not isinstance(gate, Mapping) or gate.get("agent_id") != agent_id:
         return False
     schema = gate.get("schema_version")
-    if schema == MUTATION_GATE_SCHEMA:
+    if schema in {MUTATION_GATE_SCHEMA, "aworld.mutation-gate/v3"}:
         from aworld.core.context.compiler import semantic_fingerprint
 
         return gate.get("scope_hash") == semantic_fingerprint(
             _model_decision_scope(context, agent_id)
         )
-    if schema in _LEGACY_MUTATION_GATE_SCHEMAS:
+    if schema in {"aworld.mutation-gate/v1", "aworld.mutation-gate/v2"}:
         owner = state_context(context)
         return bool(
             gate.get("task_id") == getattr(owner, "task_id", None)
@@ -1662,18 +1729,13 @@ def _mint_review_repair_authorization_locked(
     if _repair_evidence_seen(high_water, failure_evidence_hash):
         return
     high_water = _repair_evidence_add(high_water, failure_evidence_hash)
-    diagnostic_read_count = _repair_diagnostic_read_count(
-        gate.get("repair_diagnostic_read_count")
-    )
     updated = dict(gate)
-    updated["repair_diagnostic_read_count"] = diagnostic_read_count
     updated["repair_authorization"] = {
         "schema_version": _REPAIR_AUTHORIZATION_SCHEMA,
         "scope_hash": scope_hash,
         "candidate_fingerprint": candidate_fingerprint,
         "failure_evidence_hash": failure_evidence_hash,
         "source": source,
-        "diagnostic_read_count": diagnostic_read_count,
         "used": False,
     }
     updated["repair_failure_evidence_high_water"] = format(high_water, "0128x")
@@ -2331,6 +2393,45 @@ def _update_mutation_gate_locked(
         )
         else None
     )
+    previous_diagnostic_read_count = (
+        previous.get("candidate_diagnostic_read_count")
+        if isinstance(previous, Mapping)
+        else None
+    )
+    if isinstance(previous, Mapping) and previous:
+        candidate_diagnostic_high_water, high_water_is_canonical = (
+            _candidate_diagnostic_high_water(
+                previous.get("candidate_diagnostic_high_water")
+            )
+        )
+        diagnostic_state_invalid = bool(
+            previous.get("schema_version") != MUTATION_GATE_SCHEMA
+            or not high_water_is_canonical
+        )
+        if diagnostic_state_invalid:
+            candidate_diagnostic_high_water = (
+                _CANDIDATE_DIAGNOSTIC_HIGH_WATER_FULL
+            )
+        elif previous_candidate_fingerprint is not None:
+            expected_previous_count = _candidate_diagnostic_count(
+                candidate_diagnostic_high_water,
+                previous_candidate_fingerprint,
+            )
+            if (
+                not _is_canonical_candidate_diagnostic_read_count(
+                    previous_diagnostic_read_count
+                )
+                or previous_diagnostic_read_count != expected_previous_count
+            ):
+                candidate_diagnostic_high_water = (
+                    _candidate_diagnostic_fail_closed(
+                        candidate_diagnostic_high_water,
+                        previous_candidate_fingerprint,
+                    )
+                )
+    else:
+        candidate_diagnostic_high_water = 0
+        diagnostic_state_invalid = False
     observed_candidate_fingerprint = semantic_state.get(
         "public_delivery_fingerprint"
     )
@@ -2369,36 +2470,34 @@ def _update_mutation_gate_locked(
     if not candidate_present and convergence_stage is ConvergenceStage.PRODUCE_CANDIDATE:
         candidate_fingerprint = None
 
-    previous_diagnostic_read_count = (
-        previous.get("repair_diagnostic_read_count")
-        if isinstance(previous, Mapping)
-        else None
-    )
     candidate_binding_unchanged = bool(
         _is_canonical_semantic_fingerprint(candidate_fingerprint)
         and previous_candidate_fingerprint == candidate_fingerprint
     )
+    if (
+        diagnostic_state_invalid
+        and _is_canonical_semantic_fingerprint(candidate_fingerprint)
+    ):
+        candidate_diagnostic_high_water = _candidate_diagnostic_fail_closed(
+            candidate_diagnostic_high_water,
+            candidate_fingerprint,
+        )
     if candidate_binding_unresolved:
-        repair_diagnostic_read_count = _MAX_REPAIR_DIAGNOSTIC_READS
-    elif candidate_binding_unchanged:
-        repair_diagnostic_read_count = _repair_diagnostic_read_count(
-            previous_diagnostic_read_count
+        candidate_diagnostic_read_count = _MAX_CANDIDATE_DIAGNOSTIC_READS
+    elif _is_canonical_semantic_fingerprint(candidate_fingerprint):
+        candidate_diagnostic_read_count = _candidate_diagnostic_count(
+            candidate_diagnostic_high_water,
+            candidate_fingerprint,
         )
     else:
-        repair_diagnostic_read_count = 0
+        candidate_diagnostic_read_count = 0
 
     repair_authorization = None
-    if (
-        candidate_binding_unchanged
-        and _is_canonical_repair_diagnostic_read_count(
-            previous_diagnostic_read_count
-        )
-    ):
+    if candidate_binding_unchanged:
         repair_authorization = _normalized_repair_authorization(
             previous.get("repair_authorization"),
             scope_hash=scope_hash,
             candidate_fingerprint=candidate_fingerprint,
-            diagnostic_read_count=previous_diagnostic_read_count,
         )
     repair_evidence_high_water = _repair_evidence_mask(
         previous.get("repair_failure_evidence_high_water")
@@ -2449,7 +2548,6 @@ def _update_mutation_gate_locked(
                 "candidate_fingerprint": candidate_fingerprint,
                 "failure_evidence_hash": failure_evidence_hash,
                 "source": _REPAIR_SOURCE_VALIDATION_FAILURE,
-                "diagnostic_read_count": repair_diagnostic_read_count,
                 "used": False,
             }
     validation_window_open = repair_authorization is not None
@@ -2491,7 +2589,10 @@ def _update_mutation_gate_locked(
         "candidate_fingerprint": candidate_fingerprint,
         "candidate_binding_unresolved": candidate_binding_unresolved,
         "repair_authorization": repair_authorization,
-        "repair_diagnostic_read_count": repair_diagnostic_read_count,
+        "candidate_diagnostic_read_count": candidate_diagnostic_read_count,
+        "candidate_diagnostic_high_water": format(
+            candidate_diagnostic_high_water, "0128x"
+        ),
         "repair_failure_evidence_high_water": format(
             repair_evidence_high_water, "0128x"
         ),
@@ -2746,17 +2847,22 @@ def _mutation_gate_interception_locked(
         return None
     state = load_execution_protocol_state(context, agent_id)
     declared_targets = declared_action_target_ids(state_context(context))
-    gate_diagnostic_read_count = gate.get("repair_diagnostic_read_count")
-    repair_diagnostic_read_count = _repair_diagnostic_read_count(
-        gate_diagnostic_read_count
+    candidate_fingerprint = gate.get("candidate_fingerprint")
+    (
+        candidate_diagnostic_high_water,
+        candidate_diagnostic_read_count,
+        diagnostic_state_is_canonical,
+    ) = _normalized_candidate_diagnostic_state(gate)
+    candidate_binding_is_canonical = _is_canonical_semantic_fingerprint(
+        candidate_fingerprint
     )
     repair_authorization = _normalized_repair_authorization(
         gate.get("repair_authorization"),
         scope_hash=gate.get("scope_hash"),
-        candidate_fingerprint=gate.get("candidate_fingerprint"),
-        diagnostic_read_count=gate_diagnostic_read_count,
+        candidate_fingerprint=candidate_fingerprint,
     )
-    initial_repair_diagnostic_read_count = repair_diagnostic_read_count
+    initial_candidate_diagnostic_read_count = candidate_diagnostic_read_count
+    initial_candidate_diagnostic_high_water = candidate_diagnostic_high_water
     blocked_call_ids: list[str] = list(unique_call_ids) if invalid_call_ids else []
     consumed_repair = False
     admitted_diagnostic_read = False
@@ -2806,15 +2912,36 @@ def _mutation_gate_interception_locked(
             )
             if (
                 not admitted
-                and live_repair
                 and not admitted_diagnostic_read
-                and repair_diagnostic_read_count
-                < _MAX_REPAIR_DIAGNOSTIC_READS
+                and gate.get("candidate_present") is True
+                and gate.get("candidate_binding_unresolved") is not True
+                and candidate_binding_is_canonical
+                and candidate_diagnostic_read_count
+                < _MAX_CANDIDATE_DIAGNOSTIC_READS
                 and actions_are_provably_read_only([action])
             ):
-                admitted = True
-                admitted_diagnostic_read = True
-                repair_diagnostic_read_count += 1
+                for slot in range(_MAX_CANDIDATE_DIAGNOSTIC_READS):
+                    slot_fingerprint = _candidate_diagnostic_slot_fingerprint(
+                        candidate_fingerprint,
+                        slot,
+                    )
+                    if not _repair_evidence_seen(
+                        candidate_diagnostic_high_water,
+                        slot_fingerprint,
+                    ):
+                        candidate_diagnostic_high_water = _repair_evidence_add(
+                            candidate_diagnostic_high_water,
+                            slot_fingerprint,
+                        )
+                        candidate_diagnostic_read_count = (
+                            _candidate_diagnostic_count(
+                                candidate_diagnostic_high_water,
+                                candidate_fingerprint,
+                            )
+                        )
+                        admitted = True
+                        admitted_diagnostic_read = True
+                        break
             if not admitted and semantics is not None:
                 targets = set(semantics.target_ids)
                 if semantics.effect == "mutating" and declared_targets:
@@ -2867,7 +2994,10 @@ def _mutation_gate_interception_locked(
             blocked_call_ids.append(call_id)
     if block_all:
         declared_mutation_attempts = initial_declared_mutation_attempts
-        repair_diagnostic_read_count = initial_repair_diagnostic_read_count
+        candidate_diagnostic_read_count = initial_candidate_diagnostic_read_count
+        candidate_diagnostic_high_water = (
+            initial_candidate_diagnostic_high_water
+        )
         admitted_diagnostic_read = False
         admitted_declared_mutation = False
     owner = state_context(context)
@@ -2887,11 +3017,10 @@ def _mutation_gate_interception_locked(
     updated["declared_mutation_attempt_high_water"] = format(
         declared_mutation_attempts, "0128x"
     )
-    updated["repair_diagnostic_read_count"] = repair_diagnostic_read_count
-    if repair_authorization is not None:
-        repair_authorization["diagnostic_read_count"] = (
-            repair_diagnostic_read_count
-        )
+    updated["candidate_diagnostic_read_count"] = candidate_diagnostic_read_count
+    updated["candidate_diagnostic_high_water"] = format(
+        candidate_diagnostic_high_water, "0128x"
+    )
     updated["repair_authorization"] = repair_authorization
     updated["validation_window_open"] = repair_authorization is not None
     if consumed_repair:
@@ -2902,6 +3031,7 @@ def _mutation_gate_interception_locked(
             consumed_repair
             or admitted_diagnostic_read
             or admitted_declared_mutation
+            or not diagnostic_state_is_canonical
         ):
             if owner is not None:
                 owner.context_info[MUTATION_GATE_STATE_KEY] = updated
@@ -2941,8 +3071,8 @@ def _mutation_gate_interception_locked(
             "post_candidate_no_delivery_progress_observations", 0
         ),
         "convergence_stage": updated.get("convergence_stage"),
-        "repair_diagnostic_read_count": updated[
-            "repair_diagnostic_read_count"
+        "candidate_diagnostic_read_count": updated[
+            "candidate_diagnostic_read_count"
         ],
         "blocked_read_only_call_count": updated[
             "blocked_read_only_call_count"
@@ -3986,37 +4116,35 @@ def consume_execution_protocol_guidance(context, agent_id: str) -> str | None:
     mutation_gate = _read_runtime_value(
         context, agent_id, MUTATION_GATE_STATE_KEY
     )
-    repair_authorization = (
-        _normalized_repair_authorization(
-            mutation_gate.get("repair_authorization"),
-            scope_hash=mutation_gate.get("scope_hash"),
-            candidate_fingerprint=mutation_gate.get("candidate_fingerprint"),
-            diagnostic_read_count=mutation_gate.get(
-                "repair_diagnostic_read_count"
-            ),
-        )
+    candidate_diagnostic_read_count = (
+        _normalized_candidate_diagnostic_state(mutation_gate)[1]
         if isinstance(mutation_gate, Mapping)
-        else None
+        else _MAX_CANDIDATE_DIAGNOSTIC_READS
     )
     if (
         isinstance(mutation_gate, Mapping)
-        and mutation_gate.get("validation_window_open") is True
-        and repair_authorization is not None
-    ):
-        diagnostic_reads = _repair_diagnostic_read_count(
-            mutation_gate.get("repair_diagnostic_read_count")
+        and mutation_gate.get("active") is True
+        and mutation_gate.get("convergence_stage")
+        == ConvergenceStage.VALIDATE_REPAIR_OR_SUBMIT.value
+        and mutation_gate.get("candidate_present") is True
+        and mutation_gate.get("candidate_binding_unresolved") is not True
+        and _is_canonical_semantic_fingerprint(
+            mutation_gate.get("candidate_fingerprint")
         )
+    ):
         diagnostic_reads_remaining = max(
-            0, _MAX_REPAIR_DIAGNOSTIC_READS - diagnostic_reads
+            0,
+            _MAX_CANDIDATE_DIAGNOSTIC_READS
+            - candidate_diagnostic_read_count,
         )
         return (
-            "AWorld mutation validation window: fresh failed-validation or typed "
-            "review-repair evidence for the current candidate permits at most two "
-            "bounded, mechanically read-only diagnostic Tool calls, one per "
-            "batch, before repair or submission. Registered validation remains "
-            "admitted and does not spend this allowance. "
+            "AWorld mutation validation window: each current candidate permits "
+            "up to three bounded, mechanically read-only diagnostic Tool calls, "
+            "one per batch. No verifier or repair authorization is required for "
+            "these diagnostics. Registered validation remains admitted and does "
+            "not spend this allowance. "
             f"{diagnostic_reads_remaining} diagnostic call(s) remain; then make "
-            "one evidence-backed repair or declared revision, or submit the "
+            "a declared revision, use an evidence-backed repair, or submit the "
             "current result accurately. Unknown, helper, and unrelated mutations "
             "remain blocked."
         )
@@ -4079,11 +4207,12 @@ def consume_execution_protocol_guidance(context, agent_id: str) -> str | None:
             "contract, one bounded revision targeting only declared public "
             "deliverables with an exact Tool-argument signature that is new for "
             "the current candidate, a repair directly supported by failed "
-            "validation, or an accurate submission (current or uncertain). Fresh "
-            "failed-validation or typed review-repair evidence also permits at "
-            "most two mechanically read-only diagnostic Tool calls, one per batch, "
-            "before repair or submission; registered validation does not spend "
-            "that allowance. Each "
+            "validation, or an accurate submission (current or uncertain). Each "
+            "current candidate also permits up to three mechanically read-only "
+            "diagnostic Tool calls, one per batch, without verifier or repair "
+            "authorization; registered validation does not spend that allowance. "
+            "After the quota is exhausted, revise a declared deliverable, use an "
+            "evidence-backed repair, or submit. Each "
             "candidate-bound declared-revision signature is admitted once. Mixed "
             "batches do not widen admission: repeated revisions, additional "
             "declared revisions in the same batch, helper or unrelated mutations, "
