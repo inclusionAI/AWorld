@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from aworld._version import __version__
 
 ROOT = Path(__file__).resolve().parents[3]
 
@@ -26,7 +27,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("Agent + Context + Tool", result.stdout)
         self.assertEqual(result.stderr, "")
-        self.assertIn("1.0.0a7", command("--version").stdout)
+        self.assertIn(__version__, command("--version").stdout)
         tools = json.loads(command("tools", "--json").stdout)
         self.assertEqual([tool["name"] for tool in tools], ["read", "write", "bash", "read_session", "search_sessions", "session_query"])
 

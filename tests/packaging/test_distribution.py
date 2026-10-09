@@ -7,6 +7,7 @@ import tarfile
 import zipfile
 from email.parser import Parser
 import pytest
+from aworld._version import __version__ as VERSION
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -22,13 +23,13 @@ def artifacts(tmp_path_factory):
     work = tmp_path_factory.mktemp("distribution")
     output = work / "artifacts"
     run(sys.executable, str(ROOT / "scripts/build_packages.py"), "--no-isolation", "--outdir", str(output))
-    assert json.loads((output / "packages.json").read_text())["version"] == "1.0.0a5"
+    assert json.loads((output / "packages.json").read_text())["version"] == VERSION
     return work, output
 
 
 def test_wheel_contains_one_kernel_and_explicit_dependencies(artifacts):
     _, output = artifacts
-    with zipfile.ZipFile(output / "aworld-1.0.0a5-py3-none-any.whl") as wheel:
+    with zipfile.ZipFile(output / f"aworld-{VERSION}-py3-none-any.whl") as wheel:
         files = set(wheel.namelist())
         assert {"aworld/cli/main.py", "aworld/core/agent/loop.py", "aworld/core/session/models.py",
                 "aworld/core/agent/usage.py", "aworld/core/context/budget.py", "aworld/models/token_accounting.py"} <= files
@@ -36,17 +37,18 @@ def test_wheel_contains_one_kernel_and_explicit_dependencies(artifacts):
         assert not any("llm_agent" in name or "/runners/" in name or "/events/" in name for name in files)
         assert {"aworld/models/openai_provider.py", "aworld/core/llm_provider.py",
                 "aworld/core/context/base.py", "aworld/config/cl100k_base.tiktoken"} <= files
-        metadata = Parser().parsestr(wheel.read("aworld-1.0.0a5.dist-info/METADATA").decode())
-        assert metadata["Version"] == "1.0.0a5"
+        metadata = Parser().parsestr(wheel.read(f"aworld-{VERSION}.dist-info/METADATA").decode())
+        assert metadata["Version"] == VERSION
         assert all("extra ==" in value for value in metadata.get_all("Requires-Dist", []))
-        scripts = wheel.read("aworld-1.0.0a5.dist-info/entry_points.txt").decode()
+        scripts = wheel.read(f"aworld-{VERSION}.dist-info/entry_points.txt").decode()
         assert "aworld = aworld.cli.main:main" in scripts
         assert "legacy" not in scripts and "aworldv1" not in scripts
-    with zipfile.ZipFile(output / "aworld_cli-1.0.0a5-py3-none-any.whl") as wheel:
+    with zipfile.ZipFile(output / f"aworld_cli-{VERSION}-py3-none-any.whl") as wheel:
         files = [name for name in wheel.namelist() if name.endswith(".py")]
         assert set(files) == {"aworld_cli/__init__.py", "aworld_cli/__main__.py", "aworld_cli/entrypoint.py"}
-        metadata = Parser().parsestr(wheel.read("aworld_cli-1.0.0a5.dist-info/METADATA").decode())
-        assert "aworld==1.0.0a5" in metadata.get_all("Requires-Dist")
+        metadata = Parser().parsestr(wheel.read(f"aworld_cli-{VERSION}.dist-info/METADATA").decode())
+        assert metadata["Version"] == VERSION
+        assert f"aworld=={VERSION}" in metadata.get_all("Requires-Dist")
 
 
 def test_normal_install_and_both_commands_work_without_source_or_extras(artifacts):
@@ -55,7 +57,7 @@ def test_normal_install_and_both_commands_work_without_source_or_extras(artifact
     run("uv", "venv", "--python", sys.executable, str(environment))
     python = environment / "bin/python"
     run("uv", "pip", "install", "--offline", "--python", str(python),
-        str(output / "aworld-1.0.0a5-py3-none-any.whl"), str(output / "aworld_cli-1.0.0a5-py3-none-any.whl"))
+        str(output / f"aworld-{VERSION}-py3-none-any.whl"), str(output / f"aworld_cli-{VERSION}-py3-none-any.whl"))
     for command in ("aworld", "aworld-cli"):
         results = [json.loads(line) for line in run(str(environment / "bin" / command), "run", "--demo", "--no-skills",
             "--task", "hello", "--follow-up", "again", "--json", cwd=work).splitlines()]
@@ -68,12 +70,12 @@ def test_sdist_rebuild_is_self_contained_and_reproducible(artifacts):
     work, output = artifacts
     for name, wheel in (("aworld", "aworld"), ("aworld_cli", "aworld_cli")):
         unpacked = work / (name + "-source")
-        with tarfile.open(output / f"{name}-1.0.0a5.tar.gz") as archive:
+        with tarfile.open(output / f"{name}-{VERSION}.tar.gz") as archive:
             archive.extractall(unpacked, filter="data")
         source = next(unpacked.iterdir())
         rebuilt = work / (name + "-rebuilt")
         run(sys.executable, "-m", "build", "--wheel", "--no-isolation", "--outdir", str(rebuilt), str(source))
-        filename = f"{wheel}-1.0.0a5-py3-none-any.whl"
+        filename = f"{wheel}-{VERSION}-py3-none-any.whl"
         assert (rebuilt / filename).read_bytes() == (output / filename).read_bytes()
 
 
@@ -83,7 +85,7 @@ def test_pep660_editable_install_uses_canonical_namespace(artifacts):
     run("uv", "venv", "--python", sys.executable, str(environment))
     python = environment / "bin/python"
     run("uv", "pip", "install", "--offline", "--python", str(python), "-e", str(ROOT), "-e", str(ROOT / "aworld-cli"))
-    run(str(python), "-I", "-c", "import aworld; from aworld.cli.main import main; assert aworld.__version__ == '1.0.0a5'", cwd=work)
+    run(str(python), "-I", "-c", f"import aworld; from aworld.cli.main import main; assert aworld.__version__ == {VERSION!r}", cwd=work)
     assert json.loads(run(str(environment / "bin/aworld-cli"), "run", "--demo", "--no-skills", "--task", "editable", "--json", cwd=work))["status"] == "completed"
 
 
@@ -93,7 +95,7 @@ def test_installed_wheel_reuses_the_real_provider_outside_checkout(artifacts):
     run("uv", "venv", "--python", sys.executable, str(environment))
     python = environment / "bin/python"
     run("uv", "pip", "install", "--offline", "--python", str(python),
-        str(output / "aworld-1.0.0a5-py3-none-any.whl") + "[llm]")
+        str(output / f"aworld-{VERSION}-py3-none-any.whl") + "[llm]")
     # Construct the actual backend and exercise complete()/SDK parsing without
     # any source checkout on sys.path. A missing transitive import fails here.
     code = """

@@ -49,6 +49,9 @@ def build_trajectory(history, *, result, agent, model_name=None, events=()):
         elif entry.kind == "assistant":
             step = {"step_id": len(steps) + 1, "source": "agent", "message": entry.data["content"],
                     "llm_call_count": 1, "extra": {"run_id": entry.run_id}, **metrics(entry.data.get("usage"))}
+            if "replayed_reasoning_chars" in entry.data:
+                step["extra"].update(reasoning_chars=len(entry.data.get("reasoning_content") or ""),
+                                     replayed_reasoning_chars=entry.data["replayed_reasoning_chars"])
             if entry.data["tool_calls"]:
                 step["tool_calls"] = [{"tool_call_id": call["id"], "function_name": call["name"],
                                       "arguments": call["arguments"]} for call in entry.data["tool_calls"]]

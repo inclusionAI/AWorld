@@ -6,18 +6,27 @@ import importlib.util
 import inspect
 import json
 import math
+from dataclasses import replace
+from hashlib import sha256
 from urllib.parse import urlsplit
 
 from aworld.core.agent.messages import AssistantMessage, ModelRequest, ToolCall, ToolResultMessage
 
 
-def request_payload(request: ModelRequest, model: str, reasoning_effort: str | None = None) -> dict:
+def request_payload(request: ModelRequest, model: str, reasoning_effort: str | None = None, *,
+                    reasoning_identity: str | None = None, requires_reasoning_content: bool = False) -> dict:
     messages = []
     if request.system_prompt:
         messages.append({"role": "system", "content": request.system_prompt})
     for message in request.messages:
         if isinstance(message, AssistantMessage):
             value = {"role": "assistant", "content": message.content or None}
+            if request.tools and reasoning_effort != "none":
+                if message.reasoning_content is not None and message.reasoning_identity in (None, reasoning_identity):
+                    value["reasoning_content"] = message.reasoning_content
+                elif requires_reasoning_content:
+                    # History predating reasoning capture can have no replay field.
+                    value["reasoning_content"] = ""
             if message.tool_calls:
                 value["tool_calls"] = [{"id": call.id, "type": "function", "function": {
                     "name": call.name, "arguments": json.dumps(dict(call.arguments), ensure_ascii=False, allow_nan=False),
@@ -57,9 +66,11 @@ def parse_response(payload: dict) -> AssistantMessage:
             "tool_call_count": len(body["tool_calls"]) if isinstance(body.get("tool_calls"), list) else 0,
             "reasoning_chars": len(body["reasoning_content"]) if isinstance(body.get("reasoning_content"), str) else None,
             "refusal": bool(body.get("refusal"))}
+        if getattr(exc, "code", None) == "empty_final_response":
+            diagnostics["response_kind"] = "reasoning_only" if body.get("reasoning_content") else "empty"
         raise ModelResponseError(str(exc), usage=usage, code=getattr(exc, "code", "invalid_response"),
                                  diagnostics=diagnostics) from exc
-    return AssistantMessage(message.content, message.tool_calls, usage)
+    return replace(message, usage=usage)
 
 
 def _parse_message(payload: dict) -> AssistantMessage:
@@ -89,29 +100,46 @@ def _parse_message(payload: dict) -> AssistantMessage:
     if isinstance(content, str) and not content.strip() and not calls:
         from aworld.core.agent.usage import ModelResponseError
         raise ModelResponseError("Model returned an empty final response", code="empty_final_response")
-    return AssistantMessage(content, tuple(calls))
+    return AssistantMessage(content, tuple(calls), reasoning_content=message.get("reasoning_content"))
 
 
 class ProviderModel:
     """Convert messages only; provider owns transport, parsing and retries."""
 
     def __init__(self, provider, *, model: str, reasoning_effort: str | None = None,
-                 owns_provider: bool = False, default_parameters: dict | None = None):
+                 owns_provider: bool = False, default_parameters: dict | None = None,
+                 requires_reasoning_content: bool | None = None):
         self._provider = provider
         self._model, self._reasoning_effort = model, reasoning_effort
         self._owns_provider = owns_provider
         self._default_parameters = dict(default_parameters or {})
+        if requires_reasoning_content is not None and type(requires_reasoning_content) is not bool:
+            raise TypeError("requires_reasoning_content must be bool or None")
+        route = (model.lower(), str(getattr(provider, "base_url", "")).lower())
+        self._requires_reasoning_content = (any("deepseek" in part or "dsv4" in part for part in route)
+            if requires_reasoning_content is None else requires_reasoning_content)
+
+    @property
+    def reasoning_identity(self):
+        # Replay is bound to the originating model/endpoint, including custom gateways.
+        route = (self._model, str(getattr(self._provider, "base_url", "")))
+        return sha256(json.dumps(route).encode()).hexdigest()
 
     @property
     def context_identity(self):
         return (self._model, str(getattr(self._provider, "base_url", "")), self._reasoning_effort,
-                json.dumps(self._default_parameters, sort_keys=True))
+                json.dumps(self._default_parameters, sort_keys=True), self._requires_reasoning_content)
 
     async def complete(self, request: ModelRequest) -> AssistantMessage:
-        payload = {**self._default_parameters, **request_payload(request, self._model, self._reasoning_effort)}
+        effort = self._reasoning_effort or self._default_parameters.get("reasoning_effort")
+        identity = self.reasoning_identity
+        payload = {**self._default_parameters, **request_payload(request, self._model, effort,
+            reasoning_identity=identity,
+            requires_reasoning_content=self._requires_reasoning_content and effort != "none")}
         payload.pop("model")
         payload.pop("stream")
         messages = payload.pop("messages")
+        replayed_chars = sum(len(message.get("reasoning_content") or "") for message in messages)
         try:
             response = await self._provider.acompletion(messages=messages, **payload)
         except Exception as exc:
@@ -136,7 +164,13 @@ class ProviderModel:
         original_usage = getattr(response, "raw_usage", None)
         if isinstance(original_usage, dict) and getattr(response, "usage_reported", True):
             raw = {**raw, "usage": original_usage}
-        return parse_response(raw)
+        from aworld.core.agent.usage import ModelResponseError
+        try:
+            parsed = parse_response(raw)
+        except ModelResponseError as exc:
+            exc.diagnostics["replayed_reasoning_chars"] = replayed_chars
+            raise
+        return replace(parsed, reasoning_identity=identity, replayed_reasoning_chars=replayed_chars)
 
     async def aclose(self):
         if not self._owns_provider:
@@ -160,7 +194,7 @@ class ChatCompletionsModel(ProviderModel):
     def __init__(self, *, model: str, base_url: str = "https://api.openai.com/v1",
                  api_key: str | None = None, timeout: float = 60,
                  reasoning_effort: str | None = None, max_retries: int = 3,
-                 default_parameters: dict | None = None):
+                 default_parameters: dict | None = None, requires_reasoning_content: bool | None = None):
         if not isinstance(model, str) or not model.strip():
             raise ValueError("Specify --model or AWORLD_MODEL")
         parsed = urlsplit(base_url)
@@ -188,4 +222,4 @@ class ChatCompletionsModel(ProviderModel):
             api_key=api_key or "local-no-key", sync_enabled=False,
             async_enabled=True, timeout=timeout, max_retries=max_retries)
         super().__init__(provider, model=model, reasoning_effort=reasoning_effort, owns_provider=True,
-                         default_parameters=default_parameters)
+                         default_parameters=default_parameters, requires_reasoning_content=requires_reasoning_content)
