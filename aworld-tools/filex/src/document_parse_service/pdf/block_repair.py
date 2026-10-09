@@ -24,6 +24,7 @@ MAX_REPAIR_BLOCKS = 32
 MAX_REPAIR_ATTEMPTS = 2
 MAX_COLUMNS = 50
 MAX_ROWS = 500
+MAX_LABELS = MAX_ROWS + MAX_COLUMNS
 MAX_CELL_CHARS = 2048
 MAX_MODEL_OUTPUT_CHARS = 2 * 1024 * 1024
 MAX_MODEL_BOILERPLATE_CHARS = 4096
@@ -213,7 +214,7 @@ class StructuredTable:
             raise BlockRepairError("filex_block_repair_header_invalid")
         normalized_rows: list[tuple[StructuredCell, ...]] = []
         for row in rows:
-            if not isinstance(row, list):
+            if not isinstance(row, list) or len(row) > MAX_COLUMNS:
                 raise BlockRepairError("filex_block_repair_row_invalid")
             normalized_rows.append(
                 tuple(_structured_cell(cell, default_header=False) for cell in row)
@@ -235,7 +236,10 @@ class StructuredTable:
         value_columns: tuple[int, ...] = ()
         if require_numeric:
             raw_labels = payload["labels"]
-            if not isinstance(raw_labels, list) or not raw_labels:
+            if (
+                not isinstance(raw_labels, list)
+                or not 1 <= len(raw_labels) <= MAX_LABELS
+            ):
                 raise BlockRepairError("filex_block_repair_schema_invalid")
             labels = tuple(_cell_text(label) for label in raw_labels)
             if any(not label for label in labels) or len(set(labels)) != len(labels):
@@ -403,6 +407,16 @@ def _validate_table_grid(
     _table_grid(columns, rows)
 
 
+def _occupy_grid_position(
+    occupied: dict[tuple[int, int], StructuredCell],
+    position: tuple[int, int],
+    cell: StructuredCell,
+) -> None:
+    if position in occupied:
+        raise BlockRepairError("filex_block_repair_span_invalid")
+    occupied[position] = cell
+
+
 def _table_grid(
     columns: tuple[StructuredCell, ...], rows: list[tuple[StructuredCell, ...]]
 ) -> tuple[int, dict[tuple[int, int], StructuredCell]]:
@@ -420,14 +434,10 @@ def _table_grid(
                 all_rows
             ):
                 raise BlockRepairError("filex_block_repair_span_invalid")
-            positions = {
-                (covered_row, column)
-                for covered_row in range(row_index, row_index + cell.rowspan)
-                for column in range(column_index, column_index + cell.colspan)
-            }
-            if set(occupied) & positions:
-                raise BlockRepairError("filex_block_repair_span_invalid")
-            occupied.update((position, cell) for position in positions)
+            for covered_row in range(row_index, row_index + cell.rowspan):
+                for column in range(column_index, column_index + cell.colspan):
+                    position = (covered_row, column)
+                    _occupy_grid_position(occupied, position, cell)
             column_index += cell.colspan
         while (row_index, column_index) in occupied:
             column_index += 1
@@ -448,6 +458,21 @@ def _cell_html(cell: StructuredCell) -> str:
 
 def _normalized_label(value: str) -> str:
     return re.sub(r"\s+", " ", value).strip().casefold()
+
+
+def _label_is_represented(
+    label: str,
+    *,
+    visible_exact: frozenset[str],
+    visible: tuple[str, ...],
+) -> bool:
+    if label in visible_exact:
+        return True
+    # Compatibility for a label embedded in one bounded caption/cell. The
+    # schema-level MAX_LABELS cap keeps this fallback finite.
+    return any(
+        label in candidate or candidate in label for candidate in visible if candidate
+    )
 
 
 def _validate_chart_table(
@@ -519,7 +544,7 @@ def _validate_chart_table(
         raise BlockRepairError("filex_chart_repair_numeric_value_missing")
 
     if labels:
-        visible = [
+        visible = tuple(
             _normalized_label(value)
             for value in (
                 *((caption,) if caption else ()),
@@ -527,13 +552,14 @@ def _validate_chart_table(
                 *(cell.text for row in rows for cell in row),
             )
             if value
-        ]
+        )
+        visible_exact = frozenset(visible)
         for label in labels:
             normalized_label = _normalized_label(label)
-            if not any(
-                normalized_label in candidate or candidate in normalized_label
-                for candidate in visible
-                if candidate
+            if not _label_is_represented(
+                normalized_label,
+                visible_exact=visible_exact,
+                visible=visible,
             ):
                 raise BlockRepairError("filex_chart_repair_label_missing")
 

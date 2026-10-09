@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
 
+from document_parse_service.pdf import block_repair as block_repair_module
 from document_parse_service.pdf.block_repair import (
     BlockRepairError,
     StructuredTable,
@@ -87,6 +89,89 @@ def test_structured_table_requires_top_headers_and_a_genuine_body_cell() -> None
             '[[{"text":"A","header":true},{"text":"1","header":true}]]}',
             require_numeric=False,
         )
+
+
+def test_maximum_grid_validation_uses_one_occupancy_operation_per_slot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    operations = 0
+    original = block_repair_module._occupy_grid_position
+
+    def counted(occupied, position, cell):
+        nonlocal operations
+        operations += 1
+        return original(occupied, position, cell)
+
+    monkeypatch.setattr(block_repair_module, "_occupy_grid_position", counted)
+    payload = json.dumps(
+        {
+            "columns": [f"column-{index}" for index in range(50)],
+            "rows": [[""] * 50 for _ in range(500)],
+        },
+        separators=(",", ":"),
+    )
+
+    table = StructuredTable.from_model_output(payload, require_numeric=False)
+
+    assert len(table.rows) == 500
+    assert operations == 501 * 50
+
+
+def test_structured_table_rejects_more_physical_cells_than_grid_width() -> None:
+    payload = json.dumps(
+        {
+            "columns": ["Name", "Value"],
+            "rows": [[""] * 51],
+        }
+    )
+
+    with pytest.raises(BlockRepairError, match="filex_block_repair_row_invalid"):
+        StructuredTable.from_model_output(payload, require_numeric=False)
+
+
+def test_chart_labels_are_bounded_and_exact_matches_use_one_lookup_each(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = 0
+    original = block_repair_module._label_is_represented
+
+    def counted(label, *, visible_exact, visible):
+        nonlocal calls
+        calls += 1
+        return original(label, visible_exact=visible_exact, visible=visible)
+
+    monkeypatch.setattr(block_repair_module, "_label_is_represented", counted)
+    columns = [f"header-{index}" for index in range(50)]
+    row_labels = [f"row-{index}" for index in range(500)]
+    rows = [
+        [label, *([""] * 48), str(index + 1)] for index, label in enumerate(row_labels)
+    ]
+    payload = json.dumps(
+        {
+            "caption": "",
+            "notes": [],
+            "labels": [*columns, *row_labels],
+            "estimated": False,
+            "value_columns": [49],
+            "columns": columns,
+            "rows": rows,
+        },
+        separators=(",", ":"),
+    )
+
+    table = StructuredTable.from_model_output(payload, require_numeric=True)
+
+    assert len(table.labels) == block_repair_module.MAX_LABELS
+    assert calls == block_repair_module.MAX_LABELS
+
+    oversized = json.loads(payload)
+    oversized["labels"].append("one-label-too-many")
+    with pytest.raises(BlockRepairError, match="filex_block_repair_schema_invalid"):
+        StructuredTable.from_model_output(
+            json.dumps(oversized, separators=(",", ":")),
+            require_numeric=True,
+        )
+    assert calls == block_repair_module.MAX_LABELS
 
 
 def test_chart_table_rejects_header_tagged_measure_cells() -> None:
