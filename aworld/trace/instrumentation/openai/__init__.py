@@ -196,19 +196,50 @@ class WrappedStreamResponse(wrapt.ObjectProxy):
         self._start_time = start_time
         self._complete_response = {"choices": [], "model": ""}
         self._first_token_recorded = False
+        self._time_of_first_token = None
         self._request_kwargs = request_kwargs
 
     def __enter__(self):
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        self.__wrapped__.__exit__(exc_type, exc_val, exc_tb)
+        try:
+            self.__wrapped__.__exit__(exc_type, exc_val, exc_tb)
+        finally:
+            # A caller that leaves the block before the stream is exhausted
+            # never reaches StopIteration, so the span would stay open.
+            self._close_span()
 
     async def __aenter__(self):
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
-        await self.__wrapped__.__aexit__(exc_type, exc_val, exc_tb)
+        try:
+            await self.__wrapped__.__aexit__(exc_type, exc_val, exc_tb)
+        finally:
+            self._close_span()
+
+    def close(self):
+        """Close the wrapped stream and finalize the span.
+
+        A caller that stops consuming early never raises ``StopIteration``, so
+        without this the span would stay open even though the stream is done.
+        """
+        try:
+            close = getattr(self.__wrapped__, "close", None)
+            if close is not None:
+                close()
+        finally:
+            self._close_span()
+
+    async def aclose(self):
+        """Async counterpart of :meth:`close`."""
+        try:
+            aclose = getattr(self.__wrapped__, "aclose", None)
+            if aclose is not None:
+                await aclose()
+        finally:
+            self._close_span()
 
     def __iter__(self):
         return self
@@ -249,6 +280,10 @@ class WrappedStreamResponse(wrapt.ObjectProxy):
             self._first_token_recorded = True
 
     def _close_span(self):
+        if not self._span.is_recording():
+            # Already closed: reached here from both stream exhaustion and the
+            # context manager's exit.
+            return
         duration = None
         first_token_duration = None
         first_token_to_generate_duration = None
