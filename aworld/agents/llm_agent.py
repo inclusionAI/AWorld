@@ -359,6 +359,27 @@ class ToolCallParseIssueCode(str, Enum):
     MEDIA_CAPABILITY_UNAVAILABLE = "media_capability_unavailable"
 
 
+@dataclass(frozen=True, slots=True)
+class ModelToolCallSurface:
+    """Immutable authorization snapshot for one provider invocation."""
+
+    agent_id: str
+    task_id: str | None
+    task_epoch: int | None
+    tool_names: frozenset[str]
+    media_unavailable_reason: str | None = None
+
+    def rejection_code(self, name: str) -> ToolCallParseIssueCode | None:
+        if name in self.tool_names:
+            return None
+        if (
+            LLMAgent._is_artifact_observation_tool_name(name)
+            and self.media_unavailable_reason is not None
+        ):
+            return ToolCallParseIssueCode.MEDIA_CAPABILITY_UNAVAILABLE
+        return ToolCallParseIssueCode.TOOL_NOT_IN_LIVE_SURFACE
+
+
 @dataclass(frozen=True)
 class ToolCallParseIssue:
     """Structured evidence for one malformed tool call in a model response."""
@@ -454,8 +475,23 @@ class LlmOutputParser(ModelOutputParser[ModelResponse, AgentResult]):
                     continue
 
                 agent_info = kwargs.get("agent")
+                tool_call_surface = kwargs.get("tool_call_surface")
+                if isinstance(tool_call_surface, ModelToolCallSurface):
+                    rejection_code = tool_call_surface.rejection_code(full_name)
+                    if rejection_code is not None:
+                        parse_issues.append(
+                            ToolCallParseIssue(
+                                call_index=idx,
+                                call_id=call_id,
+                                code=rejection_code,
+                            )
+                        )
+                        continue
                 action_guard = getattr(agent_info, "is_model_tool_call_allowed", None)
-                if callable(action_guard):
+                if (
+                    not isinstance(tool_call_surface, ModelToolCallSurface)
+                    and callable(action_guard)
+                ):
                     try:
                         action_allowed = action_guard(full_name)
                     except Exception:
@@ -2415,22 +2451,58 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
 
         return self._artifact_media_capability_reason(context) is None
 
-    def model_tool_call_rejection_code(
-        self, full_name: str
-    ) -> ToolCallParseIssueCode | None:
-        if self._is_artifact_observation_tool_name(full_name) and (
-            self._artifact_media_capability_reason(
-                getattr(self, "context", None)
-            )
-            is not None
-        ):
-            return ToolCallParseIssueCode.MEDIA_CAPABILITY_UNAVAILABLE
-        return None
-
-    def is_model_tool_call_allowed(self, full_name: str) -> bool:
-        """Reject only capability-incompatible media calls at parse time."""
-
-        return self.model_tool_call_rejection_code(full_name) is None
+    def _model_tool_call_surface(
+        self,
+        tools: List[Dict[str, Any]] | None,
+        context: Context | None,
+    ) -> ModelToolCallSurface:
+        presented_names = {
+            name.strip()
+            for tool in tools or ()
+            if isinstance(tool, dict)
+            for function in (tool.get("function"),)
+            if isinstance(function, dict)
+            for name in (function.get("name"),)
+            if isinstance(name, str) and name.strip()
+        }
+        names = set(presented_names)
+        tool_mapping = getattr(self, "tool_mapping", {}) or {}
+        for presented_name in presented_names:
+            original_name = tool_mapping.get(presented_name)
+            if isinstance(original_name, str) and original_name.strip():
+                original_name = original_name.strip()
+                names.add(original_name)
+                names.add(
+                    original_name
+                    if original_name.startswith("mcp__")
+                    else f"mcp__{original_name}"
+                )
+        raw_task_id = getattr(context, "task_id", None)
+        task_id = (
+            str(raw_task_id)[:256]
+            if raw_task_id is not None
+            else None
+        )
+        raw_epoch = getattr(context, "task_epoch", None)
+        task_epoch = (
+            raw_epoch
+            if isinstance(raw_epoch, int) and not isinstance(raw_epoch, bool)
+            else None
+        )
+        return ModelToolCallSurface(
+            agent_id=self.id(),
+            task_id=task_id,
+            task_epoch=task_epoch,
+            tool_names=frozenset(names),
+            media_unavailable_reason=(
+                self._artifact_media_capability_reason(context)
+                if not any(
+                    self._is_artifact_observation_tool_name(name)
+                    for name in names
+                )
+                else None
+            ),
+        )
 
     def _apply_reasoning_phase_policy(
         self,
@@ -6881,6 +6953,9 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                                 agent_id=self.id(),
                                 agent=self,
                                 use_tools_in_prompt=self.use_tools_in_prompt,
+                                tool_call_surface=response_parse_args.get(
+                                    "tool_call_surface"
+                                ),
                             )
                     except ToolCallBatchParseError as exc:
                         validation_feedback = (
@@ -9152,6 +9227,60 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         context_info[f"artifact_media_recovery:{self.id()}"] = diagnostic
 
     @staticmethod
+    def _tool_surface_rejection_codes(
+        response: ModelResponse | None,
+        surface: ModelToolCallSurface,
+    ) -> tuple[ToolCallParseIssueCode, ...]:
+        result = []
+        for call in getattr(response, "tool_calls", None) or ():
+            function = getattr(call, "function", None)
+            name = getattr(function, "name", None)
+            rejection = (
+                surface.rejection_code(name)
+                if isinstance(name, str)
+                else ToolCallParseIssueCode.TOOL_NOT_IN_LIVE_SURFACE
+            )
+            if rejection is not None:
+                result.append(rejection)
+        return tuple(result)
+
+    def _artifact_media_recovery_exhausted_response(
+        self,
+        *,
+        context: Context | None,
+        response: ModelResponse | None,
+        recovery_failure_reason: str,
+        recovery_context: str,
+    ) -> ModelResponse:
+        from aworld.core.context.execution_state import (
+            ARTIFACT_MEDIA_RECOVERY_EXHAUSTED_REASON,
+            record_execution_state,
+        )
+
+        self._record_artifact_media_recovery(
+            context,
+            status="recovery_exhausted",
+            recovery_failure_reason=recovery_failure_reason,
+        )
+        record_execution_state(
+            context,
+            self.id(),
+            "incomplete",
+            ARTIFACT_MEDIA_RECOVERY_EXHAUSTED_REASON,
+            recoverable=False,
+        )
+        self._store_model_response_recovery_context(
+            context,
+            reason=ARTIFACT_MEDIA_RECOVERY_EXHAUSTED_REASON,
+            content=recovery_context,
+        )
+        return self._incomplete_model_response(
+            response,
+            ARTIFACT_MEDIA_RECOVERY_EXHAUSTED_REASON,
+            recoverable=False,
+        )
+
+    @staticmethod
     def _incomplete_model_response(
         response: ModelResponse | None,
         reason: str,
@@ -9513,6 +9642,10 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                     artifact_media_attempt_count = (
                         self._artifact_media_attempt_count(context)
                     )
+                    tool_call_surface = self._model_tool_call_surface(
+                        tools,
+                        context,
+                    )
                     if current_stream_mode:
                         # Pre-calc prompt tokens for display (API often does not return in stream chunks)
                         prompt_tokens_est = 0
@@ -9560,6 +9693,33 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                         self._artifact_media_attempt_count(context)
                         > artifact_media_attempt_count
                     )
+                    parser_args = kwargs.get("response_parse_args")
+                    if isinstance(parser_args, dict):
+                        parser_args["tool_call_surface"] = tool_call_surface
+                    surface_rejection_codes = (
+                        self._tool_surface_rejection_codes(
+                            llm_response,
+                            tool_call_surface,
+                        )
+                    )
+                    if (
+                        artifact_media_empty_recovery_attempted
+                        and ToolCallParseIssueCode.MEDIA_CAPABILITY_UNAVAILABLE
+                        in surface_rejection_codes
+                    ):
+                        if llm_response:
+                            usage_process(llm_response.usage, message.context)
+                        return self._artifact_media_recovery_exhausted_response(
+                            context=context,
+                            response=llm_response,
+                            recovery_failure_reason=(
+                                "media_capability_unavailable_tool_call"
+                            ),
+                            recovery_context=(
+                                "Text-only artifact media recovery returned a "
+                                "Tool call outside its immutable live surface."
+                            ),
+                        )
                     # A non-empty provider response is not necessarily a completed
                     # action. In particular length-stop batches must be discarded
                     # atomically even if an early call happens to be valid JSON.
@@ -9694,27 +9854,13 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                                 )
                             continue
                         if media_recovery_failed:
-                            self._record_artifact_media_recovery(
-                                context,
-                                status="recovery_exhausted",
-                                recovery_failure_reason=incomplete_reason,
-                            )
-                            record_execution_state(
-                                context,
-                                self.id(),
-                                "incomplete",
-                                ARTIFACT_MEDIA_RECOVERY_EXHAUSTED_REASON,
-                                recoverable=False,
-                            )
-                            self._store_model_response_recovery_context(
-                                context,
-                                reason=ARTIFACT_MEDIA_RECOVERY_EXHAUSTED_REASON,
-                                content=recovery_context,
-                            )
-                            return self._incomplete_model_response(
-                                llm_response,
-                                ARTIFACT_MEDIA_RECOVERY_EXHAUSTED_REASON,
-                                recoverable=False,
+                            return (
+                                self._artifact_media_recovery_exhausted_response(
+                                    context=context,
+                                    response=llm_response,
+                                    recovery_failure_reason=incomplete_reason,
+                                    recovery_context=recovery_context,
+                                )
                             )
                         record_execution_state(
                             context,
@@ -9736,7 +9882,13 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                         record_execution_state,
                     )
 
-                    if (
+                    if surface_rejection_codes:
+                        # The parser will emit the stable typed rejection and
+                        # preserve its existing validation-feedback behavior.
+                        # A call outside this request's immutable surface cannot
+                        # resolve an earlier model-response blocker.
+                        pass
+                    elif (
                         context is not None
                         and execution_state_resolution_mode == "ordinary"
                         and llm_response

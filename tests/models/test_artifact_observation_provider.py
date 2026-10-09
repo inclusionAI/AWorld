@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 from copy import deepcopy
@@ -186,6 +187,33 @@ class _AlwaysEmptyStreamProvider(_CapturingProvider):
         self.kwargs_calls.append(dict(kwargs))
         if False:
             yield self._response()
+
+
+class _EmptyThenForbiddenMediaProvider(_CapturingProvider):
+    def __init__(self) -> None:
+        super().__init__()
+        self.stream_attempts = 0
+
+    async def astream_completion(self, messages, **kwargs):
+        self.calls.append(messages)
+        self.kwargs_calls.append(dict(kwargs))
+        self.stream_attempts += 1
+        if self.stream_attempts == 1:
+            return
+        yield ModelResponse(
+            id="forbidden-media-call",
+            model="vision-test",
+            tool_calls=[
+                ToolCall(
+                    id="call-repeat-observe",
+                    function=Function(
+                        name="observe_artifact",
+                        arguments='{"path":"chart.png"}',
+                    ),
+                )
+            ],
+            finish_reason="tool_calls",
+        )
 
 
 class _UnfinishedThenSuccessProvider(_CapturingProvider):
@@ -1042,6 +1070,53 @@ async def test_media_empty_recovery_exhaustion_is_typed_and_nonrecoverable() -> 
 
 
 @pytest.mark.asyncio
+async def test_media_empty_recovery_rejects_forbidden_repeat_observation() -> None:
+    from aworld.core.context.execution_state import get_execution_state
+
+    context = Context(
+        task_id="artifact-media-forbidden-retry",
+        session=Session(session_id="artifact-media-forbidden-retry-session"),
+    )
+    provider = _EmptyThenForbiddenMediaProvider()
+    agent = _artifact_agent(provider)
+    message = _artifact_message(context)
+
+    result = await agent.invoke_model(
+        _causal_messages(context),
+        message=message,
+        prepared_tools=[
+            _artifact_tool_schema("observe_artifact"),
+            _artifact_tool_schema("workspace__write"),
+        ],
+        stream=True,
+        _aworld_artifact_vision_enabled=True,
+        _aworld_artifact_agent_id=agent.id(),
+    )
+
+    assert len(provider.calls) == 2
+    assert [
+        tool["function"]["name"]
+        for tool in provider.kwargs_calls[1]["tools"]
+    ] == ["workspace__write"]
+    assert result.tool_calls == []
+    assert result.message["aworld_incomplete_reason"] == (
+        "model_response_artifact_media_recovery_exhausted"
+    )
+    assert result.message["aworld_recoverable"] is False
+    execution_state = get_execution_state(context, agent_id=agent.id())
+    assert execution_state["reason"] == (
+        "model_response_artifact_media_recovery_exhausted"
+    )
+    assert execution_state["recoverable"] is False
+    assert context.context_info[f"artifact_media_recovery:{agent.id()}"] == {
+        "schema_version": "aworld.artifact-media-recovery/v1",
+        "status": "recovery_exhausted",
+        "reason": "empty_model_response_after_artifact_media",
+        "recovery_failure_reason": "media_capability_unavailable_tool_call",
+    }
+
+
+@pytest.mark.asyncio
 async def test_undeclared_media_capability_omits_and_rejects_observe_artifact() -> None:
     context = Context(task_id="artifact-media-unsupported")
     agent = _artifact_agent(_UnsupportedMediaProvider(), attempts=1)
@@ -1080,10 +1155,89 @@ async def test_undeclared_media_capability_omits_and_rejects_observe_artifact() 
             response,
             agent_id=agent.id(),
             agent=agent,
+            tool_call_surface=agent._model_tool_call_surface(selected, context),
         )
     assert exc_info.value.issues[0].code is (
         ToolCallParseIssueCode.MEDIA_CAPABILITY_UNAVAILABLE
     )
+
+
+@pytest.mark.asyncio
+async def test_same_agent_concurrent_parse_uses_request_local_media_surface() -> None:
+    agent = _artifact_agent(_CapturingProvider(), attempts=1)
+    disabled_context = Context(task_id="media-disabled-context")
+    enabled_context = Context(task_id="media-enabled-context")
+    agent._record_artifact_media_recovery(
+        disabled_context,
+        status="text_only_recovery",
+    )
+    tools = [
+        _artifact_tool_schema("observe_artifact"),
+        _artifact_tool_schema("workspace__write"),
+    ]
+    disabled_tools = agent._filter_artifact_observation_tools(
+        tools,
+        disabled_context,
+    )
+    disabled_surface = agent._model_tool_call_surface(
+        disabled_tools,
+        disabled_context,
+    )
+    enabled_surface = agent._model_tool_call_surface(tools, enabled_context)
+    arrived = 0
+    arrived_lock = asyncio.Lock()
+    release = asyncio.Event()
+
+    async def parse_with_context(context, surface):
+        nonlocal arrived
+        # Reproduce the old race: the shared mutable Agent context is left at
+        # whichever concurrent invocation assigned it last.
+        agent.context = context
+        async with arrived_lock:
+            arrived += 1
+            if arrived == 2:
+                release.set()
+        await release.wait()
+        response = ModelResponse(
+            id=f"response-{context.task_id}",
+            model="capability-contract-test",
+            tool_calls=[
+                ToolCall(
+                    id=f"call-{context.task_id}",
+                    function=Function(
+                        name="observe_artifact",
+                        arguments='{"path":"chart.png"}',
+                    ),
+                )
+            ],
+        )
+        return await LlmOutputParser().parse(
+            response,
+            agent_id=agent.id(),
+            agent=agent,
+            tool_call_surface=surface,
+        )
+
+    disabled_task = asyncio.create_task(
+        parse_with_context(disabled_context, disabled_surface)
+    )
+    await asyncio.sleep(0)
+    enabled_task = asyncio.create_task(
+        parse_with_context(enabled_context, enabled_surface)
+    )
+    disabled_result, enabled_result = await asyncio.gather(
+        disabled_task,
+        enabled_task,
+        return_exceptions=True,
+    )
+
+    assert agent.context is enabled_context
+    assert isinstance(disabled_result, ToolCallBatchParseError)
+    assert disabled_result.issues[0].code is (
+        ToolCallParseIssueCode.MEDIA_CAPABILITY_UNAVAILABLE
+    )
+    assert not isinstance(enabled_result, Exception)
+    assert enabled_result.is_call_tool is True
 
 
 @pytest.mark.asyncio
