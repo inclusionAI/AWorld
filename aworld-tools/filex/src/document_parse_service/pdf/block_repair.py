@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections import deque
 import copy
 import json
 import math
@@ -29,6 +30,9 @@ MAX_CELL_CHARS = 2048
 MAX_MODEL_OUTPUT_CHARS = 2 * 1024 * 1024
 MAX_MODEL_BOILERPLATE_CHARS = 4096
 MAX_REPAIR_OUTPUT_TOKENS = 16_384
+MAX_LABEL_FALLBACK_OUTPUT_CHECKS = MAX_MODEL_OUTPUT_CHARS * 2
+MAX_LABEL_PATTERN_CHARS = 64 * 1024
+MAX_LABEL_AUTOMATON_OUTPUTS = MAX_LABEL_PATTERN_CHARS * 2
 
 _FENCE = re.compile(r"^```(?:json)?\s*|\s*```$", re.IGNORECASE)
 _NUMERIC = re.compile(
@@ -460,19 +464,88 @@ def _normalized_label(value: str) -> str:
     return re.sub(r"\s+", " ", value).strip().casefold()
 
 
-def _label_is_represented(
-    label: str,
-    *,
-    visible_exact: frozenset[str],
+def _advance_label_match_state(
+    transitions: list[dict[str, int]],
+    failure: list[int],
+    state: int,
+    character: str,
+) -> int:
+    while state and character not in transitions[state]:
+        state = failure[state]
+    return transitions[state].get(character, 0)
+
+
+def _represented_chart_labels(
+    labels: tuple[str, ...],
     visible: tuple[str, ...],
-) -> bool:
-    if label in visible_exact:
-        return True
-    # Compatibility for a label embedded in one bounded caption/cell. The
-    # schema-level MAX_LABELS cap keeps this fallback finite.
-    return any(
-        label in candidate or candidate in label for candidate in visible if candidate
-    )
+) -> frozenset[str]:
+    """Find labels embedded in visible cells with one bounded multi-pattern scan."""
+
+    visible_exact = frozenset(visible)
+    represented = {label for label in labels if label in visible_exact}
+    remaining = set(labels) - represented
+    if not remaining:
+        return frozenset(represented)
+    if sum(len(label) for label in remaining) > MAX_LABEL_PATTERN_CHARS:
+        raise BlockRepairError(
+            "filex_chart_repair_label_validation_budget_exceeded"
+        )
+
+    transitions: list[dict[str, int]] = [{}]
+    failure = [0]
+    outputs: list[list[str]] = [[]]
+    for label in sorted(remaining):
+        state = 0
+        for character in label:
+            next_state = transitions[state].get(character)
+            if next_state is None:
+                next_state = len(transitions)
+                transitions[state][character] = next_state
+                transitions.append({})
+                failure.append(0)
+                outputs.append([])
+            state = next_state
+        outputs[state].append(label)
+
+    automaton_outputs = sum(len(values) for values in outputs)
+    pending = deque(transitions[0].values())
+    while pending:
+        state = pending.popleft()
+        for character, child in transitions[state].items():
+            pending.append(child)
+            fallback = failure[state]
+            while fallback and character not in transitions[fallback]:
+                fallback = failure[fallback]
+            failure[child] = transitions[fallback].get(character, 0)
+            automaton_outputs += len(outputs[failure[child]])
+            if automaton_outputs > MAX_LABEL_AUTOMATON_OUTPUTS:
+                raise BlockRepairError(
+                    "filex_chart_repair_label_validation_budget_exceeded"
+                )
+            outputs[child].extend(outputs[failure[child]])
+
+    output_checks = 0
+    # Only the declared label being embedded in a visible caption/cell is
+    # accepted.  The former reverse ``candidate in label`` check admitted a
+    # longer model-invented label when only its short prefix was visible.
+    for candidate in visible:
+        state = 0
+        for character in candidate:
+            state = _advance_label_match_state(
+                transitions, failure, state, character
+            )
+            for label in outputs[state]:
+                output_checks += 1
+                if output_checks > MAX_LABEL_FALLBACK_OUTPUT_CHECKS:
+                    raise BlockRepairError(
+                        "filex_chart_repair_label_validation_budget_exceeded"
+                    )
+                if label in remaining:
+                    remaining.remove(label)
+                    represented.add(label)
+            if not remaining:
+                return frozenset(represented)
+    return frozenset(represented)
 
 
 def _validate_chart_table(
@@ -553,14 +626,10 @@ def _validate_chart_table(
             )
             if value
         )
-        visible_exact = frozenset(visible)
-        for label in labels:
-            normalized_label = _normalized_label(label)
-            if not _label_is_represented(
-                normalized_label,
-                visible_exact=visible_exact,
-                visible=visible,
-            ):
+        normalized_labels = tuple(_normalized_label(label) for label in labels)
+        represented = _represented_chart_labels(normalized_labels, visible)
+        for normalized_label in normalized_labels:
+            if normalized_label not in represented:
                 raise BlockRepairError("filex_chart_repair_label_missing")
 
 

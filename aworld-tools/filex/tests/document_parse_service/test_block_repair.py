@@ -129,18 +129,18 @@ def test_structured_table_rejects_more_physical_cells_than_grid_width() -> None:
         StructuredTable.from_model_output(payload, require_numeric=False)
 
 
-def test_chart_labels_are_bounded_and_exact_matches_use_one_lookup_each(
+def test_chart_labels_are_bounded_and_exact_matches_skip_fallback_scan(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    calls = 0
-    original = block_repair_module._label_is_represented
+    steps = 0
+    original = block_repair_module._advance_label_match_state
 
-    def counted(label, *, visible_exact, visible):
-        nonlocal calls
-        calls += 1
-        return original(label, visible_exact=visible_exact, visible=visible)
+    def counted(transitions, failure, state, character):
+        nonlocal steps
+        steps += 1
+        return original(transitions, failure, state, character)
 
-    monkeypatch.setattr(block_repair_module, "_label_is_represented", counted)
+    monkeypatch.setattr(block_repair_module, "_advance_label_match_state", counted)
     columns = [f"header-{index}" for index in range(50)]
     row_labels = [f"row-{index}" for index in range(500)]
     rows = [
@@ -162,7 +162,7 @@ def test_chart_labels_are_bounded_and_exact_matches_use_one_lookup_each(
     table = StructuredTable.from_model_output(payload, require_numeric=True)
 
     assert len(table.labels) == block_repair_module.MAX_LABELS
-    assert calls == block_repair_module.MAX_LABELS
+    assert steps == 0
 
     oversized = json.loads(payload)
     oversized["labels"].append("one-label-too-many")
@@ -171,7 +171,76 @@ def test_chart_labels_are_bounded_and_exact_matches_use_one_lookup_each(
             json.dumps(oversized, separators=(",", ":")),
             require_numeric=True,
         )
-    assert calls == block_repair_module.MAX_LABELS
+    assert steps == 0
+
+
+def test_chart_label_fallback_scans_visible_text_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    steps = 0
+    original = block_repair_module._advance_label_match_state
+
+    def counted(transitions, failure, state, character):
+        nonlocal steps
+        steps += 1
+        return original(transitions, failure, state, character)
+
+    monkeypatch.setattr(block_repair_module, "_advance_label_match_state", counted)
+    labels = [
+        "a" * 55 + chr(0xE000 + index)
+        for index in range(block_repair_module.MAX_LABELS)
+    ]
+    columns = [f"header-{index}" for index in range(50)]
+    missing = "a" * 55 + "z"
+    rows = [[missing] * 49 + [str(index + 1)] for index in range(500)]
+    positions = [(row, column) for row in range(500) for column in range(49)]
+    for label, (row, column) in zip(labels, positions[-len(labels) :]):
+        rows[row][column] = label + "!"
+    payload = json.dumps(
+        {
+            "caption": "",
+            "notes": [],
+            "labels": labels,
+            "estimated": False,
+            "value_columns": [49],
+            "columns": columns,
+            "rows": rows,
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    visible_characters = sum(map(len, columns)) + sum(
+        len(value) for row in rows for value in row
+    )
+
+    table = StructuredTable.from_model_output(payload, require_numeric=True)
+
+    assert len(table.labels) == block_repair_module.MAX_LABELS
+    assert steps <= visible_characters
+
+
+def test_chart_label_fallback_has_bounded_trie_size() -> None:
+    labels = tuple(
+        f"label-{index}-" + "x" * 120
+        for index in range(block_repair_module.MAX_LABELS)
+    )
+
+    with pytest.raises(
+        BlockRepairError,
+        match="filex_chart_repair_label_validation_budget_exceeded",
+    ):
+        block_repair_module._represented_chart_labels(labels, ("visible",))
+
+
+def test_chart_label_fallback_only_accepts_declared_label_embedded_in_cell() -> None:
+    assert block_repair_module._represented_chart_labels(
+        ("revenue",),
+        ("revenue (usd)",),
+    ) == frozenset({"revenue"})
+    assert block_repair_module._represented_chart_labels(
+        ("revenue (usd)",),
+        ("revenue",),
+    ) == frozenset()
 
 
 def test_chart_table_rejects_header_tagged_measure_cells() -> None:
