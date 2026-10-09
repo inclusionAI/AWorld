@@ -45,8 +45,6 @@ from aworld.sandbox.declared_write import (
     DECLARED_PUBLIC_WRITE_HASH_MAX_BYTES,
     DeclaredWriteLeaseUnavailable,
     authorized_declared_write_targets,
-    build_receipts_for_versions,
-    declared_write_operation_sha256,
     framework_scope_from_hidden,
     framework_scope_sha256,
     overlapping_path_leases,
@@ -1659,7 +1657,6 @@ async def run_code(
     scope = _framework_scope(env_content)
     declared_contract = None
     declared_targets: tuple[dict[str, str], ...] = ()
-    declared_operation_sha256 = None
     try:
         declared_scope_sha256 = framework_scope_sha256(
             framework_scope_from_hidden(env_content)
@@ -1682,17 +1679,9 @@ async def run_code(
             declared_contract,
             normalize_path=normalize_declared_path,
         )
-        if declared_targets:
-            declared_operation_sha256 = declared_write_operation_sha256(
-                code=code,
-                language=language,
-                cwd=None,
-                declared_write_paths=declared_write_paths,
-            )
     except (AttributeError, OSError, TypeError, ValueError):
         declared_contract = None
         declared_targets = ()
-        declared_operation_sha256 = None
     cached_fact = _lookup_read_fact(
         scope=scope,
         operation_key=operation_key,
@@ -1854,10 +1843,6 @@ async def run_code(
             write_paths,
             timeout=timeout,
         )
-        declared_observation_before = await _container_declared_write_versions(
-            declared_targets,
-            timeout=timeout,
-        )
         if controlled_read_request is not None and execution_context is not None:
             try:
                 candidate_execution = await _held_fd_container_file_read(
@@ -1925,37 +1910,11 @@ async def run_code(
             if before_write_states is not None and after_write_states is not None
             else None
         )
-        declared_observation_after = await _container_declared_write_versions(
-            declared_targets,
-            timeout=timeout,
-        )
-        declared_versions_before = (
-            declared_observation_before[0]
-            if declared_observation_before is not None
-            and declared_observation_after is not None
-            and declared_observation_before[1] == declared_observation_after[1]
-            else None
-        )
-        declared_versions_after = (
-            declared_observation_after[0]
-            if declared_versions_before is not None
-            else None
-        )
-        declared_public_write_receipts = build_receipts_for_versions(
-            declared_targets,
-            before_versions=declared_versions_before,
-            after_versions=declared_versions_after,
-            contract=declared_contract,
-            tool_call_id=(
-                env_content.get("tool_call_id")
-                if isinstance(env_content, Mapping)
-                else None
-            ),
-            operation_sha256=declared_operation_sha256,
-            executed=True,
-            exit_code=return_code,
-            timed_out=timed_out,
-        )
+        # ``docker exec`` returning does not prove that container-side descendants
+        # have quiesced.  Before/after hashes therefore cannot authenticate this
+        # call as the writer; the trusted parent barrier still serializes the live
+        # provider call, but no declared-write receipt is emitted.
+        declared_public_write_receipts = ()
     finally:
         await lease_context.__aexit__(None, None, None)
     stable_execution_context = execution_context

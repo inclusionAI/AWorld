@@ -71,7 +71,6 @@ from aworld.sandbox.task_budget import (
 )
 from aworld.sandbox.declared_write import (
     DECLARED_PUBLIC_WRITE_CONTRACT_KEY,
-    DECLARED_WRITE_LOCK_ROOT_ENV,
     DeclaredWriteLeaseUnavailable,
     authorized_declared_write_targets,
     build_receipts_for_versions,
@@ -198,6 +197,8 @@ class CommandResult(BaseModel):
     capture_limit_bytes: int = _DEFAULT_TOTAL_CAPTURE_BYTES
     capture_complete: bool = True
     background_output_detached: bool = False
+    background_process_requested: bool = False
+    process_group_quiesced: bool | None = None
     timed_out: bool = False
     stdout_output_policy: dict[str, Any] = Field(default_factory=dict)
     stderr_output_policy: dict[str, Any] = Field(default_factory=dict)
@@ -230,6 +231,8 @@ class TerminalMetadata(BaseModel):
     capture_limit_bytes: int = _DEFAULT_TOTAL_CAPTURE_BYTES
     capture_complete: bool = True
     background_output_detached: bool = False
+    background_process_requested: bool = False
+    process_group_quiesced: bool | None = None
     capture_strategy: str = "bounded_head_tail_drain"
     environment_keys: list[str] = Field(default_factory=list)
     output_policy: dict[str, dict[str, Any]] = Field(default_factory=dict)
@@ -494,7 +497,6 @@ def _resolve_environment(
     # This parent/stdio-sidecar cache authority is framework state, not task
     # command configuration. Never project it into model-executed processes.
     resolved.pop(TERMINAL_EXECUTION_AUTHORITY_ENV, None)
-    resolved.pop(DECLARED_WRITE_LOCK_ROOT_ENV, None)
     if isinstance(framework_scope, Mapping):
         for source_name, environment_name in (
             ("task_id", "AWORLD_TASK_ID"),
@@ -1144,26 +1146,34 @@ async def run_code(
                 env=command_environment,
                 language=language,
                 python_executable=python_executable,
+                quiesce_process_group=declared_contract is not None,
             )
             execution_result = result
             execution_time = time.time() - start_time
             mutation_observed = _mutation_observed_from_snapshot(mutation_snapshot)
             declared_versions_after = content_versions_for_targets(declared_targets)
-            declared_public_write_receipts = build_receipts_for_versions(
-                declared_targets,
-                before_versions=declared_versions_before,
-                after_versions=declared_versions_after,
-                contract=declared_contract,
-                tool_call_id=(
-                    env_content.get("tool_call_id")
-                    if isinstance(env_content, Mapping)
-                    else None
-                ),
-                operation_sha256=declared_operation_sha256,
-                executed=True,
-                exit_code=result.return_code,
-                timed_out=result.timed_out,
-            )
+            if (
+                not result.background_process_requested
+                and not result.background_output_detached
+                and result.capture_complete
+                and not result.timed_out
+                and result.process_group_quiesced is True
+            ):
+                declared_public_write_receipts = build_receipts_for_versions(
+                    declared_targets,
+                    before_versions=declared_versions_before,
+                    after_versions=declared_versions_after,
+                    contract=declared_contract,
+                    tool_call_id=(
+                        env_content.get("tool_call_id")
+                        if isinstance(env_content, Mapping)
+                        else None
+                    ),
+                    operation_sha256=declared_operation_sha256,
+                    executed=True,
+                    exit_code=result.return_code,
+                    timed_out=result.timed_out,
+                )
             read_epochs_after = (
                 _read_path_epochs(
                     plan=receipt_plan,
@@ -1205,6 +1215,8 @@ async def run_code(
             capture_limit_bytes=result.capture_limit_bytes,
             capture_complete=result.capture_complete,
             background_output_detached=result.background_output_detached,
+            background_process_requested=result.background_process_requested,
+            process_group_quiesced=result.process_group_quiesced,
             environment_keys=environment_keys,
             output_policy={
                 "stdout": result.stdout_output_policy,
@@ -2337,9 +2349,10 @@ def _close_subprocess_pipe_transports(process: asyncio.subprocess.Process) -> No
             pass
 
 
-async def _terminate_process(process: asyncio.subprocess.Process) -> None:
+async def _terminate_process(process: asyncio.subprocess.Process) -> bool:
     """Terminate a timed-out shell and its descendants, then reap it."""
 
+    descendants_quiesced = False
     if platform_info["system"] == "Windows":
         try:
             taskkill = await asyncio.create_subprocess_exec(
@@ -2353,6 +2366,7 @@ async def _terminate_process(process: asyncio.subprocess.Process) -> None:
                 stderr=subprocess.DEVNULL,
             )
             await asyncio.wait_for(taskkill.wait(), timeout=5)
+            descendants_quiesced = taskkill.returncode == 0
         except (FileNotFoundError, ProcessLookupError, OSError, asyncio.TimeoutError):
             try:
                 process.kill()
@@ -2364,23 +2378,38 @@ async def _terminate_process(process: asyncio.subprocess.Process) -> None:
         # still own stdout/stderr and otherwise keep our readers alive forever.
         try:
             os.killpg(process.pid, signal.SIGTERM)
-        except (ProcessLookupError, OSError):
+        except ProcessLookupError:
+            descendants_quiesced = True
+        except OSError:
             pass
-        await asyncio.sleep(0.2)
-        try:
-            os.killpg(process.pid, 0)
-        except (ProcessLookupError, OSError):
-            pass
-        else:
+        if not descendants_quiesced:
+            await asyncio.sleep(0.2)
             try:
-                os.killpg(process.pid, signal.SIGKILL)
-            except (ProcessLookupError, OSError):
+                os.killpg(process.pid, 0)
+            except ProcessLookupError:
+                descendants_quiesced = True
+            except OSError:
                 pass
+            else:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except (ProcessLookupError, OSError):
+                    pass
+                for _ in range(20):
+                    await asyncio.sleep(0.025)
+                    try:
+                        os.killpg(process.pid, 0)
+                    except ProcessLookupError:
+                        descendants_quiesced = True
+                        break
+                    except OSError:
+                        break
 
     try:
         await asyncio.wait_for(process.wait(), timeout=5)
     except (asyncio.TimeoutError, ProcessLookupError):
         pass
+    return descendants_quiesced and process.returncode is not None
 
 
 async def _finish_reader_tasks_after_termination(
@@ -2428,6 +2457,7 @@ async def _execute_command_async(
     env: Mapping[str, str] | None = None,
     language: Literal["shell", "python"] = "shell",
     python_executable: str | None = None,
+    quiesce_process_group: bool = False,
 ) -> CommandResult:
     """Execute a command while retaining only bounded stdout/stderr excerpts.
 
@@ -2513,8 +2543,14 @@ async def _execute_command_async(
 
         background_output_detached = False
         capture_complete = True
+        process_group_quiesced: bool | None = None
         if timed_out:
-            await _terminate_process(process)
+            process_group_quiesced = await _terminate_process(process)
+            capture_complete = await _finish_reader_tasks_after_termination(
+                process, reader_tasks
+            )
+        elif quiesce_process_group:
+            process_group_quiesced = await _terminate_process(process)
             capture_complete = await _finish_reader_tasks_after_termination(
                 process, reader_tasks
             )
@@ -2612,6 +2648,8 @@ async def _execute_command_async(
             capture_limit_bytes=capture_limit,
             capture_complete=capture_complete,
             background_output_detached=background_output_detached,
+            background_process_requested=is_background,
+            process_group_quiesced=process_group_quiesced,
             timed_out=timed_out,
             stdout_output_policy=stdout_output_policy,
             stderr_output_policy=stderr_output_policy,

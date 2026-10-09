@@ -1,6 +1,7 @@
 import asyncio
 import base64
 import json
+import os
 from pathlib import Path
 import shlex
 import sys
@@ -49,17 +50,10 @@ def _result(*, stdout: str = "", stderr: str = "") -> CommandResult:
     )
 
 
-def test_internal_execution_authorities_are_not_projected_to_task_commands(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv(
-        terminal_module.DECLARED_WRITE_LOCK_ROOT_ENV,
-        "/framework/declared-write-locks",
-    )
+def test_internal_execution_authority_is_not_projected_to_task_commands() -> None:
     environment = terminal_module._resolve_environment(None)
 
     assert terminal_module.TERMINAL_EXECUTION_AUTHORITY_ENV not in environment
-    assert terminal_module.DECLARED_WRITE_LOCK_ROOT_ENV not in environment
 
 
 @pytest.mark.parametrize(
@@ -1628,6 +1622,51 @@ async def test_background_operator_without_spaces_returns_promptly() -> None:
     assert result.success is True
     assert result.timed_out is False
     assert result.background_output_detached is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(os.name != "posix", reason="POSIX process groups required")
+async def test_public_contract_execution_kills_redirected_background_writer(
+    tmp_path: Path,
+) -> None:
+    marker = tmp_path / "late-write.txt"
+    command = (
+        f"(sleep 0.4; printf late > {shlex.quote(str(marker))}) "
+        ">/dev/null 2>&1 &"
+    )
+
+    result = await _execute_command_async(
+        command,
+        timeout=2,
+        cwd=tmp_path,
+        quiesce_process_group=True,
+    )
+
+    assert result.background_process_requested is True
+    assert result.process_group_quiesced is True
+    await asyncio.sleep(0.6)
+    assert not marker.exists()
+
+
+@pytest.mark.asyncio
+async def test_process_group_permission_error_never_confirms_quiescence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class CompletedProcess:
+        pid = 424242
+        returncode = 0
+
+        async def wait(self):
+            return 0
+
+    monkeypatch.setitem(terminal_module.platform_info, "system", "Linux")
+
+    def deny_killpg(*_args):
+        raise PermissionError("not authoritative")
+
+    monkeypatch.setattr(terminal_module.os, "killpg", deny_killpg)
+
+    assert await terminal_module._terminate_process(CompletedProcess()) is False
 
 
 @pytest.mark.parametrize(

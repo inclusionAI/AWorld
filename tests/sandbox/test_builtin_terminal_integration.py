@@ -8,7 +8,6 @@ import pytest
 
 from aworld.mcp_client.utils import process_mcp_tools
 from aworld.sandbox import Sandbox
-from aworld.sandbox.declared_write import DECLARED_WRITE_LOCK_ROOT_ENV
 from aworld.sandbox.terminal_receipt import plan_terminal_execution
 
 
@@ -346,43 +345,6 @@ async def test_builtin_terminal_artifact_survives_non_reuse_stdio_calls(
         assert artifact["data"]["content"] == original
         assert artifact["data"]["complete"] is True
         assert artifact["data"]["content_sha256"] == policy["content_sha256"]
-    finally:
-        await sandbox.cleanup()
-
-
-@pytest.mark.asyncio
-@pytest.mark.integration
-async def test_non_reuse_stdio_writes_share_framework_lock_root(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    lock_root = tmp_path / "control" / "declared-write-leases"
-    monkeypatch.setenv(DECLARED_WRITE_LOCK_ROOT_ENV, str(lock_root))
-    sandbox = Sandbox(
-        builtin_tools=["terminal"],
-        workspaces=[str(tmp_path)],
-        reuse=False,
-    )
-    try:
-        result = await asyncio.wait_for(
-            sandbox.terminal.run_code("printf x > locked.txt"),
-            timeout=30,
-        )
-        environment = await asyncio.wait_for(
-            sandbox.terminal.run_code(
-                f"{shlex.quote(sys.executable)} -I -c "
-                + shlex.quote(
-                    "import os; print(os.getenv('AWORLD_DECLARED_WRITE_LOCK_ROOT'))"
-                ),
-            ),
-            timeout=30,
-        )
-
-        assert result["success"] is True
-        assert (tmp_path / "locked.txt").read_text(encoding="utf-8") == "x"
-        assert lock_root.stat().st_mode & 0o777 == 0o700
-        assert list(lock_root.glob("*.lock"))
-        assert environment["data"]["message"]["stdout"] == "None\n"
     finally:
         await sandbox.cleanup()
 

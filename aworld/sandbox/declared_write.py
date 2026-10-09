@@ -11,23 +11,15 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
-import errno
 import hashlib
 import json
 import os
 import posixpath
 import re
 import stat as stat_module
-import tempfile
 import threading
-import time
 import weakref
 from typing import Any, AsyncIterator, Callable, Mapping, Sequence
-
-try:  # POSIX-only authority; unsupported platforms fail closed below.
-    import fcntl
-except ImportError:  # pragma: no cover - exercised on non-POSIX platforms.
-    fcntl = None
 
 
 DECLARED_PUBLIC_WRITE_CONTRACT_SCHEMA = "aworld.declared-public-write-contract/v1"
@@ -36,13 +28,11 @@ DECLARED_PUBLIC_WRITE_CONTRACT_KEY = "declared_public_write_contract"
 DECLARED_PUBLIC_WRITE_RECEIPTS_KEY = "declared_public_write_receipts"
 DECLARED_PUBLIC_WRITE_AUTHORITY = "aworld_framework"
 DECLARED_PUBLIC_WRITE_HASH_MAX_BYTES = 8 * 1024 * 1024
-DECLARED_WRITE_LOCK_ROOT_ENV = "AWORLD_DECLARED_WRITE_LOCK_ROOT"
 DECLARED_WRITE_LOCK_TIMEOUT_SECONDS = 30.0
 _PUBLIC_DELIVERABLE_SCHEMA = "aworld.public-deliverables/v1"
 _PUBLIC_DELIVERABLE_AUTHORITY = "public_task_advisory"
 _MAX_TARGETS = 16
 _MAX_PATH_CHARS = 4096
-_MAX_PROCESS_LOCKS = _MAX_TARGETS * 16
 _SHA256 = re.compile(r"sha256:[0-9a-f]{64}\Z")
 
 
@@ -52,6 +42,15 @@ class DeclaredWriteLeaseUnavailable(RuntimeError):
     def __init__(self, reason: str = "declared_write_lease_unavailable") -> None:
         self.reason = reason
         super().__init__(reason)
+
+
+class ControllerWriteBarrierTimeout(TimeoutError):
+    """A public-target controller barrier could not be entered in time."""
+
+    def __init__(self) -> None:
+        self.failure_category = "task_budget"
+        self.failure_code = "controller_write_barrier_timeout"
+        super().__init__("controller_write_barrier_timeout")
 
 
 def _canonical_hash(value: Mapping[str, Any]) -> str:
@@ -657,142 +656,6 @@ def _paths_overlap(first: str, second: str) -> bool:
     return first.startswith(second_prefix) or second.startswith(first_prefix)
 
 
-def _lease_path_hierarchy(path: str) -> tuple[str, ...]:
-    """Return lexical ancestors followed by the exact normalized target."""
-
-    if (
-        not isinstance(path, str)
-        or not path
-        or len(path) > _MAX_PATH_CHARS
-        or any(marker in path for marker in ("\0", "\r", "\n"))
-    ):
-        raise DeclaredWriteLeaseUnavailable()
-    normalized = _lease_path(path)
-    if normalized == "/":
-        return ("/",)
-    absolute = normalized.startswith("/")
-    parts = tuple(part for part in normalized.split("/") if part)
-    if not parts:
-        return ("/",) if absolute else (".",)
-    hierarchy: list[str] = ["/" if absolute else "."]
-    current = "/" if absolute else ""
-    for part in parts:
-        current = posixpath.join(current, part) if current else part
-        hierarchy.append(current)
-    return tuple(dict.fromkeys(hierarchy))
-
-
-def _process_lock_specs(paths: Sequence[str]) -> tuple[tuple[str, bool], ...]:
-    """Build hierarchical intention locks as ``(path, exclusive)`` entries."""
-
-    normalized_values: set[str] = set()
-    for path in paths:
-        if not path:
-            continue
-        normalized_values.add(_lease_path_hierarchy(path)[-1])
-    normalized = tuple(sorted(normalized_values))
-    if len(normalized) > _MAX_TARGETS * 2:
-        raise DeclaredWriteLeaseUnavailable()
-    modes: dict[str, bool] = {}
-    for path in normalized:
-        hierarchy = _lease_path_hierarchy(path)
-        for ancestor in hierarchy[:-1]:
-            modes.setdefault(ancestor, False)
-        modes[hierarchy[-1]] = True
-        if len(modes) > _MAX_PROCESS_LOCKS:
-            raise DeclaredWriteLeaseUnavailable()
-    # Lexical ordering is stable across processes. All requests therefore acquire
-    # a shared prefix before either side can wait on a later exclusive target.
-    return tuple(sorted(modes.items(), key=lambda item: item[0]))
-
-
-def _default_process_lock_root() -> str:
-    uid = getattr(os, "geteuid", lambda: 0)()
-    return os.path.join(
-        tempfile.gettempdir(),
-        f"aworld-declared-write-locks-{uid}",
-    )
-
-
-def _process_lock_root() -> str:
-    configured = os.environ.get(DECLARED_WRITE_LOCK_ROOT_ENV, "").strip()
-    raw_root = configured or _default_process_lock_root()
-    if (
-        not raw_root
-        or len(raw_root) > _MAX_PATH_CHARS
-        or any(marker in raw_root for marker in ("\0", "\r", "\n"))
-    ):
-        raise DeclaredWriteLeaseUnavailable()
-    root = os.path.abspath(os.path.expanduser(raw_root))
-    try:
-        os.makedirs(root, mode=0o700, exist_ok=True)
-        root_stat = os.lstat(root)
-    except OSError as exc:
-        raise DeclaredWriteLeaseUnavailable() from exc
-    effective_uid = getattr(os, "geteuid", lambda: root_stat.st_uid)()
-    if (
-        stat_module.S_ISLNK(root_stat.st_mode)
-        or not stat_module.S_ISDIR(root_stat.st_mode)
-        or root_stat.st_uid != effective_uid
-        or stat_module.S_IMODE(root_stat.st_mode) & 0o077
-    ):
-        raise DeclaredWriteLeaseUnavailable()
-    return root
-
-
-def _process_lock_name(namespace: str, path: str) -> str:
-    if (
-        not isinstance(namespace, str)
-        or not namespace
-        or len(namespace) > 512
-        or any(marker in namespace for marker in ("\0", "\r", "\n"))
-    ):
-        raise DeclaredWriteLeaseUnavailable()
-    digest = hashlib.sha256(
-        ("aworld-declared-write-lease/v1\0" + namespace + "\0" + path).encode("utf-8")
-    ).hexdigest()
-    return digest + ".lock"
-
-
-def _open_process_lock(root: str, namespace: str, path: str) -> int:
-    flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_CLOEXEC", 0)
-    flags |= getattr(os, "O_NOFOLLOW", 0)
-    lock_path = os.path.join(root, _process_lock_name(namespace, path))
-    try:
-        try:
-            existing = os.lstat(lock_path)
-        except FileNotFoundError:
-            existing = None
-        if existing is not None and (
-            stat_module.S_ISLNK(existing.st_mode)
-            or not stat_module.S_ISREG(existing.st_mode)
-        ):
-            raise DeclaredWriteLeaseUnavailable()
-        descriptor = os.open(lock_path, flags, 0o600)
-        lock_stat = os.fstat(descriptor)
-        effective_uid = getattr(os, "geteuid", lambda: lock_stat.st_uid)()
-        if (
-            not stat_module.S_ISREG(lock_stat.st_mode)
-            or lock_stat.st_uid != effective_uid
-            or lock_stat.st_nlink != 1
-            or stat_module.S_IMODE(lock_stat.st_mode) & 0o077
-        ):
-            raise DeclaredWriteLeaseUnavailable()
-        return descriptor
-    except BaseException as exc:
-        descriptor = locals().get("descriptor")
-        if isinstance(descriptor, int):
-            try:
-                os.close(descriptor)
-            except OSError:
-                pass
-        if isinstance(exc, DeclaredWriteLeaseUnavailable):
-            raise
-        if isinstance(exc, OSError):
-            raise DeclaredWriteLeaseUnavailable() from exc
-        raise
-
-
 def _bounded_lease_timeout(timeout_seconds: float | None) -> float:
     try:
         requested_timeout = float(
@@ -805,64 +668,6 @@ def _bounded_lease_timeout(timeout_seconds: float | None) -> float:
     if not 0 < requested_timeout <= 86_400:
         raise DeclaredWriteLeaseUnavailable()
     return min(requested_timeout, DECLARED_WRITE_LOCK_TIMEOUT_SECONDS)
-
-
-async def _acquire_process_locks(
-    namespace: str,
-    paths: Sequence[str],
-    *,
-    timeout_seconds: float | None,
-) -> tuple[int, ...]:
-    specs = _process_lock_specs(paths)
-    if not specs:
-        return ()
-    if fcntl is None:
-        raise DeclaredWriteLeaseUnavailable()
-    deadline = time.monotonic() + _bounded_lease_timeout(timeout_seconds)
-    root = _process_lock_root()
-    acquired: list[int] = []
-    try:
-        for path, exclusive in specs:
-            descriptor = _open_process_lock(root, namespace, path)
-            acquired.append(descriptor)
-            operation = fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH
-            while True:
-                try:
-                    fcntl.flock(descriptor, operation | fcntl.LOCK_NB)
-                    break
-                except OSError as exc:
-                    if exc.errno not in {errno.EACCES, errno.EAGAIN}:
-                        raise DeclaredWriteLeaseUnavailable() from exc
-                    remaining = deadline - time.monotonic()
-                    if remaining <= 0:
-                        raise DeclaredWriteLeaseUnavailable(
-                            "declared_write_lease_timeout"
-                        ) from exc
-                    await asyncio.sleep(min(0.025, remaining))
-        return tuple(acquired)
-    except BaseException:
-        for descriptor in reversed(acquired):
-            try:
-                os.close(descriptor)
-            except OSError:
-                pass
-        raise
-
-
-def _release_process_locks(descriptors: Sequence[int]) -> None:
-    # Never unlink live lock files: a waiter may already hold the old inode while
-    # a new opener would otherwise acquire an unrelated replacement inode.
-    for descriptor in reversed(tuple(descriptors)):
-        try:
-            if fcntl is not None:
-                fcntl.flock(descriptor, fcntl.LOCK_UN)
-        except OSError:
-            pass
-        finally:
-            try:
-                os.close(descriptor)
-            except OSError:
-                pass
 
 
 class _PathLeaseManager:
@@ -981,17 +786,21 @@ async def overlapping_path_leases(
     *,
     timeout_seconds: float | None = None,
 ) -> AsyncIterator[None]:
-    """Serialize overlapping targets in-process and across stdio processes."""
+    """Serialize cooperative overlapping targets within one event loop."""
 
     active_paths = tuple(path for path in paths if path)
     if not active_paths:
         yield
         return
-    for path in active_paths:
-        _lease_path_hierarchy(path)
+    if any(
+        not isinstance(path, str)
+        or len(path) > _MAX_PATH_CHARS
+        or any(marker in path for marker in ("\0", "\r", "\n"))
+        for path in active_paths
+    ):
+        raise DeclaredWriteLeaseUnavailable()
     manager = _lease_manager()
     lease_timeout = _bounded_lease_timeout(timeout_seconds)
-    started = time.monotonic()
     try:
         ticket = await asyncio.wait_for(
             manager.acquire(namespace, active_paths),
@@ -999,27 +808,206 @@ async def overlapping_path_leases(
         )
     except asyncio.TimeoutError as exc:
         raise DeclaredWriteLeaseUnavailable("declared_write_lease_timeout") from exc
-    process_descriptors: tuple[int, ...] = ()
     try:
-        remaining = lease_timeout - (time.monotonic() - started)
-        if remaining <= 0:
-            raise DeclaredWriteLeaseUnavailable("declared_write_lease_timeout")
-        process_descriptors = await _acquire_process_locks(
-            namespace,
-            active_paths,
-            timeout_seconds=remaining,
-        )
         yield
     finally:
-        _release_process_locks(process_descriptors)
-        # A second cancellation must not strand an in-process ticket after the
-        # OS descriptors have already been released.
         release_task = asyncio.create_task(manager.release(ticket))
         try:
             await asyncio.shield(release_task)
         except asyncio.CancelledError:
             await release_task
             raise
+
+
+class _ControllerLeaseState:
+    __slots__ = ("paths", "body_open", "retained_tasks")
+
+    def __init__(self, paths: tuple[str, ...]) -> None:
+        self.paths = paths
+        self.body_open = True
+        self.retained_tasks: set[asyncio.Future[Any]] = set()
+
+
+class ControllerWriteBarrierLease:
+    """One trusted parent-dispatch lease, transferable to live provider tasks."""
+
+    __slots__ = ("_manager", "_ticket", "paths", "_released")
+
+    def __init__(
+        self,
+        manager: "_ControllerWriteBarrierManager",
+        ticket: int,
+        paths: tuple[str, ...],
+    ) -> None:
+        self._manager = manager
+        self._ticket = ticket
+        self.paths = paths
+        self._released = False
+
+    def retain_until(self, task: asyncio.Future[Any]) -> None:
+        """Keep the target barrier closed until a cancelled provider is quiescent."""
+
+        self._manager.retain_until(self._ticket, task)
+
+    def release(self) -> None:
+        if self._released:
+            return
+        self._released = True
+        self._manager.release_body(self._ticket)
+
+
+class _ControllerWriteBarrierManager:
+    """Process-global, cross-event-loop barrier for public artifact targets."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._active: dict[int, _ControllerLeaseState] = {}
+        self._waiting: list[tuple[int, tuple[str, ...]]] = []
+        self._next_ticket = 0
+
+    @staticmethod
+    def _normalized_paths(paths: Sequence[str]) -> tuple[str, ...]:
+        normalized = tuple(sorted({_lease_path(path) for path in paths if path}))
+        if (
+            not normalized
+            or len(normalized) > _MAX_TARGETS
+            or any(
+                len(path) > _MAX_PATH_CHARS
+                or any(marker in path for marker in ("\0", "\r", "\n"))
+                for path in normalized
+            )
+        ):
+            raise DeclaredWriteLeaseUnavailable()
+        return normalized
+
+    @staticmethod
+    def _overlaps(first: Sequence[str], second: Sequence[str]) -> bool:
+        return any(_paths_overlap(path, other) for path in first for other in second)
+
+    def enqueue(self, paths: Sequence[str]) -> tuple[int, tuple[str, ...]]:
+        normalized = self._normalized_paths(paths)
+        with self._lock:
+            ticket = self._next_ticket
+            self._next_ticket += 1
+            request = (ticket, normalized)
+            self._waiting.append(request)
+            return request
+
+    def try_acquire(
+        self, request: tuple[int, tuple[str, ...]]
+    ) -> ControllerWriteBarrierLease | None:
+        ticket, paths = request
+        with self._lock:
+            if request not in self._waiting:
+                return None
+            if any(
+                self._overlaps(paths, state.paths) for state in self._active.values()
+            ):
+                return None
+            if any(
+                prior_ticket < ticket and self._overlaps(paths, prior_paths)
+                for prior_ticket, prior_paths in self._waiting
+            ):
+                return None
+            self._waiting.remove(request)
+            self._active[ticket] = _ControllerLeaseState(paths)
+        return ControllerWriteBarrierLease(self, ticket, paths)
+
+    def cancel_wait(self, request: tuple[int, tuple[str, ...]]) -> None:
+        with self._lock:
+            if request in self._waiting:
+                self._waiting.remove(request)
+
+    def release_body(self, ticket: int) -> None:
+        with self._lock:
+            state = self._active.get(ticket)
+            if state is None:
+                return
+            state.body_open = False
+            if not state.retained_tasks:
+                self._active.pop(ticket, None)
+
+    def retain_until(self, ticket: int, task: asyncio.Future[Any]) -> None:
+        if task.done():
+            return
+        with self._lock:
+            state = self._active.get(ticket)
+            if state is None or task in state.retained_tasks:
+                return
+            state.retained_tasks.add(task)
+        task.add_done_callback(
+            lambda completed, retained_ticket=ticket: self._provider_done(
+                retained_ticket, completed
+            )
+        )
+
+    def _provider_done(self, ticket: int, task: asyncio.Future[Any]) -> None:
+        with self._lock:
+            state = self._active.get(ticket)
+            if state is None:
+                return
+            state.retained_tasks.discard(task)
+            if not state.body_open and not state.retained_tasks:
+                self._active.pop(ticket, None)
+
+
+_CONTROLLER_WRITE_BARRIERS = _ControllerWriteBarrierManager()
+
+
+def controller_public_write_paths(context: Any) -> tuple[str, ...]:
+    """Resolve trusted public targets for one parent-side provider dispatch."""
+
+    contract = build_declared_public_write_contract(context)
+    if contract is None:
+        return ()
+    return tuple(target["path"] for target in contract["targets"])
+
+
+@asynccontextmanager
+async def controller_public_write_barrier(
+    context: Any,
+    *,
+    timeout_seconds: float | None = None,
+) -> AsyncIterator[ControllerWriteBarrierLease | None]:
+    """Serialize all provider calls that can affect overlapping public targets."""
+
+    paths = controller_public_write_paths(context)
+    if not paths:
+        yield None
+        return
+    if timeout_seconds is not None:
+        try:
+            bounded_timeout = float(timeout_seconds)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ControllerWriteBarrierTimeout() from exc
+        if not 0 < bounded_timeout <= 86_400:
+            raise ControllerWriteBarrierTimeout()
+        deadline = asyncio.get_running_loop().time() + bounded_timeout
+    else:
+        deadline = None
+    request = _CONTROLLER_WRITE_BARRIERS.enqueue(paths)
+    lease: ControllerWriteBarrierLease | None = None
+    try:
+        while lease is None:
+            lease = _CONTROLLER_WRITE_BARRIERS.try_acquire(request)
+            if lease is None:
+                remaining = (
+                    deadline - asyncio.get_running_loop().time()
+                    if deadline is not None
+                    else None
+                )
+                if remaining is not None and remaining <= 0:
+                    raise ControllerWriteBarrierTimeout()
+                await asyncio.sleep(
+                    0.01 if remaining is None else min(0.01, remaining)
+                )
+    except BaseException:
+        _CONTROLLER_WRITE_BARRIERS.cancel_wait(request)
+        raise
+    try:
+        yield lease
+    finally:
+        lease.release()
 
 
 __all__ = [
@@ -1029,13 +1017,16 @@ __all__ = [
     "DECLARED_PUBLIC_WRITE_HASH_MAX_BYTES",
     "DECLARED_PUBLIC_WRITE_RECEIPTS_KEY",
     "DECLARED_PUBLIC_WRITE_RECEIPT_SCHEMA",
-    "DECLARED_WRITE_LOCK_ROOT_ENV",
+    "ControllerWriteBarrierTimeout",
+    "ControllerWriteBarrierLease",
     "DeclaredWriteLeaseUnavailable",
     "authorized_declared_write_targets",
     "build_declared_public_write_contract",
     "build_declared_public_write_receipt",
     "build_receipts_for_versions",
     "content_versions_for_targets",
+    "controller_public_write_barrier",
+    "controller_public_write_paths",
     "declared_write_operation_sha256",
     "framework_scope_from_hidden",
     "framework_scope_sha256",

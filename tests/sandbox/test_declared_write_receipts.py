@@ -5,8 +5,6 @@ import asyncio
 import gc
 import hashlib
 import json
-import multiprocessing
-import os
 from pathlib import Path
 from types import SimpleNamespace
 import weakref
@@ -23,7 +21,6 @@ from aworld.runners.post_tool_progress import (
 )
 from aworld.sandbox.declared_write import (
     DECLARED_PUBLIC_WRITE_RECEIPTS_KEY,
-    DECLARED_WRITE_LOCK_ROOT_ENV,
     build_declared_public_write_contract,
     build_declared_public_write_receipt,
     declared_write_operation_sha256,
@@ -36,36 +33,6 @@ from aworld.sandbox.run.mcp_servers import McpServers
 from aworld.sandbox.tool_observation import SandboxToolObservationRuntime
 from aworld.sandbox.tool_servers.terminal.src import terminal as terminal_module
 from aworld.sandbox.tool_servers.terminal.src.terminal import CommandResult
-
-
-def _process_lease_worker(
-    lock_root: str,
-    namespace: str,
-    paths: tuple[str, ...],
-    attempting,
-    entered,
-    release,
-    outcome,
-    timeout_seconds: float = 5.0,
-) -> None:
-    os.environ[DECLARED_WRITE_LOCK_ROOT_ENV] = lock_root
-
-    async def run() -> None:
-        attempting.set()
-        try:
-            async with overlapping_path_leases(
-                namespace,
-                paths,
-                timeout_seconds=timeout_seconds,
-            ):
-                entered.set()
-                while not release.is_set():
-                    await asyncio.sleep(0.01)
-            outcome.put(("ok", ""))
-        except BaseException as exc:  # pragma: no cover - asserted by parent.
-            outcome.put((type(exc).__name__, str(exc)))
-
-    asyncio.run(run())
 
 
 def _public_context(tmp_path: Path, *, task_id: str = "declared-write") -> Context:
@@ -122,6 +89,10 @@ def _command_result(
     return_code: int,
     timed_out: bool = False,
     stdout: str = "",
+    background_process_requested: bool = False,
+    background_output_detached: bool = False,
+    capture_complete: bool = True,
+    process_group_quiesced: bool | None = None,
 ) -> CommandResult:
     return CommandResult(
         command="opaque-writer",
@@ -132,6 +103,14 @@ def _command_result(
         duration="0:00:00.001000",
         timestamp="2026-10-09T12:00:00",
         timed_out=timed_out,
+        background_process_requested=background_process_requested,
+        background_output_detached=background_output_detached,
+        capture_complete=capture_complete,
+        process_group_quiesced=(
+            not timed_out
+            if process_group_quiesced is None
+            else process_group_quiesced
+        ),
     )
 
 
@@ -148,6 +127,7 @@ async def _execute_terminal_declared_write(
     stdout: str = "",
     include_declaration: bool = True,
     timeout: float = 10,
+    result_overrides: dict[str, object] | None = None,
 ) -> tuple[ActionModel, ActionResult, dict[str, object]]:
     output = requested_path or Path(
         context.context_info["public_deliverable_contract"]["artifacts"][0]["path"]
@@ -162,6 +142,7 @@ async def _execute_terminal_declared_write(
             return_code=return_code,
             timed_out=timed_out,
             stdout=stdout,
+            **(result_overrides or {}),
         )
 
     monkeypatch.setattr(terminal_module, "workspace", Path(context.workspace_path))
@@ -332,15 +313,48 @@ async def test_declared_write_failure_states_never_advance_candidate(
         return_code=return_code,
         timed_out=timed_out,
     )
-    receipts = payload["metadata"]["terminal_execution_receipt"][
-        DECLARED_PUBLIC_WRITE_RECEIPTS_KEY
-    ]
+    terminal_receipt = payload["metadata"]["terminal_execution_receipt"]
     state = _record_progress(context, action, result)
 
-    assert len(receipts) == 1
-    assert receipts[0]["changed"] is (case != "unchanged")
-    assert receipts[0]["exit_code"] == return_code
-    assert receipts[0]["timed_out"] is timed_out
+    if timed_out:
+        assert DECLARED_PUBLIC_WRITE_RECEIPTS_KEY not in terminal_receipt
+    else:
+        receipts = terminal_receipt[DECLARED_PUBLIC_WRITE_RECEIPTS_KEY]
+        assert len(receipts) == 1
+        assert receipts[0]["changed"] is (case != "unchanged")
+        assert receipts[0]["exit_code"] == return_code
+        assert receipts[0]["timed_out"] is False
+    assert state["candidate_advanced"] is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "result_overrides",
+    [
+        {"background_process_requested": True},
+        {"background_output_detached": True},
+        {"capture_complete": False},
+        {"process_group_quiesced": False},
+    ],
+)
+async def test_declared_write_requires_foreground_quiescent_execution(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    result_overrides: dict[str, object],
+) -> None:
+    context = _public_context(tmp_path, task_id="declared-quiescence")
+    capture_public_deliverable_baseline(context)
+
+    action, result, payload = await _execute_terminal_declared_write(
+        monkeypatch,
+        context,
+        call_id="unconfirmed-writer",
+        result_overrides=result_overrides,
+    )
+    terminal_receipt = payload["metadata"]["terminal_execution_receipt"]
+    state = _record_progress(context, action, result)
+
+    assert DECLARED_PUBLIC_WRITE_RECEIPTS_KEY not in terminal_receipt
     assert state["candidate_advanced"] is False
 
 
@@ -576,170 +590,8 @@ def test_path_lease_registry_releases_closed_contended_event_loops() -> None:
     assert len(declared_write_module._LEASE_MANAGERS) == 0
 
 
-@pytest.mark.skipif(declared_write_module.fcntl is None, reason="POSIX flock required")
-@pytest.mark.parametrize(
-    "second_path",
-    ["/workspace/result.json", "/workspace/result.json/child"],
-)
-def test_process_leases_serialize_same_and_ancestor_targets(
-    tmp_path: Path,
-    second_path: str,
-) -> None:
-    process_context = multiprocessing.get_context("fork")
-    first_attempting = process_context.Event()
-    first_entered = process_context.Event()
-    first_release = process_context.Event()
-    second_attempting = process_context.Event()
-    second_entered = process_context.Event()
-    second_release = process_context.Event()
-    first_outcome = process_context.Queue()
-    second_outcome = process_context.Queue()
-    arguments = (str(tmp_path / "locks"), "terminal-host")
-    first = process_context.Process(
-        target=_process_lease_worker,
-        args=(
-            *arguments,
-            ("/workspace/result.json",),
-            first_attempting,
-            first_entered,
-            first_release,
-            first_outcome,
-        ),
-    )
-    second = process_context.Process(
-        target=_process_lease_worker,
-        args=(
-            *arguments,
-            (second_path,),
-            second_attempting,
-            second_entered,
-            second_release,
-            second_outcome,
-        ),
-    )
-    first.start()
-    assert first_attempting.wait(3)
-    assert first_entered.wait(3)
-    second.start()
-    assert second_attempting.wait(3)
-    assert not second_entered.wait(0.2)
-
-    first_release.set()
-    assert second_entered.wait(3)
-    second_release.set()
-    first.join(5)
-    second.join(5)
-
-    assert not first.is_alive()
-    assert not second.is_alive()
-    assert first_outcome.get(timeout=1) == ("ok", "")
-    assert second_outcome.get(timeout=1) == ("ok", "")
-
-
-@pytest.mark.skipif(declared_write_module.fcntl is None, reason="POSIX flock required")
-def test_process_leases_allow_sibling_targets_concurrently(tmp_path: Path) -> None:
-    process_context = multiprocessing.get_context("fork")
-    first_attempting = process_context.Event()
-    first_entered = process_context.Event()
-    first_release = process_context.Event()
-    second_attempting = process_context.Event()
-    second_entered = process_context.Event()
-    second_release = process_context.Event()
-    first_outcome = process_context.Queue()
-    second_outcome = process_context.Queue()
-    arguments = (str(tmp_path / "locks"), "terminal-host")
-    first = process_context.Process(
-        target=_process_lease_worker,
-        args=(
-            *arguments,
-            ("/workspace/first.json",),
-            first_attempting,
-            first_entered,
-            first_release,
-            first_outcome,
-        ),
-    )
-    second = process_context.Process(
-        target=_process_lease_worker,
-        args=(
-            *arguments,
-            ("/workspace/second.json",),
-            second_attempting,
-            second_entered,
-            second_release,
-            second_outcome,
-        ),
-    )
-    first.start()
-    assert first_entered.wait(3)
-    second.start()
-    assert second_attempting.wait(3)
-    assert second_entered.wait(3)
-
-    first_release.set()
-    second_release.set()
-    first.join(5)
-    second.join(5)
-
-    assert first_outcome.get(timeout=1) == ("ok", "")
-    assert second_outcome.get(timeout=1) == ("ok", "")
-
-
-@pytest.mark.skipif(declared_write_module.fcntl is None, reason="POSIX flock required")
-def test_process_death_releases_declared_write_lease(tmp_path: Path) -> None:
-    process_context = multiprocessing.get_context("fork")
-    first_attempting = process_context.Event()
-    first_entered = process_context.Event()
-    first_release = process_context.Event()
-    first_outcome = process_context.Queue()
-    root = str(tmp_path / "locks")
-    first = process_context.Process(
-        target=_process_lease_worker,
-        args=(
-            root,
-            "terminal-host",
-            ("/workspace/result.json",),
-            first_attempting,
-            first_entered,
-            first_release,
-            first_outcome,
-        ),
-    )
-    first.start()
-    assert first_entered.wait(3)
-    first.terminate()
-    first.join(5)
-    assert not first.is_alive()
-
-    second_attempting = process_context.Event()
-    second_entered = process_context.Event()
-    second_release = process_context.Event()
-    second_release.set()
-    second_outcome = process_context.Queue()
-    second = process_context.Process(
-        target=_process_lease_worker,
-        args=(
-            root,
-            "terminal-host",
-            ("/workspace/result.json",),
-            second_attempting,
-            second_entered,
-            second_release,
-            second_outcome,
-        ),
-    )
-    second.start()
-    assert second_entered.wait(3)
-    second.join(5)
-    assert second_outcome.get(timeout=1) == ("ok", "")
-
-
 @pytest.mark.asyncio
-async def test_cancelled_holder_releases_in_process_and_os_leases(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv(DECLARED_WRITE_LOCK_ROOT_ENV, str(tmp_path / "locks"))
+async def test_cancelled_holder_releases_in_process_lease() -> None:
     entered = asyncio.Event()
 
     async def holder() -> None:
@@ -766,10 +618,7 @@ async def test_cancelled_holder_releases_in_process_and_os_leases(
 
 @pytest.mark.asyncio
 async def test_in_process_lease_wait_is_bounded(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv(DECLARED_WRITE_LOCK_ROOT_ENV, str(tmp_path / "locks"))
     manager = declared_write_module._lease_manager()
     entered = asyncio.Event()
     release = asyncio.Event()
@@ -804,148 +653,7 @@ async def test_in_process_lease_wait_is_bounded(
 
 
 @pytest.mark.asyncio
-@pytest.mark.skipif(declared_write_module.fcntl is None, reason="POSIX flock required")
-async def test_process_lease_default_root_is_private_and_lock_files_persist(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.delenv(DECLARED_WRITE_LOCK_ROOT_ENV, raising=False)
-    monkeypatch.setattr(
-        declared_write_module.tempfile, "gettempdir", lambda: str(tmp_path)
-    )
-
-    async with overlapping_path_leases(
-        "default-root",
-        ["/workspace/result.json"],
-    ):
-        pass
-
-    root = Path(declared_write_module._default_process_lock_root())
-    assert root.is_dir()
-    assert root.stat().st_mode & 0o777 == 0o700
-    lock_files = list(root.glob("*.lock"))
-    assert lock_files
-    assert all(path.stat().st_mode & 0o777 == 0o600 for path in lock_files)
-
-
-@pytest.mark.asyncio
-@pytest.mark.skipif(declared_write_module.fcntl is None, reason="POSIX flock required")
-async def test_process_lease_rejects_symlinked_lock_file(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    lock_root = tmp_path / "locks"
-    lock_root.mkdir(mode=0o700)
-    victim = tmp_path / "victim"
-    victim.write_text("unchanged", encoding="utf-8")
-    root_lock = lock_root / declared_write_module._process_lock_name(
-        "symlink-file",
-        "/",
-    )
-    root_lock.symlink_to(victim)
-    monkeypatch.setenv(DECLARED_WRITE_LOCK_ROOT_ENV, str(lock_root))
-
-    with pytest.raises(
-        declared_write_module.DeclaredWriteLeaseUnavailable,
-        match="declared_write_lease_unavailable",
-    ):
-        async with overlapping_path_leases(
-            "symlink-file",
-            ["/workspace/result.json"],
-            timeout_seconds=0.2,
-        ):
-            pytest.fail("symlinked lock file unexpectedly admitted")
-
-    assert victim.read_text(encoding="utf-8") == "unchanged"
-
-
-@pytest.mark.asyncio
-@pytest.mark.skipif(declared_write_module.fcntl is None, reason="POSIX flock required")
-async def test_terminal_lock_timeout_fails_before_execution_without_receipt(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    context = _public_context(tmp_path, task_id="lease-timeout")
-    output = tmp_path / "result.json"
-    lock_root = str(tmp_path / "locks")
-    monkeypatch.setenv(DECLARED_WRITE_LOCK_ROOT_ENV, lock_root)
-    process_context = multiprocessing.get_context("fork")
-    attempting = process_context.Event()
-    entered = process_context.Event()
-    release = process_context.Event()
-    outcome = process_context.Queue()
-    holder = process_context.Process(
-        target=_process_lease_worker,
-        args=(
-            lock_root,
-            "terminal-host",
-            (str(output),),
-            attempting,
-            entered,
-            release,
-            outcome,
-        ),
-    )
-    holder.start()
-    assert entered.wait(3)
-    try:
-        _action, _result, payload = await _execute_terminal_declared_write(
-            monkeypatch,
-            context,
-            call_id="lease-timeout-call",
-            timeout=0.05,
-        )
-    finally:
-        release.set()
-        holder.join(5)
-
-    receipt = payload["metadata"]["terminal_execution_receipt"]
-    assert payload["success"] is False
-    assert payload["metadata"]["error_type"] == "declared_write_lease_timeout"
-    assert receipt["executed"] is False
-    assert DECLARED_PUBLIC_WRITE_RECEIPTS_KEY not in receipt
-    assert not output.exists()
-    assert outcome.get(timeout=1) == ("ok", "")
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("invalid_root_kind", ["file", "symlink", "broad_mode"])
-async def test_terminal_invalid_lock_root_fails_closed_before_execution(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    invalid_root_kind: str,
-) -> None:
-    context = _public_context(tmp_path, task_id=f"lease-root-{invalid_root_kind}")
-    output = tmp_path / "result.json"
-    lock_root = tmp_path / "invalid-lock-root"
-    if invalid_root_kind == "file":
-        lock_root.write_text("not a directory", encoding="utf-8")
-    elif invalid_root_kind == "symlink":
-        real_root = tmp_path / "real-lock-root"
-        real_root.mkdir(mode=0o700)
-        lock_root.symlink_to(real_root, target_is_directory=True)
-    else:
-        lock_root.mkdir(mode=0o755)
-        lock_root.chmod(0o755)
-    monkeypatch.setenv(DECLARED_WRITE_LOCK_ROOT_ENV, str(lock_root))
-
-    _action, _result, payload = await _execute_terminal_declared_write(
-        monkeypatch,
-        context,
-        call_id=f"invalid-root-{invalid_root_kind}",
-        timeout=0.2,
-    )
-
-    receipt = payload["metadata"]["terminal_execution_receipt"]
-    assert payload["success"] is False
-    assert payload["metadata"]["error_type"] == "declared_write_lease_unavailable"
-    assert receipt["executed"] is False
-    assert DECLARED_PUBLIC_WRITE_RECEIPTS_KEY not in receipt
-    assert not output.exists()
-
-
-@pytest.mark.asyncio
-async def test_docker_provider_emits_same_declared_write_receipt_contract(
+async def test_docker_provider_omits_declared_receipt_without_quiescence_proof(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("AWORLD_DOCKER_CONTAINER", "declared-write")
@@ -1072,58 +780,7 @@ async def test_docker_provider_emits_same_declared_write_receipt_contract(
     receipt = payload["metadata"]["terminal_execution_receipt"]
 
     assert receipt["effect"] == "unknown"
-    assert receipt[DECLARED_PUBLIC_WRITE_RECEIPTS_KEY][0]["changed"] is True
-    assert receipt[DECLARED_PUBLIC_WRITE_RECEIPTS_KEY][0]["target_id"] == (
-        semantic_target_sha256("/workspace/result.json")
-    )
-
-
-@pytest.mark.asyncio
-async def test_docker_invalid_lock_root_fails_before_command_execution(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("AWORLD_DOCKER_CONTAINER", "declared-write-lock-failure")
-    monkeypatch.setenv("AWORLD_DOCKER_BINARY", "/usr/bin/docker")
-    monkeypatch.setenv("AWORLD_DOCKER_WORKDIR", "/workspace")
-    monkeypatch.setenv("AWORLD_DOCKER_ALLOWED_DIRECTORIES", '["/workspace"]')
-    invalid_root = tmp_path / "lock-root-file"
-    invalid_root.write_text("not a directory", encoding="utf-8")
-    monkeypatch.setenv(DECLARED_WRITE_LOCK_ROOT_ENV, str(invalid_root))
-    from aworld.sandbox.tool_servers.docker.src import server
-
-    class LockFailureBridge:
-        container = "declared-write-lock-failure"
-        workdir = "/workspace"
-        shell = "/bin/sh"
-        allowed_directories = ["/workspace"]
-        max_output_bytes = 4096
-        executed = False
-
-        @staticmethod
-        def validate_path(value: str) -> str:
-            return value
-
-        async def shell_command(self, *_args, **_kwargs):
-            self.executed = True
-            return 0, b"", b"", False
-
-    bridge = LockFailureBridge()
-    monkeypatch.setattr(server, "bridge", bridge)
-
-    response = await server.run_code(
-        None,
-        "printf x > /workspace/result.json",
-        timeout=1,
-    )
-    payload = json.loads(response.text)
-    receipt = payload["metadata"]["terminal_execution_receipt"]
-
-    assert payload["success"] is False
-    assert payload["metadata"]["error_type"] == "declared_write_lease_unavailable"
-    assert receipt["executed"] is False
     assert DECLARED_PUBLIC_WRITE_RECEIPTS_KEY not in receipt
-    assert bridge.executed is False
 
 
 @pytest.mark.asyncio

@@ -25,6 +25,10 @@ from aworld.sandbox.tool_observation import (
     canonical_tool_identity,
     classify_tool_effect,
 )
+from aworld.sandbox.declared_write import (
+    ControllerWriteBarrierTimeout,
+    controller_public_write_barrier,
+)
 
 
 class BaseSandbox(SandboxSetup):
@@ -362,6 +366,7 @@ class BaseSandbox(SandboxSetup):
                     read_context_output_artifact,
                 )
 
+                observation_recorded = False
                 if is_context_output_artifact_read(action):
                     observed = [read_context_output_artifact(context, action)]
                 elif hasattr(self, "mcpservers") and self.mcpservers is not None:
@@ -371,17 +376,62 @@ class BaseSandbox(SandboxSetup):
                     # lowered ActionResult still carries the actual dispatched
                     # parameters for receipt validation.
                     transport_action = deepcopy(action_value)
-                    observed = await self.mcpservers.call_tool(
-                        action_list=[transport_action],
-                        task_id=task_id,
-                        session_id=session_id,
-                        context=context,
-                        event_message=event_message,
+                    timeout_resolver = getattr(
+                        self.mcpservers, "controller_write_barrier_timeout", None
                     )
+                    barrier_timeout = (
+                        timeout_resolver(
+                            [transport_action],
+                            context=context,
+                            event_message=event_message,
+                        )
+                        if callable(timeout_resolver)
+                        else 120.0
+                    )
+                    try:
+                        async with controller_public_write_barrier(
+                            context,
+                            timeout_seconds=barrier_timeout,
+                        ) as controller_write_lease:
+                            observed = await self.mcpservers.call_tool(
+                                action_list=[transport_action],
+                                task_id=task_id,
+                                session_id=session_id,
+                                context=context,
+                                event_message=event_message,
+                                controller_write_lease=controller_write_lease,
+                            )
+                            for result_index, result in enumerate(observed or []):
+                                if context is not None:
+                                    observed[result_index] = (
+                                        self._sandbox_tool_observations().record(
+                                            action,
+                                            result,
+                                            context=context,
+                                        )
+                                    )
+                            observation_recorded = True
+                    except ControllerWriteBarrierTimeout as exc:
+                        observed = [
+                            ActionResult(
+                                success=False,
+                                tool_call_id=tool_call_id or None,
+                                tool_name=server_name,
+                                action_name=action_name,
+                                content=str(exc),
+                                error=exc.failure_code,
+                                keep=True,
+                                metadata={
+                                    "failure_category": exc.failure_category,
+                                    "failure_code": exc.failure_code,
+                                },
+                                parameter=action_value.get("params") or {},
+                            )
+                        ]
                 else:
                     observed = []
                 for result in observed or []:
-                    if context is not None:
+                    if context is not None and not observation_recorded:
                         result = self._sandbox_tool_observations().record(
                             action,
                             result,

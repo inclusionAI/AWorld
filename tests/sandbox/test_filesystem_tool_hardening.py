@@ -48,10 +48,6 @@ def test_terminal_policy_configuration_is_forwarded_to_stdio_server(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("AWORLD_TERMINAL_CAPTURE_MAX_BYTES", "2097152")
-    monkeypatch.setenv(
-        "AWORLD_DECLARED_WRITE_LOCK_ROOT",
-        "/framework/declared-write-locks",
-    )
     monkeypatch.setenv("AWORLD_TERMINAL_ARTIFACT_MAX_BYTES", "67108864")
     monkeypatch.setenv("AWORLD_TASK_DEADLINE_EPOCH_SECONDS", "1900000000")
     monkeypatch.setenv("AWORLD_TERMINAL_COMPLETION_RESERVE_SECONDS", "30")
@@ -60,7 +56,6 @@ def test_terminal_policy_configuration_is_forwarded_to_stdio_server(
     env = get_server_env()
 
     assert env["AWORLD_TERMINAL_CAPTURE_MAX_BYTES"] == "2097152"
-    assert env["AWORLD_DECLARED_WRITE_LOCK_ROOT"] == ("/framework/declared-write-locks")
     assert env["AWORLD_TERMINAL_ARTIFACT_MAX_BYTES"] == "67108864"
     assert env["AWORLD_TASK_DEADLINE_EPOCH_SECONDS"] == "1900000000"
     assert env["AWORLD_TERMINAL_COMPLETION_RESERVE_SECONDS"] == "30"

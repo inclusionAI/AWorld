@@ -165,6 +165,7 @@ class SandboxManager:
         func: Callable[..., Awaitable[Any]],
         *args: Any,
         server_name: Optional[str] = None,
+        _controller_barrier_lease: Any = None,
         **kwargs: Any,
     ) -> Any:
         """
@@ -203,8 +204,28 @@ class SandboxManager:
         # Enqueue the job onto the sandbox loop from any thread safely
         loop.call_soon_threadsafe(ctx.queue.put_nowait, job)
         
-        # Wait for the result on the caller's loop/thread
-        return await asyncio.wrap_future(fut)
+        # Wait for the result on the caller's loop/thread.  A public-artifact
+        # dispatch may outlive cancellation of its caller; shield its completion
+        # future and transfer the controller barrier until the worker really
+        # finishes instead of exposing a concurrent mutation window.
+        wrapped = asyncio.wrap_future(fut)
+        if _controller_barrier_lease is None:
+            return await wrapped
+        try:
+            return await asyncio.shield(wrapped)
+        except asyncio.CancelledError:
+            _controller_barrier_lease.retain_until(wrapped)
+
+            def consume_completion(done: asyncio.Future[Any]) -> None:
+                if done.cancelled():
+                    return
+                try:
+                    done.exception()
+                except Exception:
+                    pass
+
+            wrapped.add_done_callback(consume_completion)
+            raise
     
     async def cleanup_all(self) -> None:
         """Stop sandbox workers, drain provider calls, then close pool loops."""

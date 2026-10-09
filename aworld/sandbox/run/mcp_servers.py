@@ -56,7 +56,10 @@ from aworld.sandbox.task_budget import (
 )
 from aworld.sandbox.declared_write import (
     DECLARED_PUBLIC_WRITE_CONTRACT_KEY,
+    ControllerWriteBarrierLease,
+    ControllerWriteBarrierTimeout,
     build_declared_public_write_contract,
+    controller_public_write_barrier,
 )
 
 # Import env_channel for subscription
@@ -720,7 +723,12 @@ def _build_task_lease_failure_result(
     )
 
 
-async def _await_with_task_lease(awaitable, decision: ToolLeaseDecision):
+async def _await_with_task_lease(
+    awaitable,
+    decision: ToolLeaseDecision,
+    *,
+    controller_write_lease: ControllerWriteBarrierLease | None = None,
+):
     if decision.effective_seconds <= 0:
         close = getattr(awaitable, "close", None)
         if callable(close):
@@ -733,11 +741,15 @@ async def _await_with_task_lease(awaitable, decision: ToolLeaseDecision):
         )
     except asyncio.CancelledError:
         provider_task.cancel()
+        if controller_write_lease is not None:
+            controller_write_lease.retain_until(provider_task)
         _retain_cancelled_provider_call(provider_task)
         raise
     if provider_task in done:
         return await provider_task
     provider_task.cancel()
+    if controller_write_lease is not None:
+        controller_write_lease.retain_until(provider_task)
     await asyncio.sleep(0)
     # Cancellation is cooperative. Keep a strong reference and consume any
     # eventual exception without letting a provider that suppresses
@@ -1476,13 +1488,61 @@ class McpServers:
             return 120.0
         return max(seconds + 10, 120.0)
 
+    def controller_write_barrier_timeout(
+        self,
+        action_list: List[Dict[str, Any]] | None,
+        *,
+        context: Context | None,
+        event_message: Message | None,
+    ) -> float:
+        """Bound parent-barrier admission by the same live task/tool lease."""
+
+        budget = _framework_task_budget(context, event_message)
+        decisions: list[float] = []
+        for action in action_list or ():
+            action_dict = action if isinstance(action, dict) else vars(action)
+            server_name = str(
+                action_dict.get("tool_name") or action_dict.get("server_name") or ""
+            )
+            tool_name = str(action_dict.get("action_name") or "")
+            parameter = action_dict.get("params")
+            parameter_copy = dict(parameter) if isinstance(parameter, dict) else {}
+            server_config = (
+                (self.mcp_config or {}).get("mcpServers", {}).get(server_name, {})
+                if server_name
+                else {}
+            )
+            environment = (
+                _stdio_server_environment(server_config)
+                if server_config.get("type") == "stdio" or server_config.get("command")
+                else {}
+            )
+            try:
+                requested = _resolve_mcp_transport_timeout(
+                    server_name=server_name,
+                    tool_name=tool_name,
+                    parameter=parameter_copy,
+                    tool_list=self.tool_list or [],
+                    environ=environment,
+                )
+            except (TypeError, ValueError, OverflowError):
+                requested = _MCP_TRANSPORT_MIN_TIMEOUT_SECONDS
+            decision = _transport_lease_decision(
+                requested_timeout=requested,
+                budget=budget,
+                environ=environment,
+            )
+            decisions.append(decision.effective_seconds)
+        return min(decisions, default=_MCP_TRANSPORT_MIN_TIMEOUT_SECONDS)
+
     async def call_tool(
             self,
             action_list: List[Dict[str, Any]] = None,
             task_id: str = None,
             session_id: str = None,
             context: Context = None,
-            event_message: Message = None
+            event_message: Message = None,
+            controller_write_lease: ControllerWriteBarrierLease | None = None,
     ) -> List[ActionResult]:
         """
         Public entry point for calling tools.
@@ -1490,6 +1550,52 @@ class McpServers:
         When reuse=True, runs on the sandbox-affined loop (SandboxManager).
         When reuse=False, runs directly on current loop.
         """
+        if controller_write_lease is None:
+            barrier_timeout = self.controller_write_barrier_timeout(
+                action_list,
+                context=context,
+                event_message=event_message,
+            )
+            try:
+                async with controller_public_write_barrier(
+                    context,
+                    timeout_seconds=barrier_timeout,
+                ) as acquired_lease:
+                    if acquired_lease is not None:
+                        return await self.call_tool(
+                            action_list=action_list,
+                            task_id=task_id,
+                            session_id=session_id,
+                            context=context,
+                            event_message=event_message,
+                            controller_write_lease=acquired_lease,
+                        )
+            except ControllerWriteBarrierTimeout:
+                return [
+                    _build_tool_call_failure_result(
+                        server_name=(
+                            (action if isinstance(action, dict) else vars(action)).get(
+                                "tool_name"
+                            )
+                            or ""
+                        ),
+                        tool_name=(
+                            (action if isinstance(action, dict) else vars(action)).get(
+                                "action_name"
+                            )
+                            or ""
+                        ),
+                        parameter=(
+                            (action if isinstance(action, dict) else vars(action)).get(
+                                "params"
+                            )
+                            or {}
+                        ),
+                        error=ControllerWriteBarrierTimeout(),
+                    )
+                    for action in action_list or ()
+                ]
+
         sandbox_id = self.sandbox.sandbox_id if self.sandbox is not None else None
         if not sandbox_id or not self._should_reuse():
             return await self._call_tool_impl(
@@ -1498,6 +1604,7 @@ class McpServers:
                 session_id=session_id,
                 context=context,
                 event_message=event_message,
+                controller_write_lease=controller_write_lease,
             )
 
         manager = SandboxManager.get_instance()
@@ -1521,6 +1628,11 @@ class McpServers:
             results_by_server = {}
             for server_name, indexed_actions in by_server.items():
                 filtered = [a for _, a in indexed_actions]
+                manager_options = {"server_name": server_name}
+                if controller_write_lease is not None:
+                    manager_options["_controller_barrier_lease"] = (
+                        controller_write_lease
+                    )
                 part = await manager.run_on_sandbox(
                     sandbox_id,
                     self._call_tool_impl,
@@ -1529,7 +1641,8 @@ class McpServers:
                     session_id,
                     context,
                     event_message,
-                    server_name=server_name,
+                    controller_write_lease,
+                    **manager_options,
                 )
                 if part:
                     results_by_server[server_name] = part
@@ -1554,6 +1667,9 @@ class McpServers:
                         error=RuntimeError("MCP execution returned no result"),
                     )
             return merged
+        manager_options = {}
+        if controller_write_lease is not None:
+            manager_options["_controller_barrier_lease"] = controller_write_lease
         return await manager.run_on_sandbox(
             sandbox_id,
             self._call_tool_impl,
@@ -1562,6 +1678,8 @@ class McpServers:
             session_id,
             context,
             event_message,
+            controller_write_lease,
+            **manager_options,
         )
 
     async def _call_tool_impl(
@@ -1570,7 +1688,8 @@ class McpServers:
             task_id: str = None,
             session_id: str = None,
             context: Context = None,
-            event_message: Message = None
+            event_message: Message = None,
+            controller_write_lease: ControllerWriteBarrierLease | None = None,
     ) -> List[ActionResult]:
         results = []
         if not action_list:
@@ -1676,6 +1795,7 @@ class McpServers:
                                 server_name, tool_name, parameter, self.mcp_config
                             ),
                             lease_decision,
+                            controller_write_lease=controller_write_lease,
                         )
                         results.append(call_result)
 
@@ -1723,6 +1843,7 @@ class McpServers:
                                 server_name, tool_name, parameter, self.mcp_config
                             ),
                             lease_decision,
+                            controller_write_lease=controller_write_lease,
                         )
                         results.append(call_result)
 
@@ -1863,7 +1984,9 @@ class McpServers:
                     )
                 try:
                     call_result_raw = await _await_with_task_lease(
-                        provider_call, lease_decision
+                        provider_call,
+                        lease_decision,
+                        controller_write_lease=controller_write_lease,
                     )
                 except _TaskToolLeaseTimeout as exc:
                     action_result = _build_task_lease_failure_result(
