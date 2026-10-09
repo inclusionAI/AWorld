@@ -28,6 +28,41 @@ def test_structured_table_validates_and_renders_deterministic_html() -> None:
     )
 
 
+def test_structured_table_accepts_exactly_one_json_object_with_bounded_boilerplate() -> (
+    None
+):
+    table = StructuredTable.from_model_output(
+        "Here is the requested JSON.\n"
+        "```json\n"
+        '{"columns":["Name","Value"],"rows":[["A","1"]]}\n'
+        "```\n"
+        "End of response.",
+        require_numeric=False,
+    )
+
+    assert table.to_html() == (
+        "<table><thead><tr><th>Name</th><th>Value</th></tr></thead>"
+        "<tbody><tr><td>A</td><td>1</td></tr></tbody></table>"
+    )
+
+
+def test_structured_table_rejects_multiple_json_objects_or_unbounded_boilerplate() -> (
+    None
+):
+    payload = '{"columns":["Name","Value"],"rows":[["A","1"]]}'
+
+    with pytest.raises(BlockRepairError, match="filex_block_repair_invalid_json"):
+        StructuredTable.from_model_output(
+            f"{payload}\n{payload}",
+            require_numeric=False,
+        )
+    with pytest.raises(BlockRepairError, match="filex_block_repair_invalid_json"):
+        StructuredTable.from_model_output(
+            "x" * 4097 + payload,
+            require_numeric=False,
+        )
+
+
 def test_structured_table_preserves_caption_headers_and_spans() -> None:
     table = StructuredTable.from_model_output(
         """{
@@ -262,11 +297,14 @@ def test_chart_retry_cannot_launder_estimate_evidence() -> None:
             require_numeric=True,
             estimate_evidence_seen=True,
         )
-    assert _validated_model_table(
-        corrected,
-        require_numeric=True,
-        estimate_evidence_seen=True,
-    ).estimated is True
+    assert (
+        _validated_model_table(
+            corrected,
+            require_numeric=True,
+            estimate_evidence_seen=True,
+        ).estimated
+        is True
+    )
 
 
 def test_chart_table_rejects_declared_label_that_was_not_preserved() -> None:
@@ -289,6 +327,57 @@ def test_chart_table_allows_range_text_when_it_is_a_labeled_category() -> None:
     )
 
     assert tuple(cell.text for cell in table.rows[0]) == ("2023-2024 cohort", "42")
+
+
+def _table_repair_fixture(
+    table_prose: list[str],
+) -> tuple[dict[str, object], dict[str, object]]:
+    items: list[dict[str, object]] = []
+    issues: list[dict[str, object]] = []
+    for index, prose in enumerate(table_prose):
+        block_id = f"table-{index}"
+        bbox = {"x": 5, "y": 5 + index * 20, "w": 80, "h": 15}
+        items.append(
+            {
+                "id": block_id,
+                "type": "table",
+                "md": prose,
+                "html": "",
+                "value": prose,
+                "bbox": {**bbox, "label": "table"},
+            }
+        )
+        issues.append(
+            {
+                "reason": "filex_structured_block_meta_prose",
+                "page_number": 1,
+                "item_index": index,
+                "block_id": block_id,
+                "bbox": bbox,
+            }
+        )
+    markdown = "\n\n".join(table_prose)
+    return (
+        {
+            "task_type": "parse",
+            "layout_pages": [
+                {
+                    "page_number": 1,
+                    "width": 100,
+                    "height": 100,
+                    "md": markdown,
+                    "text": markdown,
+                    "items": items,
+                }
+            ],
+            "markdown": markdown,
+        },
+        {
+            "tables": {"issues": issues},
+            "charts": {"issues": []},
+            "document": {"issues": []},
+        },
+    )
 
 
 @pytest.mark.asyncio
@@ -373,6 +462,206 @@ async def test_repair_parse_output_updates_only_targeted_table_block(
     assert result["layout"]["markdown"] == result["document"]
     assert result["layout"]["layout_pages"][0]["text"] == html
     assert layout["layout_pages"][0]["items"][0]["html"] == ""
+
+
+@pytest.mark.asyncio
+async def test_table_repair_prompt_defines_physical_grid_and_retry_names_reason(
+    tmp_path: Path,
+) -> None:
+    @dataclass
+    class _Response:
+        text: str
+        metadata: dict[str, str] | None = None
+
+    class _Backend:
+        def __init__(self) -> None:
+            self.prompts: list[str] = []
+
+        async def transcribe(self, *_args, **kwargs):
+            self.prompts.append(kwargs["options"]["prompt"])
+            if len(self.prompts) == 1:
+                return _Response(
+                    '{"columns":[{"text":"Region","rowspan":2},'
+                    '{"text":"Revenue","colspan":2}],'
+                    '"rows":[[{"text":"Q1","header":true}],'
+                    '["North","10","20"]]}'
+                )
+            return _Response(
+                '{"columns":[{"text":"Region","rowspan":2},'
+                '{"text":"Revenue","colspan":2}],'
+                '"rows":[[{"text":"Q1","header":true},'
+                '{"text":"Q2","header":true}],["North","10","20"]]}'
+            )
+
+    def render(_source_path, **kwargs):
+        output = kwargs["output_path"]
+        output.write_bytes(b"png")
+        return output
+
+    layout, report = _table_repair_fixture(["Native table prose"])
+    backend = _Backend()
+
+    result = await repair_parse_output(
+        source_path=tmp_path / "source.pdf",
+        document=layout["markdown"],
+        layout=layout,
+        quality_report=report,
+        backend=backend,
+        crop_renderer=render,
+    )
+
+    assert result["failures"] == []
+    assert len(backend.prompts) == 2
+    assert "first physical header row" in backend.prompts[0]
+    assert "sum of its colspan" in backend.prompts[0]
+    assert "active rowspans" in backend.prompts[0]
+    assert "filex_block_repair_row_invalid" in backend.prompts[1]
+
+
+@pytest.mark.asyncio
+async def test_table_repair_length_finish_gets_one_bounded_token_increase(
+    tmp_path: Path,
+) -> None:
+    @dataclass
+    class _Response:
+        text: str
+        metadata: dict[str, str]
+
+    class _Backend:
+        def __init__(self) -> None:
+            self.options: list[dict[str, object]] = []
+
+        async def transcribe(self, *_args, **kwargs):
+            self.options.append(kwargs["options"])
+            if len(self.options) == 1:
+                return _Response(
+                    '{"columns":["Name","Value"]',
+                    {"finish_reason": "length"},
+                )
+            return _Response(
+                '{"columns":["Name","Value"],"rows":[["A","1"]]}',
+                {"finish_reason": "stop"},
+            )
+
+    def render(_source_path, **kwargs):
+        output = kwargs["output_path"]
+        output.write_bytes(b"png")
+        return output
+
+    layout, report = _table_repair_fixture(["Native table prose"])
+    backend = _Backend()
+
+    result = await repair_parse_output(
+        source_path=tmp_path / "source.pdf",
+        document=layout["markdown"],
+        layout=layout,
+        quality_report=report,
+        backend=backend,
+        crop_renderer=render,
+    )
+
+    assert result["failures"] == []
+    assert len(backend.options) == 2
+    assert backend.options[0]["max_tokens"] == 4096
+    assert backend.options[1]["max_tokens"] == 8192
+    assert "filex_block_repair_output_truncated" in str(backend.options[1]["prompt"])
+
+
+@pytest.mark.asyncio
+async def test_multi_table_repair_reports_all_successes(tmp_path: Path) -> None:
+    @dataclass
+    class _Response:
+        text: str
+
+    class _Backend:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def transcribe(self, *_args, **_kwargs):
+            self.calls += 1
+            return _Response(
+                '{"columns":["Name","Value"],"rows":[["Row '
+                + str(self.calls)
+                + '","1"]]}'
+            )
+
+    def render(_source_path, **kwargs):
+        output = kwargs["output_path"]
+        output.write_bytes(b"png")
+        return output
+
+    layout, report = _table_repair_fixture(
+        ["First native table", "Second native table"]
+    )
+    backend = _Backend()
+
+    result = await repair_parse_output(
+        source_path=tmp_path / "source.pdf",
+        document=layout["markdown"],
+        layout=layout,
+        quality_report=report,
+        backend=backend,
+        crop_renderer=render,
+    )
+
+    assert result["attempted"] == 2
+    assert result["remaining"] == 0
+    assert result["failures"] == []
+    assert [item["block_id"] for item in result["repaired"]] == [
+        "table-0",
+        "table-1",
+    ]
+    assert backend.calls == 2
+
+
+@pytest.mark.asyncio
+async def test_multi_table_repair_retains_mixed_failure_summary(tmp_path: Path) -> None:
+    @dataclass
+    class _Response:
+        text: str
+
+    class _Backend:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def transcribe(self, *_args, **_kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                return _Response('{"columns":["Name","Value"],"rows":[["A","1"]]}')
+            return _Response("not json")
+
+    def render(_source_path, **kwargs):
+        output = kwargs["output_path"]
+        output.write_bytes(b"png")
+        return output
+
+    layout, report = _table_repair_fixture(
+        ["First native table", "Second native table"]
+    )
+    backend = _Backend()
+
+    result = await repair_parse_output(
+        source_path=tmp_path / "source.pdf",
+        document=layout["markdown"],
+        layout=layout,
+        quality_report=report,
+        backend=backend,
+        crop_renderer=render,
+    )
+
+    assert result["attempted"] == 2
+    assert result["remaining"] == 0
+    assert [item["block_id"] for item in result["repaired"]] == ["table-0"]
+    assert result["failures"] == [
+        {
+            "kind": "tables",
+            "page_number": 1,
+            "item_index": 1,
+            "block_id": "table-1",
+            "reason": "filex_block_repair_invalid_json",
+        }
+    ]
+    assert backend.calls == 3
 
 
 @pytest.mark.asyncio
@@ -491,6 +780,74 @@ def test_apply_repair_fails_closed_when_document_anchor_is_repeated() -> None:
     assert layout == original
 
 
+def test_apply_repair_disambiguates_repeated_target_with_unique_neighbor_context() -> (
+    None
+):
+    prose = "Repeated table description"
+    page_markdown = f"Unique before\n\n{prose}\n\nUnique after\n\n{prose}"
+    layout = {
+        "layout_pages": [
+            {
+                "page_number": 1,
+                "md": page_markdown,
+                "text": page_markdown,
+                "items": [
+                    {
+                        "id": "before",
+                        "type": "text",
+                        "md": "Unique before",
+                        "html": "",
+                        "value": "Unique before",
+                    },
+                    {
+                        "id": "table-target",
+                        "type": "table",
+                        "md": prose,
+                        "html": "",
+                        "value": prose,
+                    },
+                    {
+                        "id": "after",
+                        "type": "text",
+                        "md": "Unique after",
+                        "html": "",
+                        "value": "Unique after",
+                    },
+                    {
+                        "id": "duplicate-prose",
+                        "type": "text",
+                        "md": prose,
+                        "html": "",
+                        "value": prose,
+                    },
+                ],
+            }
+        ],
+        "pages": [{"page_index": 0, "markdown": page_markdown}],
+        "markdown": page_markdown,
+    }
+    replacement = StructuredTable(("Name", "Value"), (("A", "1"),)).to_html()
+
+    document, repaired = apply_structured_repair(
+        document=page_markdown,
+        layout=layout,
+        issue={
+            "reason": "filex_structured_block_meta_prose",
+            "page_number": 1,
+            "item_index": 99,
+            "block_id": "table-target",
+        },
+        table=StructuredTable(("Name", "Value"), (("A", "1"),)),
+    )
+
+    expected = f"Unique before\n\n{replacement}\n\nUnique after\n\n{prose}"
+    assert document == expected
+    assert repaired["markdown"] == expected
+    assert repaired["layout_pages"][0]["md"] == expected
+    assert repaired["pages"][0]["markdown"] == expected
+    assert repaired["layout_pages"][0]["items"][1]["html"] == replacement
+
+
 def test_apply_repair_uses_unique_visible_anchor_across_formatting_drift() -> None:
     item_prose = (
         "<table><tr><td>Smoking among 15-year-olds in 2014 across "
@@ -547,9 +904,7 @@ def test_apply_repair_uses_unique_visible_anchor_across_formatting_drift() -> No
     assert document == replacement.to_html()
     assert repaired["layout_pages"][0]["md"] == replacement.to_html()
     assert repaired["pages"][0]["markdown"] == replacement.to_html()
-    assert repaired["layout_pages"][0]["items"][0][
-        "filex_chart_value_columns"
-    ] == [1]
+    assert repaired["layout_pages"][0]["items"][0]["filex_chart_value_columns"] == [1]
 
 
 def test_apply_repair_requires_matching_page_item_and_block_identity() -> None:

@@ -26,6 +26,8 @@ MAX_COLUMNS = 50
 MAX_ROWS = 500
 MAX_CELL_CHARS = 2048
 MAX_MODEL_OUTPUT_CHARS = 2 * 1024 * 1024
+MAX_MODEL_BOILERPLATE_CHARS = 4096
+MAX_REPAIR_OUTPUT_TOKENS = 16_384
 
 _FENCE = re.compile(r"^```(?:json)?\s*|\s*```$", re.IGNORECASE)
 _NUMERIC = re.compile(
@@ -51,11 +53,18 @@ _HTML_TABLE_BLOCK = re.compile(r"<table\b[^>]*>.*?</table>", re.IGNORECASE | re.
 _TABLE_PROMPT = """Extract the visible table into strict JSON only.
 Return {"caption":"visible caption or empty string","notes":["exact visible
 footnote/source/unit note"],"columns":[...],"rows":[...]} with at least two
-logical columns and one body row. A simple cell may be a string. A merged/header cell must be
-{"text":"...","rowspan":1,"colspan":1,"header":true}. Preserve every visible
-cell and the exact rowspan/colspan structure; do not flatten or repeat merged
-headers. Omit no visible caption. Do not return Markdown, prose, commentary, or
-invented values."""
+logical columns and one body row. `columns` is the first physical header row;
+the sum of its colspan values defines the logical grid width. Each entry in
+`rows` is one later physical row and, after active rowspans are accounted for,
+must fill exactly that width. A simple cell may be a string. A merged/header
+cell must be {"text":"...","rowspan":1,"colspan":1,"header":true}. Mark every
+visible top or row header with header=true. Preserve every visible cell and the
+exact rowspan/colspan structure; do not flatten or repeat merged headers. For
+example, a two-level three-column header may start with columns=[{"text":"Region",
+"rowspan":2,"header":true},{"text":"Revenue","colspan":2,"header":true}]
+and rows=[[{"text":"Q1","header":true},{"text":"Q2","header":true}],...].
+Omit no visible caption. Do not return Markdown, prose, commentary, or invented
+values."""
 
 _CHART_PROMPT = """Extract the visible chart semantics into strict JSON only.
 Return {"caption":"exact visible title/caption or empty string","labels":[...],
@@ -81,6 +90,69 @@ JSON only, without prose/commentary."""
 
 class BlockRepairError(ValueError):
     """A stable failure while validating or applying one block repair."""
+
+
+def _strict_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    value: dict[str, Any] = {}
+    for key, item in pairs:
+        if key in value:
+            raise ValueError("duplicate JSON key")
+        value[key] = item
+    return value
+
+
+def _reject_json_constant(_value: str) -> None:
+    raise ValueError("nonfinite JSON value")
+
+
+_MODEL_JSON_DECODER = json.JSONDecoder(
+    object_pairs_hook=_strict_json_object,
+    parse_constant=_reject_json_constant,
+)
+
+
+def _decode_single_model_object(content: str) -> dict[str, Any]:
+    """Decode one object while tolerating bounded non-JSON model boilerplate."""
+
+    value = content.strip()
+    try:
+        payload = _MODEL_JSON_DECODER.decode(value)
+    except (json.JSONDecodeError, ValueError, RecursionError):
+        payload = None
+    if isinstance(payload, dict):
+        return payload
+    if payload is not None:
+        raise BlockRepairError("filex_block_repair_invalid_json")
+
+    candidates: list[tuple[int, int, dict[str, Any]]] = []
+    cursor = 0
+    while cursor < len(value):
+        start = value.find("{", cursor)
+        if start < 0:
+            break
+        try:
+            decoded, end = _MODEL_JSON_DECODER.raw_decode(value, start)
+        except (json.JSONDecodeError, ValueError, RecursionError):
+            cursor = start + 1
+            continue
+        if isinstance(decoded, dict):
+            candidates.append((start, end, decoded))
+            cursor = end
+        else:
+            cursor = start + 1
+    if len(candidates) != 1:
+        raise BlockRepairError("filex_block_repair_invalid_json")
+    start, end, payload = candidates[0]
+    prefix = value[:start].strip()
+    suffix = value[end:].strip()
+    boilerplate = prefix + suffix
+    if (
+        len(prefix) + len(suffix) > MAX_MODEL_BOILERPLATE_CHARS
+        or "{" in boilerplate
+        or "}" in boilerplate
+    ):
+        raise BlockRepairError("filex_block_repair_invalid_json")
+    return payload
 
 
 class BlockRepairBackend(Protocol):
@@ -121,13 +193,7 @@ class StructuredTable:
             raise BlockRepairError("filex_block_repair_empty_output")
         if len(content) > MAX_MODEL_OUTPUT_CHARS:
             raise BlockRepairError("filex_block_repair_output_too_large")
-        value = content.strip()
-        if value.startswith("```"):
-            value = _FENCE.sub("", value).strip()
-        try:
-            payload = json.loads(value)
-        except (json.JSONDecodeError, ValueError, RecursionError):
-            raise BlockRepairError("filex_block_repair_invalid_json") from None
+        payload = _decode_single_model_object(content)
         allowed = {"columns", "rows", "caption", "notes"}
         required = {"columns", "rows"}
         if require_numeric:
@@ -432,9 +498,7 @@ def _validate_chart_table(
             if _NARRATIVE_ESTIMATE.search(value):
                 raise BlockRepairError("filex_chart_repair_narrative_value_invalid")
             if _MARKED_CURRENCY_VALUE.match(value):
-                raise BlockRepairError(
-                    "filex_chart_repair_estimated_currency_inline"
-                )
+                raise BlockRepairError("filex_chart_repair_estimated_currency_inline")
             if _MISSING_CHART_VALUE.fullmatch(value):
                 continue
             if _NUMERIC.fullmatch(value) is None:
@@ -478,8 +542,18 @@ def _validate_chart_table(
 
 
 def _gateway_options(
-    *, prompt: str, kind: str, timeout_seconds: int | None = None
+    *,
+    prompt: str,
+    kind: str,
+    timeout_seconds: int | None = None,
+    increase_output_tokens: bool = False,
 ) -> dict[str, Any]:
+    configured_max_tokens = int(os.getenv("FILEX_BLOCK_REPAIR_MAX_TOKENS", "4096"))
+    if configured_max_tokens < 1:
+        raise BlockRepairError("filex_block_repair_max_tokens_invalid")
+    max_tokens = min(configured_max_tokens, MAX_REPAIR_OUTPUT_TOKENS)
+    if increase_output_tokens:
+        max_tokens = min(max_tokens * 2, MAX_REPAIR_OUTPUT_TOKENS)
     options: dict[str, Any] = {
         "prompt": prompt,
         "timeout_seconds": (
@@ -487,7 +561,7 @@ def _gateway_options(
             if timeout_seconds is not None
             else int(os.getenv("FILEX_BLOCK_REPAIR_TIMEOUT_SECONDS", "180"))
         ),
-        "max_tokens": int(os.getenv("FILEX_BLOCK_REPAIR_MAX_TOKENS", "4096")),
+        "max_tokens": max_tokens,
         "temperature": 0,
     }
     mapping = {
@@ -514,6 +588,14 @@ def _gateway_options(
         "enable_sec_check": True,
     }
     return options
+
+
+def _correction_prompt(prompt: str, *, reason: str) -> str:
+    return (
+        f"{prompt}\nCORRECTION ({reason}): the prior response violated the strict "
+        "JSON or physical rectangular-grid contract. Read the image again, apply "
+        "the header/rowspan/colspan rules above, and return exactly one JSON object."
+    )
 
 
 def _render_crop(
@@ -575,6 +657,8 @@ def _anchored_rewrite(
     replacement: str,
     *,
     scope: str,
+    before_candidates: list[str] | None = None,
+    after_candidates: list[str] | None = None,
 ) -> str:
     """Replace one uniquely anchored block without a global first-match fallback."""
 
@@ -592,7 +676,15 @@ def _anchored_rewrite(
         if not positions:
             continue
         if len(positions) != 1:
-            raise BlockRepairError(f"filex_block_repair_{scope}_anchor_ambiguous")
+            contextual = _contextual_rewrite_position(
+                content,
+                positions,
+                before_candidates=before_candidates,
+                after_candidates=after_candidates,
+            )
+            if contextual is None:
+                raise BlockRepairError(f"filex_block_repair_{scope}_anchor_ambiguous")
+            positions = {contextual}
         start, end = next(iter(positions))
         return content[:start] + replacement + content[end:]
     visible_content, content_spans = _visible_projection_with_spans(content)
@@ -623,6 +715,47 @@ def _anchored_rewrite(
         start, end = next(iter(visible_positions))
         return content[:start] + replacement + content[end:]
     raise BlockRepairError("filex_block_repair_anchor_missing")
+
+
+def _exact_candidate_positions(
+    content: str, candidates: list[str] | None
+) -> set[tuple[int, int]]:
+    positions: set[tuple[int, int]] = set()
+    for candidate in {
+        value for value in candidates or [] if isinstance(value, str) and value.strip()
+    }:
+        start = 0
+        while True:
+            index = content.find(candidate, start)
+            if index < 0:
+                break
+            positions.add((index, index + len(candidate)))
+            start = index + 1
+    return positions
+
+
+def _contextual_rewrite_position(
+    content: str,
+    target_positions: set[tuple[int, int]],
+    *,
+    before_candidates: list[str] | None,
+    after_candidates: list[str] | None,
+) -> tuple[int, int] | None:
+    """Use unique adjacent item content only to disambiguate a known target."""
+
+    before_positions = _exact_candidate_positions(content, before_candidates)
+    after_positions = _exact_candidate_positions(content, after_candidates)
+    unique_before = next(iter(before_positions)) if len(before_positions) == 1 else None
+    unique_after = next(iter(after_positions)) if len(after_positions) == 1 else None
+    if unique_before is None and unique_after is None:
+        return None
+    candidates = {
+        position
+        for position in target_positions
+        if (unique_before is None or unique_before[1] <= position[0])
+        and (unique_after is None or position[1] <= unique_after[0])
+    }
+    return next(iter(candidates)) if len(candidates) == 1 else None
 
 
 def _visible_projection_with_spans(value: str) -> tuple[str, list[tuple[int, int]]]:
@@ -738,6 +871,29 @@ def _item_candidates(item: dict[str, Any]) -> list[str]:
         if canonical != value:
             candidates.append(canonical)
     return candidates
+
+
+def _rewrite_neighbor_candidates(
+    page: dict[str, Any], item_index: int
+) -> tuple[list[str] | None, list[str] | None]:
+    items = page.get("items")
+    if not isinstance(items, list):
+        raise BlockRepairError("filex_block_repair_target_items_invalid")
+
+    def nearest(indices: range) -> list[str] | None:
+        for index in indices:
+            candidate = items[index]
+            if not isinstance(candidate, dict):
+                continue
+            values = _item_candidates(candidate)
+            if any(value.strip() for value in values):
+                return values
+        return None
+
+    return (
+        nearest(range(item_index - 1, -1, -1)),
+        nearest(range(item_index + 1, len(items))),
+    )
 
 
 def _visible_context(value: str) -> str:
@@ -1206,7 +1362,12 @@ def apply_structured_repair(
         if insertion_required and neighbor is not None
         else old_candidates
     )
-    rewrite = _anchored_insert if insertion_required else _anchored_rewrite
+    before_candidates: list[str] | None = None
+    after_candidates: list[str] | None = None
+    if not insertion_required:
+        before_candidates, after_candidates = _rewrite_neighbor_candidates(
+            page, item_index
+        )
     page_markdown = page.get("md")
     if not isinstance(page_markdown, str):
         raise BlockRepairError("filex_block_repair_page_markdown_missing")
@@ -1242,14 +1403,14 @@ def apply_structured_repair(
         if parsed_page is not None:
             parsed_page["markdown"] = html
     elif insertion_required:
-        document = rewrite(
+        document = _anchored_insert(
             document, anchor_candidates, html, before=insert_before, scope="document"
         )
-        page["md"] = rewrite(
+        page["md"] = _anchored_insert(
             page_markdown, anchor_candidates, html, before=insert_before, scope="page"
         )
         if parsed_page is not None and parsed_markdown is not None:
-            parsed_page["markdown"] = rewrite(
+            parsed_page["markdown"] = _anchored_insert(
                 parsed_markdown,
                 anchor_candidates,
                 html,
@@ -1257,11 +1418,30 @@ def apply_structured_repair(
                 scope="parsed_page",
             )
     else:
-        document = rewrite(document, anchor_candidates, html, scope="document")
-        page["md"] = rewrite(page_markdown, anchor_candidates, html, scope="page")
+        document = _anchored_rewrite(
+            document,
+            anchor_candidates,
+            html,
+            scope="document",
+            before_candidates=before_candidates,
+            after_candidates=after_candidates,
+        )
+        page["md"] = _anchored_rewrite(
+            page_markdown,
+            anchor_candidates,
+            html,
+            scope="page",
+            before_candidates=before_candidates,
+            after_candidates=after_candidates,
+        )
         if parsed_page is not None and parsed_markdown is not None:
-            parsed_page["markdown"] = rewrite(
-                parsed_markdown, anchor_candidates, html, scope="parsed_page"
+            parsed_page["markdown"] = _anchored_rewrite(
+                parsed_markdown,
+                anchor_candidates,
+                html,
+                scope="parsed_page",
+                before_candidates=before_candidates,
+                after_candidates=after_candidates,
             )
     item["md"] = html
     item["html"] = html
@@ -1330,9 +1510,7 @@ async def repair_parse_output(
         temporary_root = Path(temporary)
         selected_issues = issues[:max_blocks]
         for repair_index, (kind, issue) in enumerate(selected_issues):
-            remaining_seconds = (
-                deadline - loop.time() if deadline is not None else None
-            )
+            remaining_seconds = deadline - loop.time() if deadline is not None else None
             if remaining_seconds is not None and remaining_seconds <= 1:
                 break
             block_attempted += 1
@@ -1377,9 +1555,9 @@ async def repair_parse_output(
                         )
                     attempt_prompt = prompt
                     if attempt:
-                        attempt_prompt += (
-                            "\nCORRECTION: the prior response violated the JSON or rectangular "
-                            "table contract. Read the image again and return only valid JSON."
+                        attempt_prompt = _correction_prompt(
+                            prompt,
+                            reason=last_reason,
                         )
                         if estimate_evidence_seen:
                             attempt_prompt += (
@@ -1399,11 +1577,30 @@ async def repair_parse_output(
                                     prompt=attempt_prompt,
                                     kind=kind,
                                     timeout_seconds=call_timeout,
+                                    increase_output_tokens=(
+                                        attempt > 0
+                                        and last_reason
+                                        == "filex_block_repair_output_truncated"
+                                    ),
                                 ),
                             ),
                             timeout=call_timeout,
                         )
                         response_text = str(getattr(response, "text", "") or "")
+                        metadata = getattr(response, "metadata", None)
+                        finish_reason = (
+                            str(metadata.get("finish_reason") or "").strip().lower()
+                            if isinstance(metadata, dict)
+                            else ""
+                        )
+                        if finish_reason == "length":
+                            if kind == "charts" and _estimate_evidence_declared(
+                                response_text
+                            ):
+                                estimate_evidence_seen = True
+                            raise BlockRepairError(
+                                "filex_block_repair_output_truncated"
+                            )
                         table = _validated_model_table(
                             response_text,
                             require_numeric=kind == "charts",
