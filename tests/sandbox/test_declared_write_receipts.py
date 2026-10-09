@@ -2,13 +2,16 @@ from __future__ import annotations
 
 from copy import deepcopy
 import asyncio
+import gc
 import hashlib
 import json
 from pathlib import Path
 from types import SimpleNamespace
+import weakref
 
 import pytest
 
+import aworld.sandbox.declared_write as declared_write_module
 from aworld.core.common import ActionModel, ActionResult, Observation
 from aworld.core.context.base import Context
 from aworld.core.context.session import Session
@@ -23,6 +26,7 @@ from aworld.sandbox.declared_write import (
     declared_write_operation_sha256,
     framework_scope_sha256,
     framework_scope_values,
+    overlapping_path_leases,
     semantic_target_sha256,
 )
 from aworld.sandbox.run.mcp_servers import McpServers
@@ -479,6 +483,63 @@ def test_declared_write_operation_binds_exact_requested_paths(tmp_path: Path) ->
 
     assert first.startswith("sha256:")
     assert first != changed
+
+
+def test_path_lease_registry_releases_closed_contended_event_loops() -> None:
+    loop_refs: list[weakref.ReferenceType[asyncio.AbstractEventLoop]] = []
+    manager_refs: list[weakref.ReferenceType[object]] = []
+
+    async def contend_once() -> tuple[
+        weakref.ReferenceType[asyncio.AbstractEventLoop],
+        weakref.ReferenceType[object],
+    ]:
+        loop = asyncio.get_running_loop()
+        manager = declared_write_module._lease_manager()
+        holder_entered = asyncio.Event()
+        release_holder = asyncio.Event()
+
+        async def holder() -> None:
+            async with overlapping_path_leases("gc-regression", ["/workspace/a"]):
+                holder_entered.set()
+                await release_holder.wait()
+
+        async def waiter() -> None:
+            async with overlapping_path_leases("gc-regression", ["/workspace/a"]):
+                return
+
+        holder_task = asyncio.create_task(holder())
+        await holder_entered.wait()
+        successful_waiter = asyncio.create_task(waiter())
+        cancelled_waiter = asyncio.create_task(waiter())
+        for _ in range(100):
+            if len(manager._waiting) == 2:
+                break
+            await asyncio.sleep(0)
+        assert len(manager._waiting) == 2
+        assert manager._condition._loop is loop
+
+        cancelled_waiter.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await cancelled_waiter
+        assert len(manager._waiting) == 1
+
+        release_holder.set()
+        await asyncio.gather(holder_task, successful_waiter)
+        assert manager._waiting == []
+        assert manager._active == {}
+        return weakref.ref(loop), weakref.ref(manager)
+
+    for _ in range(3):
+        loop_ref, manager_ref = asyncio.run(contend_once())
+        loop_refs.append(loop_ref)
+        manager_refs.append(manager_ref)
+
+    for _ in range(3):
+        gc.collect()
+
+    assert all(reference() is None for reference in manager_refs)
+    assert all(reference() is None for reference in loop_refs)
+    assert len(declared_write_module._LEASE_MANAGERS) == 0
 
 
 @pytest.mark.asyncio

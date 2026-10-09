@@ -703,17 +703,45 @@ class _PathLeaseManager:
             self._condition.notify_all()
 
 
-_LEASE_MANAGERS: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, _PathLeaseManager]" = weakref.WeakKeyDictionary()
+_LEASE_MANAGERS: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, weakref.ReferenceType[_PathLeaseManager]]" = weakref.WeakKeyDictionary()
 _LEASE_MANAGERS_LOCK = threading.Lock()
+
+
+def _retire_lease_manager(
+    manager_reference: weakref.ReferenceType[_PathLeaseManager],
+    *,
+    loop_reference: weakref.ReferenceType[asyncio.AbstractEventLoop],
+) -> None:
+    loop = loop_reference()
+    if loop is None:
+        return
+    with _LEASE_MANAGERS_LOCK:
+        if _LEASE_MANAGERS.get(loop) is manager_reference:
+            _LEASE_MANAGERS.pop(loop, None)
 
 
 def _lease_manager() -> _PathLeaseManager:
     loop = asyncio.get_running_loop()
     with _LEASE_MANAGERS_LOCK:
-        manager = _LEASE_MANAGERS.get(loop)
+        manager_reference = _LEASE_MANAGERS.get(loop)
+        manager = manager_reference() if manager_reference is not None else None
         if manager is None:
             manager = _PathLeaseManager()
-            _LEASE_MANAGERS[loop] = manager
+            # A contended ``asyncio.Condition`` binds back to its event loop.
+            # Keeping the manager strongly in a weak-key map would therefore
+            # form registry -> manager -> loop and prevent the weak key from
+            # ever dying. Active/waiting lease contexts already keep their
+            # manager alive, so a weak value preserves sharing while work
+            # exists and releases closed loops once it does not.
+            loop_reference = weakref.ref(loop)
+            manager_reference = weakref.ref(
+                manager,
+                lambda reference: _retire_lease_manager(
+                    reference,
+                    loop_reference=loop_reference,
+                ),
+            )
+            _LEASE_MANAGERS[loop] = manager_reference
         return manager
 
 
