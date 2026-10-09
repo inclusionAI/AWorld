@@ -7,6 +7,7 @@ import time
 from typing import Any, Mapping
 
 from aworld.core.common import ActionModel, Observation
+from aworld.core.context.work_progress import public_deliverable_contract_identity
 from aworld.runners.public_deliverables import inspect_public_deliverable
 from aworld.utils.serialized_util import to_serializable
 
@@ -26,6 +27,8 @@ _VOLATILE_FAILURE_TEXT = re.compile(
 _PUBLIC_DELIVERABLE_SCHEMA = "aworld.public-deliverables/v1"
 _PUBLIC_DELIVERABLE_AUTHORITY = "public_task_advisory"
 _PUBLIC_DELIVERABLE_BASELINE_KEY = "public_deliverable_baseline"
+_PUBLIC_DELIVERY_CONTINUITY_KEY = "public_delivery_continuity"
+_PUBLIC_DELIVERY_CONTINUITY_SCHEMA = "aworld.public-delivery-continuity/v1"
 _PUBLIC_DELIVERABLE_HASH_MAX_BYTES = 8 * 1024 * 1024
 _PUBLIC_DELIVERY_HIGH_WATER_BLOOM_BITS = 512
 _SANDBOX_OBSERVATION_SCHEMA = "aworld.sandbox-tool-observation/v1"
@@ -233,7 +236,106 @@ def _public_deliverable_projection(context) -> dict[str, Any] | None:
     }
 
 
-def capture_public_deliverable_baseline(context) -> None:
+def _public_delivery_versions(
+    value: Any,
+    *,
+    deliverable_ids: tuple[str, ...],
+) -> dict[str, str | None] | None:
+    if not isinstance(value, Mapping) or set(value) != set(deliverable_ids):
+        return None
+    versions: dict[str, str | None] = {}
+    for deliverable_id in deliverable_ids:
+        version = value.get(deliverable_id)
+        if version is not None and (
+            not isinstance(version, str)
+            or len(version) > 128
+            or (
+                re.fullmatch(r"sha256:[0-9a-f]{64}", version) is None
+                and re.fullmatch(r"size-only:\d+", version) is None
+            )
+        ):
+            return None
+        versions[deliverable_id] = version
+    return versions
+
+
+def _validated_public_delivery_continuity(
+    value: Any,
+    *,
+    scope: Mapping[str, Any],
+    contract_fingerprint: str,
+    deliverable_ids: tuple[str, ...],
+) -> dict[str, Any] | None:
+    if (
+        not isinstance(value, Mapping)
+        or value.get("schema_version") != _PUBLIC_DELIVERY_CONTINUITY_SCHEMA
+        or value.get("scope") != scope
+        or value.get("contract_fingerprint") != contract_fingerprint
+    ):
+        return None
+    baseline_versions = _public_delivery_versions(
+        value.get("baseline_versions"), deliverable_ids=deliverable_ids
+    )
+    latest_versions = _public_delivery_versions(
+        value.get("latest_versions"), deliverable_ids=deliverable_ids
+    )
+    if baseline_versions is None or latest_versions is None:
+        return None
+    fingerprints = []
+    for key in ("baseline_fingerprint", "latest_fingerprint"):
+        fingerprint = value.get(key)
+        if (
+            not isinstance(fingerprint, str)
+            or re.fullmatch(r"sha256:[0-9a-f]{64}", fingerprint) is None
+        ):
+            return None
+        fingerprints.append(fingerprint)
+    recent = value.get("recent_fingerprints")
+    if (
+        not isinstance(recent, list)
+        or len(recent) > 32
+        or any(
+            not isinstance(item, str)
+            or re.fullmatch(r"sha256:[0-9a-f]{64}", item) is None
+            for item in recent
+        )
+    ):
+        return None
+    high_water_count = value.get("high_water_count")
+    high_water_bloom = value.get("high_water_bloom")
+    if (
+        isinstance(high_water_count, bool)
+        or not isinstance(high_water_count, int)
+        or not 0 <= high_water_count <= len(deliverable_ids)
+        or not isinstance(high_water_bloom, str)
+        or re.fullmatch(r"[0-9a-f]{128}", high_water_bloom) is None
+    ):
+        return None
+    high_water_mask = _delivery_high_water_mask(high_water_bloom)
+    if any(
+        not _delivery_high_water_contains(high_water_mask, fingerprint)
+        for fingerprint in fingerprints
+    ):
+        return None
+    return {
+        "schema_version": _PUBLIC_DELIVERY_CONTINUITY_SCHEMA,
+        "scope": dict(scope),
+        "contract_fingerprint": contract_fingerprint,
+        "baseline_fingerprint": fingerprints[0],
+        "baseline_versions": baseline_versions,
+        "latest_fingerprint": fingerprints[1],
+        "latest_versions": latest_versions,
+        "high_water_count": high_water_count,
+        "high_water_bloom": high_water_bloom,
+        "recent_fingerprints": list(recent),
+    }
+
+
+def capture_public_deliverable_baseline(
+    context,
+    *,
+    agent_id: str | None = None,
+) -> None:
     """Capture candidate versions before ordinary task Tools execute."""
 
     from aworld.core.context.compiler import semantic_fingerprint
@@ -242,24 +344,86 @@ def capture_public_deliverable_baseline(context) -> None:
     if runtime_context is None:
         return
     scope = _semantic_state_scope(runtime_context)
+    contract_identity = public_deliverable_contract_identity(runtime_context)
+    if contract_identity is None:
+        return
+    contract_fingerprint, deliverable_ids = contract_identity
+    continuity_candidates = [
+        runtime_context.context_info.get(_PUBLIC_DELIVERY_CONTINUITY_KEY)
+    ]
+    if isinstance(agent_id, str) and agent_id:
+        from aworld.core.context.compiler import ADAPTIVE_WORK_STATE_KEY
+
+        durable_owner = _runtime_registry_owner(runtime_context)
+        work_key = f"{ADAPTIVE_WORK_STATE_KEY}:{agent_id}"
+        carried_work = _working_state_value(durable_owner, work_key)
+        if not isinstance(carried_work, Mapping):
+            carried_work = durable_owner.context_info.get(work_key)
+        if isinstance(carried_work, Mapping):
+            continuity_candidates.append(
+                carried_work.get(_PUBLIC_DELIVERY_CONTINUITY_KEY)
+            )
+    continuity = next(
+        (
+            validated
+            for candidate in continuity_candidates
+            if (
+                validated := _validated_public_delivery_continuity(
+                    candidate,
+                    scope=scope,
+                    contract_fingerprint=contract_fingerprint,
+                    deliverable_ids=deliverable_ids,
+                )
+            )
+            is not None
+        ),
+        None,
+    )
+    if continuity is not None:
+        runtime_context.context_info[_PUBLIC_DELIVERABLE_BASELINE_KEY] = {
+            "scope": scope,
+            "contract_fingerprint": contract_fingerprint,
+            "fingerprint": continuity["baseline_fingerprint"],
+            "artifacts": dict(continuity["baseline_versions"]),
+        }
+        runtime_context.context_info[_PUBLIC_DELIVERY_CONTINUITY_KEY] = continuity
+        return
     current = runtime_context.context_info.get(_PUBLIC_DELIVERABLE_BASELINE_KEY)
-    if isinstance(current, dict) and current.get("scope") == scope:
+    if (
+        isinstance(current, dict)
+        and current.get("scope") == scope
+        and current.get("contract_fingerprint") == contract_fingerprint
+    ):
         return
     projection = _public_deliverable_projection(runtime_context)
-    runtime_context.context_info[_PUBLIC_DELIVERABLE_BASELINE_KEY] = {
-        "scope": scope,
-        "fingerprint": (
-            semantic_fingerprint(projection) if projection is not None else None
-        ),
-        "artifacts": (
-            {
-                item["deliverable_id"]: item.get("version")
-                for item in projection.get("artifacts", ())
-            }
-            if projection is not None
-            else {}
-        ),
+    if projection is None:
+        return
+    fingerprint = semantic_fingerprint(projection)
+    versions = {
+        item["deliverable_id"]: item.get("version")
+        for item in projection.get("artifacts", ())
     }
+    baseline = {
+        "scope": scope,
+        "contract_fingerprint": contract_fingerprint,
+        "fingerprint": fingerprint,
+        "artifacts": versions,
+    }
+    high_water_mask = _delivery_high_water_add(0, fingerprint)
+    continuity = {
+        "schema_version": _PUBLIC_DELIVERY_CONTINUITY_SCHEMA,
+        "scope": scope,
+        "contract_fingerprint": contract_fingerprint,
+        "baseline_fingerprint": fingerprint,
+        "baseline_versions": versions,
+        "latest_fingerprint": fingerprint,
+        "latest_versions": versions,
+        "high_water_count": int(projection.get("candidate_count", 0) or 0),
+        "high_water_bloom": format(high_water_mask, "0128x"),
+        "recent_fingerprints": [fingerprint],
+    }
+    runtime_context.context_info[_PUBLIC_DELIVERABLE_BASELINE_KEY] = baseline
+    runtime_context.context_info[_PUBLIC_DELIVERY_CONTINUITY_KEY] = continuity
 
 
 def _observed_action_names(
@@ -935,17 +1099,35 @@ def _record_semantic_tool_progress_locked(
     candidate_present = (
         public_delivery_count > 0 if public_delivery_projection is not None else None
     )
+    contract_identity = public_deliverable_contract_identity(runtime_context)
+    continuity = None
+    if contract_identity is not None:
+        contract_fingerprint, deliverable_ids = contract_identity
+        continuity = _validated_public_delivery_continuity(
+            runtime_context.context_info.get(_PUBLIC_DELIVERY_CONTINUITY_KEY),
+            scope=semantic_scope,
+            contract_fingerprint=contract_fingerprint,
+            deliverable_ids=deliverable_ids,
+        )
     baseline = runtime_context.context_info.get(_PUBLIC_DELIVERABLE_BASELINE_KEY)
     baseline_versions = (
         baseline.get("artifacts")
         if isinstance(baseline, dict)
         and baseline.get("scope") == semantic_scope
+        and (
+            contract_identity is None
+            or baseline.get("contract_fingerprint") == contract_identity[0]
+        )
         and isinstance(baseline.get("artifacts"), dict)
         else {}
     )
     previous_versions = previous.get("public_delivery_versions")
     if not isinstance(previous_versions, dict):
-        previous_versions = baseline_versions
+        previous_versions = (
+            continuity["latest_versions"]
+            if continuity is not None
+            else baseline_versions
+        )
     public_delivery_versions = (
         {
             item["deliverable_id"]: item.get("version")
@@ -962,7 +1144,11 @@ def _record_semantic_tool_progress_locked(
         )
     )
     previous_public_delivery_high_water = int(
-        previous.get("public_delivery_high_water_count", 0) or 0
+        previous.get(
+            "public_delivery_high_water_count",
+            continuity["high_water_count"] if continuity is not None else 0,
+        )
+        or 0
     )
     public_delivery_changed = bool(
         public_delivery_projection is not None
@@ -973,7 +1159,13 @@ def _record_semantic_tool_progress_locked(
     )
     recent_public_delivery_fingerprints = [
         value
-        for value in (previous.get("recent_public_delivery_fingerprints") or ())
+        for value in (
+            previous.get(
+                "recent_public_delivery_fingerprints",
+                continuity["recent_fingerprints"] if continuity is not None else (),
+            )
+            or ()
+        )
         if isinstance(value, str)
     ][-31:]
     if (
@@ -983,7 +1175,10 @@ def _record_semantic_tool_progress_locked(
     ):
         recent_public_delivery_fingerprints.append(baseline["fingerprint"])
     public_delivery_high_water_mask = _delivery_high_water_mask(
-        previous.get("public_delivery_high_water_bloom")
+        previous.get(
+            "public_delivery_high_water_bloom",
+            continuity["high_water_bloom"] if continuity is not None else None,
+        )
     )
     if public_delivery_high_water_mask == 0:
         for fingerprint in recent_public_delivery_fingerprints:
@@ -1018,6 +1213,31 @@ def _record_semantic_tool_progress_locked(
         previous_public_delivery_high_water,
         public_delivery_count,
     )
+    updated_public_delivery_continuity = None
+    if (
+        contract_identity is not None
+        and public_delivery_fingerprint is not None
+        and isinstance(baseline, Mapping)
+        and baseline.get("scope") == semantic_scope
+        and baseline.get("contract_fingerprint") == contract_identity[0]
+        and isinstance(baseline.get("fingerprint"), str)
+        and set(baseline_versions) == set(contract_identity[1])
+    ):
+        updated_public_delivery_continuity = {
+            "schema_version": _PUBLIC_DELIVERY_CONTINUITY_SCHEMA,
+            "scope": semantic_scope,
+            "contract_fingerprint": contract_identity[0],
+            "baseline_fingerprint": baseline["fingerprint"],
+            "baseline_versions": dict(baseline_versions),
+            "latest_fingerprint": public_delivery_fingerprint,
+            "latest_versions": dict(public_delivery_versions),
+            "high_water_count": public_delivery_high_water_count,
+            "high_water_bloom": format(public_delivery_high_water_mask, "0128x"),
+            "recent_fingerprints": recent_public_delivery_fingerprints[-32:],
+        }
+        runtime_context.context_info[_PUBLIC_DELIVERY_CONTINUITY_KEY] = (
+            updated_public_delivery_continuity
+        )
     # Workspace receipts and failure signatures make diagnostic change
     # observable, but neither proves that a declared task requirement advanced.
     # Keep contractless work unknown at the goal layer; a separate bounded
@@ -1395,6 +1615,13 @@ def _record_semantic_tool_progress_locked(
             recent_public_delivery_fingerprints[-32:]
         ),
         "public_delivery_versions": public_delivery_versions,
+        **(
+            {
+                _PUBLIC_DELIVERY_CONTINUITY_KEY: updated_public_delivery_continuity,
+            }
+            if updated_public_delivery_continuity is not None
+            else {}
+        ),
         "public_deliverable_declared": public_deliverable_declared,
         "missing_public_deliverable_count": missing_public_deliverable_count,
         "candidate_present": candidate_present,

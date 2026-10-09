@@ -7,6 +7,8 @@ only a generic progress summary.
 from __future__ import annotations
 
 from copy import deepcopy
+import os
+from typing import Mapping
 
 from aworld.core.context.compiler.adaptive import semantic_fingerprint
 from aworld.core.context.compiler.work_state import ADAPTIVE_WORK_STATE_KEY
@@ -15,9 +17,73 @@ from aworld.core.context.execution_state import state_context, checkpoint_execut
 
 _MAX_OBJECTIVE_CHARS = 8_192
 _MAX_OBLIGATIONS = 32
+_PUBLIC_DELIVERABLE_SCHEMA = "aworld.public-deliverables/v1"
+_PUBLIC_DELIVERABLE_AUTHORITY = "public_task_advisory"
 
 
-def _reset_segment_local_work_state(state: dict) -> None:
+def public_deliverable_contract_identity(
+    context,
+) -> tuple[str, tuple[str, ...]] | None:
+    """Return the exact ordered identity of one trusted public-output contract."""
+
+    value = getattr(context, "context_info", {}).get("public_deliverable_contract")
+    if (
+        not isinstance(value, Mapping)
+        or value.get("schema_version") != _PUBLIC_DELIVERABLE_SCHEMA
+        or value.get("authority") != _PUBLIC_DELIVERABLE_AUTHORITY
+        or value.get("source") != "public_task_text"
+    ):
+        return None
+    artifacts = value.get("artifacts")
+    if not isinstance(artifacts, list) or not artifacts or len(artifacts) > 16:
+        return None
+    normalized = []
+    deliverable_ids = []
+    seen: set[str] = set()
+    for item in artifacts:
+        if (
+            not isinstance(item, Mapping)
+            or item.get("kind") != "file"
+            or item.get("authority") != _PUBLIC_DELIVERABLE_AUTHORITY
+        ):
+            return None
+        deliverable_id = item.get("deliverable_id")
+        path = item.get("path")
+        if (
+            not isinstance(deliverable_id, str)
+            or not deliverable_id
+            or len(deliverable_id) > 256
+            or deliverable_id in seen
+            or not isinstance(path, str)
+            or not path
+            or len(path) > 4096
+        ):
+            return None
+        seen.add(deliverable_id)
+        deliverable_ids.append(deliverable_id)
+        normalized.append(
+            {
+                "deliverable_id": deliverable_id,
+                "path": os.path.normpath(path),
+                "kind": "file",
+                "authority": _PUBLIC_DELIVERABLE_AUTHORITY,
+            }
+        )
+    return semantic_fingerprint(
+        {
+            "schema_version": _PUBLIC_DELIVERABLE_SCHEMA,
+            "authority": _PUBLIC_DELIVERABLE_AUTHORITY,
+            "source": "public_task_text",
+            "artifacts": normalized,
+        }
+    ), tuple(deliverable_ids)
+
+
+def _reset_segment_local_work_state(
+    state: dict,
+    *,
+    public_contract_fingerprint: str | None,
+) -> None:
     """Remove Sandbox identities that are scoped to the prior task epoch."""
 
     state["workspace_generation"] = 0
@@ -28,6 +94,20 @@ def _reset_segment_local_work_state(state: dict) -> None:
     # task registry. Historical actions remain useful evidence but must not be
     # mistaken for current-segment observations.
     state["available_artifacts"] = []
+    continuity = state.get("public_delivery_continuity")
+    if (
+        isinstance(continuity, dict)
+        and continuity.get("schema_version")
+        == "aworld.public-delivery-continuity/v1"
+        and continuity.get("scope") == state.get("carried_from")
+        and continuity.get("contract_fingerprint")
+        == public_contract_fingerprint
+    ):
+        continuity = deepcopy(continuity)
+        continuity["scope"] = deepcopy(state.get("scope"))
+        state["public_delivery_continuity"] = continuity
+    else:
+        state.pop("public_delivery_continuity", None)
     for key in ("recent_operations", "milestones", "failed_operations"):
         values = []
         for item in state.get(key) or ():
@@ -291,7 +371,13 @@ def carry_goal_work_state(old_context, new_context, *, agent_id_mapping=None) ->
         state["carried_from"] = state.get("scope") or {"task_id": getattr(old, "task_id", None)}
         state["scope"] = {"task_id": getattr(new, "task_id", None), "task_epoch": getattr(new, "task_epoch", None)}
         state["repeated_read_evidence"] = None
-        _reset_segment_local_work_state(state)
+        new_contract = public_deliverable_contract_identity(new)
+        _reset_segment_local_work_state(
+            state,
+            public_contract_fingerprint=(
+                new_contract[0] if new_contract is not None else None
+            ),
+        )
         for evidence in state.get("validation_evidence", []):
             evidence["historical"] = True
         for candidate in state.get("candidate_submission", []):

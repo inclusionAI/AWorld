@@ -1760,7 +1760,81 @@ def test_public_candidate_rollback_to_baseline_revokes_convergence_readiness():
         policy,
     )
     assert inspected.state.post_candidate_read_only_observations == 0
+    assert inspected.state.candidate_checkpoint_recorded is False
+    assert inspected.state.acceptance_confirmed is False
     assert inspected.state.convergence_constraint_active is False
+
+
+def test_present_unmutated_candidate_enters_bounded_validation_convergence():
+    policy = ExecutionProtocolPolicy(
+        mode="guide",
+        post_candidate_read_only_threshold=2,
+        repetition_threshold=99,
+        low_information_gain_threshold=99,
+        no_goal_progress_threshold=99,
+        stagnation_event_threshold=99,
+    )
+    first = transition_execution_protocol(
+        _armed_state(),
+        _tool(
+            public_deliverable_declared=True,
+            candidate_present=True,
+            public_candidate_mutated=False,
+            read_only_observed=True,
+            deadline_consumed_fraction=0.4,
+        ),
+        policy,
+    )
+    assert first.state.post_candidate_no_delivery_progress_observations == 1
+    assert first.state.candidate_checkpoint_recorded is False
+    assert first.state.convergence_constraint_active is False
+
+    constrained = transition_execution_protocol(
+        first.state,
+        _tool(
+            public_deliverable_declared=True,
+            candidate_present=True,
+            public_candidate_mutated=False,
+            read_only_observed=True,
+            deadline_consumed_fraction=0.4,
+        ),
+        policy,
+    )
+
+    assert constrained.decision.action is (
+        ControllerAction.APPLY_CONVERGENCE_CONSTRAINT
+    )
+    assert constrained.state.convergence_stage is (
+        ConvergenceStage.VALIDATE_REPAIR_OR_SUBMIT
+    )
+    assert constrained.state.candidate_checkpoint_recorded is False
+    assert constrained.state.acceptance_confirmed is False
+
+
+def test_contractless_presence_without_checkpoint_does_not_enter_convergence():
+    policy = ExecutionProtocolPolicy(
+        mode="guide",
+        post_candidate_read_only_threshold=1,
+        repetition_threshold=99,
+        low_information_gain_threshold=99,
+        no_goal_progress_threshold=99,
+        stagnation_event_threshold=99,
+    )
+
+    observed = transition_execution_protocol(
+        _armed_state(),
+        _tool(
+            candidate_present=True,
+            candidate_advanced=False,
+            read_only_observed=True,
+            deadline_consumed_fraction=0.4,
+        ),
+        policy,
+    )
+
+    assert observed.state.post_candidate_no_delivery_progress_observations == 0
+    assert observed.state.candidate_checkpoint_recorded is False
+    assert observed.state.convergence_constraint_active is False
 
 
 def test_model_plan_update_cannot_escape_pending_review_phase():

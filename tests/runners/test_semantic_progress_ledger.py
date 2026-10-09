@@ -23,6 +23,10 @@ from aworld.core.context.execution_state import (
     get_execution_state,
     record_execution_state,
 )
+from aworld.core.context.work_progress import (
+    carry_goal_work_state,
+    retain_work_progress,
+)
 from aworld.core.context.compiler import (
     ADAPTIVE_WORK_STATE_KEY,
     ArtifactEvidence,
@@ -759,6 +763,135 @@ def test_public_deliverable_baseline_distinguishes_existing_file_from_update(
     assert reverted["candidate_advanced"] is False
     assert reverted["public_delivery_advanced"] is False
     assert reverted["goal_progress"] is False
+
+
+def _public_delivery_contract(path: str, *, deliverable_id: str = "candidate"):
+    return {
+        "schema_version": "aworld.public-deliverables/v1",
+        "authority": "public_task_advisory",
+        "source": "public_task_text",
+        "artifacts": [
+            {
+                "deliverable_id": deliverable_id,
+                "path": path,
+                "display_path": os.path.basename(path),
+                "kind": "file",
+                "authority": "public_task_advisory",
+            }
+        ],
+    }
+
+
+def test_public_delivery_continuity_survives_implicit_segment_without_recounting(
+    tmp_path,
+):
+    output = tmp_path / "candidate.txt"
+    old = Context(task_id="segment-a", task_epoch=1)
+    old.context_info["public_deliverable_contract"] = _public_delivery_contract(
+        str(output)
+    )
+    retain_work_progress(old, "agent")
+    capture_public_deliverable_baseline(old, agent_id="agent")
+
+    output.write_text("candidate-a", encoding="utf-8")
+    first = _record_failure(old, 1)
+
+    assert first["public_candidate_mutated"] is True
+    assert first["public_delivery_advanced"] is True
+    original_continuity = first["public_delivery_continuity"]
+    assert original_continuity["baseline_versions"] == {"candidate": None}
+    assert original_continuity["latest_versions"] == first[
+        "public_delivery_versions"
+    ]
+
+    new = Context(task_id="segment-b", task_epoch=0)
+    new.context_info["public_deliverable_contract"] = _public_delivery_contract(
+        str(output)
+    )
+    assert carry_goal_work_state(old, new) == 1
+    carried = new.context_info[f"{ADAPTIVE_WORK_STATE_KEY}:agent"]
+    assert carried["workspace_generation"] == 0
+    assert carried["artifact_fingerprint"] is None
+    assert carried["latest_sandbox_observations"] == []
+    assert carried["latest_workspace_mutation"] is None
+    assert carried["public_delivery_continuity"]["scope"] == {
+        "task_id": "segment-b",
+        "task_epoch": 0,
+    }
+    assert carried["public_delivery_continuity"]["baseline_versions"] == {
+        "candidate": None
+    }
+    assert carried["public_delivery_continuity"]["latest_fingerprint"] == (
+        original_continuity["latest_fingerprint"]
+    )
+    assert carried["public_delivery_continuity"]["high_water_bloom"] == (
+        original_continuity["high_water_bloom"]
+    )
+
+    capture_public_deliverable_baseline(new, agent_id="agent")
+    rebound_baseline = new.context_info["public_deliverable_baseline"]
+    assert rebound_baseline["artifacts"] == {"candidate": None}
+
+    repeated = _record_failure(new, 2)
+
+    assert repeated["public_candidate_mutated"] is True
+    assert repeated["public_delivery_changed"] is False
+    assert repeated["public_delivery_advanced"] is False
+    assert repeated["public_delivery_continuity"]["latest_fingerprint"] == (
+        original_continuity["latest_fingerprint"]
+    )
+    assert repeated["public_delivery_continuity"]["high_water_bloom"] == (
+        original_continuity["high_water_bloom"]
+    )
+
+    output.unlink()
+    deleted = _record_failure(new, 3)
+    assert deleted["candidate_present"] is False
+    assert deleted["public_candidate_mutated"] is False
+    assert deleted["public_delivery_continuity"]["latest_versions"] == {
+        "candidate": None
+    }
+
+    output.write_text("candidate-a", encoding="utf-8")
+    restored = _record_failure(new, 4)
+    assert restored["candidate_present"] is True
+    assert restored["public_candidate_mutated"] is True
+    assert restored["public_delivery_changed"] is True
+    assert restored["public_delivery_advanced"] is False
+
+
+def test_public_delivery_continuity_rejects_changed_contract(tmp_path):
+    old_output = tmp_path / "old.txt"
+    old = Context(task_id="segment-old", task_epoch=2)
+    old.context_info["public_deliverable_contract"] = _public_delivery_contract(
+        str(old_output), deliverable_id="old"
+    )
+    retain_work_progress(old, "agent")
+    capture_public_deliverable_baseline(old, agent_id="agent")
+    old_output.write_text("old-candidate", encoding="utf-8")
+    old_state = _record_failure(old, 1)
+
+    new_output = tmp_path / "new.txt"
+    new_output.write_text("preexisting-new", encoding="utf-8")
+    new = Context(task_id="segment-new", task_epoch=0)
+    new.context_info["public_deliverable_contract"] = _public_delivery_contract(
+        str(new_output), deliverable_id="new"
+    )
+    assert carry_goal_work_state(old, new) == 1
+    carried = new.context_info[f"{ADAPTIVE_WORK_STATE_KEY}:agent"]
+    assert "public_delivery_continuity" not in carried
+
+    capture_public_deliverable_baseline(new, agent_id="agent")
+    baseline = new.context_info["public_deliverable_baseline"]
+    current = _record_failure(new, 2)
+
+    assert baseline["artifacts"] == current["public_delivery_versions"]
+    assert current["public_candidate_mutated"] is False
+    assert current["public_delivery_changed"] is False
+    assert current["public_delivery_advanced"] is False
+    assert current["public_delivery_continuity"]["contract_fingerprint"] != (
+        old_state["public_delivery_continuity"]["contract_fingerprint"]
+    )
 
 
 def test_public_deliverable_hash_stops_when_file_grows_past_shared_budget(

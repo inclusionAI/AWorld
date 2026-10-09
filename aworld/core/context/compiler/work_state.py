@@ -188,6 +188,13 @@ def build_adaptive_work_state_entry(
 
     projected_results = []
     progress = dict(semantic_progress or {})
+    public_delivery_continuity = progress.get("public_delivery_continuity")
+    if not (
+        isinstance(public_delivery_continuity, Mapping)
+        and public_delivery_continuity.get("schema_version")
+        == "aworld.public-delivery-continuity/v1"
+    ):
+        public_delivery_continuity = None
     progress_generation = progress.get("workspace_generation")
     if (
         not isinstance(progress_generation, int)
@@ -363,6 +370,11 @@ def build_adaptive_work_state_entry(
             if isinstance(item, Mapping)
         ],
         "available_artifacts": available_artifacts,
+        **(
+            {"public_delivery_continuity": dict(public_delivery_continuity)}
+            if public_delivery_continuity is not None
+            else {}
+        ),
     }
 
 
@@ -483,6 +495,9 @@ def advance_adaptive_work_state(
                    "result_hash": value.get("result_hash"),
                    "sequences": [item["sequence"] for item in repeated]}
                   if len(repeated) >= 3 else None)
+    public_delivery_continuity = value.get("public_delivery_continuity")
+    if not isinstance(public_delivery_continuity, Mapping):
+        public_delivery_continuity = state.get("public_delivery_continuity")
     return {
         **{key: state[key] for key in ("scope", "carried_from", "budget_handoff", "public_requirements", "current_task_request", "current_plan", "candidate_submission", "pending_artifacts", "validation_evidence", "model_work_checkpoint") if key in state},
         "failed_operations": failed[-4:],
@@ -501,6 +516,13 @@ def advance_adaptive_work_state(
         "available_artifacts": list(artifacts_by_ref.values())[-12:],
         "public_probe_receipt_count": value.get("public_probe_receipt_count", 0),
         "public_probe_receipts": list(value.get("public_probe_receipts") or [])[-4:],
+        **(
+            {"public_delivery_continuity": dict(public_delivery_continuity)}
+            if isinstance(public_delivery_continuity, Mapping)
+            and public_delivery_continuity.get("schema_version")
+            == "aworld.public-delivery-continuity/v1"
+            else {}
+        ),
     }
 
 

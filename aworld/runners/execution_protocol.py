@@ -3992,14 +3992,15 @@ def _activate_convergence_constraint_locked(
         if delivery.get("candidate_present") is not None
         else state.candidate_present
     )
+    # Presence can select the bounded validation convergence stage without
+    # manufacturing a candidate checkpoint or acceptance claim.
     candidate_convergence_ready = bool(
         state.candidate_checkpoint_recorded
         or (
             candidate_present is True
             and (
-                state.public_candidate_mutated
-                if state.public_deliverable_declared
-                else state.candidate_epoch_advanced
+                state.public_deliverable_declared
+                or state.candidate_epoch_advanced
             )
         )
     )

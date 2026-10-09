@@ -496,14 +496,16 @@ def transition_execution_protocol(
             # A candidate that has returned to its pre-task baseline is only
             # inspectable presence, not current task-epoch candidate evidence.
             candidate_checkpoint_recorded = False
+        # Inspectable presence is sufficient to narrow a bounded convergence
+        # phase to validate/repair/submit. It is deliberately not candidate
+        # admission: baseline presence still revokes the checkpoint above and
+        # never confirms acceptance or goal progress.
         candidate_convergence_ready = bool(
             candidate_checkpoint_recorded
             or (
                 candidate_present is True
                 and (
-                    public_candidate_mutated
-                    if public_deliverable_declared
-                    else candidate_epoch_advanced
+                    public_deliverable_declared or candidate_epoch_advanced
                 )
             )
         )

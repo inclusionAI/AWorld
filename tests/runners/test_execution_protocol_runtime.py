@@ -1748,6 +1748,63 @@ def test_named_deliverable_gate_reopens_reads_after_candidate_changes(
     ] == 0
 
 
+def test_present_unmutated_candidate_uses_existing_convergence_threshold(
+    tmp_path,
+) -> None:
+    candidate = tmp_path / "result.json"
+    candidate.write_text("baseline", encoding="utf-8")
+    context = _context("present-unmutated-convergence")
+    context.context_info["public_deliverable_contract"] = {
+        "schema_version": "aworld.public-deliverables/v1",
+        "authority": "public_task_advisory",
+        "source": "public_task_text",
+        "artifacts": [
+            {
+                "deliverable_id": "public-output-1",
+                "path": str(candidate),
+                "display_path": "result.json",
+                "kind": "file",
+                "authority": "public_task_advisory",
+            }
+        ],
+    }
+    configure_execution_protocol(
+        context,
+        "agent",
+        ExecutionProtocolPolicy(
+            mode=ProtocolMode.GUIDE,
+            post_candidate_read_only_threshold=2,
+            repetition_threshold=99,
+            low_information_gain_threshold=99,
+            no_goal_progress_threshold=99,
+            stagnation_event_threshold=99,
+        ),
+    )
+    _declare_long_horizon(context)
+    _set_deadline_progress(context, 0.40)
+
+    for step in (1, 2):
+        transition = record_tool_protocol_event(
+            context,
+            "agent",
+            _semantic_state(
+                current_agent_step=step,
+                public_deliverable_declared=True,
+                candidate_present=True,
+                public_candidate_mutated=False,
+                read_only_observed=True,
+                workspace_mutated=False,
+            ),
+        )
+
+    assert transition.decision.action is ControllerAction.APPLY_CONVERGENCE_CONSTRAINT
+    assert transition.decision.reason is DecisionReason.POST_CANDIDATE_STAGNATION
+    state = load_execution_protocol_state(context, "agent")
+    assert state.convergence_stage is ConvergenceStage.VALIDATE_REPAIR_OR_SUBMIT
+    assert state.candidate_checkpoint_recorded is False
+    assert state.acceptance_confirmed is False
+
+
 @pytest.mark.asyncio
 async def test_post_candidate_read_only_loop_converges_to_validate_repair_or_submit(
     tmp_path,

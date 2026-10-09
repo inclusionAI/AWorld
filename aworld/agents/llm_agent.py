@@ -8416,7 +8416,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 capture_public_deliverable_baseline,
             )
 
-            capture_public_deliverable_baseline(context)
+            capture_public_deliverable_baseline(context, agent_id=self.id())
         if any(
             item.get("role") == "system"
             and _PUBLIC_DELIVERABLE_PROMPT_MARKER in str(item.get("content", ""))
