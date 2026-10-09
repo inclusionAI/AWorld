@@ -5116,17 +5116,15 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
     def _model_response_action_projection_output_cap(
         policy: GenerationBudgetPolicy,
     ) -> int | None:
-        """Return the opt-in action-repair cap for response recovery.
+        """Return the independently opt-in cap for response recovery.
 
-        Response recovery also runs when the action-budget watchdog is off.
-        Treating ``action_repair_max_output_tokens`` as an unconditional retry
-        cap made the disabled default silently shrink otherwise valid long
+        Response recovery and timeout-oriented action repair are separate
+        mechanisms.  Reusing the action-repair default made an explicit policy
+        that only configured a deadline silently shrink otherwise valid long
         Tool arguments to 1024 tokens.
         """
 
-        if not policy.action_repair_enabled:
-            return None
-        return policy.action_repair_max_output_tokens
+        return policy.response_recovery_max_output_tokens
 
     @staticmethod
     def _staged_action_recovery_guidance(
@@ -8529,6 +8527,9 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                     "action_repair_timeout_seconds": (
                         policy.action_repair_timeout_seconds
                     ),
+                    "response_recovery_max_output_tokens": (
+                        policy.response_recovery_max_output_tokens
+                    ),
                     "action_repair_enabled": policy.action_repair_enabled,
                 }
             return policy
@@ -8569,6 +8570,9 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             ),
             action_repair_max_output_tokens=configured(
                 "generation_action_repair_max_output_tokens", 1024
+            ),
+            response_recovery_max_output_tokens=configured(
+                "generation_response_recovery_max_output_tokens", None
             ),
             partial_response_context_chars=configured(
                 "generation_partial_response_context_chars", 8192

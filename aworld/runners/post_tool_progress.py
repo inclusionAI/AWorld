@@ -30,6 +30,9 @@ _PUBLIC_DELIVERABLE_HASH_MAX_BYTES = 8 * 1024 * 1024
 _PUBLIC_DELIVERY_HIGH_WATER_BLOOM_BITS = 512
 _SANDBOX_OBSERVATION_SCHEMA = "aworld.sandbox-tool-observation/v1"
 _MAX_WORKSPACE_GENERATION = 1_000_000_000
+_ANALYSIS_RUNWAY_START_FRACTION = 0.40
+_ANALYSIS_RUNWAY_END_FRACTION = 0.65
+_ANALYSIS_RUNWAY_MAX_PROGRESS_RESETS = 8
 
 
 def _trusted_sandbox_receipts(
@@ -400,6 +403,26 @@ def _runtime_context(context):
         getattr(event_manager, "context", None) if event_manager is not None else None
     )
     return root_context or context
+
+
+def _task_deadline_consumed_fraction(context) -> float | None:
+    get_task = getattr(context, "get_task", None)
+    try:
+        task = get_task() if callable(get_task) else None
+        total = getattr(task, "timeout", None) if task is not None else None
+        remaining = task.remaining_seconds() if task is not None else None
+    except Exception:
+        return None
+    if (
+        isinstance(total, bool)
+        or not isinstance(total, (int, float))
+        or total <= 0
+        or isinstance(remaining, bool)
+        or not isinstance(remaining, (int, float))
+    ):
+        return None
+    bounded_remaining = min(float(total), max(0.0, float(remaining)))
+    return min(1.0, max(0.0, 1.0 - bounded_remaining / float(total)))
 
 
 def _runtime_registry_owner(context):
@@ -1190,17 +1213,39 @@ def _record_semantic_tool_progress_locked(
     repetition_count = recent_pairs.count(semantic_pair_hash)
     result_repetition_count = history.count(result_hash)
     new_information_observed = result_repetition_count == 1
-    # A command can be only partially modeled while still exposing literal
-    # write targets whose pre/post state was authenticated by the Sandbox.  A
-    # real change to that known subset is useful analysis progress even when
-    # the final public deliverable is not ready yet.  Likewise, a successful,
-    # mechanically read-only observation with a never-before-seen result is a
-    # bounded information-gain signal.  Neither signal is completion evidence.
-    intermediate_artifact_advanced = bool(sandbox_workspace_mutated)
+    # Analysis runway uses a task-scoped high-water fingerprint instead of the
+    # short repetition window above. Replaying a bounded set of reads, touching
+    # metadata, or oscillating between earlier helper-file writes cannot mint
+    # fresh runway once the same operation/result evidence has been seen.
+    analysis_evidence_fingerprint = semantic_fingerprint(
+        {
+            "operation_hash": operation_hash,
+            "result_content_sha256": sorted(
+                str(receipt.get("content_sha256"))
+                for receipt in current_sandbox_receipts
+                if isinstance(receipt.get("content_sha256"), str)
+            ),
+            "read_only": sandbox_read_only_observed,
+            "workspace_mutated": sandbox_workspace_mutated,
+        }
+    )
+    analysis_progress_high_water = _delivery_high_water_mask(
+        previous.get("analysis_progress_high_water_bloom")
+    )
+    analysis_evidence_novel = not _delivery_high_water_contains(
+        analysis_progress_high_water,
+        analysis_evidence_fingerprint,
+    )
+    intermediate_artifact_advanced = bool(
+        sandbox_workspace_mutated
+        and observed_results_complete
+        and not rollback_performed
+        and analysis_evidence_novel
+    )
     analysis_information_advanced = bool(
         sandbox_read_only_observed
         and observed_results_complete
-        and new_information_observed
+        and analysis_evidence_novel
     )
     analysis_progress_advanced = bool(
         durable_milestone_advanced
@@ -1220,6 +1265,30 @@ def _record_semantic_tool_progress_locked(
             int(previous.get("analysis_stagnation_count", 0) or 0) + 1,
         )
     )
+    if intermediate_artifact_advanced or analysis_information_advanced:
+        analysis_progress_high_water = _delivery_high_water_add(
+            analysis_progress_high_water,
+            analysis_evidence_fingerprint,
+        )
+    deadline_consumed_fraction = _task_deadline_consumed_fraction(runtime_context)
+    previous_runway_resets = min(
+        _ANALYSIS_RUNWAY_MAX_PROGRESS_RESETS + 1,
+        max(0, int(previous.get("analysis_runway_reset_count", 0) or 0)),
+    )
+    if (
+        deadline_consumed_fraction is None
+        or deadline_consumed_fraction < _ANALYSIS_RUNWAY_START_FRACTION
+    ):
+        analysis_runway_reset_count = 0
+    elif deadline_consumed_fraction >= _ANALYSIS_RUNWAY_END_FRACTION:
+        analysis_runway_reset_count = previous_runway_resets
+    elif analysis_progress_advanced:
+        analysis_runway_reset_count = min(
+            _ANALYSIS_RUNWAY_MAX_PROGRESS_RESETS + 1,
+            previous_runway_resets + 1,
+        )
+    else:
+        analysis_runway_reset_count = previous_runway_resets
     semantic_progress = bool(semantic_progress or analysis_progress_advanced)
     # Successful investigation can produce useful observations without
     # advancing a durable, inspectable milestone.  Keep that evidence in
@@ -1343,6 +1412,15 @@ def _record_semantic_tool_progress_locked(
         "analysis_progress_advanced": analysis_progress_advanced,
         "analysis_progress_count": analysis_progress_count,
         "analysis_stagnation_count": analysis_stagnation_count,
+        "analysis_progress_high_water_bloom": format(
+            analysis_progress_high_water,
+            "0128x",
+        ),
+        "analysis_runway_reset_count": analysis_runway_reset_count,
+        "analysis_runway_max_progress_resets": (
+            _ANALYSIS_RUNWAY_MAX_PROGRESS_RESETS
+        ),
+        "deadline_consumed_fraction": deadline_consumed_fraction,
         "observed_action_names": _observed_action_names(tool_name, actions),
         "observed_action_signatures": _observed_action_signatures(actions),
         "observed_action_semantics": observed_action_semantics,

@@ -206,6 +206,9 @@ class ContextCompilerRuntimeConfig(BaseConfig):
         default=None, gt=0
     )
     generation_action_repair_max_output_tokens: int = Field(default=1024, gt=0)
+    generation_response_recovery_max_output_tokens: Optional[int] = Field(
+        default=None, gt=0
+    )
     generation_partial_response_context_chars: int = Field(default=8192, gt=0)
     generation_action_repair_enabled: bool = False
 

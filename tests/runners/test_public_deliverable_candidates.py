@@ -31,10 +31,10 @@ from aworld.sandbox.tool_observation import (
         ("\ufeff \n".encode(), "blank"),
         (b"TBD\n", "placeholder"),
         (b"todo", "placeholder"),
-        (b'"UNKNOWN"', "placeholder"),
+        (b"placeholder", "placeholder"),
         (b"# TODO: implement the real answer", "placeholder"),
         (b"/* to be determined */", "placeholder"),
-        (b"```text\nI don't know\n```", "placeholder"),
+        (b"```text\nimplementation pending\n```", "placeholder"),
     ],
 )
 def test_empty_and_known_placeholder_files_are_not_candidate_eligible(
@@ -60,6 +60,9 @@ def test_empty_and_known_placeholder_files_are_not_candidate_eligible(
         b"none",
         b"false",
         b"?",
+        b"unknown",
+        b'"UNKNOWN"',
+        b"```text\nI don't know\n```",
         b"flag{answer}",
         b"The input token is unknown, so emit the literal value.\nunknown\n",
         b"TODO items: none\nresult: 42\n",
@@ -214,7 +217,7 @@ def test_placeholder_write_does_not_discharge_delivery_debt(tmp_path) -> None:
 
 def test_preexisting_placeholder_is_not_a_public_candidate(tmp_path) -> None:
     output = tmp_path / "out.txt"
-    output.write_text("unknown")
+    output.write_text("TBD")
     context = _public_context(str(output))
     capture_public_deliverable_baseline(context)
 

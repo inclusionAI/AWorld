@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+
 from aworld.core.common import ActionModel, ActionResult, Observation
 from aworld.core.context.base import Context
 from aworld.core.execution_protocol import (
@@ -9,6 +11,7 @@ from aworld.core.execution_protocol import (
 )
 from aworld.core.task import Task
 from aworld.runners.execution_protocol import (
+    build_execution_protocol_telemetry,
     configure_execution_protocol,
     load_execution_protocol_state,
     record_model_decision_attempt_failure,
@@ -57,7 +60,13 @@ def _set_deadline_progress(context: Context, consumed_fraction: float) -> None:
     task.remaining_seconds = lambda: remaining
 
 
-def _semantic_state(*, progress_count: int, stagnation_count: int, step: int):
+def _semantic_state(
+    *,
+    progress_count: int,
+    stagnation_count: int,
+    step: int,
+    reset_count: int = 0,
+):
     return {
         "repetition_count": 0,
         "low_information_gain_count": 0,
@@ -73,6 +82,7 @@ def _semantic_state(*, progress_count: int, stagnation_count: int, step: int):
         "analysis_progress_advanced": stagnation_count == 0,
         "analysis_progress_count": progress_count,
         "analysis_stagnation_count": stagnation_count,
+        "analysis_runway_reset_count": reset_count,
     }
 
 
@@ -134,7 +144,7 @@ def test_only_novel_successful_read_resets_analysis_runway() -> None:
     )
     effect = classify_tool_effect(action)
 
-    def observe():
+    def observe(content: str):
         return record_semantic_tool_progress(
             context,
             tool_name="terminal",
@@ -144,7 +154,7 @@ def test_only_novel_successful_read_resets_analysis_runway() -> None:
                 action_result=[
                     ActionResult(
                         tool_call_id=action.tool_call_id,
-                        content="bounded new geometry",
+                        content=content,
                         success=True,
                         metadata={
                             "sandbox_observation": {
@@ -157,6 +167,8 @@ def test_only_novel_successful_read_resets_analysis_runway() -> None:
                                 "workspace_generation": 0,
                                 "effect": "read_only",
                                 "workspace_mutated": False,
+                                "content_sha256": "sha256:"
+                                + hashlib.sha256(content.encode()).hexdigest(),
                             }
                         },
                     )
@@ -164,8 +176,8 @@ def test_only_novel_successful_read_resets_analysis_runway() -> None:
             ),
         )
 
-    first = observe()
-    repeated = observe()
+    first = observe("bounded new geometry")
+    repeated = observe("bounded new geometry")
 
     assert first["new_information_observed"] is True
     assert first["analysis_information_advanced"] is True
@@ -173,6 +185,13 @@ def test_only_novel_successful_read_resets_analysis_runway() -> None:
     assert repeated["new_information_observed"] is False
     assert repeated["analysis_information_advanced"] is False
     assert repeated["analysis_stagnation_count"] == 1
+
+    for index in range(9):
+        assert observe(f"distinct geometry {index}")[
+            "analysis_information_advanced"
+        ] is True
+    replay_after_window = observe("bounded new geometry")
+    assert replay_after_window["analysis_information_advanced"] is False
 
 
 def test_analysis_progress_defers_40_percent_gate_for_three_stagnant_observations() -> None:
@@ -185,6 +204,11 @@ def test_analysis_progress_defers_40_percent_gate_for_three_stagnant_observation
         _semantic_state(progress_count=1, stagnation_count=0, step=1),
     )
     assert progressed.state.convergence_constraint_active is False
+    telemetry = build_execution_protocol_telemetry(context, "agent")
+    assert telemetry["analysis_runway_open"] is True
+    assert telemetry["analysis_progress_count"] == 1
+    assert telemetry["analysis_stagnation_count"] == 0
+    assert telemetry["analysis_runway_reset_count"] == 0
 
     for step, stagnation_count in ((2, 1), (3, 2)):
         transition = record_tool_protocol_event(
@@ -215,6 +239,25 @@ def test_analysis_runway_has_unconditional_65_percent_ceiling() -> None:
         context,
         "agent",
         _semantic_state(progress_count=8, stagnation_count=0, step=8),
+    )
+
+    assert transition.state.convergence_constraint_active is True
+    assert transition.state.convergence_stage.value == "produce_candidate"
+
+
+def test_analysis_runway_has_bounded_progress_reset_budget() -> None:
+    context = _context("analysis-runway-reset-budget")
+    _set_deadline_progress(context, 0.50)
+
+    transition = record_tool_protocol_event(
+        context,
+        "agent",
+        _semantic_state(
+            progress_count=9,
+            stagnation_count=0,
+            reset_count=9,
+            step=9,
+        ),
     )
 
     assert transition.state.convergence_constraint_active is True

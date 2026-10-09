@@ -29,27 +29,17 @@ _EXACT_PLACEHOLDER_TEXT = frozenset(
     {
         "tbd",
         "todo",
-        "unknown",
-        "undetermined",
+        "placeholder",
         "to be determined",
         "to be done",
-        "not known",
-        "not determined",
-        "i don't know",
-        "i do not know",
-        "answer unknown",
-        "answer is unknown",
+        "not implemented",
+        "implementation pending",
     }
 )
 _QUALIFIED_PLACEHOLDER_TEXT = re.compile(
-    r"^(?:"
-    r"(?:todo|tbd)(?:\s*(?::|-)\s*|\s+)"
+    r"^(?:todo|tbd)(?:\s*(?::|-)\s*|\s+)"
     r"(?:implement|fill(?:\s+in)?|replace|complete|finish|later|pending|placeholder)"
-    r"(?:\s+.*)?"
-    r"|"
-    r"(?:unknown|undetermined|not\s+known|not\s+determined)"
-    r"(?:\s*(?::|-)\s*|\s+)(?:yet|for\s+now|pending|placeholder)"
-    r")$",
+    r"(?:\s+.*)?$",
     re.IGNORECASE,
 )
 
