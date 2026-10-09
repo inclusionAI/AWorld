@@ -97,6 +97,8 @@ def parser():
     value.add_argument("--max-turns", type=int, default=20)
     value.add_argument("--timeout", type=float, help="Total execution budget per run in seconds")
     value.add_argument("--request-timeout", type=float, default=60)
+    value.add_argument("--response-retries", type=int, default=2, help="Recovery retries for empty model replies (0-5; count toward max-turns)")
+    value.add_argument("--response-retry-delay", type=float, default=0.5, help="Initial response recovery delay in seconds (0-30; exponential backoff)")
     value.add_argument("--max-retries", type=int, default=3, help="Retries per unresolved model request (0-10)")
     value.add_argument("--reasoning-effort", choices=["none", "minimal", "low", "medium", "high", "xhigh"])
     value.add_argument("--context-window", type=int, help="Override profile/environment/model-registry context limit")
@@ -196,6 +198,7 @@ async def _host(args, command):
     sessions = InMemorySessionStore()
     try:
         agent = Agent(model=model, tools=registry, skills=skills, system_prompt=system_prompt, max_turns=args.max_turns,
+                      response_retries=args.response_retries, response_retry_delay=args.response_retry_delay,
                       runtime_prompt=runtime_prompt(args), prompt_metadata={"version": PROMPT_VERSION, "sources": sources,
                                                                           "context": context_metadata})
         session = await create_session(agent=agent, context=Context(policy=policy), store=sessions, metadata={"cwd": str(args.cwd.resolve())})

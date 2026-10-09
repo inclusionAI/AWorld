@@ -58,7 +58,9 @@ def build_trajectory(history, *, result, agent, model_name=None, events=()):
         elif entry.kind == "model.error":
             steps.append({"step_id": len(steps) + 1, "source": "agent", "llm_call_count": 1,
                           "message": "Model call failed", "extra": {"run_id": entry.run_id,
-                          "error_type": entry.data["error_type"]}, **metrics(entry.data.get("usage"))})
+                          "error_type": entry.data["error_type"],
+                          **{key: entry.data[key] for key in ("error_code", "diagnostics", "will_retry") if key in entry.data}},
+                          **metrics(entry.data.get("usage"))})
         elif entry.kind == "context.summary":
             steps.append({"step_id": len(steps) + 1, "source": "agent", "llm_call_count": 1,
                           "message": entry.data["content"], "extra": {"run_id": entry.run_id,
