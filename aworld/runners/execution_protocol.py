@@ -95,6 +95,7 @@ _ANALYSIS_RUNWAY_MAX_PROGRESS_RESETS = 8
 _MAX_CANDIDATE_DIAGNOSTIC_READS = 3
 _MAX_PRE_CANDIDATE_REJECTED_CALLS = 2
 _MAX_EXHAUSTED_REJECTED_BATCHES = 2
+_MAX_POST_CANDIDATE_PURE_REJECTED_BATCHES = 4
 _MAX_MUTATION_GATE_CALL_REJECTIONS = 32
 _SAFE_RECEIPT_TOOL_CALL_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,255}\Z")
 _REPAIR_AUTHORIZATION_SCHEMA = "aworld.repair-authorization/v2"
@@ -479,6 +480,37 @@ def _candidate_rejection_fail_closed(
             _candidate_rejection_slot_fingerprint(candidate_fingerprint, slot),
         )
     return mask
+
+
+def _normalized_pure_rejection_state(
+    gate: Mapping[str, Any],
+    candidate_fingerprint: Any,
+) -> tuple[int, bool, bool]:
+    """Return consecutive diagnostic-independent rejected-batch state."""
+
+    if not _is_canonical_semantic_fingerprint(candidate_fingerprint):
+        return 0, False, False
+    binding = gate.get("candidate_pure_rejection_fingerprint")
+    count = gate.get("candidate_pure_rejection_count")
+    latched = gate.get("candidate_pure_rejection_latched")
+    if binding is None and count is None and latched is None:
+        return 0, False, True
+    if binding != candidate_fingerprint:
+        return 0, False, True
+    if (
+        isinstance(count, bool)
+        or not isinstance(count, int)
+        or not 0 <= count <= _MAX_POST_CANDIDATE_PURE_REJECTED_BATCHES
+        or not isinstance(latched, bool)
+        or latched
+        != (count >= _MAX_POST_CANDIDATE_PURE_REJECTED_BATCHES)
+    ):
+        return (
+            _MAX_POST_CANDIDATE_PURE_REJECTED_BATCHES,
+            True,
+            False,
+        )
+    return count, latched, True
 
 
 def constrain_candidate_convergence_tool_catalog(
@@ -2847,6 +2879,14 @@ def _update_mutation_gate_locked(
     if not rejection_latch_applicable:
         candidate_tool_free_latched = False
     (
+        candidate_pure_rejection_count,
+        candidate_pure_rejection_latched,
+        _pure_rejection_state_is_canonical,
+    ) = _normalized_pure_rejection_state(previous, candidate_fingerprint)
+    if convergence_stage is not ConvergenceStage.VALIDATE_REPAIR_OR_SUBMIT:
+        candidate_pure_rejection_count = 0
+        candidate_pure_rejection_latched = False
+    (
         pre_candidate_rejected_batch_count,
         pre_candidate_tool_free_latched,
         _pre_candidate_rejection_state_is_canonical,
@@ -2971,6 +3011,13 @@ def _update_mutation_gate_locked(
             candidate_rejection_high_water, "0128x"
         ),
         "candidate_tool_free_latched": candidate_tool_free_latched,
+        "candidate_pure_rejection_fingerprint": (
+            candidate_fingerprint
+            if _is_canonical_semantic_fingerprint(candidate_fingerprint)
+            else None
+        ),
+        "candidate_pure_rejection_count": candidate_pure_rejection_count,
+        "candidate_pure_rejection_latched": candidate_pure_rejection_latched,
         "pre_candidate_rejected_batch_count": (
             pre_candidate_rejected_batch_count
         ),
@@ -3020,6 +3067,25 @@ def _update_mutation_gate_locked(
         "analysis_runway_deadline_ceiling_fraction": (
             _ANALYSIS_RUNWAY_MAX_DEADLINE_FRACTION
         ),
+        "structured_quality_open": (
+            semantic_state.get("structured_quality_open") is True
+        ),
+        "structured_quality_required_table_count": _bounded_counter(
+            semantic_state.get("structured_quality_required_table_count")
+        ),
+        "structured_quality_usable_table_count": _bounded_counter(
+            semantic_state.get("structured_quality_usable_table_count")
+        ),
+        "structured_quality_repair_attempt_count": _bounded_counter(
+            semantic_state.get("structured_quality_repair_attempt_count")
+        ),
+        "structured_quality_reason_codes": [
+            value
+            for value in (
+                semantic_state.get("structured_quality_reason_codes") or ()
+            )
+            if isinstance(value, str)
+        ][:16],
         "convergence_stage": (
             convergence_stage.value if convergence_stage is not None else None
         ),
@@ -3311,6 +3377,11 @@ def _mutation_gate_interception_locked(
         _rejection_state_is_canonical,
     ) = _normalized_exhausted_rejection_state(gate, candidate_fingerprint)
     (
+        candidate_pure_rejection_count,
+        candidate_pure_rejection_latched,
+        _pure_rejection_state_is_canonical,
+    ) = _normalized_pure_rejection_state(gate, candidate_fingerprint)
+    (
         pre_candidate_rejected_batch_count,
         pre_candidate_tool_free_latched,
         _pre_candidate_rejection_state_is_canonical,
@@ -3345,6 +3416,7 @@ def _mutation_gate_interception_locked(
     block_all = bool(
         invalid_call_ids
         or candidate_tool_free_latched
+        or candidate_pure_rejection_latched
         or pre_candidate_tool_free_latched
     )
     if invalid_call_ids:
@@ -3352,7 +3424,11 @@ def _mutation_gate_interception_locked(
             (call_id or None, MutationGateRejectionReason.CALL_IDENTITY_INVALID)
             for call_id in action_call_ids
         )
-    elif candidate_tool_free_latched or pre_candidate_tool_free_latched:
+    elif (
+        candidate_tool_free_latched
+        or candidate_pure_rejection_latched
+        or pre_candidate_tool_free_latched
+    ):
         blocked_call_ids = list(unique_call_ids)
         call_rejections.extend(
             (call_id, MutationGateRejectionReason.FINALIZATION_LATCHED)
@@ -3576,7 +3652,13 @@ def _mutation_gate_interception_locked(
         admitted_diagnostic_read = False
         admitted_declared_mutation = False
         admitted_candidate_mutation = False
-    rejected_batch = bool(block_all or blocked_call_ids)
+    pure_post_candidate_rejected_batch = bool(
+        block_all
+        or (
+            actions
+            and len(blocked_call_ids) == len(actions)
+        )
+    )
     if stage is ConvergenceStage.PRODUCE_CANDIDATE:
         if pre_candidate_tool_free_latched:
             pre_candidate_rejected_batch_count = (
@@ -3587,7 +3669,7 @@ def _mutation_gate_interception_locked(
             # let unrelated calls in the same mixed batch manufacture a
             # terminal latch before that candidate attempt is observed.
             pre_candidate_rejected_batch_count = 0
-        elif rejected_batch:
+        elif pure_post_candidate_rejected_batch:
             pre_candidate_rejected_batch_count = min(
                 _MAX_PRE_CANDIDATE_REJECTED_CALLS,
                 pre_candidate_rejected_batch_count + 1,
@@ -3610,7 +3692,7 @@ def _mutation_gate_interception_locked(
             candidate_exhausted_rejection_count = (
                 _MAX_EXHAUSTED_REJECTED_BATCHES
             )
-        elif rejected_batch:
+        elif bool(block_all or blocked_call_ids):
             for slot in range(_MAX_EXHAUSTED_REJECTED_BATCHES):
                 slot_fingerprint = _candidate_rejection_slot_fingerprint(
                     candidate_fingerprint,
@@ -3636,6 +3718,29 @@ def _mutation_gate_interception_locked(
     else:
         candidate_exhausted_rejection_count = 0
         candidate_tool_free_latched = False
+    pure_rejection_budget_active = bool(
+        stage is ConvergenceStage.VALIDATE_REPAIR_OR_SUBMIT
+        and candidate_binding_is_canonical
+    )
+    if pure_rejection_budget_active:
+        if candidate_pure_rejection_latched:
+            candidate_pure_rejection_count = (
+                _MAX_POST_CANDIDATE_PURE_REJECTED_BATCHES
+            )
+        elif pure_post_candidate_rejected_batch:
+            candidate_pure_rejection_count = min(
+                _MAX_POST_CANDIDATE_PURE_REJECTED_BATCHES,
+                candidate_pure_rejection_count + 1,
+            )
+        elif not block_all and not blocked_call_ids:
+            candidate_pure_rejection_count = 0
+        candidate_pure_rejection_latched = bool(
+            candidate_pure_rejection_count
+            >= _MAX_POST_CANDIDATE_PURE_REJECTED_BATCHES
+        )
+    else:
+        candidate_pure_rejection_count = 0
+        candidate_pure_rejection_latched = False
     owner = state_context(context)
     updated = dict(gate)
     updated["blocked_call_count"] = min(
@@ -3667,6 +3772,13 @@ def _mutation_gate_interception_locked(
         candidate_rejection_high_water, "0128x"
     )
     updated["candidate_tool_free_latched"] = candidate_tool_free_latched
+    updated["candidate_pure_rejection_fingerprint"] = (
+        candidate_fingerprint if candidate_binding_is_canonical else None
+    )
+    updated["candidate_pure_rejection_count"] = candidate_pure_rejection_count
+    updated["candidate_pure_rejection_latched"] = (
+        candidate_pure_rejection_latched
+    )
     updated["pre_candidate_rejected_batch_count"] = (
         pre_candidate_rejected_batch_count
     )
@@ -3728,6 +3840,12 @@ def _mutation_gate_interception_locked(
         ],
         "candidate_tool_free_latched": updated[
             "candidate_tool_free_latched"
+        ],
+        "candidate_pure_rejection_count": updated[
+            "candidate_pure_rejection_count"
+        ],
+        "candidate_pure_rejection_latched": updated[
+            "candidate_pure_rejection_latched"
         ],
         "pre_candidate_rejected_batch_count": updated[
             "pre_candidate_rejected_batch_count"
@@ -4936,6 +5054,57 @@ def consume_execution_protocol_guidance(context, agent_id: str) -> str | None:
         and mutation_gate.get("convergence_stage")
         == ConvergenceStage.VALIDATE_REPAIR_OR_SUBMIT.value
         and mutation_gate.get("candidate_present") is True
+        and mutation_gate.get("structured_quality_open") is True
+    ):
+        required = _bounded_counter(
+            mutation_gate.get("structured_quality_required_table_count")
+        )
+        usable = _bounded_counter(
+            mutation_gate.get("structured_quality_usable_table_count")
+        )
+        attempts = _bounded_counter(
+            mutation_gate.get("structured_quality_repair_attempt_count")
+        )
+        reasons = [
+            value
+            for value in (
+                mutation_gate.get("structured_quality_reason_codes") or ()
+            )
+            if isinstance(value, str)
+        ][:3]
+        reason_suffix = (
+            " Observed reason(s): " + ", ".join(reasons) + "."
+            if reasons
+            else ""
+        )
+        if attempts < 1:
+            return (
+                "AWorld structured-quality debt: the current public candidate "
+                f"represents {usable} of {required} declared table(s) as a "
+                "usable cell structure. Make one bounded repair of the declared "
+                "public deliverables now. Preserve source wording and geometry; "
+                "replace descriptive prose with an explicit JSON cell grid and "
+                "matching Markdown or HTML table, then validate the revised "
+                "candidate. Do not restart source discovery or claim completion "
+                "while this debt is open."
+                + reason_suffix
+                + deadline_suffix(produce_candidate=False)
+            )
+        return (
+            "AWorld structured-quality debt remains after the bounded repair "
+            f"attempt ({usable} of {required} declared table(s) usable). Use a "
+            "registered validation if it can resolve the evidence; otherwise "
+            "submit the limitation accurately without claiming complete table "
+            "recovery. Do not loop through additional speculative repairs."
+            + reason_suffix
+            + deadline_suffix(produce_candidate=False)
+        )
+    if (
+        isinstance(mutation_gate, Mapping)
+        and mutation_gate.get("active") is True
+        and mutation_gate.get("convergence_stage")
+        == ConvergenceStage.VALIDATE_REPAIR_OR_SUBMIT.value
+        and mutation_gate.get("candidate_present") is True
         and mutation_gate.get("candidate_binding_unresolved") is not True
         and _is_canonical_semantic_fingerprint(
             mutation_gate.get("candidate_fingerprint")
@@ -5448,8 +5617,20 @@ def _execution_protocol_requires_tool_free_finalization_locked(
                 gate.get("candidate_fingerprint"),
             )
         )
+        _pure_count, pure_latched, _pure_is_canonical = (
+            _normalized_pure_rejection_state(
+                gate,
+                gate.get("candidate_fingerprint"),
+            )
+        )
+        # Pure rejected batches have an independent budget, while the tighter
+        # legacy latch still applies once diagnostic allowance is exhausted.
         candidate_exhausted = bool(
-            diagnostic_count >= _MAX_CANDIDATE_DIAGNOSTIC_READS and latched
+            pure_latched
+            or (
+                diagnostic_count >= _MAX_CANDIDATE_DIAGNOSTIC_READS
+                and latched
+            )
         )
     if not (pre_candidate_exhausted or candidate_exhausted):
         return False

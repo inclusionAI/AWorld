@@ -3783,6 +3783,65 @@ def _exhaust_candidate_diagnostics(context: Context) -> str:
     return candidate_fingerprint
 
 
+def test_post_candidate_rejection_budget_is_independent_of_diagnostic_budget():
+    context = _context("independent-post-candidate-rejection-budget")
+    _activate_validate_repair_convergence(context)
+
+    for index in range(4):
+        blocked = mutation_gate_interception(
+            context,
+            [
+                ActionModel(
+                    tool_name="terminal",
+                    action_name="run_code",
+                    params={"code": f"unmodeled_command_{index}"},
+                    tool_call_id=f"pure-rejection-{index}",
+                    agent_name="agent",
+                )
+            ],
+        )
+        assert blocked is not None
+        assert blocked["candidate_diagnostic_read_count"] == 0
+        assert blocked["candidate_exhausted_rejection_count"] == 0
+        assert blocked["candidate_pure_rejection_count"] == index + 1
+        assert blocked["candidate_pure_rejection_latched"] is (index == 3)
+
+    assert execution_protocol_requires_tool_free_finalization(context, "agent")
+    assert load_execution_protocol_state(context, "agent").phase is (
+        ProtocolPhase.FINALIZE
+    )
+
+
+def test_structured_quality_debt_guides_one_bounded_repair_then_uncertainty():
+    context = _context("structured-quality-guidance")
+    _activate_validate_repair_convergence(context)
+    gate = context.read_task_runtime_state(
+        "agent", "execution_protocol_mutation_gate"
+    )
+    gate.update(
+        structured_quality_open=True,
+        structured_quality_required_table_count=2,
+        structured_quality_usable_table_count=0,
+        structured_quality_repair_attempt_count=0,
+        structured_quality_reason_codes=["structured_table_unusable"],
+    )
+    context.write_task_runtime_state(
+        "agent", "execution_protocol_mutation_gate", gate
+    )
+
+    repair_guidance = consume_execution_protocol_guidance(context, "agent")
+    assert "one bounded repair" in repair_guidance
+    assert "JSON cell grid" in repair_guidance
+
+    gate["structured_quality_repair_attempt_count"] = 1
+    context.write_task_runtime_state(
+        "agent", "execution_protocol_mutation_gate", gate
+    )
+    exhausted_guidance = consume_execution_protocol_guidance(context, "agent")
+    assert "remains after the bounded repair attempt" in exhausted_guidance
+    assert "submit the limitation accurately" in exhausted_guidance
+
+
 def test_exhausted_candidate_hides_exploration_and_latches_after_two_rejections():
     from aworld.core.context.compiler import semantic_fingerprint
 

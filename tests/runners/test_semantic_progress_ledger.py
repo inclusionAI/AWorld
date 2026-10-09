@@ -782,6 +782,170 @@ def _public_delivery_contract(path: str, *, deliverable_id: str = "candidate"):
     }
 
 
+def _successful_unknown_observation(action: ActionModel, content: str):
+    return Observation(
+        action_result=[
+            ActionResult(
+                tool_call_id=action.tool_call_id,
+                content=content,
+                success=True,
+                metadata={
+                    "sandbox_observation": _sandbox_receipt(
+                        action,
+                        1,
+                        effect="unknown",
+                        workspace_mutated=False,
+                        cache_hit=False,
+                        action_semantic_receipt={
+                            "schema_version": "aworld.action-semantic-receipt/v1",
+                            "capability_aliases": ["workspace.execute"],
+                            "effect": "unknown",
+                            "target_ids": [],
+                            "executed": True,
+                            "succeeded": True,
+                            "timed_out": False,
+                            "validation_kind": None,
+                            "declared_deliverable_targeted": False,
+                            "tool_call_id": action.tool_call_id,
+                        },
+                    )
+                },
+            )
+        ]
+    )
+
+
+def test_structured_quality_debt_clears_after_one_public_cell_grid_repair(
+    tmp_path,
+):
+    from aworld.sandbox.tool_observation import semantic_target_sha256
+
+    output = tmp_path / "candidate.json"
+    context = Context(task_id="structured-quality-repair")
+    context.context_info["public_deliverable_contract"] = _public_delivery_contract(
+        str(output)
+    )
+    capture_public_deliverable_baseline(context, agent_id="agent")
+    output.write_text(
+        json.dumps({"blocks": [{"type": "table", "usable": False}]}),
+        encoding="utf-8",
+    )
+    parse_action = ActionModel(
+        tool_name="terminal",
+        action_name="run_code",
+        tool_call_id="parse-quality-open",
+        params={"code": "capability-adapter parse source.pdf"},
+    )
+    open_state = record_semantic_tool_progress(
+        context,
+        tool_name="terminal",
+        agent_id="agent",
+        actions=[parse_action],
+        observation=_successful_unknown_observation(
+            parse_action,
+            json.dumps(
+                {
+                    "quality_report": {
+                        "tables": {
+                            "declared": 1,
+                            "usable": 0,
+                            "issues": [
+                                {"reason": "structured_block_meta_prose"}
+                            ],
+                        }
+                    }
+                }
+            ),
+        ),
+    )
+    assert open_state["structured_quality_open"] is True
+    assert open_state["structured_quality_repair_attempt_count"] == 0
+
+    clear_claim = ActionModel(
+        tool_name="terminal",
+        action_name="run_code",
+        tool_call_id="unverified-quality-clear",
+        params={"code": "printf an-unverified-clear-claim"},
+    )
+    still_open = record_semantic_tool_progress(
+        context,
+        tool_name="terminal",
+        agent_id="agent",
+        actions=[clear_claim],
+        observation=_successful_unknown_observation(
+            clear_claim,
+            json.dumps(
+                {
+                    "schema_version": "aworld.structured-quality-observation/v1",
+                    "status": "clear",
+                    "required_table_count": 1,
+                    "usable_table_count": 1,
+                    "reason_codes": [],
+                }
+            ),
+        ),
+    )
+    assert still_open["structured_quality_open"] is True
+
+    output.write_text(
+        json.dumps(
+            {
+                "blocks": [
+                    {
+                        "type": "table",
+                        "table": {"rows": [["name", "value"], ["a", "3"]]},
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    repair_action = ActionModel(
+        tool_name="filesystem",
+        action_name="write_file",
+        tool_call_id="repair-cell-grid",
+        params={"path": str(output), "content": output.read_text()},
+    )
+    repaired = record_semantic_tool_progress(
+        context,
+        tool_name="terminal",
+        agent_id="agent",
+        actions=[repair_action],
+        observation=Observation(
+            action_result=[
+                ActionResult(
+                    tool_call_id=repair_action.tool_call_id,
+                    content=json.dumps({"success": True, "status": "repaired"}),
+                    success=True,
+                    metadata={
+                        "sandbox_observation": _sandbox_receipt(
+                            repair_action,
+                            2,
+                            effect="mutating",
+                            workspace_mutated=True,
+                            action_semantic_receipt={
+                                "schema_version": "aworld.action-semantic-receipt/v1",
+                                "capability_aliases": ["workspace.mutate"],
+                                "effect": "mutating",
+                                "target_ids": [semantic_target_sha256(str(output))],
+                                "executed": True,
+                                "succeeded": True,
+                                "timed_out": False,
+                                "validation_kind": None,
+                                "declared_deliverable_targeted": True,
+                                "tool_call_id": repair_action.tool_call_id,
+                            },
+                        )
+                    },
+                )
+            ]
+        ),
+    )
+    assert repaired["structured_quality_open"] is False
+    assert repaired["structured_quality_usable_table_count"] >= 1
+    assert repaired["structured_quality_repair_attempt_count"] == 1
+
+
 def test_public_delivery_continuity_survives_implicit_segment_without_recounting(
     tmp_path,
 ):

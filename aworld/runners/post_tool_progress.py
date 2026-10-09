@@ -1354,6 +1354,100 @@ def _record_semantic_tool_progress_locked(
             or authenticated_declared_candidate_mutation
         )
     )
+    # Capability integrations may expose structured-content facts in their
+    # ordinary JSON output.  Project those facts into one capability-neutral
+    # quality debt.  The controller owns the convergence effect; adapters and
+    # parsers only expose evidence and never decide whether a task is complete.
+    from aworld.runners.structured_quality import (
+        inspect_public_structured_quality,
+        observe_structured_quality,
+    )
+
+    structured_quality_observation = observe_structured_quality(
+        action_results,
+        trusted_call_ids={
+            str(receipt["tool_call_id"])
+            for receipt in current_sandbox_receipts
+            if isinstance(receipt.get("tool_call_id"), str)
+        },
+    )
+    previous_quality_open = previous.get("structured_quality_open") is True
+    previous_quality_required = int(
+        previous.get("structured_quality_required_table_count", 0) or 0
+    )
+    structured_quality_required = previous_quality_required
+    structured_quality_usable = int(
+        previous.get("structured_quality_usable_table_count", 0) or 0
+    )
+    structured_quality_reasons = [
+        value
+        for value in (previous.get("structured_quality_reason_codes") or ())
+        if isinstance(value, str)
+    ][:16]
+    structured_quality_open = previous_quality_open
+    structured_quality_evidence_fingerprint = previous.get(
+        "structured_quality_evidence_fingerprint"
+    )
+    if structured_quality_observation is not None:
+        structured_quality_required = max(
+            structured_quality_required,
+            int(structured_quality_observation["required_table_count"]),
+        )
+        if structured_quality_observation["status"] == "open":
+            structured_quality_usable = int(
+                structured_quality_observation["usable_table_count"]
+            )
+            structured_quality_reasons = list(
+                structured_quality_observation["reason_codes"]
+            )
+            structured_quality_open = True
+            structured_quality_evidence_fingerprint = (
+                structured_quality_observation["evidence_fingerprint"]
+            )
+        elif not previous_quality_open:
+            # Capability output may open a conservative debt, but only the
+            # framework's independent public-file inspection may clear an
+            # existing one.  Successful command stdout is not acceptance.
+            structured_quality_usable = int(
+                structured_quality_observation["usable_table_count"]
+            )
+            structured_quality_reasons = []
+            structured_quality_open = False
+    public_quality_observation = None
+    if structured_quality_required > 0 and (
+        previous_quality_open
+        or structured_quality_open
+        or public_delivery_changed
+    ):
+        public_quality_observation = inspect_public_structured_quality(
+            runtime_context,
+            required_table_count=structured_quality_required,
+        )
+        if public_quality_observation is not None:
+            structured_quality_usable = int(
+                public_quality_observation["usable_table_count"]
+            )
+            structured_quality_reasons = list(
+                public_quality_observation["reason_codes"]
+            )
+            structured_quality_open = (
+                public_quality_observation["status"] == "open"
+            )
+            structured_quality_evidence_fingerprint = (
+                public_quality_observation["evidence_fingerprint"]
+            )
+    structured_quality_repair_attempt_count = int(
+        previous.get("structured_quality_repair_attempt_count", 0) or 0
+    )
+    if (
+        previous_quality_open
+        and previous.get("candidate_present") is True
+        and public_delivery_progress_advanced
+    ):
+        structured_quality_repair_attempt_count = min(
+            2,
+            structured_quality_repair_attempt_count + 1,
+        )
     declared_write_high_water = previous_declared_write_high_water
     for receipt in declared_write_receipts:
         declared_write_high_water = _delivery_high_water_add(
@@ -1788,6 +1882,18 @@ def _record_semantic_tool_progress_locked(
         "declared_write_receipt_high_water_bloom": format(
             declared_write_high_water,
             "0128x",
+        ),
+        "structured_quality_open": structured_quality_open,
+        "structured_quality_required_table_count": (
+            structured_quality_required
+        ),
+        "structured_quality_usable_table_count": structured_quality_usable,
+        "structured_quality_reason_codes": structured_quality_reasons,
+        "structured_quality_evidence_fingerprint": (
+            structured_quality_evidence_fingerprint
+        ),
+        "structured_quality_repair_attempt_count": (
+            structured_quality_repair_attempt_count
         ),
         # Candidate advancement is a successful, never-before-seen public
         # delivery high-water fingerprint.  A failed Tool result, missing
