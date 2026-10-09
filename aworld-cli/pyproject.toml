@@ -4,16 +4,16 @@ build-backend = "hatchling.build"
 
 [project]
 name = "aworld-cli"
-version = "1.0.0a4"
+version = "1.0.0a7"
 description = "Thin command-line wrapper for AWorld"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
-dependencies = ["aworld==1.0.0a4"]
+dependencies = ["aworld==1.0.0a7"]
 
 [project.optional-dependencies]
-llm = ["aworld[llm]==1.0.0a4"]
-skills = ["aworld[skills]==1.0.0a4"]
+llm = ["aworld[llm]==1.0.0a7"]
+skills = ["aworld[skills]==1.0.0a7"]
 
 [project.scripts]
 aworld-cli = "aworld_cli.entrypoint:main"

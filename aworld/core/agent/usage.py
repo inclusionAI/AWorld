@@ -37,9 +37,11 @@ class TokenUsage:
 class ModelResponseError(ValueError):
     """Rejected output can still have a billable provider receipt."""
 
-    def __init__(self, message, *, usage=None):
+    def __init__(self, message, *, usage=None, code="invalid_response", diagnostics=None):
         super().__init__(message)
         self.usage = usage
+        self.code = code
+        self.diagnostics = dict(diagnostics or {})
 
 
 def summarize_usage(receipts):

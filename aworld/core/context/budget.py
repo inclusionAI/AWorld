@@ -84,7 +84,7 @@ class ContextBudget:
     safety_margin: int = 2048
     trigger_ratio: float = 0.85
     keep_recent_tokens: int = 16000
-    summary_max_tokens: int = 2048
+    summary_max_tokens: int = 32768
     summary_timeout: float = 30
     max_attempts: int = 2
 
@@ -220,6 +220,7 @@ class BudgetPolicy:
         execution.emit("context.compaction.started", {"before": before, "source_start_index": start,
                                                       "first_kept_index": cut, "attempt": state.attempts})
         response = None
+        execution.emit("context.summary.started", {"attempt": state.attempts})
         try:
             timeout = self.budget.summary_timeout
             if execution.remaining_seconds is not None:
@@ -234,7 +235,10 @@ class BudgetPolicy:
             usage = getattr(exc, "usage", None)
             execution.append("context.summary", {"content": "", "status": "failed", "purpose": "compaction",
                              "error_type": type(exc).__name__, "usage": usage.to_dict() if usage is not None else None})
+            execution.emit("context.summary.finished", {"attempt": state.attempts, "is_error": True,
+                                                        "error_type": type(exc).__name__})
             return fallback(type(exc).__name__)
+        execution.emit("context.summary.finished", {"attempt": state.attempts, "is_error": False})
         execution.append("context.summary", {"content": response.content, "status": "received", "purpose": "compaction",
                          "usage": response.usage.to_dict() if response.usage is not None else None})
         if response.tool_calls or not response.content.strip():

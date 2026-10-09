@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 from copy import deepcopy
 from typing import Callable, Mapping, Sequence
 from hashlib import sha256
@@ -12,6 +13,7 @@ from aworld.core.tool.function import Tool, ToolExecutionError
 from aworld.core.tool.local import default_tools
 from aworld.core.tool.registry import ToolRegistry
 from .skill import Skill
+from .usage import ModelResponseError
 from .messages import AssistantMessage, Model, ModelRequest
 from .messages import messages_from_history as _messages
 
@@ -25,7 +27,7 @@ class Agent:
     def __init__(
         self, *, model: Model, tools: Sequence[Tool] | ToolRegistry | None = None,
         skills: Sequence[Skill] = (), system_prompt: str = "",
-        max_turns: int = 20,
+        max_turns: int = 20, response_retries: int = 2, response_retry_delay: float = 0.5,
         runtime_prompt: Callable[[RunContext, int], str] | None = None,
         prompt_metadata: Mapping[str, object] | None = None,
     ) -> None:
@@ -33,6 +35,11 @@ class Agent:
             raise TypeError("model must implement async complete()")
         if isinstance(max_turns, bool) or not isinstance(max_turns, int) or max_turns < 1:
             raise ValueError("max_turns must be a positive integer")
+        if type(response_retries) is not int or not 0 <= response_retries <= 5:
+            raise ValueError("response_retries must be an integer between 0 and 5")
+        if isinstance(response_retry_delay, bool) or not isinstance(response_retry_delay, (int, float)) or not math.isfinite(response_retry_delay) or not 0 <= response_retry_delay <= 30:
+            raise ValueError("response_retry_delay must be finite seconds between 0 and 30")
+        self._response_retries, self._response_retry_delay = response_retries, response_retry_delay
         if not isinstance(system_prompt, str):
             raise TypeError("system_prompt must be text")
         skills = tuple(skills)
@@ -73,6 +80,7 @@ class Agent:
     async def run(self, input: object, context: RunContext) -> str:
         self.validate_input(input)
         seen_calls = context.resource((self, "tool_call_ids"), set)
+        empty_retries = 0
         for turn in range(1, self._max_turns + 1):
             # Prepare again after every tool batch; no cached second message history.
             history = await context.get_context()
@@ -82,6 +90,11 @@ class Agent:
             system_prompt = self._system_prompt
             if self._runtime_prompt is not None:
                 system_prompt += "\n\n" + self._runtime_prompt(context, turn)
+            if empty_retries:
+                system_prompt += ("\n\nYour previous response contained no usable answer or tool call. "
+                    "Continue the unfinished task from the confirmed history: take the next concrete action "
+                    "with the available tools, or return a substantive final answer only if the work is complete. "
+                    "Do not repeat completed tool actions merely to recover the response.")
             if self._prompt_metadata is not None:
                 context.append("system", {**self._prompt_metadata, "content": system_prompt,
                     "sha256": sha256(system_prompt.encode()).hexdigest(), "turn": turn})
@@ -99,6 +112,9 @@ class Agent:
                 if not isinstance(response, AssistantMessage):
                     raise TypeError("Model must return AssistantMessage")
                 response = deepcopy(response)
+                if not response.content.strip() and not response.tool_calls:
+                    raise ModelResponseError("Model returned an empty final response", usage=response.usage,
+                                             code="empty_final_response")
                 ids = [call.id for call in response.tool_calls]
                 if len(set(ids)) != len(ids) or seen_calls.intersection(ids):
                     raise ValueError("Tool call IDs must be unique in context")
@@ -106,9 +122,24 @@ class Agent:
                 raise
             except Exception as exc:
                 usage = getattr(exc, "usage", None) or getattr(response, "usage", None)
-                context.append("model.error", {"turn": turn, "error_type": type(exc).__name__,
-                                               "usage": usage.to_dict() if usage is not None else None})
-                raise
+                delay = min(30, self._response_retry_delay * (2 ** empty_retries))
+                remaining = context.remaining_seconds
+                retry = (isinstance(exc, ModelResponseError) and exc.code == "empty_final_response"
+                         and empty_retries < self._response_retries and turn < self._max_turns
+                         and (remaining is None or remaining > delay))
+                error = {"turn": turn, "error_type": type(exc).__name__, "will_retry": retry}
+                if isinstance(exc, ModelResponseError):
+                    error.update(error_code=exc.code, diagnostics=exc.diagnostics)
+                context.append("model.error", {**error, "usage": usage.to_dict() if usage is not None else None})
+                context.emit("model.failed", error)
+                if not retry:
+                    raise
+                empty_retries += 1
+                context.emit("model.retry.scheduled", {"turn": turn, "attempt": empty_retries,
+                    "delay_seconds": delay, "error_code": exc.code})
+                await asyncio.sleep(delay)
+                continue
+            empty_retries = 0
             seen_calls.update(ids)
             context.append("assistant", {
                 "content": response.content,
