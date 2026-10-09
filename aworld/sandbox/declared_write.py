@@ -825,7 +825,7 @@ class _ControllerLeaseState:
     def __init__(self, paths: tuple[str, ...]) -> None:
         self.paths = paths
         self.body_open = True
-        self.retained_tasks: set[asyncio.Future[Any]] = set()
+        self.retained_tasks: set[Any] = set()
 
 
 class ControllerWriteBarrierLease:
@@ -844,7 +844,7 @@ class ControllerWriteBarrierLease:
         self.paths = paths
         self._released = False
 
-    def retain_until(self, task: asyncio.Future[Any]) -> None:
+    def retain_until(self, task: Any) -> None:
         """Keep the target barrier closed until a cancelled provider is quiescent."""
 
         self._manager.retain_until(self._ticket, task)
@@ -924,10 +924,13 @@ class _ControllerWriteBarrierManager:
             if state is None:
                 return
             state.body_open = False
+            state.retained_tasks = {
+                task for task in state.retained_tasks if not task.done()
+            }
             if not state.retained_tasks:
                 self._active.pop(ticket, None)
 
-    def retain_until(self, ticket: int, task: asyncio.Future[Any]) -> None:
+    def retain_until(self, ticket: int, task: Any) -> None:
         if task.done():
             return
         with self._lock:
@@ -941,7 +944,7 @@ class _ControllerWriteBarrierManager:
             )
         )
 
-    def _provider_done(self, ticket: int, task: asyncio.Future[Any]) -> None:
+    def _provider_done(self, ticket: int, task: Any) -> None:
         with self._lock:
             state = self._active.get(ticket)
             if state is None:

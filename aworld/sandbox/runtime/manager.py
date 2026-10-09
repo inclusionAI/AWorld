@@ -119,30 +119,29 @@ class SandboxManager:
                     try:
                         # None is used as a sentinel to eventually support shutting down the worker
                         if func is None:
-                            queue.task_done()
                             # Stop accepting new jobs
                             break
-                        
+
                         # If the caller already cancelled the Future, skip executing the job
                         if fut.cancelled():
-                            queue.task_done()
                             continue
-                        
+
                         try:
                             result = await func(*args, **kwargs)
-                        except Exception as e:  # noqa: BLE001
+                        except BaseException as exc:  # noqa: BLE001
                             # Propagate the exception back to the caller's thread/loop
                             if not fut.done():
-                                fut.set_exception(e)
+                                if isinstance(exc, asyncio.CancelledError):
+                                    fut.cancel()
+                                else:
+                                    fut.set_exception(exc)
+                            if isinstance(exc, asyncio.CancelledError):
+                                raise
                         else:
                             if not fut.done():
                                 fut.set_result(result)
-                        finally:
-                            queue.task_done()
-                    except Exception:
-                        # Do not let exceptions in the worker crash the loop; log & continue
+                    finally:
                         queue.task_done()
-                        continue
             
             worker_task = asyncio.create_task(_worker())
             ctx_inner = _SandboxContext(loop=loop, queue=queue, worker_task=worker_task)
@@ -214,9 +213,9 @@ class SandboxManager:
         try:
             return await asyncio.shield(wrapped)
         except asyncio.CancelledError:
-            _controller_barrier_lease.retain_until(wrapped)
+            _controller_barrier_lease.retain_until(fut)
 
-            def consume_completion(done: asyncio.Future[Any]) -> None:
+            def consume_completion(done: Future) -> None:
                 if done.cancelled():
                     return
                 try:
@@ -224,7 +223,7 @@ class SandboxManager:
                 except Exception:
                     pass
 
-            wrapped.add_done_callback(consume_completion)
+            fut.add_done_callback(consume_completion)
             raise
     
     async def cleanup_all(self) -> None:

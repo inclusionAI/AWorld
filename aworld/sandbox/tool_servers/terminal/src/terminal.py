@@ -2430,6 +2430,23 @@ async def _finish_reader_tasks_after_termination(
     return False
 
 
+async def _cleanup_cancelled_execution(
+    process: asyncio.subprocess.Process | None,
+    reader_tasks: set[asyncio.Task[None]],
+    stdout_capture: _BoundedStreamCapture,
+    stderr_capture: _BoundedStreamCapture,
+) -> None:
+    """Finish process-tree cleanup in a task that repeated caller cancels cannot cut."""
+
+    try:
+        if process is not None:
+            await _terminate_process(process)
+            await _finish_reader_tasks_after_termination(process, reader_tasks)
+    finally:
+        stdout_capture.discard_artifact()
+        stderr_capture.discard_artifact()
+
+
 def _record_command_history(
     *,
     command: str,
@@ -2662,19 +2679,30 @@ async def _execute_command_async(
         )
         return result
 
-    except asyncio.CancelledError:
-        if process is not None:
-            await _terminate_process(process)
+    except asyncio.CancelledError as cancellation:
         tasks = {
             task
             for task in (stdout_task, stderr_task)
             if task is not None and not task.done()
         }
-        if process is not None:
-            await _finish_reader_tasks_after_termination(process, tasks)
-        stdout_capture.discard_artifact()
-        stderr_capture.discard_artifact()
-        raise
+        cleanup_task = asyncio.create_task(
+            _cleanup_cancelled_execution(
+                process,
+                tasks,
+                stdout_capture,
+                stderr_capture,
+            )
+        )
+        while not cleanup_task.done():
+            try:
+                await asyncio.shield(cleanup_task)
+            except asyncio.CancelledError:
+                # Provider cleanup may issue repeated cancellation while forcing
+                # a timed-out call to settle.  The cleanup task owns the process
+                # group and must reach quiescence before this wrapper becomes done.
+                continue
+        cleanup_task.result()
+        raise cancellation
     except Exception as e:
         if process is not None:
             await _terminate_process(process)

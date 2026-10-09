@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+from concurrent.futures import Future as ConcurrentFuture
 from pathlib import Path
+import shlex
+import sys
 import threading
 import time
 from types import SimpleNamespace
@@ -19,8 +22,10 @@ from aworld.sandbox.declared_write import (
 )
 from aworld.sandbox.run import mcp_servers as mcp_servers_module
 from aworld.sandbox.runtime import manager as sandbox_manager_module
+from aworld.sandbox.runtime.loop_pool import SandboxLoopPool
 from aworld.sandbox.task_budget import ToolLeaseDecision
 from aworld.sandbox.tool_observation import SandboxToolObservationRuntime
+from aworld.sandbox.tool_servers.terminal.src.terminal import _execute_command_async
 
 
 def _public_context(tmp_path: Path, *, task_id: str = "controller-barrier") -> Context:
@@ -186,7 +191,9 @@ async def test_timed_out_live_provider_retains_barrier_until_actual_quiescence(
 
     retained: set[asyncio.Future[object]] = set()
 
-    def retain_without_forcing_quiescence(task: asyncio.Future[object]) -> None:
+    def retain_without_forcing_quiescence(
+        task: asyncio.Future[object], **_kwargs
+    ) -> None:
         retained.add(task)
         task.add_done_callback(retained.discard)
 
@@ -331,6 +338,15 @@ async def test_reuse_worker_cancellation_retains_barrier_until_job_finishes(
             caller.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await caller
+            manager_state = declared_write_module._CONTROLLER_WRITE_BARRIERS
+            with manager_state._lock:
+                retained = tuple(
+                    task
+                    for state in manager_state._active.values()
+                    for task in state.retained_tasks
+                )
+            assert retained
+            assert all(isinstance(task, ConcurrentFuture) for task in retained)
 
         with pytest.raises(ControllerWriteBarrierTimeout):
             async with controller_public_write_barrier(
@@ -350,6 +366,74 @@ async def test_reuse_worker_cancellation_retains_barrier_until_job_finishes(
     finally:
         worker_task.cancel()
         await asyncio.gather(worker_task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_multi_action_batch_aborts_after_first_provider_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    servers = mcp_servers_module.McpServers(
+        mcp_servers=["terminal"],
+        mcp_config={
+            "mcpServers": {
+                "terminal": {"type": "stdio", "command": "unused"}
+            }
+        },
+        sandbox=SimpleNamespace(sandbox_id=None, reuse=False),
+    )
+    servers.tool_list = [
+        {
+            "type": "function",
+            "function": {
+                "name": "terminal__run_code",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }
+    ]
+    provider_calls = 0
+
+    async def provider_call(**_kwargs):
+        nonlocal provider_calls
+        provider_calls += 1
+        return None
+
+    async def timeout_first(awaitable, _decision, **_kwargs):
+        awaitable.close()
+        raise mcp_servers_module._TaskToolLeaseTimeout(timed_out=True)
+
+    async def accept_parameters(**_kwargs):
+        return None
+
+    monkeypatch.setattr(
+        mcp_servers_module, "call_mcp_tool_with_exit_stack", provider_call
+    )
+    monkeypatch.setattr(mcp_servers_module, "_await_with_task_lease", timeout_first)
+    monkeypatch.setattr(servers, "check_tool_params", accept_parameters)
+
+    results = await servers._call_tool_impl(
+        action_list=[
+            {
+                "tool_name": "terminal",
+                "action_name": "run_code",
+                "tool_call_id": "first",
+                "params": {"code": "first"},
+            },
+            {
+                "tool_name": "terminal",
+                "action_name": "run_code",
+                "tool_call_id": "second",
+                "params": {"code": "second"},
+            },
+        ]
+    )
+
+    assert provider_calls == 0  # coroutine bodies never started by the fake waiter
+    assert len(results) == 2
+    assert results[0].error == "task_tool_lease_timeout"
+    assert results[1].metadata == {
+        "failure_category": "infrastructure",
+        "failure_code": "provider_batch_aborted_after_timeout",
+    }
 
 
 def test_controller_barrier_leaves_no_files_or_event_loop_state(tmp_path: Path) -> None:
@@ -495,3 +579,172 @@ async def test_mcpservers_reuse_and_nonreuse_dispatch_receive_parent_lease(
     assert results[0].success is True
     assert len(received) == 1
     assert received[0] is not None
+
+
+@pytest.mark.asyncio
+async def test_reuse_cross_server_batch_stops_after_first_timeout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = _public_context(tmp_path, task_id="cross-server-timeout")
+    servers = mcp_servers_module.McpServers(
+        mcp_servers=["terminal", "filesystem"],
+        mcp_config={"mcpServers": {}},
+        sandbox=SimpleNamespace(sandbox_id="reuse-cross-server", reuse=True),
+    )
+    servers.tool_list = []
+    started_servers: list[str] = []
+
+    async def fake_impl(action_list, *_args, **_kwargs):
+        server = action_list[0]["tool_name"]
+        started_servers.append(server)
+        if server == "terminal":
+            return [
+                ActionResult(
+                    success=False,
+                    tool_name=server,
+                    action_name="run_code",
+                    error="task_tool_lease_timeout",
+                    metadata={"failure_type": "task_tool_lease_timeout"},
+                )
+            ]
+        return [ActionResult(success=True, tool_name=server, action_name="write_file")]
+
+    monkeypatch.setattr(servers, "_call_tool_impl", fake_impl)
+
+    class ImmediateManager:
+        async def run_on_sandbox(
+            self,
+            _sandbox_id,
+            function,
+            *args,
+            server_name=None,
+            _controller_barrier_lease=None,
+            **kwargs,
+        ):
+            del server_name, _controller_barrier_lease
+            return await function(*args, **kwargs)
+
+    immediate = ImmediateManager()
+    monkeypatch.setattr(
+        mcp_servers_module.SandboxManager,
+        "get_instance",
+        classmethod(lambda _cls: immediate),
+    )
+
+    results = await servers.call_tool(
+        action_list=[
+            {
+                "tool_name": "terminal",
+                "action_name": "run_code",
+                "params": {"code": "first"},
+            },
+            {
+                "tool_name": "filesystem",
+                "action_name": "write_file",
+                "params": {"path": str(tmp_path / "result.json"), "content": "x"},
+            },
+        ],
+        context=context,
+    )
+
+    assert started_servers == ["terminal"]
+    assert len(results) == 2
+    assert results[1].metadata["failure_code"] == (
+        "provider_batch_aborted_after_timeout"
+    )
+
+
+@pytest.mark.asyncio
+async def test_repeated_provider_cancel_cannot_interrupt_process_group_cleanup(
+    tmp_path: Path,
+) -> None:
+    context = _public_context(tmp_path, task_id="repeated-cancel")
+    marker = tmp_path / "late.txt"
+    child = (
+        "import pathlib, signal, time; "
+        "signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+        "time.sleep(0.7); "
+        f"pathlib.Path({str(marker)!r}).write_text('late')"
+    )
+    parent = (
+        "import subprocess, sys, time; "
+        f"subprocess.Popen([sys.executable, '-c', {child!r}]); "
+        "time.sleep(60)"
+    )
+    command = f"{shlex.quote(sys.executable)} -c {shlex.quote(parent)}"
+    decision = ToolLeaseDecision(
+        requested_seconds=0.1,
+        policy_seconds=0.1,
+        effective_seconds=0.1,
+        remaining_task_seconds=1.0,
+        limited_by="task_lease",
+    )
+
+    async with controller_public_write_barrier(
+        context, timeout_seconds=0.2
+    ) as lease:
+        with pytest.raises(mcp_servers_module._TaskToolLeaseTimeout):
+            await mcp_servers_module._await_with_task_lease(
+                _execute_command_async(
+                    command,
+                    timeout=5,
+                    cwd=tmp_path,
+                    quiesce_process_group=True,
+                ),
+                decision,
+                controller_write_lease=lease,
+            )
+
+    with pytest.raises(ControllerWriteBarrierTimeout):
+        async with controller_public_write_barrier(
+            context, timeout_seconds=0.03
+        ):
+            pytest.fail("barrier released before process-group cleanup")
+    await asyncio.sleep(0.8)
+    assert not marker.exists()
+    async with controller_public_write_barrier(context, timeout_seconds=0.5):
+        pass
+
+
+@pytest.mark.asyncio
+async def test_cleanup_all_completes_retained_reuse_future(tmp_path: Path) -> None:
+    context = _public_context(tmp_path, task_id="cleanup-retained")
+    pool = SandboxLoopPool(num_loops=1)
+    manager = sandbox_manager_module.SandboxManager()
+    manager._loop_pool = pool
+    started = threading.Event()
+    finished = threading.Event()
+
+    async def provider_job() -> None:
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            finished.set()
+
+    try:
+        async with controller_public_write_barrier(
+            context, timeout_seconds=0.5
+        ) as lease:
+            caller = asyncio.create_task(
+                manager.run_on_sandbox(
+                    "cleanup-retained-sandbox",
+                    provider_job,
+                    _controller_barrier_lease=lease,
+                )
+            )
+            assert await asyncio.to_thread(started.wait, 1)
+            caller.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await caller
+
+        await manager.cleanup_all()
+        assert finished.wait(1)
+        async with controller_public_write_barrier(
+            context, timeout_seconds=0.5
+        ):
+            pass
+    finally:
+        if pool._loops:
+            await asyncio.to_thread(pool.shutdown)

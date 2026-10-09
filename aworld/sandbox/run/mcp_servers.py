@@ -84,7 +84,10 @@ class _ProviderCleanupState:
     __slots__ = ("calls", "worker")
 
     def __init__(self) -> None:
-        self.calls: dict[asyncio.Future[Any], int] = {}
+        # ``None`` marks an authority-bearing call whose task completion is the
+        # public-write quiescence signal.  It must never be repeatedly cancelled,
+        # force-closed, or evicted while cleanup is still running.
+        self.calls: dict[asyncio.Future[Any], int | None] = {}
         self.worker: asyncio.Task[None] | None = None
 
 
@@ -98,6 +101,14 @@ class _TaskToolLeaseTimeout(TimeoutError):
     def __init__(self, *, timed_out: bool) -> None:
         super().__init__("authoritative task Tool lease elapsed")
         self.timed_out = timed_out
+
+
+class _ProviderBatchAborted(RuntimeError):
+    failure_category = "infrastructure"
+    failure_code = "provider_batch_aborted_after_timeout"
+
+    def __init__(self) -> None:
+        super().__init__(self.failure_code)
 
 
 def _consume_provider_call(task: asyncio.Future[Any]) -> None:
@@ -176,9 +187,13 @@ async def cleanup_provider_calls_for_loop(
     if worker is not None and worker is not asyncio.current_task() and not worker.done():
         worker.cancel()
         await asyncio.gather(worker, return_exceptions=True)
-    retained = list(state.calls)
-    for task in retained:
+    protected = [task for task, attempts in state.calls.items() if attempts is None]
+    unprotected = [task for task, attempts in state.calls.items() if attempts is not None]
+    for task in unprotected:
         _force_close_provider_call(task)
+    if protected:
+        await asyncio.gather(*protected, return_exceptions=True)
+    retained = [*protected, *unprotected]
     state.calls.clear()
     await asyncio.sleep(0)
     for task in retained:
@@ -231,10 +246,14 @@ async def _cleanup_cancelled_provider_calls(
     worker = asyncio.current_task()
     try:
         while state.calls:
+            protected_pending = False
             for task, attempts in list(state.calls.items()):
                 if task.done():
                     state.calls.pop(task, None)
                     _consume_provider_call(task)
+                    continue
+                if attempts is None:
+                    protected_pending = True
                     continue
                 if attempts >= _PROVIDER_FORCE_CANCEL_ROUNDS:
                     _force_close_provider_call(task)
@@ -242,19 +261,25 @@ async def _cleanup_cancelled_provider_calls(
                     continue
                 state.calls[task] = attempts + 1
                 task.cancel()
-            await asyncio.sleep(0)
+            await asyncio.sleep(0.05 if protected_pending else 0)
     finally:
         # Worker cancellation or loop shutdown must not retain request-bound
         # provider coroutines indefinitely.
-        for task in list(state.calls):
-            _force_close_provider_call(task)
-        state.calls.clear()
+        for task, attempts in list(state.calls.items()):
+            if attempts is not None:
+                _force_close_provider_call(task)
+                state.calls.pop(task, None)
         if state.worker is worker:
             state.worker = None
-        _drop_provider_cleanup_state(loop, state)
+        if not state.calls:
+            _drop_provider_cleanup_state(loop, state)
 
 
-def _retain_cancelled_provider_call(task: asyncio.Future[Any]) -> None:
+def _retain_cancelled_provider_call(
+    task: asyncio.Future[Any],
+    *,
+    force_cancel: bool = True,
+) -> None:
     get_loop = getattr(task, "get_loop", None)
     owner_loop = get_loop() if callable(get_loop) else None
     if owner_loop is None or owner_loop.is_closed():
@@ -265,7 +290,12 @@ def _retain_cancelled_provider_call(task: asyncio.Future[Any]) -> None:
         running_loop = None
     if running_loop is not owner_loop:
         try:
-            owner_loop.call_soon_threadsafe(_retain_cancelled_provider_call, task)
+            owner_loop.call_soon_threadsafe(
+                lambda: _retain_cancelled_provider_call(
+                    task,
+                    force_cancel=force_cancel,
+                )
+            )
         except RuntimeError:
             pass
         return
@@ -275,16 +305,29 @@ def _retain_cancelled_provider_call(task: asyncio.Future[Any]) -> None:
     state = _provider_cleanup_state(owner_loop, create=True)
     assert state is not None
     if task in state.calls:
+        if not force_cancel:
+            state.calls[task] = None
         return
     while len(state.calls) >= _MAX_RETAINED_CANCELLED_PROVIDER_CALLS:
-        oldest = next(iter(state.calls))
+        oldest = next(
+            (
+                retained
+                for retained, attempts in state.calls.items()
+                if attempts is not None
+            ),
+            None,
+        )
+        if oldest is None:
+            break
         state.calls.pop(oldest, None)
         _force_close_provider_call(oldest)
-    state.calls[task] = 0
+    state.calls[task] = 0 if force_cancel else None
 
     def finish_cancelled_call(done: asyncio.Future[Any]) -> None:
         state.calls.pop(done, None)
         _consume_provider_call(done)
+        if not state.calls and (state.worker is None or state.worker.done()):
+            _drop_provider_cleanup_state(owner_loop, state)
 
     task.add_done_callback(finish_cancelled_call)
     if state.worker is None or state.worker.done():
@@ -669,6 +712,43 @@ def _build_tool_call_failure_result(
     )
 
 
+def _append_aborted_batch_results(
+    results: list[ActionResult],
+    actions: List[Dict[str, Any]],
+    *,
+    start_index: int,
+) -> None:
+    """Fail remaining calls rather than overlap a still-live timed-out provider."""
+
+    for action in actions[start_index:]:
+        action_dict = action if isinstance(action, dict) else vars(action)
+        results.append(
+            _build_tool_call_failure_result(
+                server_name=(
+                    action_dict.get("tool_name")
+                    or action_dict.get("server_name")
+                    or ""
+                ),
+                tool_name=action_dict.get("action_name") or "",
+                parameter=action_dict.get("params") or {},
+                error=_ProviderBatchAborted(),
+            )
+        )
+
+
+def _provider_batch_was_aborted(results: Any) -> bool:
+    for result in results or ():
+        error = getattr(result, "error", None)
+        metadata = getattr(result, "metadata", None)
+        if error in {"task_tool_lease_timeout", "task_tool_lease_exhausted"}:
+            return True
+        if isinstance(metadata, Mapping) and metadata.get("failure_code") == (
+            _ProviderBatchAborted.failure_code
+        ):
+            return True
+    return False
+
+
 def _requested_timeout_for_receipt(
     parameter: Dict[str, Any], transport_timeout: float
 ) -> float:
@@ -743,7 +823,10 @@ async def _await_with_task_lease(
         provider_task.cancel()
         if controller_write_lease is not None:
             controller_write_lease.retain_until(provider_task)
-        _retain_cancelled_provider_call(provider_task)
+        _retain_cancelled_provider_call(
+            provider_task,
+            force_cancel=controller_write_lease is None,
+        )
         raise
     if provider_task in done:
         return await provider_task
@@ -754,7 +837,10 @@ async def _await_with_task_lease(
     # Cancellation is cooperative. Keep a strong reference and consume any
     # eventual exception without letting a provider that suppresses
     # cancellation hold the caller beyond the authoritative lease.
-    _retain_cancelled_provider_call(provider_task)
+    _retain_cancelled_provider_call(
+        provider_task,
+        force_cancel=controller_write_lease is None,
+    )
     raise _TaskToolLeaseTimeout(timed_out=True)
 
 
@@ -1626,6 +1712,7 @@ class McpServers:
                         error=ValueError("Missing tool_name"),
                     )
             results_by_server = {}
+            provider_batch_aborted = False
             for server_name, indexed_actions in by_server.items():
                 filtered = [a for _, a in indexed_actions]
                 manager_options = {"server_name": server_name}
@@ -1646,6 +1733,9 @@ class McpServers:
                 )
                 if part:
                     results_by_server[server_name] = part
+                if _provider_batch_was_aborted(part):
+                    provider_batch_aborted = True
+                    break
             indices = {sn: 0 for sn in results_by_server}
             merged = [None] * len(action_list)
             for index, invalid_result in invalid_results.items():
@@ -1664,7 +1754,11 @@ class McpServers:
                         server_name=ad.get("tool_name") or ad.get("server_name") or "",
                         tool_name=ad.get("action_name") or "",
                         parameter=ad.get("params", {}),
-                        error=RuntimeError("MCP execution returned no result"),
+                        error=(
+                            _ProviderBatchAborted()
+                            if provider_batch_aborted
+                            else RuntimeError("MCP execution returned no result")
+                        ),
                     )
             return merged
         manager_options = {}
@@ -1700,7 +1794,7 @@ class McpServers:
             await self.list_tools(context=context)
 
         try:
-            for action in action_list:
+            for action_index, action in enumerate(action_list):
                 if not isinstance(action, dict):
                     action_dict = vars(action)
                 else:
@@ -1812,6 +1906,12 @@ class McpServers:
                         )
                         results.append(call_result)
                         self._update_metadata(result_key, call_result, operation_info)
+                        _append_aborted_batch_results(
+                            results,
+                            action_list,
+                            start_index=action_index + 1,
+                        )
+                        return results
                     except Exception as e:
                         logger.warning(f"Error calling function_tool tool: {e}")
                         results.append(
@@ -1860,6 +1960,12 @@ class McpServers:
                         )
                         results.append(call_result)
                         self._update_metadata(result_key, call_result, operation_info)
+                        _append_aborted_batch_results(
+                            results,
+                            action_list,
+                            start_index=action_index + 1,
+                        )
+                        return results
                     except Exception as e:
                         logger.warning(f"Error calling API tool: {e}")
                         results.append(
@@ -2000,7 +2106,12 @@ class McpServers:
                     )
                     results.append(action_result)
                     self._update_metadata(result_key, action_result, operation_info)
-                    continue
+                    _append_aborted_batch_results(
+                        results,
+                        action_list,
+                        start_index=action_index + 1,
+                    )
+                    return results
 
                 if not call_result_raw:
                     call_mcp_e = Exception("Failed to call tool after all retry attempts")
