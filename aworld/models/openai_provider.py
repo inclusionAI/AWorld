@@ -897,9 +897,10 @@ class OpenAIProvider(LLMProviderBase):
                             reason_code="provider_capture_storage_failed",
                             snapshot=provider_request,
                         )
-                logger.warning(
-                    "OpenAI provider prepared capture failed before send; continuing because Context enforcement is not active"
-                )
+                if request_kwargs.get("context") is not None:
+                    logger.warning(
+                        "OpenAI provider prepared capture failed before send; continuing because Context enforcement is not active"
+                    )
         elif observed_envelope is not None:
             self.commit_provider_observation_unavailable(
                 context=request_kwargs.get("context"),

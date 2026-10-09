@@ -32,7 +32,7 @@ dependencies = [
 ]
 
 [project.scripts]
-aworld-cli = "aworld_cli.main:main"
+aworld-cli = "aworld_cli.entrypoint:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/aworld_cli"]

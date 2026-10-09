@@ -96,7 +96,8 @@ def parser():
     value.add_argument("--system-prompt", default=None, help="Replace the default base prompt; workspace, Skill and runtime context still apply")
     value.add_argument("--max-turns", type=int, default=20)
     value.add_argument("--timeout", type=float, help="Total execution budget per run in seconds")
-    value.add_argument("--request-timeout", type=float, default=60)
+    value.add_argument("--request-timeout", type=float, default=300,
+                       help="Per-attempt model request timeout in seconds (default: 300)")
     value.add_argument("--response-retries", type=int, default=2, help="Recovery retries for empty model replies (0-5; count toward max-turns)")
     value.add_argument("--response-retry-delay", type=float, default=0.5, help="Initial response recovery delay in seconds (0-30; exponential backoff)")
     value.add_argument("--max-retries", type=int, default=3, help="Retries per unresolved model request (0-10)")
@@ -176,7 +177,9 @@ async def _host(args, command):
             summary_max_tokens=args.summary_max_tokens if args.summary_max_tokens is not None else min(32768, settings.max_output_tokens, max(1, summary_room)),
             summary_timeout=args.compaction_timeout))
     from aworld.cli.prompt import BASE_PROMPT, PROMPT_VERSION, discover_skills, workspace_prompt, runtime_prompt
-    skills = discover_skills(args.cwd, paths=args.skill_path, disabled=args.no_skills)
+    skills = discover_skills(
+        args.cwd, paths=args.skill_path, disabled=args.no_skills or args.no_tools
+    )
     workspace, sources = workspace_prompt(args.cwd)
     system_prompt = "\n\n".join(part for part in (BASE_PROMPT if args.system_prompt is None else args.system_prompt, workspace) if part)
     sources = [{"kind": "base", "version": PROMPT_VERSION, "custom": args.system_prompt is not None}, *sources,

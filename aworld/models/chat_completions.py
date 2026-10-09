@@ -145,15 +145,23 @@ class ProviderModel:
         except Exception as exc:
             # Legacy errors may contain endpoint/response data. Expose only the
             # status or deepest exception type in RunResult/ATIF.
-            current, seen, status = exc, set(), None
+            current, seen, status, timed_out = exc, set(), None, False
+            timeout_types = {
+                "APITimeoutError", "ConnectTimeout", "ReadTimeout",
+                "TimeoutError", "TimeoutException",
+            }
             while current is not None and id(current) not in seen:
                 seen.add(id(current))
                 status = status or getattr(current, "status_code", None)
+                timed_out = timed_out or any(
+                    cls.__name__ in timeout_types for cls in type(current).__mro__
+                )
                 cause = current.__cause__ or current.__context__
                 if cause is None:
                     break
                 current = cause
-            detail = f"HTTP {status}" if status is not None else type(current).__name__
+            detail = (f"HTTP {status}" if status is not None else
+                      "timeout" if timed_out else type(current).__name__)
             raise RuntimeError(f"Model provider failed: {detail}") from None
         raw = response.raw_response
         if not isinstance(raw, dict):

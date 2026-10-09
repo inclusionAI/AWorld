@@ -397,6 +397,7 @@ def _write_self_evolve_task_response(
 
 def _register_run_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--task", type=str, required=True)
+    parser.add_argument("--model", type=str)
     parser.add_argument("--agent", type=str)
     parser.add_argument("--skill", dest="skill", action="append")
     parser.add_argument(

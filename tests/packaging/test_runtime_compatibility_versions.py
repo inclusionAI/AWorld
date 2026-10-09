@@ -48,10 +48,12 @@ def test_runtime_compatibility_versions_and_dependency_are_explicit() -> None:
     assert f"aworld=={core_version}" in metadata["project"]["dependencies"]
 
 
-def test_runtime_compatibility_manifest_keeps_full_cli_entrypoint() -> None:
+def test_runtime_compatibility_manifest_uses_dual_mode_entrypoint() -> None:
     metadata = tomllib.loads(RUNTIME_CLI_METADATA.read_text(encoding="utf-8"))
 
-    assert metadata["project"]["scripts"] == {"aworld-cli": "aworld_cli.main:main"}
+    assert metadata["project"]["scripts"] == {
+        "aworld-cli": "aworld_cli.entrypoint:main"
+    }
     assert metadata["tool"]["hatch"]["build"]["targets"]["wheel"]["packages"] == [
         "src/aworld_cli"
     ]

@@ -50,6 +50,32 @@ def test_message_roles_tool_ids_json_and_empty_capability_set():
     assert value["reasoning_effort"] == "none"
 
 
+def test_provider_timeout_reports_timeout_instead_of_low_level_ssl_error():
+    class SSLWantReadError(Exception):
+        pass
+
+    class APITimeoutError(Exception):
+        pass
+
+    class FailingProvider:
+        base_url = "https://provider.example/v1"
+
+        async def acompletion(self, **kwargs):
+            try:
+                raise SSLWantReadError("socket detail")
+            except SSLWantReadError as cause:
+                raise APITimeoutError("Request timed out") from cause
+
+    from aworld.models.chat_completions import ProviderModel
+
+    async def run():
+        model = ProviderModel(FailingProvider(), model="fixture")
+        with pytest.raises(RuntimeError, match=r"Model provider failed: timeout"):
+            await model.complete(ModelRequest("", (UserMessage("hello"),), ()))
+
+    asyncio.run(run())
+
+
 def test_real_cli_profile_compaction_and_summary_usage_reach_atif(tmp_path):
     requests, main_calls, summary_calls = [], [], []
     (tmp_path / "note").write_text("verified file content\n" + "x" * 1900)

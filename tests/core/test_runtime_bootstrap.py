@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 import pytest
@@ -63,6 +64,38 @@ def test_bootstrap_runtime_initializes_middlewares_banner_and_skill_registry(
     assert len(calls["init_middlewares"]) == 1
     assert calls["show_banner"] == 1
     assert calls["build_runtime_skill_registry_view"] == [["./skills"]]
+
+
+def test_bootstrap_runtime_applies_cli_model_after_loading_dotenv(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from aworld_cli.runtime_bootstrap import bootstrap_runtime
+
+    monkeypatch.setenv("AWORLD_CLI_MODEL_OVERRIDE", "cli-model")
+    monkeypatch.setenv("LLM_MODEL_NAME", "dotenv-model")
+    monkeypatch.setattr(
+        "aworld_cli.core.config.load_config_with_env",
+        lambda env_file: ({"provider": "demo"}, "env", env_file),
+    )
+    monkeypatch.setattr("aworld_cli.core.config.has_model_config", lambda config: True)
+    monkeypatch.setattr(
+        "aworld_cli.core.runtime_skill_registry.build_runtime_skill_registry_view",
+        lambda skill_paths=None, cwd=None: type(
+            "Registry", (), {"get_all_skills": lambda self: {}}
+        )(),
+    )
+    monkeypatch.setattr(
+        "aworld_cli.memory.bootstrap.register_cli_memory_provider",
+        lambda: None,
+    )
+
+    bootstrap_runtime(
+        show_banner=False,
+        init_middlewares_fn=lambda **kwargs: None,
+        show_banner_fn=lambda: None,
+    )
+
+    assert os.environ["LLM_MODEL_NAME"] == "cli-model"
 
 
 def test_bootstrap_runtime_raises_when_model_config_missing(

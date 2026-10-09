@@ -14,7 +14,7 @@ aworld run --model MODEL --base-url URL --task 'Read the latest earnings' \
 
 Pass keys via AWORLD_API_KEY / OPENAI_API_KEY. `--events` writes observation events to stderr, `--json` writes terminal RunResult to stdout. ATIF export includes model/tool interactions and Session/Run identity; unavailable token usage is explicitly marked, never estimated. Terminal artifacts are written atomically on completion, failure and cancellation.
 
-The CLI uses the same direct Agent loop as applications. Session history persists for follow-up Runs in this process. Interactive commands `/new`, `/sessions`, `/session ID`, `/query JSON` and `/read ID` operate on the current in-process store. Cross-process persistence and automatic compaction remain future work.
+The synchronized 1.x thin wheel uses the same direct Agent loop as applications. Session history persists for follow-up Runs in this process. Interactive commands `/new`, `/sessions`, `/session ID`, `/query JSON` and `/read ID` operate on the current in-process store. Cross-process persistence and automatic compaction remain future work. In source and Runtime compatibility installations, `aworld-cli` defaults to the full Rich UI; pass `--minimal` (or `--session-run`) to select this Session/Run interface explicitly. The thin wheel falls back to the minimal interface when the Rich modules are not installed.
 
 The Micron integration test used the local search-api Skill and a real model. It searched the release, read the complete official press-release syndication after IR returned HTTP 403, and produced a report. Runtime integration is tested separately with a pinned aworld wheel, native ATIF and SkillsBench verifier output.
 

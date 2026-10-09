@@ -128,6 +128,11 @@ class CliTests(unittest.TestCase):
                     self.assertEqual(result.returncode, 2, result.stderr)
                     self.assertIn("summary_timeout must be positive and finite", result.stderr)
 
+    def test_live_request_timeout_defaults_to_five_minutes(self):
+        from aworld.cli.main import parser
+
+        self.assertEqual(parser().parse_args([]).request_timeout, 300)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -8,6 +8,7 @@ from aworld_cli.top_level_commands.invocation import parse_command_invocation_ar
 
 
 def _register_interactive_options(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--model", type=str)
     parser.add_argument(
         "--agent",
         type=str,

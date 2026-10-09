@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import inspect
+import os
 from typing import Any, Callable
 
 from aworld.logs.util import logger
@@ -11,6 +12,9 @@ from aworld_cli.memory import bootstrap as memory_bootstrap
 
 class RuntimeBootstrapError(RuntimeError):
     """Raised when CLI runtime bootstrap cannot proceed."""
+
+
+_MODEL_OVERRIDE_ENV = "AWORLD_CLI_MODEL_OVERRIDE"
 
 
 @dataclass(frozen=True)
@@ -46,6 +50,9 @@ def bootstrap_runtime(
 
     resolved_console = console or global_console
     config_dict, _, _ = load_config_with_env(env_file)
+    model_override = (os.environ.get(_MODEL_OVERRIDE_ENV) or "").strip()
+    if model_override:
+        os.environ["LLM_MODEL_NAME"] = model_override
     if not has_model_config(config_dict):
         resolved_console.print(
             "[yellow]No model configuration (API key, etc.) detected. Please configure before starting.[/yellow]"

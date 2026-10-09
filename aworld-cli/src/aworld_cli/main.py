@@ -996,6 +996,11 @@ def build_parser(zh: bool = False) -> argparse.ArgumentParser:
         help="启动时不显示 banner" if zh else "Disable banner display on startup / 启动时不显示 banner",
     )
     parser.add_argument(
+        "--model",
+        type=str,
+        help="覆盖模型名称。" if zh else "Override the model name from .env or global config.",
+    )
+    parser.add_argument(
         "command",
         nargs="?",
         default="interactive",
@@ -1106,6 +1111,7 @@ def _build_parser_command_choices() -> list[str]:
 
 _GLOBAL_OPTIONS_WITH_VALUES = {
     "--task",
+    "--model",
     "--agent",
     "--skill",
     "--max-runs",

@@ -1,8 +1,15 @@
 # aworld-cli
 
-An optional thin wrapper: `aworld-cli` delegates to `aworld.cli.main`.
-Install the root AWorld package for the kernel and the `aworld` command.
-This distribution declares its dependency on `aworld` and does not bundle a second kernel or install dependencies during its build.
+`aworld-cli` selects the full Rich interactive CLI by default when installed
+from the Runtime compatibility package or a source checkout. Use
+`aworld-cli --minimal` (alias: `--session-run`) to select the minimal
+Session/Run CLI explicitly; `--rich` can be used to make the default choice
+explicit. Both modes accept `--model MODEL`, with the command-line value
+overriding `.env` model selection.
+
+The synchronized 1.x thin wheel does not bundle the historical Rich runtime.
+It falls back to the minimal CLI with a diagnostic; install the Runtime
+compatibility package when the Rich UI, HUD, plugins and steering are needed.
 
 ---
 
