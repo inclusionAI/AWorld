@@ -85,6 +85,12 @@ _MAX_CONSECUTIVE_UNAPPLIED_REPLANS = 2
 _MUTATION_GATE_READ_ONLY_THRESHOLD = 8
 _MUTATION_GATE_DEADLINE_MIN_READS = 3
 _MUTATION_GATE_DEADLINE_FRACTION = 0.20
+# Between the 40% candidate checkpoint and the 65% validation checkpoint,
+# recent framework-observed analysis progress may defer hard convergence for a
+# small number of non-progress observations.  The absolute 65% ceiling keeps
+# this from becoming an unbounded exploration escape hatch.
+_ANALYSIS_RUNWAY_STAGNATION_THRESHOLD = 3
+_ANALYSIS_RUNWAY_MAX_DEADLINE_FRACTION = 0.65
 _MAX_CANDIDATE_DIAGNOSTIC_READS = 3
 _MAX_PRE_CANDIDATE_REJECTED_CALLS = 2
 _MAX_EXHAUSTED_REJECTED_BATCHES = 2
@@ -732,6 +738,8 @@ def _planning_semantic_fingerprint(update: ModelPlanUpdate) -> str | None:
 
 
 def _missing_public_deliverable_names(context) -> tuple[str, ...]:
+    from aworld.runners.public_deliverables import inspect_public_deliverable
+
     value = getattr(context, "context_info", {}).get("public_deliverable_contract")
     if (
         not isinstance(value, Mapping)
@@ -753,17 +761,15 @@ def _missing_public_deliverable_names(context) -> tuple[str, ...]:
             or not isinstance(item.get("display_path"), str)
         ):
             return ()
-        try:
-            exists = os.path.isfile(item["path"])
-        except OSError:
-            exists = False
-        if not exists:
+        if not inspect_public_deliverable(item["path"]).candidate_eligible:
             missing.append(item["display_path"])
     return tuple(missing)
 
 
 def _public_delivery_status(context) -> dict[str, Any]:
-    """Return bounded public candidate presence without inspecting contents."""
+    """Return bounded, minimally inspectable public candidate presence."""
+
+    from aworld.runners.public_deliverables import inspect_public_deliverable
 
     value = getattr(context, "context_info", {}).get("public_deliverable_contract")
     if (
@@ -797,10 +803,9 @@ def _public_delivery_status(context) -> dict[str, Any]:
                 "missing_public_deliverable_count": 0,
                 "candidate_present": None,
             }
-        try:
-            existing += int(os.path.isfile(item["path"]))
-        except OSError:
-            pass
+        existing += int(
+            inspect_public_deliverable(item["path"]).candidate_eligible
+        )
     return {
         "public_deliverable_declared": True,
         "missing_public_deliverable_count": len(artifacts) - existing,
@@ -2497,14 +2502,65 @@ def _task_deadline_progress(context) -> tuple[float, float, float] | None:
     return float(total), bounded_remaining, consumed
 
 
-def _hard_convergence_deadline_reached(context) -> bool:
-    """Return whether a hard convergence phase may become active."""
+def _bounded_analysis_runway_open(
+    consumed_fraction: float,
+    semantic_state: Mapping[str, Any] | None,
+) -> bool:
+    if not (
+        HARD_CONVERGENCE_MIN_DEADLINE_FRACTION
+        <= consumed_fraction
+        < _ANALYSIS_RUNWAY_MAX_DEADLINE_FRACTION
+    ) or not isinstance(semantic_state, Mapping):
+        return False
+    progress_count = _bounded_counter(
+        semantic_state.get("analysis_progress_count")
+    )
+    stagnation_count = _bounded_counter(
+        semantic_state.get("analysis_stagnation_count")
+    )
+    return bool(
+        (
+            progress_count > 0
+            or semantic_state.get("analysis_progress_advanced") is True
+        )
+        and stagnation_count < _ANALYSIS_RUNWAY_STAGNATION_THRESHOLD
+    )
+
+
+def _hard_convergence_deadline_reached(
+    context,
+    agent_id: str | None = None,
+    *,
+    semantic_state: Mapping[str, Any] | None = None,
+) -> bool:
+    """Return whether a hard convergence phase may become active.
+
+    The 40% checkpoint starts a *bounded* candidate runway, rather than
+    immediately revoking analysis Tools, when the Sandbox has recently
+    observed a changed intermediate artifact or novel read-only evidence.
+    Three subsequent observations without such progress exhaust that runway;
+    65% of the caller deadline is an unconditional ceiling.  Older/unscoped
+    semantic state receives no implicit allowance.
+    """
 
     progress = _task_deadline_progress(context)
-    return bool(
-        progress is None
-        or progress[2] >= HARD_CONVERGENCE_MIN_DEADLINE_FRACTION
-    )
+    if progress is None:
+        return True
+    consumed_fraction = progress[2]
+    if consumed_fraction < HARD_CONVERGENCE_MIN_DEADLINE_FRACTION:
+        return False
+    if consumed_fraction >= _ANALYSIS_RUNWAY_MAX_DEADLINE_FRACTION:
+        return True
+    if semantic_state is None and isinstance(agent_id, str) and agent_id:
+        try:
+            from aworld.runners.post_tool_progress import semantic_progress_for_agent
+
+            semantic_state = semantic_progress_for_agent(context, agent_id=agent_id)
+        except Exception:
+            semantic_state = None
+    if not isinstance(semantic_state, Mapping):
+        return True
+    return not _bounded_analysis_runway_open(consumed_fraction, semantic_state)
 
 
 def _update_mutation_gate(
@@ -2915,6 +2971,25 @@ def _update_mutation_gate_locked(
         "post_candidate_read_only_observations": no_delivery_progress_count,
         "read_only_threshold": _MUTATION_GATE_READ_ONLY_THRESHOLD,
         "deadline_consumed_fraction": consumed_fraction,
+        "analysis_progress_count": _bounded_counter(
+            semantic_state.get("analysis_progress_count")
+        ),
+        "analysis_stagnation_count": _bounded_counter(
+            semantic_state.get("analysis_stagnation_count")
+        ),
+        "analysis_runway_open": bool(
+            consumed_fraction is not None
+            and _bounded_analysis_runway_open(
+                consumed_fraction,
+                semantic_state,
+            )
+        ),
+        "analysis_runway_stagnation_threshold": (
+            _ANALYSIS_RUNWAY_STAGNATION_THRESHOLD
+        ),
+        "analysis_runway_deadline_ceiling_fraction": (
+            _ANALYSIS_RUNWAY_MAX_DEADLINE_FRACTION
+        ),
         "convergence_stage": (
             convergence_stage.value if convergence_stage is not None else None
         ),
@@ -3832,6 +3907,8 @@ def _apply_event(
 def _activate_convergence_constraint(
     context,
     agent_id: str,
+    *,
+    semantic_state: Mapping[str, Any] | None = None,
 ) -> ProtocolTransition | None:
     """Serialize convergence activation through its gate projection."""
 
@@ -3839,13 +3916,23 @@ def _activate_convergence_constraint(
     transaction = getattr(owner, "task_runtime_state_transaction", None)
     if callable(transaction):
         with transaction():
-            return _activate_convergence_constraint_locked(context, agent_id)
-    return _activate_convergence_constraint_locked(context, agent_id)
+            return _activate_convergence_constraint_locked(
+                context,
+                agent_id,
+                semantic_state=semantic_state,
+            )
+    return _activate_convergence_constraint_locked(
+        context,
+        agent_id,
+        semantic_state=semantic_state,
+    )
 
 
 def _activate_convergence_constraint_locked(
     context,
     agent_id: str,
+    *,
+    semantic_state: Mapping[str, Any] | None = None,
 ) -> ProtocolTransition | None:
     """Replace repeated unacknowledged replans with one executable phase.
 
@@ -3857,7 +3944,11 @@ def _activate_convergence_constraint_locked(
     policy = execution_protocol_policy(context, agent_id)
     if policy.mode is ProtocolMode.OFF:
         return None
-    if not _hard_convergence_deadline_reached(context):
+    if not _hard_convergence_deadline_reached(
+        context,
+        agent_id,
+        semantic_state=semantic_state,
+    ):
         return None
     store = ExecutionProtocolStore(context, agent_id, policy)
     state = store.load()
@@ -3943,6 +4034,24 @@ def _activate_convergence_constraint_locked(
                 if isinstance(previous_gate, Mapping)
                 else 0
             ),
+            "analysis_progress_count": _bounded_counter(
+                semantic_state.get("analysis_progress_count")
+                if isinstance(semantic_state, Mapping)
+                else previous_gate.get("analysis_progress_count")
+                if isinstance(previous_gate, Mapping)
+                else 0
+            ),
+            "analysis_stagnation_count": _bounded_counter(
+                semantic_state.get("analysis_stagnation_count")
+                if isinstance(semantic_state, Mapping)
+                else previous_gate.get("analysis_stagnation_count")
+                if isinstance(previous_gate, Mapping)
+                else 0
+            ),
+            "analysis_progress_advanced": bool(
+                isinstance(semantic_state, Mapping)
+                and semantic_state.get("analysis_progress_advanced") is True
+            ),
         },
     )
     return transition
@@ -3951,6 +4060,8 @@ def _activate_convergence_constraint_locked(
 def _activate_convergence_after_unapplied_limit(
     context,
     agent_id: str,
+    *,
+    semantic_state: Mapping[str, Any] | None = None,
 ) -> ProtocolTransition | None:
     attempts = _normalized_decision_attempts(
         _read_runtime_value(context, agent_id, EXECUTION_PROTOCOL_MODEL_DECISIONS_KEY),
@@ -3961,9 +4072,17 @@ def _activate_convergence_after_unapplied_limit(
         < _MAX_CONSECUTIVE_UNAPPLIED_REPLANS
     ):
         return None
-    if not _hard_convergence_deadline_reached(context):
+    if not _hard_convergence_deadline_reached(
+        context,
+        agent_id,
+        semantic_state=semantic_state,
+    ):
         return None
-    return _activate_convergence_constraint(context, agent_id)
+    return _activate_convergence_constraint(
+        context,
+        agent_id,
+        semantic_state=semantic_state,
+    )
 
 
 def record_tool_protocol_event(
@@ -3990,7 +4109,11 @@ def _record_tool_protocol_event_locked(
         return None
     # Upgrade persisted v1 fail-open counters before processing another Tool
     # observation so a legacy task cannot increment requested replans again.
-    _activate_convergence_after_unapplied_limit(context, agent_id)
+    _activate_convergence_after_unapplied_limit(
+        context,
+        agent_id,
+        semantic_state=semantic_state,
+    )
     observed_action_semantics: list[ActionSemanticReceipt] = []
     raw_action_semantics = semantic_state.get("observed_action_semantics") or ()
     if isinstance(raw_action_semantics, (list, tuple)):
@@ -4072,7 +4195,11 @@ def _record_tool_protocol_event_locked(
         return transition
     deadline_candidate_due = bool(
         deadline_progress is not None
-        and deadline_progress[2] >= HARD_CONVERGENCE_MIN_DEADLINE_FRACTION
+        and _hard_convergence_deadline_reached(
+            context,
+            agent_id,
+            semantic_state=semantic_state,
+        )
         and event.candidate_present is False
         and not transition.state.convergence_constraint_active
         and execution_protocol_eligible(
@@ -4081,7 +4208,11 @@ def _record_tool_protocol_event_locked(
         )
     )
     if deadline_candidate_due:
-        activated = _activate_convergence_constraint_locked(context, agent_id)
+        activated = _activate_convergence_constraint_locked(
+            context,
+            agent_id,
+            semantic_state=semantic_state,
+        )
         if (
             activated is not None
             and activated.state.convergence_constraint_active
@@ -4932,7 +5063,8 @@ def consume_execution_protocol_guidance(context, agent_id: str) -> str | None:
         missing = _missing_public_deliverable_names(context)
         if missing:
             missing_delivery_guidance = (
-                " The public task still has missing named output file(s): "
+                " The public task still has missing, blank, or placeholder "
+                "named output file(s): "
                 + ", ".join(missing)
                 + ". Choose the next delivery intent explicitly; this signal "
                 "does not force a command or claim that a write is safe."

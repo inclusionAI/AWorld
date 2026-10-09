@@ -7,6 +7,7 @@ import time
 from typing import Any, Mapping
 
 from aworld.core.common import ActionModel, Observation
+from aworld.runners.public_deliverables import inspect_public_deliverable
 from aworld.utils.serialized_util import to_serializable
 
 WATCHDOG_STATE_KEY = "post_tool_progress_watchdog"
@@ -173,7 +174,7 @@ def _public_file_version(
 
 
 def _public_deliverable_projection(context) -> dict[str, Any] | None:
-    """Observe explicit public file milestones without granting acceptance."""
+    """Observe minimally inspectable public candidates without accepting them."""
 
     value = context.context_info.get("public_deliverable_contract")
     if (
@@ -197,14 +198,15 @@ def _public_deliverable_projection(context) -> dict[str, Any] | None:
             or not isinstance(item.get("path"), str)
         ):
             return None
+        inspection = inspect_public_deliverable(item["path"])
         try:
-            stat = os.stat(item["path"])
-            exists = os.path.isfile(item["path"])
+            stat = os.stat(item["path"]) if inspection.candidate_eligible else None
         except OSError:
             stat = None
-            exists = False
+        exists = inspection.exists
+        candidate_eligible = bool(inspection.candidate_eligible and stat is not None)
         version = None
-        if exists and stat is not None:
+        if candidate_eligible and stat is not None:
             version, consumed = _public_file_version(
                 item["path"],
                 stat,
@@ -215,12 +217,15 @@ def _public_deliverable_projection(context) -> dict[str, Any] | None:
             {
                 "deliverable_id": item["deliverable_id"],
                 "exists": exists,
+                "candidate_eligible": candidate_eligible,
+                "rejection_reason": inspection.rejection_reason,
                 "version": version,
             }
         )
     return {
         "declared_count": len(projection),
         "existing_count": sum(item["exists"] for item in projection),
+        "candidate_count": sum(item["candidate_eligible"] for item in projection),
         "artifacts": projection,
     }
 
@@ -889,7 +894,12 @@ def _record_semantic_tool_progress_locked(
         else None
     )
     public_delivery_count = (
-        int(public_delivery_projection["existing_count"])
+        int(public_delivery_projection["candidate_count"])
+        if public_delivery_projection is not None
+        else 0
+    )
+    public_delivery_non_candidate_count = (
+        int(public_delivery_projection["existing_count"]) - public_delivery_count
         if public_delivery_projection is not None
         else 0
     )
@@ -1180,6 +1190,37 @@ def _record_semantic_tool_progress_locked(
     repetition_count = recent_pairs.count(semantic_pair_hash)
     result_repetition_count = history.count(result_hash)
     new_information_observed = result_repetition_count == 1
+    # A command can be only partially modeled while still exposing literal
+    # write targets whose pre/post state was authenticated by the Sandbox.  A
+    # real change to that known subset is useful analysis progress even when
+    # the final public deliverable is not ready yet.  Likewise, a successful,
+    # mechanically read-only observation with a never-before-seen result is a
+    # bounded information-gain signal.  Neither signal is completion evidence.
+    intermediate_artifact_advanced = bool(sandbox_workspace_mutated)
+    analysis_information_advanced = bool(
+        sandbox_read_only_observed
+        and observed_results_complete
+        and new_information_observed
+    )
+    analysis_progress_advanced = bool(
+        durable_milestone_advanced
+        or intermediate_artifact_advanced
+        or analysis_information_advanced
+    )
+    analysis_progress_count = min(
+        _MAX_WORKSPACE_GENERATION,
+        int(previous.get("analysis_progress_count", 0) or 0)
+        + int(analysis_progress_advanced),
+    )
+    analysis_stagnation_count = (
+        0
+        if analysis_progress_advanced
+        else min(
+            _MAX_WORKSPACE_GENERATION,
+            int(previous.get("analysis_stagnation_count", 0) or 0) + 1,
+        )
+    )
+    semantic_progress = bool(semantic_progress or analysis_progress_advanced)
     # Successful investigation can produce useful observations without
     # advancing a durable, inspectable milestone.  Keep that evidence in
     # ``semantic_progress`` while allowing the advisory clock to continue.
@@ -1273,6 +1314,7 @@ def _record_semantic_tool_progress_locked(
         "completion_advanced": completion_advanced,
         "public_delivery_fingerprint": public_delivery_fingerprint,
         "public_delivery_count": public_delivery_count,
+        "public_delivery_non_candidate_count": (public_delivery_non_candidate_count),
         "public_delivery_high_water_count": public_delivery_high_water_count,
         "public_delivery_high_water_bloom": format(
             public_delivery_high_water_mask, "0128x"
@@ -1296,6 +1338,11 @@ def _record_semantic_tool_progress_locked(
         "validation_evidence_advanced": validation_evidence_advanced,
         "validation_observed": validation_evidence_advanced,
         "new_information_observed": new_information_observed,
+        "intermediate_artifact_advanced": intermediate_artifact_advanced,
+        "analysis_information_advanced": analysis_information_advanced,
+        "analysis_progress_advanced": analysis_progress_advanced,
+        "analysis_progress_count": analysis_progress_count,
+        "analysis_stagnation_count": analysis_stagnation_count,
         "observed_action_names": _observed_action_names(tool_name, actions),
         "observed_action_signatures": _observed_action_signatures(actions),
         "observed_action_semantics": observed_action_semantics,
@@ -1566,6 +1613,14 @@ def _record_semantic_tool_progress_locked(
     if artifact_changed:
         metrics["task_artifact_change_count"] = (
             int(metrics.get("task_artifact_change_count", 0) or 0) + 1
+        )
+    if intermediate_artifact_advanced:
+        metrics["intermediate_artifact_progress_count"] = (
+            int(metrics.get("intermediate_artifact_progress_count", 0) or 0) + 1
+        )
+    if analysis_information_advanced:
+        metrics["analysis_information_gain_count"] = (
+            int(metrics.get("analysis_information_gain_count", 0) or 0) + 1
         )
     if goal_progress:
         metrics["goal_progress_count"] = (

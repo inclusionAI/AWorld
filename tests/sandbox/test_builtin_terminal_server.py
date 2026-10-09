@@ -832,6 +832,29 @@ async def test_run_code_reports_observed_change_for_literal_write_target(
 
 
 @pytest.mark.asyncio
+async def test_run_code_observes_known_write_subset_for_unknown_effect(
+    tmp_path: Path,
+) -> None:
+    command = """python3 - <<'PY'
+import urllib.request
+with open('analysis.txt', 'w', encoding='utf-8') as handle:
+    handle.write('new intermediate evidence')
+PY
+"""
+
+    response = await run_code(None, command, timeout=10, cwd=str(tmp_path))
+    payload = json.loads(response.text)
+    receipt = payload["metadata"]["terminal_execution_receipt"]
+
+    assert payload["success"] is True
+    assert receipt["effect"] == "unknown"
+    assert receipt["write_paths"] == ["analysis.txt"]
+    assert receipt["write_set_complete"] is False
+    assert receipt["mutation_observed"] is True
+    assert (tmp_path / "analysis.txt").read_text() == "new intermediate evidence"
+
+
+@pytest.mark.asyncio
 async def test_run_code_does_not_cache_reads_outside_workspace(
     tmp_path: Path,
 ) -> None:

@@ -2010,11 +2010,14 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
     def _public_deliverable_feedback_if_unsatisfied(
         self, context: Context
     ) -> str | None:
-        """Block a success claim when an explicit public output is still absent.
+        """Block a success claim when an explicit public output is not a candidate.
 
-        This is an existence milestone, not content validation or verifier
-        acceptance. It cannot turn a file into canonical task success.
+        This is a narrow inspectability milestone, not content validation or
+        verifier acceptance. It rejects only missing, blank, or known whole-file
+        placeholders and cannot turn an eligible file into canonical task success.
         """
+
+        from aworld.runners.public_deliverables import inspect_public_deliverable
 
         artifacts = self._public_deliverable_artifacts(context)
         if not artifacts:
@@ -2022,18 +2025,17 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         observations = []
         missing = []
         for item in artifacts:
-            try:
-                exists = os.path.isfile(item["path"])
-            except OSError:
-                exists = False
+            inspection = inspect_public_deliverable(item["path"])
             observations.append(
                 {
                     "deliverable_id": item["deliverable_id"],
                     "path": item["path"],
-                    "exists": exists,
+                    "exists": inspection.exists,
+                    "candidate_eligible": inspection.candidate_eligible,
+                    "rejection_reason": inspection.rejection_reason,
                 }
             )
-            if not exists:
+            if not inspection.candidate_eligible:
                 missing.append(item)
         context.context_info["public_deliverable_observations"] = {
             "schema_version": _PUBLIC_DELIVERABLE_SCHEMA,
@@ -2043,9 +2045,10 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             return None
         names = ", ".join(item["display_path"] for item in missing)
         return (
-            "The public task explicitly names deliverable file(s) that do not "
-            f"exist yet: {names}. Treat the task as unfinished. Create the "
-            "inspectable file(s), then verify their existence and contents "
+            "The public task explicitly names deliverable file(s) that are "
+            f"missing, blank, or still placeholders: {names}. Treat the task "
+            "as unfinished. Create a minimally inspectable candidate, then "
+            "verify its existence and contents "
             "before proposing another final response. This advisory milestone "
             "does not replace any content validator or canonical verifier."
         )
@@ -4915,15 +4918,16 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         self,
         kwargs: dict[str, Any],
         *,
-        max_output_tokens: int,
+        max_output_tokens: int | None,
         context: Context | None,
     ) -> dict[str, Any]:
         """Project an incomplete response onto one bounded concrete action.
 
         A reasoning-only or truncated response is evidence that another open-
         ended model turn is the wrong retry shape.  Reuse the reviewed
-        reasoning transport capability when it exists, and always bound the
-        recovery output independently of provider-specific reasoning support.
+        reasoning transport capability when it exists.  The output cap is
+        optional because ordinary response recovery must preserve the caller's
+        output allowance unless bounded action repair was explicitly enabled.
         """
 
         updated = self._incomplete_action_recovery_kwargs(
@@ -4975,8 +4979,53 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             metrics["last_action_projection_max_output_tokens"] = (
                 max_output_tokens
             )
+            metrics["last_action_projection_output_cap_applied"] = (
+                max_output_tokens is not None
+            )
             context.context_info["model_response_recovery_metrics"] = metrics
         return updated
+
+    @staticmethod
+    def _model_response_action_projection_output_cap(
+        policy: GenerationBudgetPolicy,
+    ) -> int | None:
+        """Return the opt-in action-repair cap for response recovery.
+
+        Response recovery also runs when the action-budget watchdog is off.
+        Treating ``action_repair_max_output_tokens`` as an unconditional retry
+        cap made the disabled default silently shrink otherwise valid long
+        Tool arguments to 1024 tokens.
+        """
+
+        if not policy.action_repair_enabled:
+            return None
+        return policy.action_repair_max_output_tokens
+
+    @staticmethod
+    def _staged_action_recovery_guidance(
+        reason: str,
+        *,
+        repeated: bool,
+    ) -> str:
+        """Steer truncated Tool payloads away from an identical retry loop."""
+
+        if reason not in {"incomplete_tool_arguments", "model_output_truncated"}:
+            return ""
+        prefix = (
+            "A prior recovery was also truncated. Do not repeat the same "
+            "oversized Tool payload. "
+            if repeated
+            else (
+                "If the previous response was cut off while encoding a large "
+                "Tool payload, do not repeat that oversized payload unchanged. "
+            )
+        )
+        return (
+            " "
+            + prefix
+            + "Use a smaller staged Tool action, such as a bounded first chunk "
+            "or a minimal valid skeleton, and extend it in later turns."
+        )
 
     @staticmethod
     def _model_response_recovery_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
@@ -5671,6 +5720,10 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                         "accurate final answer. When the request names a concrete "
                         "deliverable and its core format is known, create or "
                         "update an inspectable candidate before finalizing."
+                        + self._staged_action_recovery_guidance(
+                            reason,
+                            repeated=True,
+                        )
                         + retained_guidance
                     ),
                 )
@@ -9218,8 +9271,8 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             if model_response_recovery_turn and tools:
                 kwargs = self._model_response_action_projection_kwargs(
                     kwargs,
-                    max_output_tokens=(
-                        controller.policy.action_repair_max_output_tokens
+                    max_output_tokens=self._model_response_action_projection_output_cap(
+                        controller.policy
                     ),
                     context=context,
                 )
@@ -9377,6 +9430,16 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                                 "advances the task. If a concrete deliverable "
                                 "and its core format are already known, create "
                                 "or update an inspectable candidate now."
+                                + self._staged_action_recovery_guidance(
+                                    incomplete_reason,
+                                    repeated=(
+                                        model_response_recovery_turn
+                                        or self._model_response_recovery_continuations(
+                                            context
+                                        )
+                                        > 0
+                                    ),
+                                )
                                 if tools
                                 else (
                                     "No Tools are available in this recovery "
@@ -9405,15 +9468,17 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                                 # ended planning turn. Requiring one declared Tool
                                 # call prevents max-reasoning models from spending
                                 # the entire continuation on a second prose-only
-                                # analysis. It does not cap task turns, tokens, or
-                                # the caller-owned deadline.
+                                # analysis. Ordinary recovery preserves the
+                                # caller's output allowance; only an explicitly
+                                # enabled action-repair policy may apply its
+                                # configured output cap.
                                 kwargs = dict(kwargs)
                                 kwargs["tool_choice"] = "required"
                                 kwargs = (
                                     self._model_response_action_projection_kwargs(
                                         kwargs,
-                                        max_output_tokens=(
-                                            controller.policy.action_repair_max_output_tokens
+                                        max_output_tokens=self._model_response_action_projection_output_cap(
+                                            controller.policy
                                         ),
                                         context=context,
                                     )

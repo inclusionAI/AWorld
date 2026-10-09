@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import replace
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -387,6 +388,43 @@ def test_public_delivery_reserve_requests_typed_model_decision_only_when_armed(
         assert record_pre_generation_delivery_decision(
             context, agent.id(), policy=policy
         ) is None
+
+
+def test_public_deliverable_feedback_rejects_whole_file_placeholder(
+    tmp_path,
+) -> None:
+    agent = _long_running_generation_agent(armed=False)
+    context = agent.context
+    output = tmp_path / "out.txt"
+    context.context_info["public_deliverable_contract"] = {
+        "schema_version": "aworld.public-deliverables/v1",
+        "authority": "public_task_advisory",
+        "source": "public_task_text",
+        "artifacts": [
+            {
+                "deliverable_id": "public-output-1",
+                "path": str(output),
+                "display_path": "out.txt",
+                "kind": "file",
+                "authority": "public_task_advisory",
+            }
+        ],
+    }
+
+    output.write_text("TBD\n", encoding="utf-8")
+    feedback = agent._public_deliverable_feedback_if_unsatisfied(context)
+
+    assert feedback is not None
+    assert "missing, blank, or still placeholders" in feedback
+    observation = context.context_info["public_deliverable_observations"][
+        "artifacts"
+    ][0]
+    assert observation["exists"] is True
+    assert observation["candidate_eligible"] is False
+    assert observation["rejection_reason"] == "placeholder"
+
+    output.write_text("flag{resolved}", encoding="utf-8")
+    assert agent._public_deliverable_feedback_if_unsatisfied(context) is None
 
 
 def test_explicit_generation_compiler_configuration_wins_after_arming() -> None:
@@ -806,12 +844,9 @@ async def test_truncated_model_actions_continue_with_tools_until_task_boundary(
         for index in range(7)
     )
     assert all(
-        min(
-            value
-            for key, value in provider_calls[index].items()
-            if key in {"max_tokens", "max_completion_tokens"}
+        not {"max_tokens", "max_completion_tokens"}.intersection(
+            provider_calls[index]
         )
-        == 1024
         for index in range(1, 7)
     )
     assert all(
@@ -826,6 +861,10 @@ async def test_truncated_model_actions_continue_with_tools_until_task_boundary(
     )
     assert any(
         "Runtime response recovery" in str(item.get("content", ""))
+        for item in provider_calls[-1]["messages"]
+    )
+    assert any(
+        "prior recovery was also truncated" in str(item.get("content", "")).lower()
         for item in provider_calls[-1]["messages"]
     )
     assert any(
@@ -934,6 +973,153 @@ def test_model_response_action_projection_still_caps_unknown_transport() -> None
     ]
     assert receipt["applied"] is False
     assert receipt["reason_code"] == "unsupported_reasoning_transport"
+
+
+@pytest.mark.asyncio
+async def test_disabled_default_recovery_preserves_long_tool_output_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A filter-js-sized Tool call must not be squeezed into 1024 tokens."""
+
+    agent = _ToolAgent(
+        name="Aworld",
+        conf=AgentConfig(
+            llm_provider="openai",
+            llm_model_name="fake-model",
+            llm_api_key="fake-key",
+        ),
+        llm_max_attempts=2,
+        llm_retry_delay=0,
+    )
+    agent._llm = object()
+    message = _message("long-tool-response-recovery")
+    provider_calls: list[dict] = []
+    long_source = "const safe = true;\n" + ("x" * 4_096)
+
+    async def provider(*_args, **kwargs):
+        provider_calls.append(kwargs)
+        if len(provider_calls) == 1:
+            yield ModelResponse(
+                id="truncated-long-write",
+                model="fake-model",
+                tool_calls=[
+                    ToolCall(
+                        id="partial-write",
+                        function=Function(
+                            name="workspace__write",
+                            arguments=(
+                                '{"path":"/app/filter.py","content":"'
+                                + ("x" * 3_500)
+                            ),
+                        ),
+                    )
+                ],
+            )
+            yield ModelResponse(
+                id="truncated-long-write",
+                model="fake-model",
+                finish_reason="length",
+            )
+            return
+        yield ModelResponse(
+            id="complete-long-write",
+            model="fake-model",
+            tool_calls=[
+                ToolCall(
+                    id="complete-write",
+                    function=Function(
+                        name="workspace__write",
+                        arguments=json.dumps(
+                            {"path": "/app/filter.py", "content": long_source}
+                        ),
+                    ),
+                )
+            ],
+        )
+        yield ModelResponse(
+            id="complete-long-write",
+            model="fake-model",
+            finish_reason="tool_calls",
+        )
+
+    monkeypatch.setattr(llm_agent_module, "acall_llm_model_stream", provider)
+
+    response = await agent.invoke_model(
+        messages=[{"role": "user", "content": "write /app/filter.py"}],
+        message=message,
+        max_completion_tokens=8_192,
+        stream=True,
+    )
+
+    assert len(provider_calls) == 2
+    assert provider_calls[1]["tool_choice"] == "required"
+    assert provider_calls[1]["max_completion_tokens"] == 8_192
+    assert len(
+        json.loads(response.tool_calls[0].function.arguments)["content"]
+    ) > 3_000
+    assert any(
+        "smaller staged Tool action" in str(item.get("content", ""))
+        for item in provider_calls[1]["messages"]
+    )
+    policy_metrics = message.context.context_info[
+        f"generation_budget_policy:{agent.id()}"
+    ]
+    assert policy_metrics["policy_source"] == "disabled_default"
+    recovery_metrics = message.context.context_info[
+        "model_response_recovery_metrics"
+    ]
+    assert recovery_metrics["last_action_projection_max_output_tokens"] is None
+    assert recovery_metrics["last_action_projection_output_cap_applied"] is False
+
+
+@pytest.mark.asyncio
+async def test_explicit_action_repair_keeps_configured_recovery_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent = _agent(
+        policy=GenerationBudgetPolicy(
+            total_timeout_seconds=5,
+            action_repair_enabled=True,
+            action_repair_max_output_tokens=1_536,
+        ),
+        attempts=2,
+    )
+    provider_calls: list[dict] = []
+
+    async def provider(*_args, **kwargs):
+        provider_calls.append(kwargs)
+        if len(provider_calls) == 1:
+            return ModelResponse(
+                id="truncated-explicit-repair",
+                model="fake-model",
+                content="unfinished",
+                finish_reason="length",
+            )
+        return ModelResponse(
+            id="recovered-explicit-repair",
+            model="fake-model",
+            finish_reason="tool_calls",
+            tool_calls=[
+                ToolCall(
+                    id="write-small",
+                    function=Function(
+                        name="workspace__write",
+                        arguments='{"path":"/app/out.txt","content":"done"}',
+                    ),
+                )
+            ],
+        )
+
+    monkeypatch.setattr(llm_agent_module, "acall_llm_model", provider)
+
+    await agent.invoke_model(
+        messages=[{"role": "user", "content": "write"}],
+        message=_message("explicit-action-repair-cap"),
+        max_completion_tokens=8_192,
+        stream=False,
+    )
+
+    assert provider_calls[1]["max_completion_tokens"] == 1_536
 
 
 @pytest.mark.asyncio

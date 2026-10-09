@@ -257,6 +257,27 @@ class _MemoryDockerBridge:
         return value.decode()
 
 
+def test_docker_snapshots_known_write_subset_for_unknown_effect(monkeypatch) -> None:
+    server = _docker_server(monkeypatch)
+    test_bridge = _MemoryDockerBridge(b"")
+    monkeypatch.setattr(server, "bridge", test_bridge)
+    command = """cd /workspace && python3 - <<'PY'
+import urllib.request
+with open('analysis.txt', 'w', encoding='utf-8') as handle:
+    handle.write('new intermediate evidence')
+PY
+"""
+
+    plan = server.plan_terminal_execution(command)
+
+    assert plan.effect == "unknown"
+    assert plan.write_paths == ("analysis.txt",)
+    assert plan.write_set_complete is False
+    assert server._literal_container_write_paths(command, plan) == [
+        "/workspace/analysis.txt"
+    ]
+
+
 def _docker_server(monkeypatch):
     monkeypatch.setenv("AWORLD_DOCKER_CONTAINER", "context-eval")
     monkeypatch.setenv("AWORLD_DOCKER_BINARY", "/usr/bin/docker")

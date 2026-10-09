@@ -1873,9 +1873,17 @@ def _snapshot_known_write_paths(
     plan: TerminalExecutionPlan,
     working_directory: Path,
 ) -> dict[Path, tuple[Any, ...]] | None:
-    """Capture cheap pre-execution evidence for literal write targets."""
+    """Capture cheap pre-execution evidence for literal write targets.
 
-    if plan.effect != "mutating" or not plan.write_paths:
+    An incomplete command analysis can still expose a bounded set of literal
+    write targets.  Snapshot those known targets even when the command's
+    overall effect remains ``unknown``.  The resulting receipt does not claim
+    that the write set is complete or make the command admissible at a hard
+    gate; it only prevents a real, observed intermediate-file mutation from
+    being reported as ``mutation_observed=null``.
+    """
+
+    if plan.effect == "read_only" or not plan.write_paths:
         return None
     effective_working_directory = _plan_working_directory(plan, working_directory)
     if effective_working_directory is None:

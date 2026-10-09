@@ -671,20 +671,37 @@ def _literal_container_write_paths(
     code: str,
     plan: Any,
 ) -> list[str] | None:
-    if plan.effect != "mutating" or not plan.write_paths:
+    # A partially modeled command may have an unknown overall effect while
+    # still exposing literal write targets.  Diff that bounded known subset so
+    # downstream progress accounting receives observed mutation evidence.  We
+    # deliberately retain the unknown effect and incomplete-write-set flags;
+    # this is observation, not an admission-policy upgrade.
+    if plan.effect == "read_only" or not plan.write_paths:
         return None
     shell_changes_directory = plan.language == "shell" and bool(
         re.search(r"(?:^|[;&|]\s*)cd\s+", code)
     )
+    write_directory = bridge.workdir
+    if shell_changes_directory:
+        command_cwd = getattr(plan, "command_cwd", None)
+        if not getattr(plan, "command_cwd_safe", False) or not command_cwd:
+            return None
+        write_directory = (
+            command_cwd
+            if PurePosixPath(command_cwd).is_absolute()
+            else posixpath.join(bridge.workdir, command_cwd)
+        )
+        try:
+            write_directory = bridge.validate_path(write_directory)
+        except ValueError:
+            return None
     paths: list[str] = []
     for value in plan.write_paths:
         if "\n" in value or "\r" in value:
             return None
         candidate = value
         if not PurePosixPath(candidate).is_absolute():
-            if shell_changes_directory:
-                return None
-            candidate = posixpath.join(bridge.workdir, candidate)
+            candidate = posixpath.join(write_directory, candidate)
         try:
             paths.append(bridge.validate_path(candidate))
         except ValueError:
