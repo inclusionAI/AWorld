@@ -7,6 +7,7 @@ import tomllib
 from zipfile import ZipFile, ZipInfo
 
 import aworld
+from aworld._version import __version__ as CANONICAL_VERSION
 import pytest
 
 
@@ -66,7 +67,7 @@ def test_core_source_checkout_ignores_unrelated_installed_metadata(monkeypatch) 
 
     monkeypatch.setattr(aworld, "distribution", lambda _name: StaleDistribution())
 
-    assert aworld._resolve_version() == "1.0.0a7"
+    assert aworld._resolve_version() == CANONICAL_VERSION
 
 
 def test_installed_core_uses_its_own_distribution_metadata(monkeypatch) -> None:
