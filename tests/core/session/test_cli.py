@@ -14,8 +14,10 @@ ROOT = Path(__file__).resolve().parents[3]
 
 def command(*args, input=None):
     env = dict(os.environ)
-    for key in ("AWORLD_MODEL", "OPENAI_MODEL", "AWORLD_API_KEY", "OPENAI_API_KEY", "AWORLD_AUTO_DOTENV"):
+    for key in ("AWORLD_MODEL", "OPENAI_MODEL", "LLM_MODEL_NAME", "AWORLD_API_KEY",
+                "OPENAI_API_KEY", "LLM_API_KEY", "AWORLD_AUTO_DOTENV"):
         env.pop(key, None)
+    env["AWORLD_DISABLE_AUTO_DOTENV"] = "1"
     return subprocess.run([sys.executable, "-I", "-S", "-c",
         "import sys; sys.path.insert(0, sys.argv.pop(1)); from aworld.cli.main import main; raise SystemExit(main())",
         str(ROOT), *args, "--no-skills"], input=input, capture_output=True, text=True, env=env, timeout=10)

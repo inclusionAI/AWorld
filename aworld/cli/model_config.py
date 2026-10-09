@@ -9,6 +9,11 @@ import re
 from aworld.models.context_window import resolve_model_context_window
 
 
+_TRUE_VALUES = {"1", "true", "yes", "on"}
+_DOTENV_KEY = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+_DOTENV_REFERENCE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
+
+
 @dataclass(frozen=True)
 class ModelSettings:
     model: str | None
@@ -33,6 +38,54 @@ def _tokens(value, name):
     if type(value) is not int or value <= 0:
         raise ValueError(f"{name} must be a positive integer")
     return value
+
+
+def _fallback_dotenv_values(path, environ):
+    """Parse the common dotenv subset needed by the dependency-free CLI."""
+    values = {}
+    for raw_line in path.read_text(encoding="utf-8-sig").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[7:].lstrip()
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key, value = key.strip(), value.strip()
+        if not _DOTENV_KEY.fullmatch(key):
+            continue
+        if len(value) >= 2 and value[0] == value[-1] == "'":
+            value = value[1:-1]
+        elif len(value) >= 2 and value[0] == value[-1] == '"':
+            value = value[1:-1]
+            value = (value.replace(r"\n", "\n").replace(r"\r", "\r")
+                     .replace(r"\t", "\t").replace(r'\"', '"').replace(r"\\", "\\"))
+        else:
+            value = re.split(r"\s+#", value, maxsplit=1)[0].rstrip()
+        combined = {**environ, **values}
+        values[key] = _DOTENV_REFERENCE.sub(lambda match: combined.get(match.group(1), ""), value)
+    return values
+
+
+def load_project_dotenv(cwd, *, environ=None):
+    """Load ``cwd/.env`` without replacing variables exported by the caller."""
+    env = os.environ if environ is None else environ
+    if str(env.get("AWORLD_DISABLE_AUTO_DOTENV", "")).strip().lower() in _TRUE_VALUES:
+        return None
+    path = Path(cwd) / ".env"
+    if not path.is_file():
+        return None
+    try:
+        from dotenv import dotenv_values
+    except ImportError:
+        values = _fallback_dotenv_values(path, env)
+    else:
+        values = dotenv_values(path, interpolate=True)
+    for key, value in values.items():
+        if key and value is not None and key not in env:
+            env[key] = value
+    return path
 
 
 def resolve_model_settings(args, *, environ=None, home=None):

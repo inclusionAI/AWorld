@@ -82,7 +82,7 @@ def parser():
     value.add_argument("--task", help="Task text (alternative to positional prompt)")
     value.add_argument("--follow-up", action="append", default=[], help="Another run in the same session")
     value.add_argument("--demo", action="store_true", help="Offline deterministic smoke model")
-    value.add_argument("--model")
+    value.add_argument("--model", help="Model name; overrides environment, .env and model profiles")
     value.add_argument("--model-profile", help="Named model in project/user .aworld/aworld.json")
     value.add_argument("--base-url")
     value.add_argument("--cwd", type=Path, default=Path.cwd(), help="LocalSandbox working directory")
@@ -259,6 +259,8 @@ def main(argv=None):
     if command == "run" and args.task is None and args.prompt is None:
         cli.error("run requires a task")
     try:
+        from aworld.cli.model_config import load_project_dotenv
+        load_project_dotenv(args.cwd)
         return asyncio.run(_host(args, command))
     except KeyboardInterrupt:
         return 130
