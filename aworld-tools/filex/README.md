@@ -97,7 +97,8 @@ docker run --rm \
 ```
 
 The default container command is `aworld-cli`. The image also exposes FileX
-through the bundled skill:
+through the bundled skill. AWorld 1.0 loads repository skills from an explicit
+path; the image installs the FileX skill at `/skills/filex`:
 
 ```bash
 docker run --rm -it \
@@ -105,7 +106,7 @@ docker run --rm -it \
   --env-file .env.aworld-filex \
   -v "$PWD/workspace:/root/workspace" \
   aworld-filex:local \
-  aworld-cli run --agent Aworld --skill filex \
+  aworld-cli run --skill-path /skills/filex \
   --task "Parse /root/workspace/report.pdf and summarize it"
 ```
 
