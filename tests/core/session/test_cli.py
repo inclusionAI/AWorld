@@ -109,8 +109,22 @@ class CliTests(unittest.TestCase):
                     self.assertEqual(result.returncode, 0, result.stderr)
                     budget = json.loads(path.read_text())["extra"]["context_budget"]["budget"]
                     self.assertEqual(budget["summary_max_tokens"], expected)
+                    self.assertEqual(budget["summary_timeout"], 300)
                     self.assertLess(budget["keep_recent_tokens"] + expected,
                                     int((window - output - budget["safety_margin"]) * budget["trigger_ratio"]))
+
+    def test_summary_timeout_override_is_exported_and_invalid_values_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "trajectory.json"
+            result = command("run", "--demo", "--task", "hello", "--compaction-timeout", "145.5",
+                             "--trajectory-output", str(path))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(json.loads(path.read_text())["extra"]["context_budget"]["budget"]["summary_timeout"], 145.5)
+            for value in ("0", "-1", "nan", "inf"):
+                with self.subTest(value=value):
+                    result = command("run", "--demo", "--task", "hello", "--compaction-timeout", value)
+                    self.assertEqual(result.returncode, 2, result.stderr)
+                    self.assertIn("summary_timeout must be positive and finite", result.stderr)
 
 
 if __name__ == "__main__":

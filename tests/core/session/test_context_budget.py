@@ -259,6 +259,49 @@ def test_cancelled_summary_cannot_write_a_checkpoint_even_if_model_ignores_cance
     asyncio.run(run())
 
 
+@pytest.mark.parametrize("configured", [300, 145.5])
+def test_summary_wait_uses_configured_timeout_and_remaining_run_deadline(monkeypatch, configured):
+    import aworld.core.context.budget as module
+    from aworld.core.session import RunOptions
+    original_wait_for = asyncio.wait_for
+    waits = []
+
+    async def observe_wait(awaitable, timeout):
+        waits.append(timeout)
+        return await original_wait_for(awaitable, timeout)
+
+    monkeypatch.setattr(module.asyncio, "wait_for", observe_wait)
+
+    async def run():
+        model = LongModel(turns=6)
+        _, session = await make_session(model, budget=replace(BUDGET, summary_timeout=configured))
+        try:
+            assert (await (await session.submit("inspect")).result()).status == RunStatus.COMPLETED
+            assert model.summary_requests
+            assert configured in waits
+        finally:
+            await session.close()
+        waits.clear()
+        started = asyncio.Event()
+
+        async def pending_summary(request):
+            started.set()
+            await asyncio.Event().wait()
+
+        model = LongModel(summary=pending_summary)
+        _, session = await make_session(model, budget=replace(BUDGET, summary_timeout=configured))
+        try:
+            result = await (await session.submit("inspect", options=RunOptions(timeout_seconds=.2))).result()
+            assert started.is_set()
+            assert result.status != RunStatus.COMPLETED
+            assert any(0 < timeout <= .2 for timeout in waits if timeout is not None)
+            assert not any(e.kind == "context.compaction" for e in await session.history())
+        finally:
+            await session.close()
+
+    asyncio.run(run())
+
+
 @pytest.mark.parametrize("changes", [{"context_window": 0}, {"output_reserve": True}, {"trigger_ratio": 1},
                                     {"summary_timeout": float("nan")}, {"keep_recent_tokens": 5000}])
 def test_invalid_budgets_rejected(changes):
