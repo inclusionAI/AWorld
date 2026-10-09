@@ -185,7 +185,11 @@ class MutationGatePreToolHook(PreToolCallHook):
                 "This Tool call is outside the active candidate-production "
                 f"admission (reason: {reason_summary}). Create or modify the "
                 "exact declared deliverable, or execute the exact model-bound "
-                "contractless candidate action."
+                "contractless candidate action. Declaring write paths without "
+                "code that actually writes those exact files is not candidate "
+                "production. When required public deliverables are still "
+                "absent, produce them now; a tool-free handoff is not task "
+                "completion."
             )
         if reason_guidance:
             message_text += " " + reason_guidance

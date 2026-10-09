@@ -2300,7 +2300,9 @@ async def test_produce_convergence_admits_only_exact_declared_target(tmp_path) -
     assert anonymous_receipt["tool_call_ids"] == []
 
 
-def test_produce_convergence_finalizes_after_two_rejected_calls(tmp_path) -> None:
+def test_produce_convergence_keeps_required_delivery_open_after_rejections(
+    tmp_path,
+) -> None:
     target = tmp_path / "result.json"
     context = _context("produce-rejection-finalization")
     context.context_info["public_deliverable_contract"] = {
@@ -2348,16 +2350,27 @@ def test_produce_convergence_finalizes_after_two_rejected_calls(tmp_path) -> Non
         assert blocked["convergence_stage"] == "produce_candidate"
         assert blocked["blocked_call_count"] == index + 1
         assert blocked["pre_candidate_rejected_batch_count"] == index + 1
-        assert blocked["pre_candidate_tool_free_latched"] is (index == 1)
-        assert execution_protocol_requires_tool_free_finalization(
+        assert blocked["pre_candidate_tool_free_latched"] is False
+        assert not execution_protocol_requires_tool_free_finalization(
             context, "agent"
-        ) is (index == 1)
+        )
 
     state = load_execution_protocol_state(context, "agent")
-    assert state.phase is ProtocolPhase.FINALIZE
-    assert state.finalization_entered is True
+    assert state.phase is ProtocolPhase.EXECUTE
+    assert state.finalization_entered is False
     telemetry = build_execution_protocol_telemetry(context, "agent")
     assert telemetry["convergence_gate_blocked_call_count"] == 2
+
+    # The rejection counter is bounded telemetry, not authority to abandon a
+    # required output.  A later exact candidate write must remain admissible.
+    deliverable = ActionModel(
+        tool_name="terminal",
+        action_name="run_code",
+        params={"code": f"printf '{{}}' > {target}"},
+        tool_call_id="recovered-candidate-write",
+        agent_name="agent",
+    )
+    assert mutation_gate_interception(context, [deliverable]) is None
 
 
 def test_produce_rejection_latch_rechecks_live_candidate_before_finalizing(
@@ -2477,10 +2490,10 @@ def test_produce_rejection_latch_ignores_baseline_file_presence(tmp_path) -> Non
         )
         assert receipt is not None
 
-    assert execution_protocol_requires_tool_free_finalization(context, "agent")
+    assert not execution_protocol_requires_tool_free_finalization(context, "agent")
     assert load_execution_protocol_state(
         context, "agent"
-    ).phase is ProtocolPhase.FINALIZE
+    ).phase is ProtocolPhase.EXECUTE
 
 
 def test_produce_convergence_requires_isolated_python_import_authority() -> None:

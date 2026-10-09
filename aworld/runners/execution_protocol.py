@@ -431,6 +431,16 @@ def _normalized_pre_candidate_rejection_state(
 
     count = gate.get("pre_candidate_rejected_batch_count")
     latched = gate.get("pre_candidate_tool_free_latched")
+    required_public_candidate_missing = bool(
+        gate.get("public_deliverable_declared") is True
+        and gate.get("candidate_present") is False
+    )
+    expected_latched = bool(
+        isinstance(count, int)
+        and not isinstance(count, bool)
+        and count >= _MAX_PRE_CANDIDATE_REJECTED_CALLS
+        and not required_public_candidate_missing
+    )
     if count is None and latched is None:
         return 0, False, True
     if (
@@ -438,7 +448,7 @@ def _normalized_pre_candidate_rejection_state(
         and not isinstance(count, bool)
         and 0 <= count <= _MAX_PRE_CANDIDATE_REJECTED_CALLS
         and isinstance(latched, bool)
-        and latched == (count >= _MAX_PRE_CANDIDATE_REJECTED_CALLS)
+        and latched == expected_latched
     ):
         return count, latched, True
     # Corrupted framework state cannot mint fresh Tool runway.
@@ -3293,6 +3303,10 @@ def _mutation_gate_interception_locked(
             )
             pre_latched = bool(
                 pre_count >= _MAX_PRE_CANDIDATE_REJECTED_CALLS
+                and not (
+                    gate.get("public_deliverable_declared") is True
+                    and gate.get("candidate_present") is False
+                )
             )
         else:
             pre_count = 0
@@ -3677,6 +3691,10 @@ def _mutation_gate_interception_locked(
         pre_candidate_tool_free_latched = bool(
             pre_candidate_rejected_batch_count
             >= _MAX_PRE_CANDIDATE_REJECTED_CALLS
+            and not (
+                gate.get("public_deliverable_declared") is True
+                and gate.get("candidate_present") is False
+            )
         )
     else:
         pre_candidate_rejected_batch_count = 0
@@ -5558,12 +5576,15 @@ def execution_protocol_requires_tool_free_finalization(context, agent_id: str) -
     the review model attaches an explicit structured repair decision to a
     concrete Tool call, normal execution continues under the original task
     budget until the model emits a new candidate final response.  Separately,
-    two rejected calls while a required candidate is still absent establish
-    that the solver is not following the only remaining production action.
-    After a candidate exists, two rejected batches following exhaustion of its
-    diagnostic quota establish the same fact for revision/validation.  Either
-    durable latch forces the next turn Tool-free; admitted candidate progress
-    changes the convergence stage before the pre-generation boundary.
+    rejected calls may finalize a contractless task whose only remaining
+    action was already model-bound.  They must not manufacture completion when
+    the public task still has a declared deliverable and no candidate exists;
+    in that case the production gate stays active until a real candidate or
+    the outer task budget ends.  After a candidate exists, rejected batches
+    following exhaustion of its diagnostic quota may establish the same fact
+    for revision/validation.  A durable eligible latch forces the next turn
+    Tool-free; admitted candidate progress changes the convergence stage
+    before the pre-generation boundary.
     """
     owner = state_context(context)
     transaction = getattr(owner, "task_runtime_state_transaction", None)
