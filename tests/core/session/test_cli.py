@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from aworld._version import __version__
 
 ROOT = Path(__file__).resolve().parents[3]
 
@@ -26,7 +27,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("Agent + Context + Tool", result.stdout)
         self.assertEqual(result.stderr, "")
-        self.assertIn("1.0.0a4", command("--version").stdout)
+        self.assertIn(__version__, command("--version").stdout)
         tools = json.loads(command("tools", "--json").stdout)
         self.assertEqual([tool["name"] for tool in tools], ["read", "write", "bash", "read_session", "search_sessions", "session_query"])
 
@@ -72,6 +73,12 @@ class CliTests(unittest.TestCase):
             self.assertEqual(observation["source_call_id"], step["tool_calls"][0]["tool_call_id"])
             self.assertIn("observed data", observation["content"])
             self.assertEqual(trajectory["extra"]["status"], "completed")
+            self.assertEqual(trajectory["final_metrics"]["extra"]["llm_request_count"], 3)
+            self.assertEqual(trajectory["final_metrics"]["extra"]["tool_call_count"], 1)
+            self.assertEqual(trajectory["extra"]["run_metrics"]["llm_request_count"], 1)
+            self.assertEqual(trajectory["extra"]["run_metrics"]["tool_call_count"], 0)
+            self.assertEqual(step["tool_calls"][0]["extra"]["timing_source"], "aworld.run_events")
+            self.assertGreaterEqual(step["tool_calls"][0]["extra"]["duration_ms"], 0)
 
     def test_explicit_tool_selection_and_configuration_errors(self):
         self.assertEqual([tool["name"] for tool in json.loads(command("tools", "--tools", "read", "--json").stdout)], ["read"])
@@ -81,6 +88,43 @@ class CliTests(unittest.TestCase):
         self.assertIn("Specify --model", result.stderr)
         self.assertNotIn("Traceback", result.stderr)
         self.assertEqual(command("run", "--demo", "--task", "hello", "--max-turns", "0").returncode, 2)
+
+    def test_summary_budget_defaults_and_overrides_in_exported_trajectory(self):
+        cases = [
+            (128000, 32768, None, 32768),
+            (1000000, 32768, None, 32768),
+            (65536, 32768, None, 19045),
+            (128000, 4096, None, 4096),
+            (128000, 32768, 8192, 8192),
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "trajectory.json"
+            for window, output, override, expected in cases:
+                with self.subTest(window=window, output=output, override=override):
+                    arguments = ["run", "--demo", "--task", "hello", "--context-window", str(window),
+                                 "--max-output-tokens", str(output), "--trajectory-output", str(path)]
+                    if override is not None:
+                        arguments.extend(["--summary-max-tokens", str(override)])
+                    result = command(*arguments)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    budget = json.loads(path.read_text())["extra"]["context_budget"]["budget"]
+                    self.assertEqual(budget["summary_max_tokens"], expected)
+                    self.assertEqual(budget["summary_timeout"], 300)
+                    self.assertLess(budget["keep_recent_tokens"] + expected,
+                                    int((window - output - budget["safety_margin"]) * budget["trigger_ratio"]))
+
+    def test_summary_timeout_override_is_exported_and_invalid_values_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "trajectory.json"
+            result = command("run", "--demo", "--task", "hello", "--compaction-timeout", "145.5",
+                             "--trajectory-output", str(path))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(json.loads(path.read_text())["extra"]["context_budget"]["budget"]["summary_timeout"], 145.5)
+            for value in ("0", "-1", "nan", "inf"):
+                with self.subTest(value=value):
+                    result = command("run", "--demo", "--task", "hello", "--compaction-timeout", value)
+                    self.assertEqual(result.returncode, 2, result.stderr)
+                    self.assertIn("summary_timeout must be positive and finite", result.stderr)
 
 
 if __name__ == "__main__":

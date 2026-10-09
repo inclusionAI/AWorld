@@ -131,10 +131,16 @@ class RunEvent:
     seq: int
     type: str
     data: object = None
+    # Monotonic time since admission, independent of wall-clock adjustments.
+    elapsed_ms: float | None = None
 
     def __post_init__(self) -> None:
         if isinstance(self.seq, bool) or not isinstance(self.seq, int) or self.seq < 1:
             raise ValueError("Event seq must be a positive integer")
+        if self.elapsed_ms is not None and (isinstance(self.elapsed_ms, bool)
+            or not isinstance(self.elapsed_ms, (int, float))
+            or not math.isfinite(self.elapsed_ms) or self.elapsed_ms < 0):
+            raise ValueError("elapsed_ms must be finite and non-negative")
         if not isinstance(self.type, str) or not self.type.strip():
             raise ValueError("Event type must be a non-empty string")
 

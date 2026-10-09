@@ -78,7 +78,7 @@ def test_actual_prompt_skill_body_and_runtime_are_exported(tmp_path):
     for step, request in zip(systems, requests):
         assert step['message'] == request.system_prompt
         assert step['extra']['sha256'] == sha256(request.system_prompt.encode()).hexdigest()
-        assert step['extra']['version'] == 'aworld-system-v1'
+        assert step['extra']['version'] == 'aworld-system-v2'
         assert step['extra']['sources'][1]['path'] == str(tmp_path / 'AGENTS.md')
     first = requests[0].system_prompt
     assert str(path) in first and 'BODY_ONLY_WHEN_READ' not in first
