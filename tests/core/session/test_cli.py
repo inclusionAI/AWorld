@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from aworld._version import __version__
 
 ROOT = Path(__file__).resolve().parents[3]
 
@@ -26,7 +27,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("Agent + Context + Tool", result.stdout)
         self.assertEqual(result.stderr, "")
-        self.assertIn("1.0.0a7", command("--version").stdout)
+        self.assertIn(__version__, command("--version").stdout)
         tools = json.loads(command("tools", "--json").stdout)
         self.assertEqual([tool["name"] for tool in tools], ["read", "write", "bash", "read_session", "search_sessions", "session_query"])
 
@@ -108,8 +109,22 @@ class CliTests(unittest.TestCase):
                     self.assertEqual(result.returncode, 0, result.stderr)
                     budget = json.loads(path.read_text())["extra"]["context_budget"]["budget"]
                     self.assertEqual(budget["summary_max_tokens"], expected)
+                    self.assertEqual(budget["summary_timeout"], 300)
                     self.assertLess(budget["keep_recent_tokens"] + expected,
                                     int((window - output - budget["safety_margin"]) * budget["trigger_ratio"]))
+
+    def test_summary_timeout_override_is_exported_and_invalid_values_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "trajectory.json"
+            result = command("run", "--demo", "--task", "hello", "--compaction-timeout", "145.5",
+                             "--trajectory-output", str(path))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(json.loads(path.read_text())["extra"]["context_budget"]["budget"]["summary_timeout"], 145.5)
+            for value in ("0", "-1", "nan", "inf"):
+                with self.subTest(value=value):
+                    result = command("run", "--demo", "--task", "hello", "--compaction-timeout", value)
+                    self.assertEqual(result.returncode, 2, result.stderr)
+                    self.assertIn("summary_timeout must be positive and finite", result.stderr)
 
 
 if __name__ == "__main__":

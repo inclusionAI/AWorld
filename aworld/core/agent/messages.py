@@ -33,6 +33,10 @@ class AssistantMessage:
     content: str = ""
     tool_calls: tuple[ToolCall, ...] = ()
     usage: TokenUsage | None = None
+    # Provider continuation state, never an answer or tool result.
+    reasoning_content: str | None = field(default=None, repr=False)
+    reasoning_identity: str | None = field(default=None, repr=False)
+    replayed_reasoning_chars: int | None = None
     role: str = field(default="assistant", init=False)
 
     def __post_init__(self) -> None:
@@ -40,6 +44,12 @@ class AssistantMessage:
             raise TypeError("Assistant content must be text")
         if self.usage is not None and not isinstance(self.usage, TokenUsage):
             raise TypeError("usage must be TokenUsage or None")
+        if self.reasoning_content is not None and not isinstance(self.reasoning_content, str):
+            raise TypeError("reasoning_content must be text or None")
+        if self.reasoning_identity is not None and not isinstance(self.reasoning_identity, str):
+            raise TypeError("reasoning_identity must be text or None")
+        if self.replayed_reasoning_chars is not None and (type(self.replayed_reasoning_chars) is not int or self.replayed_reasoning_chars < 0):
+            raise ValueError("replayed_reasoning_chars must be a non-negative integer or None")
         calls = tuple(self.tool_calls)
         if not all(isinstance(call, ToolCall) for call in calls):
             raise TypeError("tool_calls must contain ToolCall values")
@@ -71,7 +81,7 @@ class Model(Protocol):
     async def complete(self, request: ModelRequest) -> AssistantMessage: ...
 
 
-def messages_from_history(entries):
+def messages_from_history(entries, *, reasoning_identity=None):
     """Project facts into model messages; leave incomplete tool turns in history.
 
     A cancelled run may retain a declared call with no result. Omit that turn
@@ -89,7 +99,9 @@ def messages_from_history(entries):
             data = entry.data
             messages.append(AssistantMessage(data["content"], tuple(
                 ToolCall(call["id"], call["name"], call["arguments"]) for call in data["tool_calls"]
-            )))
+            ), reasoning_content=data.get("reasoning_content")
+                if data.get("reasoning_identity") in (None, reasoning_identity) else None,
+                reasoning_identity=data.get("reasoning_identity")))
         elif entry.kind == "tool.result" and isinstance(entry.data, dict) and "tool_call_id" in entry.data:
             data = entry.data
             messages.append(ToolResultMessage(data["tool_call_id"], data["name"], data["content"], data["is_error"]))

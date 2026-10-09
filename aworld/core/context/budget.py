@@ -20,10 +20,12 @@ def _json(value):
     return json.dumps(value, ensure_ascii=False, sort_keys=True, allow_nan=False)
 
 
-def _records(messages):
+def _records(messages, *, include_reasoning=False):
     values = []
     for message in messages:
         item = {"role": message.role, "content": message.content}
+        if include_reasoning and isinstance(message, AssistantMessage) and message.reasoning_content is not None:
+            item["reasoning_content"] = message.reasoning_content
         if isinstance(message, AssistantMessage) and message.tool_calls:
             item["tool_calls"] = [{"id": call.id, "name": call.name, "arguments": dict(call.arguments)}
                                   for call in message.tool_calls]
@@ -47,13 +49,13 @@ def _envelope(request, model):
 def request_anchor(request, model):
     return {"envelope_sha256": sha256(_json(_envelope(request, model)).encode()).hexdigest(),
             "message_count": len(request.messages),
-            "messages_sha256": sha256(_json(_records(request.messages)).encode()).hexdigest()}
+            "messages_sha256": sha256(_json(_records(request.messages, include_reasoning=bool(request.tools))).encode()).hexdigest()}
 
 
 def estimate_request(request):
     tools = [{"name": item.name, "description": item.description, "parameters": dict(item.parameters)}
              for item in request.tools]
-    return _size(request.system_prompt) + _size(tools) + sum(_size(item) for item in _records(request.messages))
+    return _size(request.system_prompt) + _size(tools) + sum(_size(item) for item in _records(request.messages, include_reasoning=bool(request.tools)))
 
 
 def measure_request(request, history, model):
@@ -68,10 +70,10 @@ def measure_request(request, history, model):
             continue
         if anchor.get("envelope_sha256") != envelope:
             break
-        prefix = sha256(_json(_records(request.messages[:count])).encode()).hexdigest()
+        prefix = sha256(_json(_records(request.messages[:count], include_reasoning=bool(request.tools))).encode()).hexdigest()
         if anchor.get("messages_sha256") != prefix:
             break
-        delta = sum(_size(item) for item in _records(request.messages[count:]))
+        delta = sum(_size(item) for item in _records(request.messages[count:], include_reasoning=bool(request.tools)))
         return {"tokens": value + delta, "method": "provider_input_plus_estimated_delta",
                 "estimated_tokens": estimated, "anchor_input_tokens": value, "trailing_estimate": delta}
     return {"tokens": estimated, "method": "estimated", "estimated_tokens": estimated}
@@ -85,7 +87,7 @@ class ContextBudget:
     trigger_ratio: float = 0.85
     keep_recent_tokens: int = 16000
     summary_max_tokens: int = 32768
-    summary_timeout: float = 30
+    summary_timeout: float = 300
     max_attempts: int = 2
 
     def __post_init__(self):
@@ -131,7 +133,7 @@ def _project(history, cut=0, summary=None, run_id=""):
     return (*[history[index] for index in pins], ContextEntry(run_id, "summary", {"content": summary}), *history[cut:])
 
 
-def _cut(history, start, tail_budget):
+def _cut(history, start, tail_budget, *, reasoning_identity=None):
     pending, boundaries, run = set(), [], None
     for index, entry in enumerate(history):
         if entry.run_id != run:
@@ -147,7 +149,7 @@ def _cut(history, start, tail_budget):
                   and any(item.kind == "assistant" for item in history[start:cut])
                   and any(item.kind == "assistant" for item in history[cut:])]
     for cut in candidates:
-        if sum(_size(item) for item in _records(messages_from_history(history[cut:]))) <= tail_budget:
+        if sum(_size(item) for item in _records(messages_from_history(history[cut:], reasoning_identity=reasoning_identity), include_reasoning=True)) <= tail_budget:
             return cut
     return None
 
@@ -206,7 +208,8 @@ class BudgetPolicy:
             return fallback("attempt_limit")
         checkpoint = _checkpoint(history)
         start = checkpoint.data["first_kept_index"] if checkpoint else 0
-        cut = _cut(history, start, self.budget.keep_recent_tokens)
+        cut = _cut(history, start, self.budget.keep_recent_tokens,
+                   reasoning_identity=getattr(model, "reasoning_identity", None))
         if cut is None:
             return fallback("no_closed_prefix_with_retained_tail")
         prefix = list(history[start:cut])
@@ -247,7 +250,8 @@ class BudgetPolicy:
         if current[:len(history)] != history or any(entry.kind in ("input", "assistant", "tool.result") for entry in current[len(history):]):
             raise RuntimeError("Context changed during summarization")
         view = _project(current, cut, response.content, execution.run_id)
-        candidate = replace(request, messages=messages_from_history(view))
+        candidate = replace(request, messages=messages_from_history(view,
+                            reasoning_identity=getattr(model, "reasoning_identity", None)))
         after = estimate_request(candidate)
         if after >= before["estimated_tokens"] * 0.9 or after > self.budget.trigger_tokens:
             return fallback("insufficient_reduction")

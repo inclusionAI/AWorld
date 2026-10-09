@@ -107,7 +107,7 @@ def parser():
                        help="Compact above this fraction of the remaining input budget")
     value.add_argument("--keep-recent-tokens", type=int, help="Estimated recent history retained during compaction")
     value.add_argument("--summary-max-tokens", type=int, help="Summary output limit (default: 32768, bounded by model output and context budget)")
-    value.add_argument("--compaction-timeout", type=float, default=30, help="Summary request timeout in seconds")
+    value.add_argument("--compaction-timeout", type=float, default=300, help="Summary request timeout in seconds (default: 300; bounded by the remaining run deadline)")
     value.add_argument("--no-compaction", action="store_true", help="Use the full history without automatic budgeting")
     value.add_argument("--json", action="store_true", help="Write one terminal RunResult JSON per line")
     value.add_argument("--events", action="store_true", help="Write observed Run events as JSON lines to stderr")

@@ -99,7 +99,7 @@ class Agent:
                 context.append("system", {**self._prompt_metadata, "content": system_prompt,
                     "sha256": sha256(system_prompt.encode()).hexdigest(), "turn": turn})
             request = ModelRequest(
-                system_prompt, _messages(history),
+                system_prompt, _messages(history, reasoning_identity=getattr(self._model, "reasoning_identity", None)),
                 self._tools.schemas(),
             )
             request = await context.prepare_request(request, model=self._model)
@@ -147,10 +147,17 @@ class Agent:
                                for call in response.tool_calls],
                 "usage": response.usage.to_dict() if response.usage is not None else None,
                 "context_anchor": anchor,
+                **({"replayed_reasoning_chars": response.replayed_reasoning_chars}
+                   if response.replayed_reasoning_chars is not None else {}),
+                **({"reasoning_content": response.reasoning_content,
+                    "reasoning_identity": response.reasoning_identity}
+                   if response.reasoning_content is not None else {}),
             })
             if response.content:
                 context.set_output(response.content)
             context.emit("model.finished", {"turn": turn, "content": response.content, "tool_calls": len(ids),
+                                           "reasoning_chars": len(response.reasoning_content or ""),
+                                           "replayed_reasoning_chars": response.replayed_reasoning_chars,
                                            "usage": response.usage.to_dict() if response.usage is not None else None})
             if not response.tool_calls:
                 return response.content

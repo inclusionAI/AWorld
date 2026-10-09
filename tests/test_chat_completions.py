@@ -427,3 +427,58 @@ with patch.object(subprocess, 'Popen', side_effect=AssertionError('unexpected in
 """
     result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=20)
     assert result.returncode == 0, result.stderr
+
+
+def test_sdk_reasoning_replay_survives_empty_response_without_repeating_tool():
+    import httpx
+    from aworld.cli.trajectory import build_trajectory
+    requests, effects = [], []
+    reasoning = "private fixture reasoning before the tool"
+    rejected_reasoning = "private fixture reasoning with no delivered action"
+
+    async def run():
+        model = ChatCompletionsModel(model="matrixllm.aisearch_dsv41flash", base_url="http://fixture/v1",
+                                    default_parameters={"reasoning_effort": "high"})
+        def handle(request):
+            body = json.loads(request.content)
+            requests.append(body)
+            if len(requests) == 1:
+                result = payload({"content": None, "reasoning_content": reasoning,
+                    "tool_calls": [{"id": "effect-once", "type": "function", "function": {
+                        "name": "effect", "arguments": "{}"}}]}, "tool_calls")
+            else:
+                # A strict compatible server requires the prior reasoning.
+                prior = next(m for m in body["messages"] if m["role"] == "assistant")
+                assert prior["reasoning_content"] == reasoning
+                assert body["messages"][-1]["role"] == "tool"
+                result = payload({"content": None, "reasoning_content": rejected_reasoning}) if len(requests) == 2 else payload({"content": "done", "reasoning_content": "finished"})
+            result["usage"] = {"prompt_tokens": 10, "completion_tokens": 5}
+            return httpx.Response(200, json=result)
+        await mock_provider_client(model, handle)
+        async def effect(arguments, context):
+            effects.append("executed")
+            return "written"
+        agent = Agent(model=model, tools=[Tool("effect", "Side effect", {"type": "object"}, effect)],
+                      system_prompt="Complete the requested tool action.", response_retry_delay=0)
+        session = await create_session(agent=agent)
+        try:
+            handle = await session.submit("do it")
+            result = await handle.result()
+            assert result.status == RunStatus.COMPLETED and result.output == "done", result.error
+            events = [e async for e in handle.events()]
+            assert sum(e.type == "model.retry.scheduled" for e in events) == 1
+            trajectory = build_trajectory(await session.history(), result=result, agent=agent, events=events)
+            assert trajectory["extra"]["run_metrics"]["model_calls"] == 3
+            assert trajectory["extra"]["run_metrics"]["total_tokens"] == 45
+            steps = [s for s in trajectory['steps'] if s['source'] == 'agent']
+            assert steps[0]['extra']['reasoning_chars'] == len(reasoning)
+            assert steps[1]['extra']['diagnostics']['replayed_reasoning_chars'] == len(reasoning)
+            assert steps[2]['extra']['replayed_reasoning_chars'] == len(reasoning)
+            assert reasoning not in str(trajectory) and rejected_reasoning not in str(trajectory)
+        finally:
+            await session.close()
+            await model.aclose()
+    asyncio.run(run())
+    assert len(requests) == 3 and effects == ["executed"]
+    assert requests[1]["messages"][1:] == requests[2]["messages"][1:]
+    assert requests[1]["messages"][0] != requests[2]["messages"][0]

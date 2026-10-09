@@ -66,7 +66,7 @@ def session_tools(store=None, *, allowed_session_ids: Collection[str] | None = N
         more = offset - 1 + len(page) < len(history)
         return {"session_id": session.id, "metadata": deepcopy(dict(snapshot.metadata)),
                 "active_run_id": snapshot.active_run_id, "total_entries": len(history),
-                "entries": [{"run_id": entry.run_id, "kind": entry.kind, "data": entry.data} for entry in page],
+                "entries": [{"run_id": entry.run_id, "kind": entry.kind, "data": _visible_data(entry)} for entry in page],
                 "next_offset": offset + len(page) if more else None}
 
     async def search(arguments, context):
@@ -102,7 +102,7 @@ def session_tools(store=None, *, allowed_session_ids: Collection[str] | None = N
                 continue
             if state is not None and (snapshot.active_run_id is not None) != (state == "active"):
                 continue
-            texts = [(index + 1, entry.kind, _search_text(entry.data)) for index, entry in enumerate(history)]
+            texts = [(index + 1, entry.kind, _search_text(_visible_data(entry))) for index, entry in enumerate(history)]
             found = next(((index, kind, text) for index, kind, text in texts if term and term in text.casefold()), None)
             if term and found is None and term not in _search_text(metadata).casefold() and term not in session.id.casefold():
                 continue
@@ -132,6 +132,13 @@ def session_tools(store=None, *, allowed_session_ids: Collection[str] | None = N
                  "metadata": {"type": "object"}, "state": {"type": "string", "enum": ["active", "idle"]},
                  "text": {"type": "string"}}, "additionalProperties": False}, **pagination}, "required": ["query"]}, query_sessions),
     )
+
+
+def _visible_data(entry):
+    if entry.kind == "assistant" and isinstance(entry.data, dict):
+        return {key: value for key, value in entry.data.items()
+                if key not in ("reasoning_content", "reasoning_identity")}
+    return entry.data
 
 
 def _search_text(data):
