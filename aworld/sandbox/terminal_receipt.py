@@ -3970,6 +3970,7 @@ def build_terminal_execution_receipt(
     representation: str | None = None,
     source_checkpoint_revision: int | None = None,
     execution_context_sha256: str | None = None,
+    declared_public_write_receipts: Sequence[Mapping[str, Any]] = (),
 ) -> dict[str, Any]:
     """Project one terminal decision/result into bounded transport metadata."""
 
@@ -4070,6 +4071,10 @@ def build_terminal_execution_receipt(
         receipt["execution_context_sha256"] = execution_context_sha256
     if nested_language_evidence:
         receipt["nested_language_evidence"] = nested_language_evidence
+    if declared_public_write_receipts:
+        receipt["declared_public_write_receipts"] = [
+            dict(item) for item in declared_public_write_receipts
+        ][:_MAX_RECEIPT_PATHS]
     return receipt
 
 

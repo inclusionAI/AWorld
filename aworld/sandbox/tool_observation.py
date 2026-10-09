@@ -34,6 +34,17 @@ from aworld.sandbox.terminal_receipt import (
     terminal_command_sha256,
     terminal_execution_context_sha256,
 )
+from aworld.sandbox.declared_write import (
+    DECLARED_PUBLIC_WRITE_CONTRACT_KEY,
+    DECLARED_PUBLIC_WRITE_RECEIPTS_KEY,
+    build_declared_public_write_contract,
+    declared_write_operation_sha256,
+    framework_scope_sha256,
+    framework_scope_values,
+    semantic_target_sha256,
+    validate_declared_public_write_contract,
+    validate_declared_public_write_receipt,
+)
 from aworld.utils.serialized_util import to_serializable
 
 
@@ -115,22 +126,6 @@ def canonical_tool_identity(action: Any) -> tuple[str, str]:
     if tool == "mcp" and "__" in operation:
         tool, operation = operation.split("__", 1)
     return tool, operation
-
-
-def semantic_target_sha256(path: str) -> str:
-    """Hash one lexical workspace target without resolving or retaining it."""
-
-    if not isinstance(path, str) or not path.strip() or len(path) > 4096:
-        raise ValueError("semantic target must be a bounded nonempty path")
-    normalized = posixpath.normpath(path.strip().replace("\\", "/"))
-    if normalized.startswith("./"):
-        normalized = normalized[2:]
-    return (
-        "sha256:"
-        + hashlib.sha256(
-            ("workspace-target/v1\0" + normalized).encode("utf-8")
-        ).hexdigest()
-    )
 
 
 def _semantic_tool_parts(action: Any) -> tuple[str, str]:
@@ -712,56 +707,7 @@ def actions_are_provably_read_only(actions: Sequence[Any]) -> bool:
 
 
 def _scope(context: Any) -> tuple[str, ...]:
-    lifecycle = getattr(context, "context_lifecycle_state", None)
-
-    def lifecycle_value(name: str, default: Any = None) -> Any:
-        return (
-            lifecycle.get(name, default)
-            if isinstance(lifecycle, Mapping)
-            else getattr(lifecycle, name, default)
-        )
-
-    epoch = getattr(context, "task_epoch", lifecycle_value("task_epoch"))
-    session_epoch = lifecycle_value("session_epoch")
-    checkpoint_revision = lifecycle_value("checkpoint_revision")
-    branch_id = lifecycle_value("branch_id")
-    agent_info = getattr(context, "agent_info", None)
-    try:
-        current_agent_id = (
-            agent_info.get("current_agent_id")
-            if isinstance(agent_info, Mapping)
-            else getattr(agent_info, "current_agent_id", None)
-        )
-    except (AttributeError, KeyError, TypeError):
-        current_agent_id = None
-    try:
-        context_agent_id = getattr(context, "agent_id", None)
-    except (AttributeError, KeyError, TypeError):
-        context_agent_id = None
-    agent_id = current_agent_id or context_agent_id
-    session_id = getattr(context, "session_id", None) or lifecycle_value("session_id")
-    return (
-        str(getattr(context, "task_id", "") or "").strip(),
-        "" if epoch is None or isinstance(epoch, bool) else str(epoch),
-        str(session_id or "").strip(),
-        (
-            str(session_epoch)
-            if isinstance(session_epoch, int)
-            and not isinstance(session_epoch, bool)
-            and session_epoch >= 0
-            else ""
-        ),
-        str(branch_id or "").strip(),
-        (
-            str(checkpoint_revision)
-            if isinstance(checkpoint_revision, int)
-            and not isinstance(checkpoint_revision, bool)
-            and checkpoint_revision >= 0
-            else ""
-        ),
-        str(agent_id or "").strip(),
-        str(agent_id or "").strip(),
-    )
+    return framework_scope_values(context)
 
 
 def _scope_is_complete(scope: tuple[str, ...]) -> bool:
@@ -812,6 +758,8 @@ def _reject_provider_replay(result: Any, *, reason: str) -> None:
 def _validated_terminal_execution_receipt(
     action: Any,
     result: Any,
+    *,
+    context: Any,
 ) -> tuple[dict[str, Any] | None, bool]:
     """Return a validated provider receipt and whether one was supplied."""
 
@@ -1141,6 +1089,90 @@ def _validated_terminal_execution_receipt(
         ):
             return None, True
     return receipt, True
+
+
+def _validated_declared_public_write_receipts(
+    action: Any,
+    result: Any,
+    *,
+    context: Any,
+    terminal_receipt: Mapping[str, Any] | None,
+) -> tuple[dict[str, Any], ...]:
+    """Authenticate provider versions against this exact framework call."""
+
+    if terminal_receipt is None:
+        return ()
+    if not _result_success(result):
+        return ()
+    candidates = terminal_receipt.get(DECLARED_PUBLIC_WRITE_RECEIPTS_KEY)
+    if candidates is None:
+        return ()
+    if not isinstance(candidates, list) or not candidates or len(candidates) > 16:
+        return ()
+    action_params = _value(action, "params", {})
+    result_params = _value(result, "parameter", {})
+    if not isinstance(action_params, Mapping) or not isinstance(result_params, Mapping):
+        return ()
+    declared_paths = action_params.get("declared_write_paths")
+    if result_params.get("declared_write_paths") != declared_paths:
+        return ()
+    hidden = result_params.get("env_content")
+    if not isinstance(hidden, Mapping):
+        return ()
+    try:
+        expected_scope_sha256 = framework_scope_sha256(
+            framework_scope_values(context)
+        )
+        expected_contract = build_declared_public_write_contract(context)
+        dispatched_contract = validate_declared_public_write_contract(
+            hidden.get(DECLARED_PUBLIC_WRITE_CONTRACT_KEY),
+            expected_scope_sha256=expected_scope_sha256,
+        )
+        operation_sha256 = declared_write_operation_sha256(
+            code=action_params.get("code"),
+            language=action_params.get("language", "shell"),
+            cwd=action_params.get("cwd"),
+            declared_write_paths=declared_paths,
+        )
+    except (AttributeError, TypeError, ValueError):
+        return ()
+    if expected_contract is None or dispatched_contract != expected_contract:
+        return ()
+    action_call_id = _value(action, "tool_call_id")
+    result_call_id = _value(result, "tool_call_id")
+    if (
+        not isinstance(action_call_id, str)
+        or not action_call_id
+        or result_call_id != action_call_id
+        or hidden.get("tool_call_id") != action_call_id
+    ):
+        return ()
+    targets = {
+        (target["deliverable_id"], target["target_id"])
+        for target in expected_contract["targets"]
+    }
+    validated: list[dict[str, Any]] = []
+    seen_receipts: set[str] = set()
+    for candidate in candidates:
+        receipt = validate_declared_public_write_receipt(candidate)
+        if receipt is None:
+            return ()
+        if (
+            receipt["scope_sha256"] != expected_scope_sha256
+            or receipt["contract_sha256"]
+            != expected_contract["contract_sha256"]
+            or receipt["tool_call_id"] != action_call_id
+            or receipt["operation_sha256"] != operation_sha256
+            or (receipt["deliverable_id"], receipt["target_id"]) not in targets
+            or receipt["executed"] is not terminal_receipt.get("executed")
+            or receipt["exit_code"] != terminal_receipt.get("exit_code")
+            or receipt["timed_out"] is not terminal_receipt.get("timed_out")
+            or receipt["receipt_id"] in seen_receipts
+        ):
+            return ()
+        seen_receipts.add(receipt["receipt_id"])
+        validated.append(receipt)
+    return tuple(validated)
 
 
 def _valid_read_coverage(value: Any) -> bool:
@@ -1953,7 +1985,19 @@ class SandboxToolObservationRuntime:
     def record(self, action: Any, result: Any, *, context: Any) -> Any:
         fallback_effect = classify_tool_effect(action)
         terminal_receipt, terminal_receipt_supplied = (
-            _validated_terminal_execution_receipt(action, result)
+            _validated_terminal_execution_receipt(
+                action,
+                result,
+                context=context,
+            )
+        )
+        declared_public_write_receipts = (
+            _validated_declared_public_write_receipts(
+                action,
+                result,
+                context=context,
+                terminal_receipt=terminal_receipt,
+            )
         )
         read_receipt, read_receipt_supplied = _validated_read_observation_receipt(
             action, result
@@ -2275,6 +2319,10 @@ class SandboxToolObservationRuntime:
             receipt["cache_bypass_reason"] = replay_bypass_reason
         if terminal_receipt is not None:
             receipt["terminal_execution_receipt"] = terminal_receipt
+        if declared_public_write_receipts:
+            receipt[DECLARED_PUBLIC_WRITE_RECEIPTS_KEY] = [
+                dict(item) for item in declared_public_write_receipts
+            ]
         if read_receipt is not None:
             receipt[READ_OBSERVATION_RECEIPT_KEY] = read_receipt
         metadata = _metadata(result)

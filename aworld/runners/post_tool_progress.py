@@ -33,6 +33,7 @@ _PUBLIC_DELIVERABLE_HASH_MAX_BYTES = 8 * 1024 * 1024
 _PUBLIC_DELIVERY_HIGH_WATER_BLOOM_BITS = 512
 _SANDBOX_OBSERVATION_SCHEMA = "aworld.sandbox-tool-observation/v1"
 _MAX_WORKSPACE_GENERATION = 1_000_000_000
+_DECLARED_PUBLIC_WRITE_RECEIPTS_KEY = "declared_public_write_receipts"
 _ANALYSIS_RUNWAY_START_FRACTION = 0.40
 _ANALYSIS_RUNWAY_END_FRACTION = 0.65
 _ANALYSIS_RUNWAY_MAX_PROGRESS_RESETS = 8
@@ -182,6 +183,8 @@ def _public_file_version(
 def _public_deliverable_projection(context) -> dict[str, Any] | None:
     """Observe minimally inspectable public candidates without accepting them."""
 
+    from aworld.sandbox.declared_write import semantic_target_sha256
+
     value = context.context_info.get("public_deliverable_contract")
     if (
         not isinstance(value, dict)
@@ -222,6 +225,7 @@ def _public_deliverable_projection(context) -> dict[str, Any] | None:
         projection.append(
             {
                 "deliverable_id": item["deliverable_id"],
+                "target_id": semantic_target_sha256(item["path"]),
                 "exists": exists,
                 "candidate_eligible": candidate_eligible,
                 "rejection_reason": inspection.rejection_reason,
@@ -539,6 +543,103 @@ def _observed_action_semantics(
     return tuple(receipts)
 
 
+def _authenticated_declared_write_receipts(
+    context: Any,
+    actions: list[ActionModel],
+    action_results: list[Any],
+) -> tuple[dict[str, Any], ...]:
+    """Revalidate path-free write versions at the progress boundary."""
+
+    from aworld.sandbox.declared_write import (
+        build_declared_public_write_contract,
+        declared_write_operation_sha256,
+        framework_scope_sha256,
+        framework_scope_values,
+        validate_declared_public_write_receipt,
+    )
+
+    expected_contract = build_declared_public_write_contract(context)
+    if expected_contract is None:
+        return ()
+    try:
+        expected_scope_sha256 = framework_scope_sha256(
+            framework_scope_values(context)
+        )
+    except ValueError:
+        return ()
+    targets = {
+        (target["deliverable_id"], target["target_id"])
+        for target in expected_contract["targets"]
+    }
+    receipts: list[dict[str, Any]] = []
+    for action, result in zip(actions, action_results):
+        if not isinstance(result, Mapping):
+            continue
+        metadata = result.get("metadata")
+        sandbox_receipt = (
+            metadata.get("sandbox_observation")
+            if isinstance(metadata, Mapping)
+            else None
+        )
+        candidates = (
+            sandbox_receipt.get(_DECLARED_PUBLIC_WRITE_RECEIPTS_KEY)
+            if isinstance(sandbox_receipt, Mapping)
+            else None
+        )
+        if not isinstance(candidates, list) or not candidates or len(candidates) > 16:
+            continue
+        action_call_id = str(action.tool_call_id or "")
+        if (
+            not action_call_id
+            or result.get("tool_call_id") != action_call_id
+            or result.get("success") is not True
+            or result.get("error")
+            or sandbox_receipt.get("tool_call_id") != action_call_id
+            or sandbox_receipt.get("scope_volatile") is True
+        ):
+            continue
+        params = action.params if isinstance(action.params, Mapping) else {}
+        try:
+            operation_sha256 = declared_write_operation_sha256(
+                code=params.get("code"),
+                language=params.get("language", "shell"),
+                cwd=params.get("cwd"),
+                declared_write_paths=params.get("declared_write_paths"),
+            )
+        except (TypeError, ValueError):
+            continue
+        terminal_receipt = sandbox_receipt.get("terminal_execution_receipt")
+        if not isinstance(terminal_receipt, Mapping):
+            continue
+        batch: list[dict[str, Any]] = []
+        batch_ids: set[str] = set()
+        for candidate in candidates:
+            receipt = validate_declared_public_write_receipt(candidate)
+            if receipt is None:
+                batch = []
+                break
+            if (
+                receipt["scope_sha256"] != expected_scope_sha256
+                or receipt["contract_sha256"]
+                != expected_contract["contract_sha256"]
+                or receipt["tool_call_id"] != action_call_id
+                or receipt["operation_sha256"] != operation_sha256
+                or (receipt["deliverable_id"], receipt["target_id"]) not in targets
+                or receipt["executed"] is not terminal_receipt.get("executed")
+                or receipt["exit_code"] != terminal_receipt.get("exit_code")
+                or receipt["timed_out"] is not terminal_receipt.get("timed_out")
+                or receipt["receipt_id"] in batch_ids
+            ):
+                batch = []
+                break
+            batch_ids.add(receipt["receipt_id"])
+            batch.append(receipt)
+        receipts.extend(batch)
+        if len(receipts) >= 16:
+            break
+    return tuple(receipts[:16])
+
+
 def _select_semantic_state(shared: Any, local: Any) -> dict[str, Any] | None:
     """Choose the newest typed state while retaining ContextState compatibility."""
     shared_state = shared if isinstance(shared, dict) else None
@@ -825,6 +926,11 @@ def _record_semantic_tool_progress_locked(
         actions,
         action_results,
         minimum_workspace_generation=previous_workspace_generation,
+    )
+    declared_write_receipts = _authenticated_declared_write_receipts(
+        runtime_context,
+        actions,
+        action_results,
     )
     known_mutation_executed = any(
         isinstance(receipt.get("terminal_execution_receipt"), dict)
@@ -1192,18 +1298,68 @@ def _record_semantic_tool_progress_locked(
             public_delivery_high_water_mask, public_delivery_fingerprint
         )
     )
-    successful_declared_candidate_mutation = any(
+    successful_non_terminal_declared_candidate_mutation = any(
         receipt.get("effect") == "mutating"
         and receipt.get("executed") is True
         and receipt.get("succeeded") is True
         and receipt.get("timed_out") is False
         and receipt.get("declared_deliverable_targeted") is True
+        and "workspace.execute" not in (receipt.get("capability_aliases") or ())
         for receipt in observed_action_semantics
         if isinstance(receipt, Mapping)
     )
-    public_delivery_progress_advanced = bool(
-        public_delivery_advanced and successful_declared_candidate_mutation
+    current_versions_by_target = (
+        {
+            item["target_id"]: item.get("version")
+            for item in public_delivery_projection.get("artifacts", ())
+            if item.get("candidate_eligible") is True
+        }
+        if public_delivery_projection is not None
+        else {}
     )
+    previous_declared_write_high_water = _delivery_high_water_mask(
+        previous.get("declared_write_receipt_high_water_bloom")
+    )
+    declared_write_receipt_replay = any(
+        _delivery_high_water_contains(
+            previous_declared_write_high_water,
+            receipt["receipt_id"],
+        )
+        for receipt in declared_write_receipts
+    )
+    fresh_changed_declared_write_receipts = [
+        receipt
+        for receipt in declared_write_receipts
+        if receipt.get("changed") is True
+        and receipt.get("executed") is True
+        and receipt.get("exit_code") == 0
+        and receipt.get("timed_out") is False
+        and not _delivery_high_water_contains(
+            previous_declared_write_high_water,
+            receipt["receipt_id"],
+        )
+    ]
+    declared_write_version_match = any(
+        current_versions_by_target.get(receipt["target_id"])
+        == receipt["after_version"]
+        for receipt in fresh_changed_declared_write_receipts
+    )
+    authenticated_declared_candidate_mutation = bool(
+        declared_write_version_match
+    )
+    public_delivery_progress_advanced = bool(
+        public_delivery_advanced
+        and (
+            successful_non_terminal_declared_candidate_mutation
+            or authenticated_declared_candidate_mutation
+        )
+    )
+    declared_write_high_water = previous_declared_write_high_water
+    for receipt in declared_write_receipts:
+        declared_write_high_water = _delivery_high_water_add(
+            declared_write_high_water,
+            receipt["receipt_id"],
+        )
     if public_delivery_fingerprint:
         recent_public_delivery_fingerprints.append(public_delivery_fingerprint)
         public_delivery_high_water_mask = _delivery_high_water_add(
@@ -1626,6 +1782,13 @@ def _record_semantic_tool_progress_locked(
         "missing_public_deliverable_count": missing_public_deliverable_count,
         "candidate_present": candidate_present,
         "public_candidate_mutated": public_candidate_mutated,
+        "declared_write_receipt_count": len(declared_write_receipts),
+        "declared_write_receipt_replay": declared_write_receipt_replay,
+        "declared_write_version_match": declared_write_version_match,
+        "declared_write_receipt_high_water_bloom": format(
+            declared_write_high_water,
+            "0128x",
+        ),
         # Candidate advancement is a successful, never-before-seen public
         # delivery high-water fingerprint.  A failed Tool result, missing
         # receipt, or A→B→A oscillation cannot manufacture progress.

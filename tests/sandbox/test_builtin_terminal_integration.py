@@ -35,6 +35,10 @@ async def test_builtin_terminal_discovers_and_executes_in_workspace(
         assert "language" in schemas["terminal__run_code"]["parameters"]["properties"]
         assert "cwd" in schemas["terminal__run_code"]["parameters"]["properties"]
         assert "env" in schemas["terminal__run_code"]["parameters"]["properties"]
+        assert (
+            "declared_write_paths"
+            in schemas["terminal__run_code"]["parameters"]["properties"]
+        )
         assert "terminal__read_output_artifact" in schemas
         processed_tools, tool_mapping = await process_mcp_tools(tools)
         assert "run_code" in {item["function"]["name"] for item in processed_tools}

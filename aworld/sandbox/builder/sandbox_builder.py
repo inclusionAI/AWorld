@@ -1,5 +1,5 @@
 """Main builder for creating Sandbox instances with fluent API."""
-from typing import Dict, List, Any, Literal, Mapping, Optional, TYPE_CHECKING
+from typing import Dict, List, Any, Literal, Mapping, Optional, Sequence, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from aworld.sandbox.implementations.sandbox import Sandbox
@@ -362,16 +362,22 @@ class SandboxBuilder:
         cwd: str | None = None,
         env: Mapping[str, str] | None = None,
         language: Literal["shell", "python"] = "shell",
+        declared_write_paths: Sequence[str] | None = None,
     ):
         """Proxy to Sandbox.terminal.run_code for IDE completion."""
         instance = self.build()
+        parameters = {
+            "code": code,
+            "timeout": timeout,
+            "output_format": output_format,
+            "cwd": cwd,
+            "env": env,
+            "language": language,
+        }
+        if declared_write_paths is not None:
+            parameters["declared_write_paths"] = list(declared_write_paths)
         return await instance.terminal.run_code(
-            code=code,
-            timeout=timeout,
-            output_format=output_format,
-            cwd=cwd,
-            env=env,
-            language=language,
+            **parameters,
         )
 
     async def read_output_artifact(

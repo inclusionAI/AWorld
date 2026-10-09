@@ -40,6 +40,17 @@ from aworld.sandbox.terminal_receipt import (
     plan_terminal_execution,
     terminal_command_sha256,
 )
+from aworld.sandbox.declared_write import (
+    DECLARED_PUBLIC_WRITE_CONTRACT_KEY,
+    DECLARED_PUBLIC_WRITE_HASH_MAX_BYTES,
+    authorized_declared_write_targets,
+    build_receipts_for_versions,
+    declared_write_operation_sha256,
+    framework_scope_from_hidden,
+    framework_scope_sha256,
+    overlapping_path_leases,
+    validate_declared_public_write_contract,
+)
 
 
 _READ_OBSERVATION_RECEIPT_KEY = "read_observation_receipt"
@@ -1187,6 +1198,80 @@ async def _held_fd_container_file_read(
     return stdout, coverage, complete, metadata, epoch_record, content_sha256
 
 
+async def _container_declared_write_versions(
+    targets: tuple[dict[str, str], ...],
+    *,
+    timeout: int,
+) -> tuple[dict[str, str], str] | None:
+    """Read exact bounded target versions through provider-attested helpers."""
+
+    if not targets:
+        return {}, "none"
+    timeout = max(1, min(timeout, 5))
+    deadline = time.monotonic() + timeout
+
+    def remaining_timeout() -> int:
+        return max(1, min(timeout, int(deadline - time.monotonic()) or 1))
+    helper_tokens = (
+        "head",
+        "readlink",
+        "sed",
+        "sha256sum",
+        "stat",
+        "tail",
+        "tee",
+        "timeout",
+        "wc",
+    )
+    context = await _trusted_docker_helper_context(
+        executable_tokens=helper_tokens,
+        timeout=remaining_timeout(),
+        require_immutable=False,
+    )
+    if context is None:
+        return None
+    versions: dict[str, str] = {}
+    for target in targets:
+        if time.monotonic() >= deadline:
+            return None
+        path = target["path"]
+        return_code, stdout, stderr, timed_out = await _execute_in_trusted_context(
+            context,
+            'if [ -e "$1" ] || [ -L "$1" ]; then printf present; else printf missing; fi',
+            timeout=remaining_timeout(),
+            arguments=(path,),
+        )
+        if timed_out or return_code != 0 or stderr or stdout not in {b"missing", b"present"}:
+            return None
+        if stdout == b"missing":
+            versions[target["target_id"]] = "missing"
+            continue
+        try:
+            observed = await _held_fd_container_file_read(
+                context,
+                path=path,
+                request={
+                    "mode": "full",
+                    "hard_limit": DECLARED_PUBLIC_WRITE_HASH_MAX_BYTES,
+                },
+                emit=False,
+                timeout=remaining_timeout(),
+            )
+        except (RuntimeError, ValueError):
+            return None
+        if not observed[2] or observed[1].kind != "full":
+            return None
+        versions[target["target_id"]] = observed[5]
+    confirmed = await _trusted_docker_helper_context(
+        executable_tokens=helper_tokens,
+        timeout=remaining_timeout(),
+        require_immutable=False,
+    )
+    if confirmed is None or confirmed.fingerprint != context.fingerprint:
+        return None
+    return versions, context.fingerprint
+
+
 def _plan_read_ranges(plan: Any) -> tuple[TerminalReadRange, ...]:
     ranges = tuple(getattr(plan, "read_ranges", ()) or ())
     if len(ranges) != len(plan.read_paths):
@@ -1431,6 +1516,14 @@ async def run_code(
             "framework executes this mode with isolated Python (-I -c)"
         ),
     ),
+    declared_write_paths: Optional[list[str]] = Field(
+        default=None,
+        description=(
+            "Optional exact paths this command intends to write. Relative paths "
+            "resolve from the container workdir and are receipt-eligible only "
+            "when the hidden public-deliverable contract also declares them."
+        ),
+    ),
     env_content: Optional[dict[str, Any]] = Field(
         default=None,
         description="Framework-injected task scope; hidden from the model schema",
@@ -1441,6 +1534,8 @@ async def run_code(
         timeout = timeout.default
     if isinstance(language, FieldInfo):
         language = language.default
+    if isinstance(declared_write_paths, FieldInfo):
+        declared_write_paths = declared_write_paths.default
     if isinstance(env_content, FieldInfo):
         env_content = env_content.default
     started = time.monotonic()
@@ -1561,6 +1656,42 @@ async def run_code(
         },
     )
     scope = _framework_scope(env_content)
+    declared_contract = None
+    declared_targets: tuple[dict[str, str], ...] = ()
+    declared_operation_sha256 = None
+    try:
+        declared_scope_sha256 = framework_scope_sha256(
+            framework_scope_from_hidden(env_content)
+        )
+        declared_contract = validate_declared_public_write_contract(
+            env_content.get(DECLARED_PUBLIC_WRITE_CONTRACT_KEY)
+            if isinstance(env_content, Mapping)
+            else None,
+            expected_scope_sha256=declared_scope_sha256,
+        )
+
+        def normalize_declared_path(value: str) -> str:
+            candidate = posixpath.normpath(value)
+            if not PurePosixPath(candidate).is_absolute():
+                candidate = posixpath.join(bridge.workdir, candidate)
+            return bridge.validate_path(candidate)
+
+        declared_targets = authorized_declared_write_targets(
+            declared_write_paths,
+            declared_contract,
+            normalize_path=normalize_declared_path,
+        )
+        if declared_targets:
+            declared_operation_sha256 = declared_write_operation_sha256(
+                code=code,
+                language=language,
+                cwd=None,
+                declared_write_paths=declared_write_paths,
+            )
+    except (AttributeError, OSError, TypeError, ValueError):
+        declared_contract = None
+        declared_targets = ()
+        declared_operation_sha256 = None
     cached_fact = _lookup_read_fact(
         scope=scope,
         operation_key=operation_key,
@@ -1657,10 +1788,10 @@ async def run_code(
             controlled_read_request = None
             controlled_read_probe = None
     write_paths = _literal_container_write_paths(code, potential_plan)
-    before_write_states = await _container_path_states(
-        write_paths,
-        timeout=timeout,
-    )
+    lease_paths = [
+        *(write_paths or ()),
+        *(target["path"] for target in declared_targets),
+    ]
     controlled_execution: (
         tuple[
             bytes,
@@ -1672,73 +1803,120 @@ async def run_code(
         ]
         | None
     ) = None
-    if controlled_read_request is not None and execution_context is not None:
-        try:
-            candidate_execution = await _held_fd_container_file_read(
+    declared_public_write_receipts: tuple[dict[str, Any], ...] = ()
+    lease_context = overlapping_path_leases(
+        f"docker:{bridge.container}", lease_paths
+    )
+    await lease_context.__aenter__()
+    try:
+        before_write_states = await _container_path_states(
+            write_paths,
+            timeout=timeout,
+        )
+        declared_observation_before = await _container_declared_write_versions(
+            declared_targets,
+            timeout=timeout,
+        )
+        if controlled_read_request is not None and execution_context is not None:
+            try:
+                candidate_execution = await _held_fd_container_file_read(
+                    execution_context,
+                    path=read_paths[0],
+                    request=controlled_read_request,
+                    emit=True,
+                    timeout=timeout,
+                )
+            except (RuntimeError, ValueError):
+                candidate_execution = None
+            if (
+                candidate_execution is not None
+                and candidate_execution[2]
+                and candidate_execution[1] == read_ranges[0]
+            ):
+                controlled_execution = candidate_execution
+                return_code, stdout, stderr, timed_out = (
+                    0,
+                    candidate_execution[0],
+                    b"",
+                    False,
+                )
+            else:
+                execution_plan = replace(
+                    potential_plan,
+                    cacheable=False,
+                    read_projection_reusable=False,
+                )
+                controlled_read_request = None
+                controlled_read_probe = None
+        if (
+            controlled_execution is None
+            and language == "shell"
+            and execution_plan.effect == "read_only"
+            and execution_context is not None
+        ):
+            return_code, stdout, stderr, timed_out = await _execute_in_trusted_context(
                 execution_context,
-                path=read_paths[0],
-                request=controlled_read_request,
-                emit=True,
+                code,
                 timeout=timeout,
             )
-        except (RuntimeError, ValueError):
-            candidate_execution = None
-        if (
-            candidate_execution is not None
-            and candidate_execution[2]
-            and candidate_execution[1] == read_ranges[0]
-        ):
-            controlled_execution = candidate_execution
-            return_code, stdout, stderr, timed_out = (
-                0,
-                candidate_execution[0],
-                b"",
-                False,
-            )
-        else:
-            execution_plan = replace(
-                potential_plan,
-                cacheable=False,
-                read_projection_reusable=False,
-            )
-            controlled_read_request = None
-            controlled_read_probe = None
-    if (
-        controlled_execution is None
-        and language == "shell"
-        and execution_plan.effect == "read_only"
-        and execution_context is not None
-    ):
-        return_code, stdout, stderr, timed_out = await _execute_in_trusted_context(
-            execution_context,
-            code,
-            timeout=timeout,
-        )
-    elif controlled_execution is None and language == "shell":
-        return_code, stdout, stderr, timed_out = await bridge.shell_command(
-            code,
-            timeout=timeout,
-        )
-    elif controlled_execution is None:
-        return_code, stdout, stderr, timed_out = await bridge.execute(
-            [
-                os.environ.get("AWORLD_DOCKER_PYTHON", "python3"),
-                "-I",
-                "-c",
+        elif controlled_execution is None and language == "shell":
+            return_code, stdout, stderr, timed_out = await bridge.shell_command(
                 code,
-            ],
+                timeout=timeout,
+            )
+        elif controlled_execution is None:
+            return_code, stdout, stderr, timed_out = await bridge.execute(
+                [
+                    os.environ.get("AWORLD_DOCKER_PYTHON", "python3"),
+                    "-I",
+                    "-c",
+                    code,
+                ],
+                timeout=timeout,
+                workdir=bridge.workdir,
+            )
+        after_write_states = await _container_path_states(
+            write_paths,
             timeout=timeout,
-            workdir=bridge.workdir,
         )
-    after_write_states = await _container_path_states(
-        write_paths,
-        timeout=timeout,
-    )
-    mutation_observed = (
-        before_write_states != after_write_states
-        if before_write_states is not None and after_write_states is not None
-        else None
-    )
+        mutation_observed = (
+            before_write_states != after_write_states
+            if before_write_states is not None and after_write_states is not None
+            else None
+        )
+        declared_observation_after = await _container_declared_write_versions(
+            declared_targets,
+            timeout=timeout,
+        )
+        declared_versions_before = (
+            declared_observation_before[0]
+            if declared_observation_before is not None
+            and declared_observation_after is not None
+            and declared_observation_before[1] == declared_observation_after[1]
+            else None
+        )
+        declared_versions_after = (
+            declared_observation_after[0]
+            if declared_versions_before is not None
+            else None
+        )
+        declared_public_write_receipts = build_receipts_for_versions(
+            declared_targets,
+            before_versions=declared_versions_before,
+            after_versions=declared_versions_after,
+            contract=declared_contract,
+            tool_call_id=(
+                env_content.get("tool_call_id")
+                if isinstance(env_content, Mapping)
+                else None
+            ),
+            operation_sha256=declared_operation_sha256,
+            executed=True,
+            exit_code=return_code,
+            timed_out=timed_out,
+        )
+    finally:
+        await lease_context.__aexit__(None, None, None)
     stable_execution_context = execution_context
     if execution_context is not None:
         if controlled_execution is not None:
@@ -1810,6 +1988,7 @@ async def run_code(
             if stable_execution_context is not None
             else None
         ),
+        declared_public_write_receipts=declared_public_write_receipts,
     )
     stored_fact = None
     if terminal_receipt["cacheable"] and read_paths:
@@ -1853,6 +2032,7 @@ async def run_code(
                     if stable_execution_context is not None
                     else None
                 ),
+                declared_public_write_receipts=declared_public_write_receipts,
             )
     return _text(
         {

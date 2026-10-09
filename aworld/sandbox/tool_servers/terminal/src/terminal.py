@@ -69,6 +69,17 @@ from aworld.sandbox.task_budget import (
     ToolLeaseStage,
     resolve_tool_lease,
 )
+from aworld.sandbox.declared_write import (
+    DECLARED_PUBLIC_WRITE_CONTRACT_KEY,
+    authorized_declared_write_targets,
+    build_receipts_for_versions,
+    content_versions_for_targets,
+    declared_write_operation_sha256,
+    framework_scope_from_hidden,
+    framework_scope_sha256,
+    overlapping_path_leases,
+    validate_declared_public_write_contract,
+)
 
 
 _TERMINAL_RECEIPT_PARAMETERS = frozenset(
@@ -850,6 +861,14 @@ async def run_code(
             "Python; 'python' executes raw Python source in isolated mode (-I -c)."
         ),
     ),
+    declared_write_paths: Optional[list[str]] = Field(
+        default=None,
+        description=(
+            "Optional exact paths this command intends to write. Relative paths "
+            "resolve from cwd. The framework records changes only for paths also "
+            "present in its hidden public-deliverable contract."
+        ),
+    ),
 ) -> Union[str, TextContent]:
     # Normalize parameters: when using MCP tool schemas, the raw values may be
     # FieldInfo instances. In that case, fall back to their default values.
@@ -873,6 +892,8 @@ async def run_code(
         env = env.default
     if isinstance(env_content, FieldInfo):
         env_content = env_content.default
+    if isinstance(declared_write_paths, FieldInfo):
+        declared_write_paths = declared_write_paths.default
 
     if language not in {"shell", "python"}:
         raise ValueError("language must be either 'shell' or 'python'")
@@ -883,6 +904,8 @@ async def run_code(
     execution_started = False
     execution_result: CommandResult | None = None
     mutation_snapshot: dict[Path, tuple[Any, ...]] | None = None
+    mutation_observed: bool | None = None
+    declared_public_write_receipts: tuple[dict[str, Any], ...] = ()
     read_epochs_before: list[dict[str, Any]] = []
 
     try:
@@ -920,6 +943,43 @@ async def run_code(
             environment=command_environment,
             environment_overrides=env,
         )
+        declared_contract = None
+        declared_targets: tuple[dict[str, str], ...] = ()
+        declared_operation_sha256 = None
+        try:
+            declared_scope_sha256 = framework_scope_sha256(
+                framework_scope_from_hidden(env_content)
+            )
+            declared_contract = validate_declared_public_write_contract(
+                env_content.get(DECLARED_PUBLIC_WRITE_CONTRACT_KEY)
+                if isinstance(env_content, Mapping)
+                else None,
+                expected_scope_sha256=declared_scope_sha256,
+            )
+            declared_targets = authorized_declared_write_targets(
+                declared_write_paths,
+                declared_contract,
+                normalize_path=lambda value: str(
+                    Path(
+                        os.path.abspath(
+                            Path(value).expanduser()
+                            if Path(value).expanduser().is_absolute()
+                            else working_directory / Path(value).expanduser()
+                        )
+                    )
+                ),
+            )
+            if declared_targets:
+                declared_operation_sha256 = declared_write_operation_sha256(
+                    code=str(command),
+                    language=language,
+                    cwd=cwd,
+                    declared_write_paths=declared_write_paths,
+                )
+        except (AttributeError, OSError, TypeError, ValueError):
+            declared_contract = None
+            declared_targets = ()
+            declared_operation_sha256 = None
         read_projection_kind = (
             getattr(receipt_plan, "read_ranges", ())[0].kind
             if getattr(receipt_plan, "read_projection_reusable", False)
@@ -1045,36 +1105,66 @@ async def run_code(
         logging.info(f"🔧 Executing command: {command}")
 
         # Execute command
-        mutation_snapshot = _snapshot_known_write_paths(
+        known_write_paths = _known_write_paths(
             command=str(command),
             plan=execution_plan,
             working_directory=working_directory,
         )
-        if receipt_plan.effect == "read_only":
-            read_epochs_before = _read_path_epochs(
-                plan=receipt_plan,
-                working_directory=working_directory,
+        lease_paths = [
+            *(str(path) for path in known_write_paths),
+            *(target["path"] for target in declared_targets),
+        ]
+        async with overlapping_path_leases("terminal-host", lease_paths):
+            mutation_snapshot = (
+                {path: _path_state(path) for path in known_write_paths}
+                if known_write_paths
+                else None
             )
-        start_time = time.time()
-        execution_started = True
-        result = await _execute_command_async(
-            command,
-            timeout_decision.effective_seconds,
-            cwd=working_directory,
-            env=command_environment,
-            language=language,
-            python_executable=python_executable,
-        )
-        execution_result = result
-        execution_time = time.time() - start_time
-        read_epochs_after = (
-            _read_path_epochs(
-                plan=receipt_plan,
-                working_directory=working_directory,
+            declared_versions_before = content_versions_for_targets(
+                declared_targets
             )
-            if result.success and receipt_plan.effect == "read_only"
-            else []
-        )
+            if receipt_plan.effect == "read_only":
+                read_epochs_before = _read_path_epochs(
+                    plan=receipt_plan,
+                    working_directory=working_directory,
+                )
+            start_time = time.time()
+            execution_started = True
+            result = await _execute_command_async(
+                command,
+                timeout_decision.effective_seconds,
+                cwd=working_directory,
+                env=command_environment,
+                language=language,
+                python_executable=python_executable,
+            )
+            execution_result = result
+            execution_time = time.time() - start_time
+            mutation_observed = _mutation_observed_from_snapshot(mutation_snapshot)
+            declared_versions_after = content_versions_for_targets(declared_targets)
+            declared_public_write_receipts = build_receipts_for_versions(
+                declared_targets,
+                before_versions=declared_versions_before,
+                after_versions=declared_versions_after,
+                contract=declared_contract,
+                tool_call_id=(
+                    env_content.get("tool_call_id")
+                    if isinstance(env_content, Mapping)
+                    else None
+                ),
+                operation_sha256=declared_operation_sha256,
+                executed=True,
+                exit_code=result.return_code,
+                timed_out=result.timed_out,
+            )
+            read_epochs_after = (
+                _read_path_epochs(
+                    plan=receipt_plan,
+                    working_directory=working_directory,
+                )
+                if result.success and receipt_plan.effect == "read_only"
+                else []
+            )
         # A replay receipt must bind the bytes just returned to one stable file
         # epoch. If any input changed while the command was reading it, execute
         # normally but do not seed the observation cache.
@@ -1120,13 +1210,14 @@ async def run_code(
                 exit_code=result.return_code,
                 timed_out=result.timed_out,
                 capture_complete=result.capture_complete,
-                mutation_observed=_mutation_observed_from_snapshot(mutation_snapshot),
+                mutation_observed=mutation_observed,
                 potential_effect=execution_plan.effect,
                 effect_source=receipt_effect_source,
                 read_path_epochs=read_path_epochs,
                 requested_language=language,
                 representation=read_representation,
                 source_checkpoint_revision=checkpoint_revision,
+                declared_public_write_receipts=declared_public_write_receipts,
             ),
         )
 
@@ -1195,9 +1286,7 @@ async def run_code(
                         else True
                     ),
                     mutation_observed=(
-                        _mutation_observed_from_snapshot(mutation_snapshot)
-                        if execution_started
-                        else None
+                        mutation_observed if execution_started else None
                     ),
                     potential_effect=execution_plan.effect,
                     effect_source=receipt_effect_source,
@@ -1867,35 +1956,49 @@ def _path_state(path: Path) -> tuple[Any, ...]:
     )
 
 
+def _known_write_paths(
+    *,
+    command: str,
+    plan: TerminalExecutionPlan,
+    working_directory: Path,
+) -> tuple[Path, ...]:
+    """Resolve the bounded literal write subset accepted by the parser.
+
+    An incomplete command analysis can still expose a bounded set of literal
+    write targets. The caller acquires overlapping-path leases before reading
+    their pre/post state so concurrent commands cannot both claim one change.
+    """
+
+    if plan.effect == "read_only" or not plan.write_paths:
+        return ()
+    effective_working_directory = _plan_working_directory(plan, working_directory)
+    if effective_working_directory is None:
+        return ()
+    paths: list[Path] = []
+    for value in plan.write_paths:
+        candidate = Path(value).expanduser()
+        if not candidate.is_absolute():
+            candidate = effective_working_directory / candidate
+        normalized = Path(os.path.abspath(candidate))
+        if normalized not in paths:
+            paths.append(normalized)
+    return tuple(paths)
+
+
 def _snapshot_known_write_paths(
     *,
     command: str,
     plan: TerminalExecutionPlan,
     working_directory: Path,
 ) -> dict[Path, tuple[Any, ...]] | None:
-    """Capture cheap pre-execution evidence for literal write targets.
+    """Compatibility helper for tests and callers that only need a snapshot."""
 
-    An incomplete command analysis can still expose a bounded set of literal
-    write targets.  Snapshot those known targets even when the command's
-    overall effect remains ``unknown``.  The resulting receipt does not claim
-    that the write set is complete or make the command admissible at a hard
-    gate; it only prevents a real, observed intermediate-file mutation from
-    being reported as ``mutation_observed=null``.
-    """
-
-    if plan.effect == "read_only" or not plan.write_paths:
-        return None
-    effective_working_directory = _plan_working_directory(plan, working_directory)
-    if effective_working_directory is None:
-        return None
-    snapshot: dict[Path, tuple[Any, ...]] = {}
-    for value in plan.write_paths:
-        candidate = Path(value).expanduser()
-        if not candidate.is_absolute():
-            candidate = effective_working_directory / candidate
-        normalized = Path(os.path.abspath(candidate))
-        snapshot[normalized] = _path_state(normalized)
-    return snapshot or None
+    paths = _known_write_paths(
+        command=command,
+        plan=plan,
+        working_directory=working_directory,
+    )
+    return {path: _path_state(path) for path in paths} or None
 
 
 def _mutation_observed_from_snapshot(

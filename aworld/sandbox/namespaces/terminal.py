@@ -3,7 +3,7 @@
 
 """Terminal namespace: sandbox.terminal.run_code."""
 
-from typing import TYPE_CHECKING, Any, Dict, Literal, Mapping
+from typing import TYPE_CHECKING, Any, Dict, Literal, Mapping, Sequence
 
 from aworld.sandbox.namespaces.base import ToolNamespace, resolve_service_name
 
@@ -26,6 +26,7 @@ class TerminalNamespace(ToolNamespace):
         cwd: str | None = None,
         env: Mapping[str, str] | None = None,
         language: Literal["shell", "python"] = "shell",
+        declared_write_paths: Sequence[str] | None = None,
     ) -> Dict[str, Any]:
         """Execute Shell by default, or explicit raw Python source."""
         if language not in {"shell", "python"}:
@@ -37,6 +38,8 @@ class TerminalNamespace(ToolNamespace):
             "cwd": cwd,
             "env": dict(env) if env is not None else None,
         }
+        if declared_write_paths is not None:
+            parameters["declared_write_paths"] = list(declared_write_paths)
         # Omit the backward-compatible default so older remote terminal
         # providers continue accepting ordinary Shell calls.
         if language != "shell":

@@ -54,6 +54,10 @@ from aworld.sandbox.task_budget import (
     resolve_tool_lease,
     snapshot_task_budget,
 )
+from aworld.sandbox.declared_write import (
+    DECLARED_PUBLIC_WRITE_CONTRACT_KEY,
+    build_declared_public_write_contract,
+)
 
 # Import env_channel for subscription
 # from env_channel import EnvChannelMessage, env_channel_sub
@@ -2030,6 +2034,7 @@ class McpServers:
         # Build env_content value
         env_content_value = {}
         framework_authority_keys = {
+            DECLARED_PUBLIC_WRITE_CONTRACT_KEY,
             "task_budget",
             "task_id",
             "session_id",
@@ -2040,6 +2045,7 @@ class McpServers:
             "agent_id",
             "prompt_namespace",
             "sandbox_id",
+            "tool_call_id",
         }
 
         # 1. Copy user-defined context from sandbox.env_content. Framework
@@ -2122,6 +2128,16 @@ class McpServers:
             env_content_value["prompt_namespace"] = agent_id.strip()
         if isinstance(tool_call_id, str) and tool_call_id:
             env_content_value["tool_call_id"] = tool_call_id
+        if (
+            tool_key.rsplit("__", 1)[-1] == "run_code"
+            and parameter.get("declared_write_paths") is not None
+            and context is not None
+        ):
+            declared_contract = build_declared_public_write_contract(context)
+            if declared_contract is not None:
+                env_content_value[DECLARED_PUBLIC_WRITE_CONTRACT_KEY] = (
+                    declared_contract
+                )
 
         # 4. Merge into parameter
         # If a stale caller supplied the hidden parameter, merge ordinary

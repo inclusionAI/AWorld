@@ -855,6 +855,65 @@ PY
 
 
 @pytest.mark.asyncio
+async def test_overlapping_known_write_snapshots_have_causal_attribution(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output = tmp_path / "result.txt"
+
+    async def execute(command, *_args, **_kwargs):
+        if command.startswith("printf first"):
+            await asyncio.sleep(0.05)
+            output.write_text("first", encoding="utf-8")
+        else:
+            # Without a path lease this call snapshots the missing file before
+            # the first call writes it, then incorrectly claims that change.
+            await asyncio.sleep(0.1)
+        return _result()
+
+    monkeypatch.setattr(terminal_module, "_execute_command_async", execute)
+    first, second = await asyncio.gather(
+        run_code(None, "printf first > result.txt", cwd=str(tmp_path), timeout=10),
+        run_code(None, "printf second > result.txt", cwd=str(tmp_path), timeout=10),
+    )
+    first_receipt = json.loads(first.text)["metadata"]["terminal_execution_receipt"]
+    second_receipt = json.loads(second.text)["metadata"]["terminal_execution_receipt"]
+
+    assert first_receipt["mutation_observed"] is True
+    assert second_receipt["mutation_observed"] is False
+
+
+@pytest.mark.asyncio
+async def test_disjoint_known_write_paths_execute_concurrently(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    active = 0
+    maximum_active = 0
+    both_started = asyncio.Event()
+
+    async def execute(command, *_args, **_kwargs):
+        nonlocal active, maximum_active
+        active += 1
+        maximum_active = max(maximum_active, active)
+        if active == 2:
+            both_started.set()
+        await asyncio.wait_for(both_started.wait(), timeout=1)
+        target = "first.txt" if "first" in command else "second.txt"
+        (tmp_path / target).write_text(target, encoding="utf-8")
+        active -= 1
+        return _result()
+
+    monkeypatch.setattr(terminal_module, "_execute_command_async", execute)
+    await asyncio.gather(
+        run_code(None, "printf first > first.txt", cwd=str(tmp_path), timeout=10),
+        run_code(None, "printf second > second.txt", cwd=str(tmp_path), timeout=10),
+    )
+
+    assert maximum_active == 2
+
+
+@pytest.mark.asyncio
 async def test_run_code_does_not_cache_reads_outside_workspace(
     tmp_path: Path,
 ) -> None:
