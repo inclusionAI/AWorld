@@ -668,7 +668,7 @@ def _text(
 
 
 def _literal_container_write_paths(
-    code: str,
+    _code: str,
     plan: Any,
 ) -> list[str] | None:
     # A partially modeled command may have an unknown overall effect while
@@ -678,13 +678,11 @@ def _literal_container_write_paths(
     # this is observation, not an admission-policy upgrade.
     if plan.effect == "read_only" or not plan.write_paths:
         return None
-    shell_changes_directory = plan.language == "shell" and bool(
-        re.search(r"(?:^|[;&|]\s*)cd\s+", code)
-    )
     write_directory = bridge.workdir
-    if shell_changes_directory:
-        command_cwd = getattr(plan, "command_cwd", None)
-        if not getattr(plan, "command_cwd_safe", False) or not command_cwd:
+    command_cwd = getattr(plan, "command_cwd", None)
+    command_cwd_safe = bool(getattr(plan, "command_cwd_safe", False))
+    if command_cwd is not None:
+        if not command_cwd_safe:
             return None
         write_directory = (
             command_cwd
@@ -701,6 +699,10 @@ def _literal_container_write_paths(
             return None
         candidate = value
         if not PurePosixPath(candidate).is_absolute():
+            if not command_cwd_safe:
+                # Parser could not prove one effective cwd. Absolute targets
+                # remain observable, but relative targets are ambiguous.
+                continue
             candidate = posixpath.join(write_directory, candidate)
         try:
             paths.append(bridge.validate_path(candidate))

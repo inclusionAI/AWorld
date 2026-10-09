@@ -53,6 +53,7 @@ class GenerationBudgetPolicy:
     active_tool_free_timeout_seconds: float | None = 240.0
     action_repair_timeout_seconds: float | None = 90.0
     action_repair_max_output_tokens: int = 1024
+    response_recovery_max_output_tokens: int | None = None
     partial_response_context_chars: int = 8192
     action_repair_enabled: bool = True
 
@@ -78,6 +79,16 @@ class GenerationBudgetPolicy:
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, int) or value < 1:
                 raise ValueError(f"{name} must be a positive integer")
+        recovery_tokens = self.response_recovery_max_output_tokens
+        if recovery_tokens is not None and (
+            isinstance(recovery_tokens, bool)
+            or not isinstance(recovery_tokens, int)
+            or recovery_tokens < 1
+        ):
+            raise ValueError(
+                "response_recovery_max_output_tokens must be a positive "
+                "integer or None"
+            )
         if not isinstance(self.action_repair_enabled, bool):
             raise TypeError("action_repair_enabled must be boolean")
 

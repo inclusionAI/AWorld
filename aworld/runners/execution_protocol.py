@@ -91,6 +91,7 @@ _MUTATION_GATE_DEADLINE_FRACTION = 0.20
 # this from becoming an unbounded exploration escape hatch.
 _ANALYSIS_RUNWAY_STAGNATION_THRESHOLD = 3
 _ANALYSIS_RUNWAY_MAX_DEADLINE_FRACTION = 0.65
+_ANALYSIS_RUNWAY_MAX_PROGRESS_RESETS = 8
 _MAX_CANDIDATE_DIAGNOSTIC_READS = 3
 _MAX_PRE_CANDIDATE_REJECTED_CALLS = 2
 _MAX_EXHAUSTED_REJECTED_BATCHES = 2
@@ -2222,6 +2223,7 @@ def project_execution_protocol_telemetry(value: Any) -> dict[str, Any] | None:
         "public_deliverable_declared",
         "public_candidate_mutated",
         "convergence_constraint_active",
+        "analysis_runway_open",
     }
     counters = {
         "event_count",
@@ -2257,6 +2259,9 @@ def project_execution_protocol_telemetry(value: Any) -> dict[str, Any] | None:
         "convergence_constraint_activation_count",
         "model_expected_tool_actions",
         "model_expected_tool_actions_overrun_count",
+        "analysis_progress_count",
+        "analysis_stagnation_count",
+        "analysis_runway_reset_count",
     }
     allowed = {"schema_version", *enums, *booleans, *counters}
     if set(value) - allowed:
@@ -2276,6 +2281,10 @@ def project_execution_protocol_telemetry(value: Any) -> dict[str, Any] | None:
         "model_expected_tool_actions",
         "model_expected_tool_actions_overrun_count",
         "terminal_incomplete",
+        "analysis_runway_open",
+        "analysis_progress_count",
+        "analysis_stagnation_count",
+        "analysis_runway_reset_count",
     }
     if (
         value.get("schema_version") == "aworld.execution-protocol-telemetry/v1"
@@ -2421,6 +2430,16 @@ def build_execution_protocol_telemetry(context, agent_id: str) -> dict[str, Any]
         "consecutive_read_only_observations": _bounded_counter(
             mutation_gate.get("consecutive_read_only_observations")
         ),
+        "analysis_runway_open": mutation_gate.get("analysis_runway_open") is True,
+        "analysis_progress_count": _bounded_counter(
+            mutation_gate.get("analysis_progress_count")
+        ),
+        "analysis_stagnation_count": _bounded_counter(
+            mutation_gate.get("analysis_stagnation_count")
+        ),
+        "analysis_runway_reset_count": _bounded_counter(
+            mutation_gate.get("analysis_runway_reset_count")
+        ),
         "post_candidate_read_only_observations": (
             max(
                 state.post_candidate_read_only_observations,
@@ -2518,12 +2537,16 @@ def _bounded_analysis_runway_open(
     stagnation_count = _bounded_counter(
         semantic_state.get("analysis_stagnation_count")
     )
+    reset_count = _bounded_counter(
+        semantic_state.get("analysis_runway_reset_count")
+    )
     return bool(
         (
             progress_count > 0
             or semantic_state.get("analysis_progress_advanced") is True
         )
         and stagnation_count < _ANALYSIS_RUNWAY_STAGNATION_THRESHOLD
+        and reset_count <= _ANALYSIS_RUNWAY_MAX_PROGRESS_RESETS
     )
 
 
@@ -2538,9 +2561,10 @@ def _hard_convergence_deadline_reached(
     The 40% checkpoint starts a *bounded* candidate runway, rather than
     immediately revoking analysis Tools, when the Sandbox has recently
     observed a changed intermediate artifact or novel read-only evidence.
-    Three subsequent observations without such progress exhaust that runway;
-    65% of the caller deadline is an unconditional ceiling.  Older/unscoped
-    semantic state receives no implicit allowance.
+    Three subsequent observations without such progress or more than eight
+    progress resets exhaust that runway; 65% of the caller deadline is an
+    unconditional ceiling. Older/unscoped semantic state receives no implicit
+    allowance.
     """
 
     progress = _task_deadline_progress(context)
@@ -2977,6 +3001,9 @@ def _update_mutation_gate_locked(
         "analysis_stagnation_count": _bounded_counter(
             semantic_state.get("analysis_stagnation_count")
         ),
+        "analysis_runway_reset_count": _bounded_counter(
+            semantic_state.get("analysis_runway_reset_count")
+        ),
         "analysis_runway_open": bool(
             consumed_fraction is not None
             and _bounded_analysis_runway_open(
@@ -2986,6 +3013,9 @@ def _update_mutation_gate_locked(
         ),
         "analysis_runway_stagnation_threshold": (
             _ANALYSIS_RUNWAY_STAGNATION_THRESHOLD
+        ),
+        "analysis_runway_max_progress_resets": (
+            _ANALYSIS_RUNWAY_MAX_PROGRESS_RESETS
         ),
         "analysis_runway_deadline_ceiling_fraction": (
             _ANALYSIS_RUNWAY_MAX_DEADLINE_FRACTION
@@ -4051,6 +4081,13 @@ def _activate_convergence_constraint_locked(
             "analysis_progress_advanced": bool(
                 isinstance(semantic_state, Mapping)
                 and semantic_state.get("analysis_progress_advanced") is True
+            ),
+            "analysis_runway_reset_count": _bounded_counter(
+                semantic_state.get("analysis_runway_reset_count")
+                if isinstance(semantic_state, Mapping)
+                else previous_gate.get("analysis_runway_reset_count")
+                if isinstance(previous_gate, Mapping)
+                else 0
             ),
         },
     )

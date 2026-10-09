@@ -278,6 +278,39 @@ PY
     ]
 
 
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [
+        (
+            "  cd /workspace/sub && printf x > result.txt",
+            ["/workspace/sub/result.txt"],
+        ),
+        (
+            "printf 'cd /workspace/sub' > result.txt",
+            ["/workspace/result.txt"],
+        ),
+        (
+            "(cd /workspace/sub && printf x > result.txt)",
+            None,
+        ),
+        (
+            "(cd /workspace/sub && printf x > /workspace/sub/result.txt)",
+            ["/workspace/sub/result.txt"],
+        ),
+    ],
+)
+def test_docker_write_snapshot_uses_parser_proven_cwd(
+    monkeypatch,
+    command: str,
+    expected: list[str] | None,
+) -> None:
+    server = _docker_server(monkeypatch)
+
+    plan = server.plan_terminal_execution(command)
+
+    assert server._literal_container_write_paths(command, plan) == expected
+
+
 def _docker_server(monkeypatch):
     monkeypatch.setenv("AWORLD_DOCKER_CONTAINER", "context-eval")
     monkeypatch.setenv("AWORLD_DOCKER_BINARY", "/usr/bin/docker")

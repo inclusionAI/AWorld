@@ -1073,15 +1073,33 @@ async def test_disabled_default_recovery_preserves_long_tool_output_budget(
 
 
 @pytest.mark.asyncio
-async def test_explicit_action_repair_keeps_configured_recovery_cap(
+@pytest.mark.parametrize(
+    ("policy", "expected_retry_tokens"),
+    [
+        (
+            GenerationBudgetPolicy(
+                total_timeout_seconds=5,
+                action_repair_enabled=True,
+                action_repair_max_output_tokens=1_536,
+            ),
+            8_192,
+        ),
+        (
+            GenerationBudgetPolicy(
+                total_timeout_seconds=5,
+                response_recovery_max_output_tokens=1_536,
+            ),
+            1_536,
+        ),
+    ],
+)
+async def test_only_response_recovery_opt_in_applies_projection_cap(
     monkeypatch: pytest.MonkeyPatch,
+    policy: GenerationBudgetPolicy,
+    expected_retry_tokens: int,
 ) -> None:
     agent = _agent(
-        policy=GenerationBudgetPolicy(
-            total_timeout_seconds=5,
-            action_repair_enabled=True,
-            action_repair_max_output_tokens=1_536,
-        ),
+        policy=policy,
         attempts=2,
     )
     provider_calls: list[dict] = []
@@ -1119,7 +1137,7 @@ async def test_explicit_action_repair_keeps_configured_recovery_cap(
         stream=False,
     )
 
-    assert provider_calls[1]["max_completion_tokens"] == 1_536
+    assert provider_calls[1]["max_completion_tokens"] == expected_retry_tokens
 
 
 @pytest.mark.asyncio
