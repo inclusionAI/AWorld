@@ -46,7 +46,19 @@ def parse_response(payload: dict) -> AssistantMessage:
     try:
         message = _parse_message(payload)
     except (ValueError, TypeError, KeyError, AttributeError) as exc:
-        raise ModelResponseError(str(exc), usage=usage) from exc
+        choices = payload.get("choices") if isinstance(payload, dict) else None
+        choice = choices[0] if isinstance(choices, list) and len(choices) == 1 and isinstance(choices[0], dict) else {}
+        body = choice.get("message")
+        body = body if isinstance(body, dict) else {}
+        reason = choice.get("finish_reason")
+        diagnostics = {"choices_count": len(choices) if isinstance(choices, list) else None,
+            "finish_reason": reason if reason in ("stop", "tool_calls", "length", "content_filter", None) else "unsupported",
+            "content_chars": len(body["content"]) if isinstance(body.get("content"), str) else None,
+            "tool_call_count": len(body["tool_calls"]) if isinstance(body.get("tool_calls"), list) else 0,
+            "reasoning_chars": len(body["reasoning_content"]) if isinstance(body.get("reasoning_content"), str) else None,
+            "refusal": bool(body.get("refusal"))}
+        raise ModelResponseError(str(exc), usage=usage, code=getattr(exc, "code", "invalid_response"),
+                                 diagnostics=diagnostics) from exc
     return AssistantMessage(message.content, message.tool_calls, usage)
 
 
@@ -74,8 +86,9 @@ def _parse_message(payload: dict) -> AssistantMessage:
     content = message.get("content")
     if content is None:
         content = ""
-    if not content and not calls:
-        raise ValueError("Model returned an empty final response")
+    if isinstance(content, str) and not content.strip() and not calls:
+        from aworld.core.agent.usage import ModelResponseError
+        raise ModelResponseError("Model returned an empty final response", code="empty_final_response")
     return AssistantMessage(content, tuple(calls))
 
 
