@@ -642,6 +642,11 @@ class AgentConfig(BaseConfig):
     need_reset: bool = True
     # use vision model
     use_vision: bool = True
+    # Trusted artifact Tool media is a separate route capability from direct
+    # user-provided images. It must be explicitly enabled by the caller.
+    artifact_observation_media_capability: Literal[
+        "supported", "unsupported"
+    ] = "unsupported"
     max_steps: int = 10
     max_input_tokens: Optional[int] = Field(default=None, gt=0, strict=True)
     max_actions_per_step: int = 10

@@ -178,6 +178,9 @@ _LONG_HORIZON_PLAN_UPDATE_PARAM = "__aworld_plan_update"
 _LONG_HORIZON_DECISION_TOOL = "aworld__execution_decision"
 _LONG_HORIZON_DECISION_BOUNDARY_ATTR = "_aworld_execution_decision_boundary"
 _LONG_HORIZON_HYPOTHESIS_PARAM = "__aworld_hypothesis_id"
+_ARTIFACT_OBSERVATION_TOOL = "observe_artifact"
+_ARTIFACT_MEDIA_CAPABILITY_SCHEMA = "aworld.artifact-media-capability/v1"
+_ARTIFACT_MEDIA_RECOVERY_SCHEMA = "aworld.artifact-media-recovery/v1"
 _PUBLIC_PROBE_PARAM = "__aworld_public_probe"
 _ACCEPTANCE_PROBE_PARAM = "__aworld_acceptance_probe"
 _REVIEW_DECISION_PARAM = "__aworld_review_decision"
@@ -353,6 +356,7 @@ class ToolCallParseIssueCode(str, Enum):
     INVALID_ARGUMENTS_JSON = "invalid_arguments_json"
     ARGUMENTS_NOT_OBJECT = "arguments_not_object"
     TOOL_NOT_IN_LIVE_SURFACE = "tool_not_in_live_surface"
+    MEDIA_CAPABILITY_UNAVAILABLE = "media_capability_unavailable"
 
 
 @dataclass(frozen=True)
@@ -457,11 +461,24 @@ class LlmOutputParser(ModelOutputParser[ModelResponse, AgentResult]):
                     except Exception:
                         action_allowed = False
                     if action_allowed is not True:
+                        rejection_code = ToolCallParseIssueCode.TOOL_NOT_IN_LIVE_SURFACE
+                        rejection_resolver = getattr(
+                            agent_info,
+                            "model_tool_call_rejection_code",
+                            None,
+                        )
+                        if callable(rejection_resolver):
+                            try:
+                                resolved_code = rejection_resolver(full_name)
+                            except Exception:
+                                resolved_code = None
+                            if isinstance(resolved_code, ToolCallParseIssueCode):
+                                rejection_code = resolved_code
                         parse_issues.append(
                             ToolCallParseIssue(
                                 call_index=idx,
                                 call_id=call_id,
-                                code=(ToolCallParseIssueCode.TOOL_NOT_IN_LIVE_SURFACE),
+                                code=rejection_code,
                             )
                         )
                         continue
@@ -2288,22 +2305,132 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             return self.conf.llm_provider
         return "openai"
 
-    def _artifact_vision_enabled(self) -> bool:
-        """Require both Agent opt-in and an explicit provider wire contract."""
+    @staticmethod
+    def _is_artifact_observation_tool_name(name: Any) -> bool:
+        return (
+            isinstance(name, str)
+            and name.strip().split("__")[-1] == _ARTIFACT_OBSERVATION_TOOL
+        )
+
+    def _artifact_media_recovery_state(
+        self, context: Context | None
+    ) -> dict[str, Any] | None:
+        context_info = getattr(context, "context_info", None)
+        if not hasattr(context_info, "get"):
+            return None
+        value = context_info.get(f"artifact_media_recovery:{self.id()}")
+        if (
+            isinstance(value, dict)
+            and value.get("schema_version") == _ARTIFACT_MEDIA_RECOVERY_SCHEMA
+        ):
+            return value
+        return None
+
+    def _artifact_media_capability_reason(
+        self, context: Context | None = None
+    ) -> str | None:
+        """Return why artifact media is unavailable, without model-name guesses."""
 
         if getattr(self.conf, "use_vision", False) is not True:
-            return False
-        provider = getattr(getattr(self, "llm", None), "provider", None)
+            return "agent_vision_disabled"
+        if (
+            getattr(
+                self.conf,
+                "artifact_observation_media_capability",
+                "unsupported",
+            )
+            != "supported"
+        ):
+            return "artifact_observation_media_capability_undeclared"
+        recovery = self._artifact_media_recovery_state(context)
+        if recovery is not None and recovery.get("status") in {
+            "text_only_recovery",
+            "recovery_exhausted",
+        }:
+            return "artifact_media_empty_response"
+        try:
+            provider = getattr(self.llm, "provider", None)
+        except Exception:
+            return "provider_media_capability_unavailable"
         resolver = getattr(provider, "provider_media_projection_capability", None)
         if not callable(resolver):
-            return False
+            return "provider_media_capability_undeclared"
         from aworld.models.provider_media import ProviderMediaProjectionCapability
 
         try:
             capability = resolver()
         except Exception:
-            return False
-        return isinstance(capability, ProviderMediaProjectionCapability)
+            return "provider_media_capability_unavailable"
+        if not isinstance(capability, ProviderMediaProjectionCapability):
+            return "provider_media_capability_undeclared"
+        return None
+
+    def _record_artifact_media_capability(
+        self,
+        context: Context | None,
+        *,
+        reason: str | None,
+    ) -> None:
+        context_info = getattr(context, "context_info", None)
+        if not (
+            hasattr(context_info, "get")
+            and hasattr(context_info, "__setitem__")
+        ):
+            return
+        context_info[f"artifact_media_capability:{self.id()}"] = {
+            "schema_version": _ARTIFACT_MEDIA_CAPABILITY_SCHEMA,
+            "available": reason is None,
+            "reason": reason,
+        }
+
+    @classmethod
+    def _without_artifact_observation_tools(
+        cls, tools: List[Dict[str, Any]] | None
+    ) -> List[Dict[str, Any]] | None:
+        if tools is None:
+            return None
+        return [
+            tool
+            for tool in tools
+            if not cls._is_artifact_observation_tool_name(
+                (tool.get("function") or {}).get("name")
+                if isinstance(tool, dict)
+                else None
+            )
+        ]
+
+    def _filter_artifact_observation_tools(
+        self,
+        tools: List[Dict[str, Any]] | None,
+        context: Context | None,
+    ) -> List[Dict[str, Any]] | None:
+        reason = self._artifact_media_capability_reason(context)
+        self._record_artifact_media_capability(context, reason=reason)
+        if reason is None:
+            return tools
+        return self._without_artifact_observation_tools(tools)
+
+    def _artifact_vision_enabled(self, context: Context | None = None) -> bool:
+        """Require Agent opt-in and an explicit provider media contract."""
+
+        return self._artifact_media_capability_reason(context) is None
+
+    def model_tool_call_rejection_code(
+        self, full_name: str
+    ) -> ToolCallParseIssueCode | None:
+        if self._is_artifact_observation_tool_name(full_name) and (
+            self._artifact_media_capability_reason(
+                getattr(self, "context", None)
+            )
+            is not None
+        ):
+            return ToolCallParseIssueCode.MEDIA_CAPABILITY_UNAVAILABLE
+        return None
+
+    def is_model_tool_call_allowed(self, full_name: str) -> bool:
+        """Reject only capability-incompatible media calls at parse time."""
+
+        return self.model_tool_call_rejection_code(full_name) is None
 
     def _apply_reasoning_phase_policy(
         self,
@@ -6600,7 +6727,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             # Consumed by LLMModel before provider kwargs are built. Artifact
             # bytes remain opaque refs until that final transport boundary.
             kwargs["_aworld_artifact_vision_enabled"] = (
-                self._artifact_vision_enabled()
+                self._artifact_vision_enabled(message.context)
             )
             kwargs["_aworld_artifact_agent_id"] = self.id()
             if context_compiler_mode != "off":
@@ -8986,9 +9113,46 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             )
         return None
 
+    def _artifact_media_attempt_count(self, context: Context | None) -> int:
+        if context is None:
+            return 0
+        from aworld.sandbox.artifact_observation import (
+            artifact_projection_attempt_count,
+        )
+
+        try:
+            return artifact_projection_attempt_count(
+                context,
+                agent_id=self.id(),
+            )
+        except Exception:
+            return 0
+
+    def _record_artifact_media_recovery(
+        self,
+        context: Context | None,
+        *,
+        status: str,
+        recovery_failure_reason: str | None = None,
+    ) -> None:
+        context_info = getattr(context, "context_info", None)
+        if not hasattr(context_info, "__setitem__"):
+            return
+        diagnostic = {
+            "schema_version": _ARTIFACT_MEDIA_RECOVERY_SCHEMA,
+            "status": status,
+            "reason": "empty_model_response_after_artifact_media",
+        }
+        if recovery_failure_reason is not None:
+            diagnostic["recovery_failure_reason"] = recovery_failure_reason
+        context_info[f"artifact_media_recovery:{self.id()}"] = diagnostic
+
     @staticmethod
     def _incomplete_model_response(
-        response: ModelResponse | None, reason: str
+        response: ModelResponse | None,
+        reason: str,
+        *,
+        recoverable: bool = True,
     ) -> ModelResponse:
         # Preserve usage/finish metadata for diagnostics; discard executable and
         # unfinished prose rather than presenting a truncated plan as completion.
@@ -9007,7 +9171,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             "role": "assistant",
             "content": result.content,
             "aworld_incomplete_reason": reason,
-            "aworld_recoverable": True,
+            "aworld_recoverable": recoverable,
         }
         return result
 
@@ -9291,6 +9455,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             attempt = 1
             last_exception = None
             incomplete_action_recovery_attempted = False
+            artifact_media_empty_recovery_attempted = False
             # Track if stream_mode failed and we need to fallback to non_stream_mode
             stream_failed_fallback = False
 
@@ -9341,6 +9506,9 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                             f"🔀 Using non-stream mode for attempt {attempt}/{self.llm_max_attempts} due to previous stream failure"
                         )
 
+                    artifact_media_attempt_count = (
+                        self._artifact_media_attempt_count(context)
+                    )
                     if current_stream_mode:
                         # Pre-calc prompt tokens for display (API often does not return in stream chunks)
                         prompt_tokens_est = 0
@@ -9384,21 +9552,43 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                             streaming=False,
                         )
 
+                    artifact_media_projected = (
+                        self._artifact_media_attempt_count(context)
+                        > artifact_media_attempt_count
+                    )
                     # A non-empty provider response is not necessarily a completed
                     # action. In particular length-stop batches must be discarded
                     # atomically even if an early call happens to be valid JSON.
                     incomplete_reason = self._incomplete_model_response_reason(
                         llm_response
                     )
+                    if llm_response is None and (
+                        artifact_media_projected
+                        or artifact_media_empty_recovery_attempted
+                    ):
+                        incomplete_reason = "empty_model_response"
                     if incomplete_reason:
                         if llm_response:
                             usage_process(llm_response.usage, message.context)
                         from aworld.core.context.execution_state import (
+                            ARTIFACT_MEDIA_RECOVERY_EXHAUSTED_REASON,
                             record_execution_state,
                         )
 
+                        media_empty_response = bool(
+                            incomplete_reason == "empty_model_response"
+                            and artifact_media_projected
+                        )
+                        media_recovery_failed = (
+                            artifact_media_empty_recovery_attempted
+                        )
+                        recorded_reason = (
+                            ARTIFACT_MEDIA_RECOVERY_EXHAUSTED_REASON
+                            if media_recovery_failed
+                            else incomplete_reason
+                        )
                         record_execution_state(
-                            context, self.id(), "incomplete", incomplete_reason
+                            context, self.id(), "incomplete", recorded_reason
                         )
                         recovery_context = (
                             self._bounded_model_response_recovery_context(
@@ -9411,6 +9601,21 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                             and not incomplete_action_recovery_attempted
                         ):
                             incomplete_action_recovery_attempted = True
+                            if media_empty_response:
+                                artifact_media_empty_recovery_attempted = True
+                                self._record_artifact_media_recovery(
+                                    context,
+                                    status="text_only_recovery",
+                                )
+                                tools = self._without_artifact_observation_tools(
+                                    tools
+                                )
+                                if not tools:
+                                    tools = None
+                                kwargs = dict(kwargs)
+                                kwargs["_aworld_artifact_vision_enabled"] = False
+                                if tools is None:
+                                    kwargs.pop("tool_choice", None)
                             attempt += 1
                             capsule_limit = min(
                                 32_768,
@@ -9484,6 +9689,29 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                                     )
                                 )
                             continue
+                        if media_recovery_failed:
+                            self._record_artifact_media_recovery(
+                                context,
+                                status="recovery_exhausted",
+                                recovery_failure_reason=incomplete_reason,
+                            )
+                            record_execution_state(
+                                context,
+                                self.id(),
+                                "incomplete",
+                                ARTIFACT_MEDIA_RECOVERY_EXHAUSTED_REASON,
+                                recoverable=False,
+                            )
+                            self._store_model_response_recovery_context(
+                                context,
+                                reason=ARTIFACT_MEDIA_RECOVERY_EXHAUSTED_REASON,
+                                content=recovery_context,
+                            )
+                            return self._incomplete_model_response(
+                                llm_response,
+                                ARTIFACT_MEDIA_RECOVERY_EXHAUSTED_REASON,
+                                recoverable=False,
+                            )
                         record_execution_state(
                             context,
                             self.id(),
@@ -10098,7 +10326,9 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             logger.info(
                 f"llm_agent don't need _filter_tools .. agent#{type(self)}#{self.id()}"
             )
-            return self.tools
+            return self._filter_artifact_observation_tools(
+                self.tools, context
+            ) or []
         # get current active skills
         skills = await context.get_active_skills(namespace=self.id())
 
@@ -10125,7 +10355,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             for tool in selected
         ):
             selected.append(recovery_tool)
-        return selected
+        return self._filter_artifact_observation_tools(selected, context) or []
 
     @staticmethod
     def _requested_skill_names_from_context(context: Context) -> List[str]:

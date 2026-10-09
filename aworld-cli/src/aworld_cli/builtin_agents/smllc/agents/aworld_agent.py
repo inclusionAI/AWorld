@@ -321,6 +321,21 @@ def resolve_aworld_provider_cache() -> tuple[ContextCacheConfig, str]:
     )
 
 
+def resolve_aworld_artifact_observation_media_capability() -> str:
+    """Resolve explicit route support for Tool-produced image observations."""
+
+    capability = os.environ.get(
+        "AWORLD_ARTIFACT_OBSERVATION_MEDIA_CAPABILITY",
+        "unsupported",
+    ).strip().lower()
+    if capability not in {"supported", "unsupported"}:
+        raise ValueError(
+            "AWORLD_ARTIFACT_OBSERVATION_MEDIA_CAPABILITY must be "
+            "supported or unsupported"
+        )
+    return capability
+
+
 def resolve_aworld_generation_budget() -> Optional[GenerationBudgetPolicy]:
     """Resolve explicitly enabled generation watchdogs.
 
@@ -826,6 +841,9 @@ def build_aworld_agent(include_skills: Optional[str] = None):
             llm_stream_call=os.environ.get("STREAM", "0").lower() in ("1", "true", "yes")
         ),
         use_vision=True,
+        artifact_observation_media_capability=(
+            resolve_aworld_artifact_observation_media_capability()
+        ),
         skill_configs={},
         ext={"skill_resolver_inputs": resolver_inputs},
     )

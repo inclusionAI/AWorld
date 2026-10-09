@@ -41,6 +41,10 @@ _BLOCKER_CATEGORIES = {
     "budget",
 }
 
+ARTIFACT_MEDIA_RECOVERY_EXHAUSTED_REASON = (
+    "model_response_artifact_media_recovery_exhausted"
+)
+
 _MODEL_RESPONSE_REASONS = {
     "model_output_truncated",
     "model_stream_ended_without_finish_reason",
@@ -52,6 +56,7 @@ _MODEL_RESPONSE_REASONS = {
     "empty_model_response",
     "context_window_exceeded",
     "transient_model_recovery_deadline_exhausted",
+    ARTIFACT_MEDIA_RECOVERY_EXHAUSTED_REASON,
 }
 _RESOLUTION_CATEGORIES = {
     "complete_provider_tool_action": frozenset({"model_response"}),

@@ -2867,7 +2867,18 @@ class LLMModel:
             ),
             media_projection=projection,
         )
-        return provider_messages, receipt, bool(receipt.get("hydrated_count"))
+        media_active = bool(receipt.get("hydrated_count"))
+        if media_active and context is not None:
+            from aworld.sandbox.artifact_observation import (
+                record_artifact_projection_attempt,
+            )
+
+            record_artifact_projection_attempt(
+                context,
+                agent_id=agent_id,
+                receipt=receipt,
+            )
+        return provider_messages, receipt, media_active
 
     async def acompletion(
         self,
@@ -3651,7 +3662,10 @@ class LLMModel:
             if (
                 artifact_media_active
                 and context is not None
-                and self._is_authoritative_stream_completion(record_chunk)
+                and (
+                    record_chunk is None
+                    or self._is_authoritative_stream_completion(record_chunk)
+                )
             ):
                 from aworld.sandbox.artifact_observation import (
                     commit_artifact_projection,
@@ -3916,7 +3930,10 @@ class LLMModel:
             if (
                 artifact_media_active
                 and context is not None
-                and self._is_authoritative_stream_completion(record_chunk)
+                and (
+                    record_chunk is None
+                    or self._is_authoritative_stream_completion(record_chunk)
+                )
             ):
                 from aworld.sandbox.artifact_observation import (
                     commit_artifact_projection,

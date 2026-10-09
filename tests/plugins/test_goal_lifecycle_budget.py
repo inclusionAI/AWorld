@@ -434,6 +434,70 @@ def test_direct_acceptance_never_reopens_protocol_finalization() -> None:
     assert response.recoverable is True
 
 
+def test_media_empty_recovery_does_not_consume_implicit_acceptance_budget() -> None:
+    from dataclasses import replace
+
+    from aworld.core.context.base import Context
+    from aworld.core.execution_protocol import (
+        ExecutionProtocolPolicy,
+        ExecutionProtocolStore,
+    )
+    from aworld.core.task import Task, TaskResponse
+    from aworld.runners.execution_protocol import configure_execution_protocol
+
+    context = Context(task_id="media-empty-segment")
+    task = Task(
+        id="media-empty-segment",
+        input="finish the requested work",
+        context=context,
+        timeout=600,
+    )
+    context.set_task(task)
+    policy = ExecutionProtocolPolicy(mode="guide")
+    configure_execution_protocol(context, "root-agent", policy)
+    store = ExecutionProtocolStore(context, "root-agent", policy)
+    store.save(replace(store.load(), long_horizon_armed=True))
+    executor = object.__new__(LocalAgentExecutor)
+    executor._session_mode = "direct"
+    executor._base_runtime = None
+    executor.swarm = SimpleNamespace(
+        communicate_agent=SimpleNamespace(id=lambda: "root-agent")
+    )
+    response = TaskResponse(
+        success=False,
+        answer="media response recovery was exhausted",
+        semantic_status="incomplete",
+        completion_reason="model_response_artifact_media_recovery_exhausted",
+        # Defend the direct boundary even if an older runner projects the
+        # specialized reason with the legacy recoverable default.
+        recoverable=True,
+    )
+
+    continuation = executor._direct_acceptance_continuation(
+        task=task,
+        response=response,
+        answer=response.answer,
+        event={
+            "task_id": task.id,
+            "semantic_status": "incomplete",
+            "completion_reason": response.completion_reason,
+            "recoverable": True,
+            "final_answer": response.answer,
+        },
+        origin_user_input="finish the requested work",
+        logical_task_state=new_goal_contract_state("finish the requested work"),
+        acceptance_state=None,
+    )
+
+    assert continuation is None
+    assert response.semantic_status == "incomplete"
+    assert response.recoverable is False
+    assert response.execution_protocol["acceptance_continuation_suppressed"] == (
+        "artifact_media_recovery_exhausted"
+    )
+    assert "implicit_acceptance_created" not in response.execution_protocol
+
+
 def test_observe_mode_finalization_does_not_suppress_direct_acceptance() -> None:
     from dataclasses import replace
 

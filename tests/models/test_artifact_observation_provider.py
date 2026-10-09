@@ -22,12 +22,20 @@ from aworld.core.context.amni.prompt.assembly.provider import (
 )
 from aworld.core.llm_provider import LLMProviderBase
 from aworld.core.task import Task
-from aworld.agents.llm_agent import Agent
+from aworld.agents.llm_agent import (
+    Agent,
+    LlmOutputParser,
+    ToolCallBatchParseError,
+    ToolCallParseIssueCode,
+)
 from aworld.config import AgentConfig, AgentMemoryConfig, ModelConfig
+from aworld.core.context.generation_budget import GenerationBudgetPolicy
+from aworld.core.context.session import Session
+from aworld.core.event.base import Constants, Message
 from aworld.mcp_client.utils import lower_mcp_call_result
 from aworld.models.llm import LLMModel
 from aworld.models.llm_http_handler import LLMHTTPHandler
-from aworld.models.model_response import ModelResponse
+from aworld.models.model_response import Function, ModelResponse, ToolCall
 from aworld.models.anthropic_provider import AnthropicProvider
 from aworld.models.openai_provider import OpenAIProvider
 from aworld.models.openai_message_sanitizer import sanitize_openai_messages
@@ -170,6 +178,14 @@ class _EmptyThenSuccessProvider(_CapturingProvider):
         if self.stream_attempts == 1:
             return
         yield self._response()
+
+
+class _AlwaysEmptyStreamProvider(_CapturingProvider):
+    async def astream_completion(self, messages, **kwargs):
+        self.calls.append(messages)
+        self.kwargs_calls.append(dict(kwargs))
+        if False:
+            yield self._response()
 
 
 class _UnfinishedThenSuccessProvider(_CapturingProvider):
@@ -878,7 +894,7 @@ def test_partial_sync_stream_failure_does_not_consume_image_delivery() -> None:
 
 
 @pytest.mark.asyncio
-async def test_empty_stream_does_not_consume_image_delivery() -> None:
+async def test_empty_stream_consumes_one_shot_image_delivery() -> None:
     context = Context(task_id="artifact-task")
     messages = _causal_messages(context)
     provider = _EmptyThenSuccessProvider()
@@ -904,7 +920,170 @@ async def test_empty_stream_does_not_consume_image_delivery() -> None:
             _aworld_artifact_agent_id="agent-1",
         )
     ]
-    assert "data:image/png;base64," in json.dumps(provider.calls[1])
+    assert "data:image" not in json.dumps(provider.calls[1])
+
+
+def _artifact_tool_schema(name: str) -> dict[str, Any]:
+    return {
+        "type": "function",
+        "function": {
+            "name": name,
+            "description": "test tool",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    }
+
+
+def _artifact_agent(provider: LLMProviderBase, *, attempts: int = 2) -> Agent:
+    agent = Agent(
+        name="Aworld",
+        conf=AgentConfig(
+            llm_provider="openai",
+            llm_model_name="capability-contract-test",
+            llm_api_key="test-key",
+            use_vision=True,
+            artifact_observation_media_capability="supported",
+        ),
+        generation_budget_policy=GenerationBudgetPolicy(total_timeout_seconds=5),
+        llm_max_attempts=attempts,
+        llm_retry_delay=0,
+    )
+    agent._llm = LLMModel(custom_provider=provider)
+    return agent
+
+
+def _artifact_message(context: Context) -> Message:
+    context.set_task(
+        Task(
+            id=context.task_id,
+            session_id=context.session_id,
+            user_id="user-1",
+            input="inspect the artifact",
+        )
+    )
+    return Message(
+        category=Constants.AGENT,
+        sender="user",
+        receiver="Aworld",
+        headers={"context": context},
+    )
+
+
+@pytest.mark.asyncio
+async def test_media_empty_response_gets_one_text_only_recovery() -> None:
+    context = Context(
+        task_id="artifact-media-empty-recovery",
+        session=Session(session_id="artifact-media-empty-recovery-session"),
+    )
+    provider = _EmptyThenSuccessProvider()
+    agent = _artifact_agent(provider)
+    message = _artifact_message(context)
+    tools = [
+        _artifact_tool_schema("observe_artifact"),
+        _artifact_tool_schema("workspace__write"),
+    ]
+
+    result = await agent.invoke_model(
+        _causal_messages(context),
+        message=message,
+        prepared_tools=tools,
+        stream=True,
+        _aworld_artifact_vision_enabled=True,
+        _aworld_artifact_agent_id=agent.id(),
+    )
+
+    assert result.content == "inspected"
+    assert len(provider.calls) == 2
+    assert "data:image/png;base64," in json.dumps(provider.calls[0])
+    assert "data:image" not in json.dumps(provider.calls[1])
+    assert [
+        tool["function"]["name"]
+        for tool in provider.kwargs_calls[1]["tools"]
+    ] == ["workspace__write"]
+    assert provider.kwargs_calls[1]["tool_choice"] == "required"
+
+
+@pytest.mark.asyncio
+async def test_media_empty_recovery_exhaustion_is_typed_and_nonrecoverable() -> None:
+    context = Context(
+        task_id="artifact-media-empty-exhausted",
+        session=Session(session_id="artifact-media-empty-exhausted-session"),
+    )
+    provider = _AlwaysEmptyStreamProvider()
+    agent = _artifact_agent(provider)
+    message = _artifact_message(context)
+
+    result = await agent.invoke_model(
+        _causal_messages(context),
+        message=message,
+        prepared_tools=[
+            _artifact_tool_schema("observe_artifact"),
+            _artifact_tool_schema("workspace__write"),
+        ],
+        stream=True,
+        _aworld_artifact_vision_enabled=True,
+        _aworld_artifact_agent_id=agent.id(),
+    )
+
+    assert len(provider.calls) == 2
+    assert "data:image/png;base64," in json.dumps(provider.calls[0])
+    assert "data:image" not in json.dumps(provider.calls[1])
+    assert result.message["aworld_incomplete_reason"] == (
+        "model_response_artifact_media_recovery_exhausted"
+    )
+    assert result.message["aworld_recoverable"] is False
+    diagnostic = context.context_info[f"artifact_media_recovery:{agent.id()}"]
+    assert diagnostic == {
+        "schema_version": "aworld.artifact-media-recovery/v1",
+        "status": "recovery_exhausted",
+        "reason": "empty_model_response_after_artifact_media",
+        "recovery_failure_reason": "empty_model_response",
+    }
+
+
+@pytest.mark.asyncio
+async def test_undeclared_media_capability_omits_and_rejects_observe_artifact() -> None:
+    context = Context(task_id="artifact-media-unsupported")
+    agent = _artifact_agent(_UnsupportedMediaProvider(), attempts=1)
+    agent.tools = [
+        _artifact_tool_schema("observe_artifact"),
+        _artifact_tool_schema("workspace__write"),
+    ]
+
+    selected = await agent._filter_tools(context)
+
+    assert [tool["function"]["name"] for tool in selected] == [
+        "workspace__write"
+    ]
+    diagnostic = context.context_info[f"artifact_media_capability:{agent.id()}"]
+    assert diagnostic == {
+        "schema_version": "aworld.artifact-media-capability/v1",
+        "available": False,
+        "reason": "provider_media_capability_undeclared",
+    }
+
+    response = ModelResponse(
+        id="unsupported-media-call",
+        model="capability-contract-test",
+        tool_calls=[
+            ToolCall(
+                id="call-observe",
+                function=Function(
+                    name="observe_artifact",
+                    arguments='{"path":"chart.png"}',
+                ),
+            )
+        ],
+    )
+    with pytest.raises(ToolCallBatchParseError) as exc_info:
+        await LlmOutputParser().parse(
+            response,
+            agent_id=agent.id(),
+            agent=agent,
+        )
+    assert exc_info.value.issues[0].code is (
+        ToolCallParseIssueCode.MEDIA_CAPABILITY_UNAVAILABLE
+    )
 
 
 @pytest.mark.asyncio
@@ -1529,8 +1708,8 @@ def test_agent_vision_gate_honors_config_and_provider_declaration() -> None:
     )
     assert disabled._artifact_vision_enabled() is False
 
-    enabled = Agent(
-        name="vision",
+    route_unspecified = Agent(
+        name="route-unspecified",
         conf=AgentConfig(
             llm_provider="openai",
             llm_model_name="fake-model",
@@ -1538,6 +1717,19 @@ def test_agent_vision_gate_honors_config_and_provider_declaration() -> None:
             use_vision=True,
         ),
     )
+    assert route_unspecified._artifact_vision_enabled() is False
+
+    enabled = Agent(
+        name="vision",
+        conf=AgentConfig(
+            llm_provider="openai",
+            llm_model_name="fake-model",
+            llm_api_key="fake-key",
+            use_vision=True,
+            artifact_observation_media_capability="supported",
+        ),
+    )
+    assert enabled._artifact_vision_enabled() is True
     enabled.llm.provider.provider_media_projection_capability = lambda: None
     assert enabled._artifact_vision_enabled() is False
 

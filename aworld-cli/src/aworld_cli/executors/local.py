@@ -29,6 +29,9 @@ from aworld.core.common import Observation
 from aworld.core.context.amni import TaskInput, ApplicationContext
 from aworld.core.context.amni.config import AmniConfigFactory, AmniConfigLevel
 from aworld.core.context.compiler.parity import _issue_context_entrypoint_claim
+from aworld.core.context.execution_state import (
+    ARTIFACT_MEDIA_RECOVERY_EXHAUSTED_REASON,
+)
 from aworld.core.task import Task, TaskResponse
 from aworld.logs.util import logger, summarize_llm_payload_for_log, summarize_tool_calls_for_log
 from aworld.memory.main import _default_file_memory_store
@@ -1493,6 +1496,24 @@ class LocalAgentExecutor(BaseAgentExecutor):
         policy = execution_protocol_policy(task.context, root_id)
         protocol_state = load_execution_protocol_state(task.context, root_id)
         current_telemetry = build_execution_protocol_telemetry(task.context, root_id)
+        completion_reason = str(
+            getattr(response, "completion_reason", None)
+            or event.get("completion_reason")
+            or ""
+        ).strip()
+        if completion_reason == ARTIFACT_MEDIA_RECOVERY_EXHAUSTED_REASON:
+            # Media transport recovery owns its own single text-only retry.
+            # Replaying the task through implicit acceptance would spend the
+            # task repair allowance on the same provider failure and relabel it
+            # as task budget exhaustion.
+            current_telemetry["acceptance_continuation_suppressed"] = (
+                "artifact_media_recovery_exhausted"
+            )
+            self.last_execution_protocol = current_telemetry
+            if response is not None:
+                response.execution_protocol = current_telemetry
+                response.recoverable = False
+            return None
         if response is not None and (
             response.failure_origin in {"infrastructure", "cancelled"}
             or response.recoverable is False

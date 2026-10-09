@@ -736,6 +736,7 @@ def mark_artifact_rollout_late_bound(
         return value
     updated = dict(value)
     updated["artifact_observation"] = {
+        "schema_version": "aworld.artifact-media-rollout/v1",
         "late_bound": True,
         "provider_cache_eligible": True,
         "retained_payload": "stable_text_receipt",
@@ -1143,6 +1144,34 @@ def commit_artifact_projection(
             delivered[attempt_key] = True
     while len(delivered) > _MAX_SIDECAR_ENTRIES:
         delivered.pop(next(iter(delivered)), None)
+
+
+def record_artifact_projection_attempt(
+    context: Any,
+    *,
+    agent_id: str,
+    receipt: Mapping[str, Any] | None,
+) -> None:
+    """Record that verified media reached one provider request boundary."""
+
+    if (
+        not isinstance(receipt, Mapping)
+        or receipt.get("schema_version")
+        != "aworld.artifact-observation-projection/v2"
+        or int(receipt.get("hydrated_count", 0) or 0) <= 0
+    ):
+        return
+    state = _projection_state(context, agent_id)
+    state["provider_attempt_count"] = min(
+        1_000_000,
+        int(state.get("provider_attempt_count", 0) or 0) + 1,
+    )
+
+
+def artifact_projection_attempt_count(context: Any, *, agent_id: str) -> int:
+    state = _projection_state(context, agent_id)
+    value = state.get("provider_attempt_count", 0)
+    return value if isinstance(value, int) and not isinstance(value, bool) else 0
 
 
 def hydrate_artifact_reference(

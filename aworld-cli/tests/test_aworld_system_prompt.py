@@ -13,6 +13,7 @@ from aworld_cli.builtin_agents.smllc.agents.aworld_agent import (
     _aworld_root_tool_policy,
     render_aworld_system_prompt,
     resolve_aworld_builtin_subagents,
+    resolve_aworld_artifact_observation_media_capability,
     resolve_aworld_generation_budget,
     resolve_aworld_reasoning_configuration,
     resolve_aworld_max_completion_tokens,
@@ -259,6 +260,21 @@ def test_native_filesystem_tools_are_explicit_opt_in(
     monkeypatch.setenv("AWORLD_NATIVE_FILESYSTEM_TOOLS", "sometimes")
     with pytest.raises(ValueError, match="off/terminal.*on/native"):
         resolve_aworld_native_filesystem_tools()
+
+
+def test_artifact_observation_media_requires_explicit_route_capability(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    variable = "AWORLD_ARTIFACT_OBSERVATION_MEDIA_CAPABILITY"
+    monkeypatch.delenv(variable, raising=False)
+    assert resolve_aworld_artifact_observation_media_capability() == "unsupported"
+
+    monkeypatch.setenv(variable, "supported")
+    assert resolve_aworld_artifact_observation_media_capability() == "supported"
+
+    monkeypatch.setenv(variable, "auto")
+    with pytest.raises(ValueError, match="supported or unsupported"):
+        resolve_aworld_artifact_observation_media_capability()
 
 
 def test_provider_native_cache_requires_explicit_namespace(
@@ -536,6 +552,24 @@ def test_agent_forwards_runtime_provider_cache_contract(
     assert cache.allow_provider_native_cache is True
     assert cache.provider_cache_namespace == "aworld:route-cache"
     assert root.conf.llm_config.provider_native_cache_capability == "supported"
+
+
+def test_agent_forwards_artifact_observation_media_capability(
+    monkeypatch, tmp_path
+) -> None:
+    monkeypatch.setenv(
+        "AWORLD_ARTIFACT_OBSERVATION_MEDIA_CAPABILITY",
+        "supported",
+    )
+    monkeypatch.setenv("LLM_MODEL_NAME", "route-with-image-input")
+    monkeypatch.setenv("LLM_API_KEY", "offline")
+    monkeypatch.chdir(tmp_path)
+
+    swarm = aworld_agent.build_aworld_agent()
+    root = next(agent for agent in swarm.agents.values() if agent.name() == "Aworld")
+
+    assert root.conf.use_vision is True
+    assert root.conf.artifact_observation_media_capability == "supported"
 
 
 def test_verifier_remains_an_explicit_fresh_context_opt_in(
