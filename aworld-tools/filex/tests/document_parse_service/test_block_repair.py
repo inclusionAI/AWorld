@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -60,6 +61,44 @@ def test_structured_table_rejects_multiple_json_objects_or_unbounded_boilerplate
         StructuredTable.from_model_output(
             "x" * 4097 + payload,
             require_numeric=False,
+        )
+
+
+def test_structured_table_rejects_adversarial_nested_json_in_bounded_time() -> None:
+    depth = 20_000
+    malformed = '{"nested":' * depth + "0" + "}" * (depth - 1)
+
+    started = time.monotonic()
+    with pytest.raises(BlockRepairError, match="filex_block_repair_invalid_json"):
+        StructuredTable.from_model_output(malformed, require_numeric=False)
+
+    assert time.monotonic() - started < 1.0
+
+
+def test_structured_table_requires_top_headers_and_a_genuine_body_cell() -> None:
+    with pytest.raises(BlockRepairError, match="filex_block_repair_header_invalid"):
+        StructuredTable.from_model_output(
+            '{"columns":[{"text":"Name","header":false},"Value"],"rows":[["A","1"]]}',
+            require_numeric=False,
+        )
+    with pytest.raises(BlockRepairError, match="filex_block_repair_body_invalid"):
+        StructuredTable.from_model_output(
+            '{"columns":["Name","Value"],"rows":'
+            '[[{"text":"A","header":true},{"text":"1","header":true}]]}',
+            require_numeric=False,
+        )
+
+
+def test_chart_table_rejects_header_tagged_measure_cells() -> None:
+    with pytest.raises(
+        BlockRepairError,
+        match="filex_chart_repair_measure_header_invalid",
+    ):
+        StructuredTable.from_model_output(
+            '{"labels":["Year","Value","2024"],"estimated":false,'
+            '"value_columns":[1],"columns":["Year","Value"],'
+            '"rows":[["2024",{"text":"42","header":true}]]}',
+            require_numeric=True,
         )
 
 

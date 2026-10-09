@@ -76,6 +76,8 @@ and series label in labels and also place each label in the caption, a header,
 or the associated row/column. A simple cell may be a string; a structured cell
 may use text,rowspan,colspan,header. Use at least two logical columns and one
 row, with every declared measure cell containing a numeric value.
+Only actual header cells use header=true; numeric measure cells in body rows
+must remain non-header cells.
 Transcribe printed values exactly. If a plotted mark has no printed value but a
 visible labelled axis and tick scale bound it, read it to no more precision than
 that scale supports, prefix that cell with ≈, and set estimated to true. Exact
@@ -124,25 +126,15 @@ def _decode_single_model_object(content: str) -> dict[str, Any]:
     if payload is not None:
         raise BlockRepairError("filex_block_repair_invalid_json")
 
-    candidates: list[tuple[int, int, dict[str, Any]]] = []
-    cursor = 0
-    while cursor < len(value):
-        start = value.find("{", cursor)
-        if start < 0:
-            break
-        try:
-            decoded, end = _MODEL_JSON_DECODER.raw_decode(value, start)
-        except (json.JSONDecodeError, ValueError, RecursionError):
-            cursor = start + 1
-            continue
-        if isinstance(decoded, dict):
-            candidates.append((start, end, decoded))
-            cursor = end
-        else:
-            cursor = start + 1
-    if len(candidates) != 1:
+    start = value.find("{")
+    if start < 0 or start > MAX_MODEL_BOILERPLATE_CHARS:
         raise BlockRepairError("filex_block_repair_invalid_json")
-    start, end, payload = candidates[0]
+    try:
+        payload, end = _MODEL_JSON_DECODER.raw_decode(value, start)
+    except (json.JSONDecodeError, ValueError, RecursionError):
+        raise BlockRepairError("filex_block_repair_invalid_json") from None
+    if not isinstance(payload, dict):
+        raise BlockRepairError("filex_block_repair_invalid_json")
     prefix = value[:start].strip()
     suffix = value[end:].strip()
     boilerplate = prefix + suffix
@@ -217,7 +209,7 @@ class StructuredTable:
         normalized_columns = tuple(
             _structured_cell(cell, default_header=True) for cell in columns
         )
-        if any(not column.text for column in normalized_columns):
+        if any(not column.text or not column.header for column in normalized_columns):
             raise BlockRepairError("filex_block_repair_header_invalid")
         normalized_rows: list[tuple[StructuredCell, ...]] = []
         for row in rows:
@@ -227,6 +219,8 @@ class StructuredTable:
                 tuple(_structured_cell(cell, default_header=False) for cell in row)
             )
         _validate_table_grid(normalized_columns, normalized_rows)
+        if not any(not cell.header for row in normalized_rows for cell in row):
+            raise BlockRepairError("filex_block_repair_body_invalid")
 
         raw_caption = payload.get("caption")
         caption = None if raw_caption in (None, "") else _cell_text(raw_caption)
@@ -492,7 +486,10 @@ def _validate_chart_table(
             if _NARRATIVE_ESTIMATE.search(value):
                 raise BlockRepairError("filex_chart_repair_narrative_value_invalid")
         for column_index in value_columns:
-            value = re.sub(r"\s+", " ", grid[(row_index, column_index)].text).strip()
+            measure_cell = grid[(row_index, column_index)]
+            if measure_cell.header:
+                raise BlockRepairError("filex_chart_repair_measure_header_invalid")
+            value = re.sub(r"\s+", " ", measure_cell.text).strip()
             if _NUMERIC_RANGE.fullmatch(value):
                 raise BlockRepairError("filex_chart_repair_range_invalid")
             if _NARRATIVE_ESTIMATE.search(value):
