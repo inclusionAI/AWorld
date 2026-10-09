@@ -284,6 +284,62 @@ async def test_mcp_direct_fallback_receives_only_admitted_actions(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_mcp_direct_fallback_fails_closed_for_public_deliverable(
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.setattr(AgentFactory, "agent_instance", lambda _name: None)
+    context = Context(
+        task_id="task-public",
+        session_id="session-public",
+        workspace_path=str(tmp_path),
+    )
+    context.agent_info.current_agent_id = "agent-public"
+    context.context_info["public_deliverable_contract"] = {
+        "schema_version": "aworld.public-deliverables/v1",
+        "authority": "public_task_advisory",
+        "source": "public_task_text",
+        "artifacts": [
+            {
+                "deliverable_id": "result",
+                "path": str(tmp_path / "result.json"),
+                "display_path": "result.json",
+                "kind": "file",
+                "authority": "public_task_advisory",
+            }
+        ],
+    }
+    message = Message(
+        category="tool_call",
+        sender="agent-public",
+        session_id="session-public",
+        headers={"context": context},
+    )
+    action = ActionModel(
+        tool_name="mcp",
+        action_name="terminal__run_code",
+        tool_call_id="public-direct",
+        agent_name="agent-public",
+        params={"code": "printf x > result.json"},
+    )
+    tool = McpTool(ConfigDict({}))
+
+    async def forbidden(_actions):
+        raise AssertionError("public-deliverable call bypassed trusted Sandbox")
+
+    monkeypatch.setattr(tool.action_executor, "async_execute_action", forbidden)
+
+    observation, reward, *_ = await tool.do_step([action], message)
+
+    assert reward == 0
+    assert observation.action_result[0].success is False
+    assert observation.action_result[0].metadata == {
+        "failure_category": "infrastructure",
+        "failure_code": "sandbox_authority_unavailable",
+    }
+
+
+@pytest.mark.asyncio
 async def test_direct_mcp_do_step_fails_partial_v1_interception_closed(
     monkeypatch,
 ):

@@ -144,6 +144,16 @@ class McpTool(AsyncTool):
                         message.headers["tool_interception"] = original_interception
                     if intercepted is not None:
                         return intercepted
+                from aworld.sandbox.declared_write import (
+                    controller_public_write_paths,
+                )
+                from aworld.sandbox.errors import SandboxInfrastructureError
+
+                if controller_public_write_paths(message.context):
+                    raise SandboxInfrastructureError(
+                        "sandbox_authority_unavailable",
+                        "Public-deliverable MCP calls require the trusted Sandbox boundary",
+                    )
                 action_results, ignore = await self.action_executor.async_execute_action(mcp_actions)
             reward = 1
         except Exception as e:

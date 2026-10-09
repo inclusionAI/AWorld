@@ -6,6 +6,7 @@ import gc
 import hashlib
 import json
 from pathlib import Path
+import shlex
 from types import SimpleNamespace
 import weakref
 
@@ -278,6 +279,31 @@ async def test_valid_opaque_declared_write_advances_candidate_once(
     assert first["public_delivery_progress_advanced"] is True
     assert duplicate["candidate_advanced"] is False
     assert duplicate["declared_write_receipt_replay"] is True
+
+
+@pytest.mark.asyncio
+async def test_real_foreground_terminal_write_proves_process_group_quiescence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = _public_context(tmp_path, task_id="real-foreground")
+    output = tmp_path / "result.json"
+    monkeypatch.setattr(terminal_module, "workspace", tmp_path)
+
+    response = await terminal_module.run_code(
+        None,
+        f"printf candidate > {shlex.quote(str(output))}",
+        timeout=2,
+        cwd=str(tmp_path),
+        declared_write_paths=[str(output)],
+        env_content=_hidden_scope(context, call_id="real-foreground-call"),
+    )
+    payload = json.loads(response.text)
+    receipt = payload["metadata"]["terminal_execution_receipt"]
+
+    assert payload["success"] is True
+    assert payload["metadata"]["process_group_quiesced"] is True
+    assert receipt[DECLARED_PUBLIC_WRITE_RECEIPTS_KEY][0]["changed"] is True
 
 
 @pytest.mark.asyncio
