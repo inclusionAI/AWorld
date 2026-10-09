@@ -43,6 +43,7 @@ from aworld.sandbox.terminal_receipt import (
 from aworld.sandbox.declared_write import (
     DECLARED_PUBLIC_WRITE_CONTRACT_KEY,
     DECLARED_PUBLIC_WRITE_HASH_MAX_BYTES,
+    DeclaredWriteLeaseUnavailable,
     authorized_declared_write_targets,
     build_receipts_for_versions,
     declared_write_operation_sha256,
@@ -1805,9 +1806,49 @@ async def run_code(
     ) = None
     declared_public_write_receipts: tuple[dict[str, Any], ...] = ()
     lease_context = overlapping_path_leases(
-        f"docker:{bridge.container}", lease_paths
+        f"docker:{bridge.container}",
+        lease_paths,
+        timeout_seconds=timeout,
     )
-    await lease_context.__aenter__()
+    try:
+        await lease_context.__aenter__()
+    except DeclaredWriteLeaseUnavailable as exc:
+        terminal_receipt = build_terminal_execution_receipt(
+            code=code,
+            plan=execution_plan,
+            executed=False,
+            exit_code=None,
+            timed_out=False,
+            potential_effect=potential_plan.effect,
+            effect_source=effect_source,
+            requested_language=language,
+            representation=representation,
+            source_checkpoint_revision=(
+                int(scope[5]) if _framework_scope_is_complete(scope) else None
+            ),
+            execution_context_sha256=(
+                execution_context.fingerprint
+                if execution_context is not None
+                else None
+            ),
+        )
+        return _text(
+            {
+                "success": False,
+                "message": exc.reason,
+                "metadata": {
+                    "command": code,
+                    "container": bridge.container,
+                    "working_directory": bridge.workdir,
+                    "return_code": None,
+                    "timeout_seconds": timeout,
+                    "timed_out": False,
+                    "execution_time": time.monotonic() - started,
+                    "error_type": exc.reason,
+                    "terminal_execution_receipt": terminal_receipt,
+                },
+            }
+        )
     try:
         before_write_states = await _container_path_states(
             write_paths,

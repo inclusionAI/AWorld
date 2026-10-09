@@ -71,6 +71,8 @@ from aworld.sandbox.task_budget import (
 )
 from aworld.sandbox.declared_write import (
     DECLARED_PUBLIC_WRITE_CONTRACT_KEY,
+    DECLARED_WRITE_LOCK_ROOT_ENV,
+    DeclaredWriteLeaseUnavailable,
     authorized_declared_write_targets,
     build_receipts_for_versions,
     content_versions_for_targets,
@@ -492,6 +494,7 @@ def _resolve_environment(
     # This parent/stdio-sidecar cache authority is framework state, not task
     # command configuration. Never project it into model-executed processes.
     resolved.pop(TERMINAL_EXECUTION_AUTHORITY_ENV, None)
+    resolved.pop(DECLARED_WRITE_LOCK_ROOT_ENV, None)
     if isinstance(framework_scope, Mapping):
         for source_name, environment_name in (
             ("task_id", "AWORLD_TASK_ID"),
@@ -1114,7 +1117,11 @@ async def run_code(
             *(str(path) for path in known_write_paths),
             *(target["path"] for target in declared_targets),
         ]
-        async with overlapping_path_leases("terminal-host", lease_paths):
+        async with overlapping_path_leases(
+            "terminal-host",
+            lease_paths,
+            timeout_seconds=timeout_decision.effective_seconds,
+        ):
             mutation_snapshot = (
                 {path: _path_state(path) for path in known_write_paths}
                 if known_write_paths
@@ -1255,6 +1262,7 @@ async def run_code(
     except Exception as e:
         error_msg = f"Failed to execute command: {str(e)}"
         logging.error(f"Command execution error: {traceback.format_exc()}")
+        lease_unavailable = isinstance(e, DeclaredWriteLeaseUnavailable)
 
         action_response = ActionResponse(
             success=False,
@@ -1265,7 +1273,9 @@ async def run_code(
                 working_directory=str(cwd or workspace),
                 timeout_seconds=0,
                 safety_check_passed=True,
-                error_type="internal_error",
+                error_type=(
+                    e.reason if lease_unavailable else "internal_error"
+                ),
                 terminal_execution_receipt=_build_terminal_execution_receipt(
                     code=str(command),
                     plan=receipt_plan,

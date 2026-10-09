@@ -49,10 +49,17 @@ def _result(*, stdout: str = "", stderr: str = "") -> CommandResult:
     )
 
 
-def test_internal_execution_authority_is_not_projected_to_task_commands() -> None:
+def test_internal_execution_authorities_are_not_projected_to_task_commands(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(
+        terminal_module.DECLARED_WRITE_LOCK_ROOT_ENV,
+        "/framework/declared-write-locks",
+    )
     environment = terminal_module._resolve_environment(None)
 
     assert terminal_module.TERMINAL_EXECUTION_AUTHORITY_ENV not in environment
+    assert terminal_module.DECLARED_WRITE_LOCK_ROOT_ENV not in environment
 
 
 @pytest.mark.parametrize(
