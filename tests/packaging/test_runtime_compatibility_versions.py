@@ -66,7 +66,7 @@ def test_core_source_checkout_ignores_unrelated_installed_metadata(monkeypatch) 
 
     monkeypatch.setattr(aworld, "distribution", lambda _name: StaleDistribution())
 
-    assert aworld._resolve_version() == "1.0.0a4"
+    assert aworld._resolve_version() == "1.0.0a7"
 
 
 def test_installed_core_uses_its_own_distribution_metadata(monkeypatch) -> None:
