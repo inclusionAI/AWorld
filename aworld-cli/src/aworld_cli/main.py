@@ -15,6 +15,10 @@ import sys
 from pathlib import Path
 from typing import Callable, Optional
 
+# Rich/prompt-toolkit owns the terminal.  Set this before the first AWorld
+# import so Loguru never creates a competing stderr sink.
+os.environ.setdefault("AWORLD_DISABLE_CONSOLE_LOG", "true")
+
 from aworld.plugins.discovery import discover_plugins
 
 from .async_runtime import (
@@ -423,12 +427,35 @@ def _trajectory_payload_from_direct_run_summary(
         "trajectory_capture_mode": "summary_synthetic",
     }
 
-# Suppress DEBUG/INFO logs from third-party libraries (asyncio, mcp, etc.)
-# Only show WARNING and above for non-aworld modules
-logging.basicConfig(
-    level=logging.WARNING,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
+def _remove_standard_console_handlers(logger_obj: logging.Logger) -> None:
+    """Keep file logging while preventing writes into the interactive TTY."""
+    for handler in tuple(logger_obj.handlers):
+        if isinstance(handler, logging.StreamHandler) and not isinstance(
+            handler, logging.FileHandler
+        ):
+            logger_obj.removeHandler(handler)
+
+
+def _configure_standard_logging_for_rich_cli() -> None:
+    """Make prompt-toolkit/Rich the sole owner of stdout and stderr."""
+    root_logger = logging.getLogger()
+    _remove_standard_console_handlers(root_logger)
+    if not root_logger.handlers:
+        root_logger.addHandler(logging.NullHandler())
+    root_logger.setLevel(logging.WARNING)
+
+    # AWorld's structured/file logging is handled separately by Loguru.  Do
+    # not propagate stdlib INFO records (memory, context, runners) to root.
+    for logger_name in ("aworld", "AWorld"):
+        logger_obj = logging.getLogger(logger_name)
+        _remove_standard_console_handlers(logger_obj)
+        if not logger_obj.handlers:
+            logger_obj.addHandler(logging.NullHandler())
+        logger_obj.setLevel(logging.INFO)
+        logger_obj.propagate = False
+
+
+_configure_standard_logging_for_rich_cli()
 
 # Explicitly suppress verbose third-party loggers
 third_party_loggers = [
@@ -445,10 +472,6 @@ for logger_name in third_party_loggers:
     logging.getLogger(logger_name).setLevel(logging.WARNING)
     # Also disable propagation to avoid console output
     logging.getLogger(logger_name).propagate = False
-
-# Keep aworld's own logging at INFO level (for file logs)
-for aworld_logger in ['aworld', 'AWorld']:
-    logging.getLogger(aworld_logger).setLevel(logging.INFO)
 
 # Try to import init_middlewares, fallback to no-op if not available
 try:
@@ -546,11 +569,7 @@ def _suppress_keyboard_interrupt_traceback(exc_type, exc_value, exc_tb):
 
 sys.excepthook = _suppress_keyboard_interrupt_traceback
 
-# Set default environment variable to disable console logging before importing aworld modules.
-# Gateway mode may explicitly override this before importing this module.
-os.environ.setdefault('AWORLD_DISABLE_CONSOLE_LOG', 'true')
-
-# Import aworld modules (they will respect the environment variable)
+# Import runtime modules after console logging has been disabled.
 from .runtime.cli import CliRuntime
 from .console import AWorldCLI
 from .models import AgentInfo

@@ -1,5 +1,6 @@
 import os
 import sys
+from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -550,6 +551,30 @@ def test_status_bar_text_keeps_idle_hud_stable_without_execution_stats():
     assert "Elapsed: 16.8s" in text
     assert "Tool:" not in text
     assert "Plugins:" not in text
+
+
+def test_running_hud_elapsed_advances_from_task_start_time():
+    plugin_root = _get_builtin_aworld_hud_root()
+    plugin = discover_plugins([plugin_root])[0]
+    started_at = (datetime.now() - timedelta(seconds=125)).isoformat()
+
+    lines = collect_hud_lines(
+        [plugin],
+        context={
+            "session": {"agent": "Aworld", "elapsed_seconds": 10},
+            "task": {
+                "current_task_id": "task-live",
+                "status": "running",
+                "started_at": started_at,
+            },
+            "workspace": {"name": "aworld"},
+            "notifications": {"cron_unread": 0},
+            "vcs": {"branch": "main"},
+        },
+    )
+
+    activity = next(line for line in lines if line.section == "activity")
+    assert any(segment.startswith("Elapsed: 2m") for segment in activity.segments)
 
 
 def test_context_bar_uses_visual_progress_format():

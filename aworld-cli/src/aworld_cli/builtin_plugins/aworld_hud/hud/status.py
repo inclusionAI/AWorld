@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from aworld_cli.plugin_capabilities.hud_helpers import (
     format_hud_context_bar,
     format_hud_elapsed,
@@ -70,6 +72,14 @@ def _activity_segments(context, plugin_state):
         segments.append(f"Ctx: {usage['context_percent']}%")
 
     elapsed = session.get("elapsed_seconds")
+    started_at = task.get("started_at")
+    if task_status == "running" and isinstance(started_at, str):
+        try:
+            started = datetime.fromisoformat(started_at)
+            live_elapsed = (datetime.now(started.tzinfo) - started).total_seconds()
+            elapsed = max(float(elapsed or 0), live_elapsed)
+        except (TypeError, ValueError):
+            pass
     if elapsed is not None:
         segments.append(f"Elapsed: {format_hud_elapsed(elapsed)}")
 

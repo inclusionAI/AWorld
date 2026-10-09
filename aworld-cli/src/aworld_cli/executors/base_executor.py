@@ -1699,18 +1699,18 @@ class BaseAgentExecutor(ABC, AgentExecutor):
             # Get all current handlers from base logger
             handlers = _get_handlers(base_loguru_logger)
             
-            # Remove all console/stderr handlers, keep file handlers
+            # Remove all console handlers, keep file handlers.  Loguru wraps
+            # streams in StreamSink, so inspect its underlying _stream too.
             for handler in handlers:
                 if hasattr(handler, '_sink'):
                     sink = handler._sink
-                    # Remove stderr handler (console output)
-                    if sink == sys.stderr:
+                    stream = getattr(sink, '_stream', sink)
+                    if stream in (sys.stderr, sys.stdout):
                         try:
                             base_loguru_logger.remove(handler._id)
                         except (ValueError, AttributeError):
                             pass
-                    # Check if it's a file-like object pointing to stderr
-                    elif hasattr(sink, 'name') and sink.name == '<stderr>':
+                    elif getattr(stream, 'name', None) in ('<stderr>', '<stdout>'):
                         try:
                             base_loguru_logger.remove(handler._id)
                         except (ValueError, AttributeError):
@@ -1723,7 +1723,11 @@ class BaseAgentExecutor(ABC, AgentExecutor):
                     handlers_dict = getattr(core, 'handlers')
                     if isinstance(handlers_dict, dict):
                         for handler_id, handler in list(handlers_dict.items()):
-                            if hasattr(handler, '_sink') and handler._sink == sys.stderr:
+                            sink = getattr(handler, '_sink', None)
+                            stream = getattr(sink, '_stream', sink)
+                            if stream in (sys.stderr, sys.stdout) or getattr(
+                                stream, 'name', None
+                            ) in ('<stderr>', '<stdout>'):
                                 try:
                                     base_loguru_logger.remove(handler_id)
                                 except (ValueError, AttributeError):
@@ -1741,7 +1745,11 @@ class BaseAgentExecutor(ABC, AgentExecutor):
                             handlers_dict = getattr(core, 'handlers')
                             if isinstance(handlers_dict, dict):
                                 for handler_id, handler in list(handlers_dict.items()):
-                                    if hasattr(handler, '_sink') and handler._sink == sys.stderr:
+                                    sink = getattr(handler, '_sink', None)
+                                    stream = getattr(sink, '_stream', sink)
+                                    if stream in (sys.stderr, sys.stdout) or getattr(
+                                        stream, 'name', None
+                                    ) in ('<stderr>', '<stdout>'):
                                         try:
                                             loguru_logger.remove(handler_id)
                                         except (ValueError, AttributeError):
@@ -1756,9 +1764,21 @@ class BaseAgentExecutor(ABC, AgentExecutor):
                 logging.getLogger("aworld.memory").setLevel(logging.ERROR)
                 logging.getLogger("aworld.output").setLevel(logging.ERROR)
         except Exception:
-            # If anything goes wrong, just suppress console output at standard logging level
-            logging.getLogger().setLevel(logging.ERROR)
-            logging.getLogger("aworld").setLevel(logging.ERROR)
+            pass
+
+        # Stdlib logging is independent from Loguru.  Always remove terminal
+        # handlers here as a last line of defense for an interactive session.
+        for logger_name in (None, "aworld", "AWorld"):
+            logger_obj = logging.getLogger(logger_name)
+            for handler in tuple(logger_obj.handlers):
+                if isinstance(handler, logging.StreamHandler) and not isinstance(
+                    handler, logging.FileHandler
+                ):
+                    logger_obj.removeHandler(handler)
+            if not logger_obj.handlers:
+                logger_obj.addHandler(logging.NullHandler())
+            if logger_name is not None:
+                logger_obj.propagate = False
 
     def _start_tool_logging(self) -> None:
         """
