@@ -4579,7 +4579,7 @@ def execution_protocol_model_decision_boundary(context, agent_id: str) -> str | 
     )
     if policy.mode is not ProtocolMode.GUIDE and not terminal_checkpoint:
         return None
-    if state.convergence_constraint_active:
+    if state.convergence_constraint_active and not terminal_checkpoint:
         return None
     attempts = _normalized_decision_attempts(
         _read_runtime_value(context, agent_id, EXECUTION_PROTOCOL_MODEL_DECISIONS_KEY),

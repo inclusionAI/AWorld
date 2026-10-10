@@ -27,6 +27,7 @@ from aworld.core.event.base import Constants, Message
 from aworld.core.execution_protocol import (
     ControllerDecision,
     ControllerAction,
+    ConvergenceStage,
     DecisionReason,
     EventKind,
     ExecutionProtocolPolicy,
@@ -1385,6 +1386,8 @@ def test_success_first_terminal_checkpoint_exposes_decision_tool() -> None:
             decision_checkpoint_pending=True,
             decision_checkpoint_reason=DecisionReason.CANDIDATE_DECISION_RESERVE,
             decision_checkpoint_candidate_present=True,
+            convergence_constraint_active=True,
+            convergence_stage=ConvergenceStage.PRODUCE_CANDIDATE,
         )
     )
     tools = [
