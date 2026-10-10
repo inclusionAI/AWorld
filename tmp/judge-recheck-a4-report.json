@@ -1,0 +1,1861 @@
+{
+  "report_version": 1,
+  "report_format": {
+    "id": "aworld.evaluator.report",
+    "version": 1
+  },
+  "generated_at": "2026-09-13T09:56:23.369656Z",
+  "suite_id": "trajectory-source-evaluator",
+  "target": {
+    "target_kind": "source",
+    "target_path": "/Users/wuman/Documents/workspace/aworld/.aworld/self_evolve/evaluator/campaign-5da22855fc198ea4676c-cycle-003-held-out-llm-mutator-a4e1b3e4157c-candidate-e6b0c85a79686a96/llm-mutator-a4e1b3e4157c/held_out/trajectory.log",
+    "source_kind": "trajectory",
+    "task_id": null,
+    "judge_agent": "/Users/wuman/Documents/agent.md",
+    "judge_agent_name": null,
+    "judge_backend_ref": null,
+    "agent": "Aworld",
+    "judge_timeout_seconds": 600.0,
+    "judge_model_profile": "gpt-5.5",
+    "source_out_dir": "/Users/wuman/Documents/workspace/aworld/tmp/judge-recheck-a4",
+    "report_output_path": "/Users/wuman/Documents/workspace/aworld/tmp/judge-recheck-a4-report.json"
+  },
+  "summary": {
+    "trajectory-source-evaluator": {
+      "score": {
+        "mean": 80.4,
+        "min": 66.4,
+        "max": 91.4,
+        "std": 11.350183552113446,
+        "eval_status": "PASSED"
+      },
+      "verdict": {
+        "value": "mixed"
+      },
+      "A1_groundedness": {
+        "mean": 3.75,
+        "min": 3,
+        "max": 4,
+        "std": 0.5
+      },
+      "A2_completeness": {
+        "mean": 4.5,
+        "min": 4,
+        "max": 5,
+        "std": 0.5773502691896257
+      },
+      "A3_relevance": {
+        "mean": 4.75,
+        "min": 4,
+        "max": 5,
+        "std": 0.5
+      },
+      "A4_readability": {
+        "mean": 4.75,
+        "min": 4,
+        "max": 5,
+        "std": 0.5
+      },
+      "B1_tool_use": {
+        "mean": 4.0,
+        "min": 4,
+        "max": 4,
+        "std": 0.0
+      },
+      "B2_efficiency": {
+        "mean": 3.75,
+        "min": 3,
+        "max": 5,
+        "std": 0.9574271077563381
+      },
+      "B3_compliance": {
+        "mean": 4.5,
+        "min": 4,
+        "max": 5,
+        "std": 0.5773502691896257
+      },
+      "B4_robustness": {
+        "mean": 4.25,
+        "min": 4,
+        "max": 5,
+        "std": 0.5
+      },
+      "veto_triggered": {
+        "true_count": 0,
+        "true_rate": 0.0
+      },
+      "evidence_block_count": {
+        "mean": 3.75,
+        "min": 2,
+        "max": 6,
+        "std": 2.0615528128088303
+      },
+      "evidence_compacted": {
+        "true_count": 2,
+        "true_rate": 0.5
+      },
+      "evidence_incomplete": {
+        "true_count": 2,
+        "true_rate": 0.5
+      }
+    },
+    "runtime_outcome": {
+      "has_evidence": {
+        "mean": 1.0,
+        "min": 1.0,
+        "max": 1.0,
+        "std": 0.0,
+        "eval_status": "PASSED"
+      },
+      "agent_finished": {
+        "mean": 1.0,
+        "min": 1.0,
+        "max": 1.0,
+        "std": 0.0,
+        "eval_status": "PASSED"
+      }
+    },
+    "TimeCostScorer": {
+      "predict_time_cost_ms": {
+        "mean": 3.1765103340148926,
+        "min": 1.9190311431884766,
+        "max": 4.270792007446289,
+        "std": 1.0143789113376827,
+        "eval_status": "PASSED"
+      }
+    }
+  },
+  "metrics": {
+    "score": {
+      "mean": 80.4,
+      "min": 66.4,
+      "max": 91.4,
+      "std": 11.350183552113446,
+      "eval_status": "PASSED"
+    },
+    "verdict": {
+      "value": "mixed"
+    },
+    "A1_groundedness": {
+      "mean": 3.75,
+      "min": 3,
+      "max": 4,
+      "std": 0.5,
+      "eval_status": "PASSED"
+    },
+    "A2_completeness": {
+      "mean": 4.5,
+      "min": 4,
+      "max": 5,
+      "std": 0.5773502691896257
+    },
+    "A3_relevance": {
+      "mean": 4.75,
+      "min": 4,
+      "max": 5,
+      "std": 0.5
+    },
+    "A4_readability": {
+      "mean": 4.75,
+      "min": 4,
+      "max": 5,
+      "std": 0.5
+    },
+    "B1_tool_use": {
+      "mean": 4.0,
+      "min": 4,
+      "max": 4,
+      "std": 0.0
+    },
+    "B2_efficiency": {
+      "mean": 3.75,
+      "min": 3,
+      "max": 5,
+      "std": 0.9574271077563381
+    },
+    "B3_compliance": {
+      "mean": 4.5,
+      "min": 4,
+      "max": 5,
+      "std": 0.5773502691896257
+    },
+    "B4_robustness": {
+      "mean": 4.25,
+      "min": 4,
+      "max": 5,
+      "std": 0.5
+    },
+    "veto_triggered": {
+      "true_count": 0,
+      "true_rate": 0.0,
+      "eval_status": "PASSED"
+    },
+    "evidence_block_count": {
+      "mean": 3.75,
+      "min": 2,
+      "max": 6,
+      "std": 2.0615528128088303
+    },
+    "evidence_compacted": {
+      "true_count": 2,
+      "true_rate": 0.5
+    },
+    "evidence_incomplete": {
+      "true_count": 2,
+      "true_rate": 0.5
+    },
+    "has_evidence": {
+      "mean": 1.0,
+      "min": 1.0,
+      "max": 1.0,
+      "std": 0.0,
+      "eval_status": "PASSED"
+    },
+    "agent_finished": {
+      "mean": 1.0,
+      "min": 1.0,
+      "max": 1.0,
+      "std": 0.0,
+      "eval_status": "PASSED"
+    },
+    "predict_time_cost_ms": {
+      "mean": 3.1765103340148926,
+      "min": 1.9190311431884766,
+      "max": 4.270792007446289,
+      "std": 1.0143789113376827,
+      "eval_status": "PASSED"
+    }
+  },
+  "results": [
+    {
+      "case_id": "task_20260522081541",
+      "input": {
+        "task_id": "task_20260522081541",
+        "trajectory_log": "/Users/wuman/Documents/workspace/aworld/.aworld/self_evolve/evaluator/campaign-5da22855fc198ea4676c-cycle-003-held-out-llm-mutator-a4e1b3e4157c-candidate-e6b0c85a79686a96/llm-mutator-a4e1b3e4157c/held_out/trajectory.log",
+        "_target": {
+          "target_kind": "source",
+          "target_path": "/Users/wuman/Documents/workspace/aworld/.aworld/self_evolve/evaluator/campaign-5da22855fc198ea4676c-cycle-003-held-out-llm-mutator-a4e1b3e4157c-candidate-e6b0c85a79686a96/llm-mutator-a4e1b3e4157c/held_out/trajectory.log",
+          "source_kind": "trajectory",
+          "task_id": null,
+          "judge_agent": "/Users/wuman/Documents/agent.md",
+          "judge_agent_name": null,
+          "judge_backend_ref": null,
+          "agent": "Aworld",
+          "judge_timeout_seconds": 600.0,
+          "judge_model_profile": "gpt-5.5",
+          "source_out_dir": "/Users/wuman/Documents/workspace/aworld/tmp/judge-recheck-a4",
+          "report_output_path": "/Users/wuman/Documents/workspace/aworld/tmp/judge-recheck-a4-report.json"
+        },
+        "_case_metadata": {
+          "source_kind": "trajectory",
+          "source_path": "/Users/wuman/Documents/workspace/aworld/.aworld/self_evolve/evaluator/campaign-5da22855fc198ea4676c-cycle-003-held-out-llm-mutator-a4e1b3e4157c-candidate-e6b0c85a79686a96/llm-mutator-a4e1b3e4157c/held_out/trajectory.log",
+          "extraction_dir": "/Users/wuman/Documents/workspace/aworld/tmp/judge-recheck-a4",
+          "source_record": {
+            "case_id": "task_20260522081541",
+            "input": {
+              "task_id": "task_20260522081541",
+              "trajectory_log": "/Users/wuman/Documents/workspace/aworld/.aworld/self_evolve/evaluator/campaign-5da22855fc198ea4676c-cycle-003-held-out-llm-mutator-a4e1b3e4157c-candidate-e6b0c85a79686a96/llm-mutator-a4e1b3e4157c/held_out/trajectory.log"
+            },
+            "answer": "已成功提取到论文的完整信息。以下是这篇论文的核心观点总结：\n\n---\n\n## 📄 论文：Rubric-based On-policy Distillation (ROPD)\n\n**arXiv ID:** 2605.07396  \n**作者:** Junfeng Fang, Zhepei Hong, Mao Zheng, Mingyang Song, Gengsheng Li, Houcheng Jiang, Dan Zhang, Haiyun Guo, Xiang Wang, Tat-Seng Chua  \n**日期:** 2026/05/08  \n**代码:** https://github.com/Peregrine123/ROPD_official\n\n---\n\n### 🎯 核心观点\n\n**1. 问题：传统 OPD 依赖 teacher logits，限制了应用场景**\n\nOn-policy distillation (OPD) 是模型对齐的强大范式，但它依赖教师模型的 logits（输出概率分布），这意味着只能用于**白盒场景**（即教师模型参数可访问）。对于闭源/商业 LLM（如 GPT-4），无法获取 logits，传统 OPD 就无法使用。\n\n**2. 核心创新：用\"语义评分标准 (Rubric)\"替代 teacher logits**\n\n论文提出，**结构化的语义 rubric（评分标准）可以作为 teacher logits 的可扩展替代品**，使得 OPD 只需要教师模型生成的**文本回复**即可完成蒸馏，无需访问模型内部参数。\n\n**3. ROPD 框架的具体方法**\n\n- **Step 1 — 诱导 Rubric：** 从教师-学生回答的对比中，自动生成针对特定 prompt 的评分标准\n- **Step 2 — 评分优化：** 用这些 rubric 对学生模型的 rollout（生成样本）进行打分，再基于评分信号进行 on-policy 优化\n\n**4. 实验结果亮点**\n\n- ROPD 在大多数场景下**超越了先进的基于 logits 的 OPD 方法**\n- 实现了高达 **10 倍的样本效率提升**\n- 作为一种**黑盒兼容**的替代方案，适用于商业闭源模型和开源模型之间的蒸馏\n\n---\n\n### 💡 一句话总结\n\n> ROPD 提出了一种不依赖教师模型 logits 的蒸馏新范式——通过自动生成的语义评分标准来指导学生模型优化，使得即使教师是闭源黑盒模型（如 GPT-4），也能进行高效的 on-policy 蒸馏，且效果优于传统白盒方法。\n\n---\n\n**证据文件：**\n- 摘要原文已保存至 `$AWORLD_REPLAY_ARTIFACT_DIR/abstract.txt`（1011 字符）\n- 原始页面已保存至 `$AWORLD_REPLAY_ARTIFACT_DIR/paper_page.html`\n- 证据清单已写入 `$AWORLD_REPLAY_EVIDENCE_MANIFEST`",
+            "metadata": {
+              "source_kind": "trajectory",
+              "source_path": "/Users/wuman/Documents/workspace/aworld/.aworld/self_evolve/evaluator/campaign-5da22855fc198ea4676c-cycle-003-held-out-llm-mutator-a4e1b3e4157c-candidate-e6b0c85a79686a96/llm-mutator-a4e1b3e4157c/held_out/trajectory.log",
+              "extraction_dir": "/Users/wuman/Documents/workspace/aworld/tmp/judge-recheck-a4"
+            }
+          }
+        },
+        "_expected": null,
+        "_max_turns": null,
+        "_timeout_seconds": null
+      },
+      "metrics": {
+        "score": {
+          "value": 87.6,
+          "status": "PASSED"
+        },
+        "verdict": {
+          "value": "Excellent"
+        },
+        "A1_groundedness": {
+          "value": 4,
+          "status": "PASSED"
+        },
+        "A2_completeness": {
+          "value": 5
+        },
+        "A3_relevance": {
+          "value": 5
+        },
+        "A4_readability": {
+          "value": 5
+        },
+        "B1_tool_use": {
+          "value": 4
+        },
+        "B2_efficiency": {
+          "value": 3
+        },
+        "B3_compliance": {
+          "value": 4
+        },
+        "B4_robustness": {
+          "value": 4
+        },
+        "veto_triggered": {
+          "value": false,
+          "status": "PASSED"
+        },
+        "evidence_block_count": {
+          "value": 6
+        },
+        "evidence_compacted": {
+          "value": true
+        },
+        "evidence_incomplete": {
+          "value": false
+        },
+        "has_evidence": {
+          "value": 1.0,
+          "status": "PASSED"
+        },
+        "agent_finished": {
+          "value": 1.0,
+          "status": "PASSED"
+        },
+        "predict_time_cost_ms": {
+          "value": 1.9190311431884766,
+          "status": "PASSED"
+        }
+      },
+      "judge": {
+        "score": 87.6,
+        "verdict": "Excellent",
+        "A1_groundedness": 4,
+        "A2_completeness": 5,
+        "A3_relevance": 5,
+        "A4_readability": 5,
+        "B1_tool_use": 4,
+        "B2_efficiency": 3,
+        "B3_compliance": 4,
+        "B4_robustness": 4,
+        "veto_triggered": false,
+        "has_evidence": true,
+        "evidence_block_count": 6,
+        "evidence_compacted": true,
+        "evidence_incomplete": false,
+        "evidence_quality": {
+          "has_evidence": true,
+          "evidence_block_count": 6,
+          "evidence_compacted": true,
+          "evidence_incomplete": false,
+          "evidence_issues": [
+            "raw tool outputs in extracted trajectory were prompt-compacted, but valid canonical evidence bundle supports the main claims",
+            "minor final-answer example/reference such as GPT-4 is not directly present in the evidence bundle"
+          ]
+        },
+        "evidence_repair_constraints": [
+          {
+            "subject_kind": "general_claim",
+            "failure_mode": "unsupported_claim",
+            "source_layer": "candidate_output",
+            "required_action": "support_or_omit",
+            "owner": "candidate",
+            "occurrence_count": 1
+          }
+        ]
+      },
+      "judge_backend": {
+        "backend_id": "trajectory-evaluator-agent-md"
+      },
+      "state_summary": {
+        "answer": "已成功提取到论文的完整信息。以下是这篇论文的核心观点总结：\n\n---\n\n## 📄 论文：Rubric-based On-policy Distillation (ROPD)\n\n**arXiv ID:** 2605.07396  \n**作者:** Junfeng Fang, Zhepei Hong, Mao Zheng, Mingyang Song, Gengsheng Li, Houcheng Jiang, Dan Zhang, Haiyun Guo, Xiang Wang, Tat-Seng Chua  \n**日期:** 2026/05/08  \n**代码:** https://github.com/Peregrine123/ROPD_official\n\n---\n\n### 🎯 核心观点\n\n**1. 问题：传统 OPD 依赖 teacher logits，限制了应用场景**\n\nOn-policy distillation (OPD) 是模型对齐的强大范式，但它依赖教师模型的 logits（输出概率分布），这意味着只能用于**白盒场景**（即教师模型参数可访问）。对于闭源/商业 LLM（如 GPT-4），无法获取 logits，传统 OPD 就无法使用。\n\n**2. 核心创新：用\"语义评分标准 (Rubric)\"替代 teacher logits**\n\n论文提出，**结构化的语义 rubric（评分标准）可以作为 teacher logits 的可扩展替代品**，使得 OPD 只需要教师模型生成的**文本回复**即可完成蒸馏，无需访问模型内部参数。\n\n**3. ROPD 框架的具体方法**\n\n- **Step 1 — 诱导 Rubric：** 从教师-学生回答的对比中，自动生成针对特定 prompt 的评分标准\n- **Step 2 — 评分优化：** 用这些 rubric 对学生模型的 rollout（生成样本）进行打分，再基于评分信号进行 on-policy 优化\n\n**4. 实验结果亮点**\n\n- ROPD 在大多数场景下**超越了先进的基于 logits 的 OPD 方法**\n- 实现了高达 **10 倍的样本效率提升**\n- 作为一种**黑盒兼容**的替代方案，适用于商业闭源模型和开源模型之间的蒸馏\n\n---\n\n### 💡 一句话总结\n\n> ROPD 提出了一种不依赖教师模型 logits 的蒸馏新范式——通过自动生成的语义评分标准来指导学生模型优化，使得即使教师是闭源黑盒模型（如 GPT-4），也能进行高效的 on-policy 蒸馏，且效果优于传统白盒方法。\n\n---\n\n**证据文件：**\n- 摘要原文已保存至 `$AWORLD_REPLAY_ARTIFACT_DIR/abstract.txt`（1011 字符）\n- 原始页面已保存至 `$AWORLD_REPLAY_ARTIFACT_DIR/paper_page.html`\n- 证据清单已写入 `$AWORLD_REPLAY_EVIDENCE_MANIFEST`",
+        "completion_count": 1,
+        "trajectory_steps": 13,
+        "tool_call_count": 12,
+        "usage": {
+          "total_tokens": 0
+        },
+        "timing": {
+          "duration_ms": 0
+        },
+        "standard_metrics": {
+          "n_turns": 13,
+          "n_tool_calls": 12,
+          "n_tokens": 0,
+          "duration_ms": 0
+        },
+        "error": null
+      },
+      "artifacts": {
+        "outcome": {
+          "task_id": "task_20260522081541",
+          "question": "http://127.0.0.1:58568/abs/2605.07396，看看这篇paper的核心观点吧\n\nSelf-evolve replay evidence requirements:\n- Preserve the user task and use artifact-first evidence. Save large or unknown-size output under AWORLD_REPLAY_ARTIFACT_DIR (/Users/wuman/Documents/workspace/aworld/.aworld/self_evolve/campaign-5da22855fc198ea4676c-cycle-003/replay/llm-mutator-a4e1b3e4157c/members/task_20260522081541-a2de86af3141/llm-mutator-a4e1b3e4157c/evidence); never stream full pages, documents, JSON, or logs.\n- In every shell command, use the literal quoted variables \"$AWORLD_REPLAY_ARTIFACT_DIR\" and \"$AWORLD_REPLAY_EVIDENCE_MANIFEST\". Never paste their resolved parenthetical paths: replay workspaces can change after a resume.\n- Inspect only explicit byte-bounded excerpts or selected fields; `head -N` is not a byte bound.\n- Append one compact JSON line per source to AWORLD_REPLAY_EVIDENCE_MANIFEST (/Users/wuman/Documents/workspace/aworld/.aworld/self_evolve/campaign-5da22855fc198ea4676c-cycle-003/replay/llm-mutator-a4e1b3e4157c/members/task_20260522081541-a2de86af3141/llm-mutator-a4e1b3e4157c/evidence/evidence_manifest.jsonl). For a file use exactly {\"source_id\":\"...\",\"extraction_method\":\"...\",\"artifact_path\":\"...\",\"selected_fields\":{\"field\":\"bounded value\"}}; for non-file evidence use exactly {\"source_id\":\"...\",\"evidence_type\":\"metadata\",\"extraction_method\":\"...\",\"metadata\":{\"field\":\"bounded value\"}}.\n- Reject compacted, truncated, invalid, or unbounded evidence; retry once with a narrower extraction.\n- Persist every valid artifact-backed sample and its manifest entry immediately. Continue only until every evidence subject required by the user task is covered (for example, every item in a comparison), or until one materially different bounded attempt establishes that a subject is unavailable. Then stop collecting and return the answer with artifact paths, subject coverage counts, explicit missing subjects, and a concise claim ledger. Omit unsupported claims.\n\nSelf-evolve replay runtime contract:\n- Keep the original authorization boundary. Required task-plane actions are allowed; control-plane actions require explicit task authorization.\n- External prerequisites are attach-only: never terminate, restart, reconfigure, replace, or copy host credentials/sessions/private state.\n- Preserve supplied HOME, TMPDIR, XDG_*, and runtime roots. Use only AWORLD_REPLAY_ENDPOINT_* endpoints; never discover alternate host ports.\n- On terminal protocol mismatch, persist one bounded diagnostic and stop. If a bounded non-mutating prerequisite probe fails, return prerequisite-unavailable.\n- Keep created files in the workspace/artifact directory. Switch strategy once when no new evidence is possible, otherwise fail with the observed reason.\n- Evidence completion is terminal: once every required evidence subject is covered, or bounded insufficiency is established for the missing subjects, make no further tool call and synthesize the final response. A single sample is terminal only for a genuinely single-subject task.",
+          "evidence_blocks": 29,
+          "raw_evidence_blocks": 23,
+          "canonical_evidence_bundle_valid": true,
+          "canonical_evidence_bundle_entries": 6,
+          "num_steps": 13,
+          "is_finished": true,
+          "final_answer_len": 1285,
+          "extracted_path": "/Users/wuman/Documents/workspace/aworld/tmp/judge-recheck-a4/extracted_task_20260522081541.json"
+        },
+        "attempts": [],
+        "child_states": []
+      },
+      "judge_diagnostics": [
+        {
+          "phase": "initial_judge",
+          "round_index": 0,
+          "status": "succeeded",
+          "prompt_chars": 43752,
+          "system_prompt_chars": 11545,
+          "input_chars": 55297,
+          "estimated_input_tokens": 13825,
+          "artifact_request_count": 0,
+          "artifact_read_result_count": 0,
+          "artifact_read_count": 0,
+          "artifact_read_denied_count": 0,
+          "artifact_read_denial_reasons": [],
+          "artifact_read_denied_path_fingerprints": [],
+          "artifact_read_continuation_count": 0,
+          "artifact_read_budget_exhausted": false,
+          "artifact_read_projection_incomplete": false,
+          "artifact_read_chars": 0,
+          "timeout_seconds": 600.0,
+          "latency_ms": 11514.635582992923
+        }
+      ],
+      "metadata": {
+        "source_kind": "trajectory",
+        "source_path": "/Users/wuman/Documents/workspace/aworld/.aworld/self_evolve/evaluator/campaign-5da22855fc198ea4676c-cycle-003-held-out-llm-mutator-a4e1b3e4157c-candidate-e6b0c85a79686a96/llm-mutator-a4e1b3e4157c/held_out/trajectory.log",
+        "extraction_dir": "/Users/wuman/Documents/workspace/aworld/tmp/judge-recheck-a4",
+        "source_case_id": "task_20260522081541",
+        "extracted_path": "/Users/wuman/Documents/workspace/aworld/tmp/judge-recheck-a4/extracted_task_20260522081541.json",
+        "_target": {
+          "target_kind": "source",
+          "target_path": "/Users/wuman/Documents/workspace/aworld/.aworld/self_evolve/evaluator/campaign-5da22855fc198ea4676c-cycle-003-held-out-llm-mutator-a4e1b3e4157c-candidate-e6b0c85a79686a96/llm-mutator-a4e1b3e4157c/held_out/trajectory.log",
+          "source_kind": "trajectory",
+          "task_id": null,
+          "judge_agent": "/Users/wuman/Documents/agent.md",
+          "judge_agent_name": null,
+          "judge_backend_ref": null,
+          "agent": "Aworld",
+          "judge_timeout_seconds": 600.0,
+          "judge_model_profile": "gpt-5.5",
+          "source_out_dir": "/Users/wuman/Documents/workspace/aworld/tmp/judge-recheck-a4",
+          "report_output_path": "/Users/wuman/Documents/workspace/aworld/tmp/judge-recheck-a4-report.json"
+        },
+        "standard_metrics": {
+          "n_turns": 13,
+          "n_tool_calls": 12,
+          "n_tokens": 0,
+          "duration_ms": 0
+        }
+      },
+      "metric_details": {
+        "score": {
+          "score": 87.6,
+          "verdict": "Excellent",
+          "A1_groundedness": 4,
+          "A2_completeness": 5,
+          "A3_relevance": 5,
+          "A4_readability": 5,
+          "B1_tool_use": 4,
+          "B2_efficiency": 3,
+          "B3_compliance": 4,
+          "B4_robustness": 4,
+          "veto_triggered": false,
+          "has_evidence": true,
+          "evidence_block_count": 6,
+          "evidence_compacted": true,
+          "evidence_incomplete": false,
+          "evidence_quality": {
+            "has_evidence": true,
+            "evidence_block_count": 6,
+            "evidence_compacted": true,
+            "evidence_incomplete": false,
+            "evidence_issues": [
+              "raw tool outputs in extracted trajectory were prompt-compacted, but valid canonical evidence bundle supports the main claims",
+              "minor final-answer example/reference such as GPT-4 is not directly present in the evidence bundle"
+            ]
+          },
+          "evidence_repair_constraints": [
+            {
+              "subject_kind": "general_claim",
+              "failure_mode": "unsupported_claim",
+              "source_layer": "candidate_output",
+              "required_action": "support_or_omit",
+              "owner": "candidate",
+              "occurrence_count": 1
+            }
+          ],
+          "_judge_backend": "trajectory-evaluator-agent-md",
+          "_judge_diagnostics": [
+            {
+              "phase": "initial_judge",
+              "round_index": 0,
+              "status": "succeeded",
+              "prompt_chars": 43752,
+              "system_prompt_chars": 11545,
+              "input_chars": 55297,
+              "estimated_input_tokens": 13825,
+              "artifact_request_count": 0,
+              "artifact_read_result_count": 0,
+              "artifact_read_count": 0,
+              "artifact_read_denied_count": 0,
+              "artifact_read_denial_reasons": [],
+              "artifact_read_denied_path_fingerprints": [],
+              "artifact_read_continuation_count": 0,
+              "artifact_read_budget_exhausted": false,
+              "artifact_read_projection_incomplete": false,
+              "artifact_read_chars": 0,
+              "timeout_seconds": 600.0,
+              "latency_ms": 11514.635582992923
+            }
+          ]
+        },
+        "has_evidence": {
+          "passed": true,
+          "reason": "matched",
+          "source": "outcome",
+          "path": [
+            "evidence_blocks"
+          ],
+          "op": ">",
+          "expected": 0,
+          "actual": 29,
+          "weight": 1.0,
+          "required": true
+        },
+        "agent_finished": {
+          "passed": true,
+          "reason": "matched",
+          "source": "outcome",
+          "path": [
+            "is_finished"
+          ],
+          "op": "==",
+          "expected": true,
+          "actual": true,
+          "weight": 1.0,
+          "required": true
+        }
+      }
+    },
+    {
+      "case_id": "task_20260521173650",
+      "input": {
+        "task_id": "task_20260521173650",
+        "trajectory_log": "/Users/wuman/Documents/workspace/aworld/.aworld/self_evolve/evaluator/campaign-5da22855fc198ea4676c-cycle-003-held-out-llm-mutator-a4e1b3e4157c-candidate-e6b0c85a79686a96/llm-mutator-a4e1b3e4157c/held_out/trajectory.log",
+        "_target": {
+          "target_kind": "source",
+          "target_path": "/Users/wuman/Documents/workspace/aworld/.aworld/self_evolve/evaluator/campaign-5da22855fc198ea4676c-cycle-003-held-out-llm-mutator-a4e1b3e4157c-candidate-e6b0c85a79686a96/llm-mutator-a4e1b3e4157c/held_out/trajectory.log",
+          "source_kind": "trajectory",
+          "task_id": null,
+          "judge_agent": "/Users/wuman/Documents/agent.md",
+          "judge_agent_name": null,
+          "judge_backend_ref": null,
+          "agent": "Aworld",
+          "judge_timeout_seconds": 600.0,
+          "judge_model_profile": "gpt-5.5",
+          "source_out_dir": "/Users/wuman/Documents/workspace/aworld/tmp/judge-recheck-a4",
+          "report_output_path": "/Users/wuman/Documents/workspace/aworld/tmp/judge-recheck-a4-report.json"
+        },
+        "_case_metadata": {
+          "source_kind": "trajectory",
+          "source_path": "/Users/wuman/Documents/workspace/aworld/.aworld/self_evolve/evaluator/campaign-5da22855fc198ea4676c-cycle-003-held-out-llm-mutator-a4e1b3e4157c-candidate-e6b0c85a79686a96/llm-mutator-a4e1b3e4157c/held_out/trajectory.log",
+          "extraction_dir": "/Users/wuman/Documents/workspace/aworld/tmp/judge-recheck-a4",
+          "source_record": {
+            "case_id": "task_20260521173650",
+            "input": {
+              "task_id": "task_20260521173650",
+              "trajectory_log": "/Users/wuman/Documents/workspace/aworld/.aworld/self_evolve/evaluator/campaign-5da22855fc198ea4676c-cycle-003-held-out-llm-mutator-a4e1b3e4157c-candidate-e6b0c85a79686a96/llm-mutator-a4e1b3e4157c/held_out/trajectory.log"
+            },
+            "answer": "I now have the complete article content. The evidence is fully collected — the full 8100-character article from Lotte (@lotte_verheyden) has been extracted, saved as an artifact, and the manifest entry recorded. This is a single-subject task, so I can now synthesize the final analysis.\n\n---\n\n## 📄 Lotte（@lotte_verheyden）的 Evals 观点深度分析\n\n**作者**: Lotte（@lotte_verheyden，关联 @langfuse）\n**发布时间**: 2026年5月19日\n**标题**: *Evals, explained*\n**系列**: Langfuse Academy — AI Engineering Loop 系列的一部分\n\n---\n\n### 🎯 Lotte 的核心框架：Evals 是\"AI 工程循环\"中的一个环节\n\nLotte 的视角与 Viv 截然不同。她不是在写\"哲学宣言\"，而是在写一篇**工程实践教程**。她的核心叙事结构是：\n\n> **生产（tracing/monitoring）→ 开发（datasets/experiments/evaluation）→ 发布 → 新数据 → 循环往复**\n\nEvals 是这个循环中\"运行实验之后、发布变更之前\"的判断步骤。\n\n---\n\n### 📋 Lotte 的核心观点梳理\n\n| # | 主题 | 关键内容 |\n|---|------|---------|\n| **1** | **评估方法的演进路径** | 手动审查 → 识别失败模式 → 自动化评估器。**手动审查不是一次性步骤**，成熟系统需要持续人工审查来发现新失败模式并校准自动评估器 |\n| **2** | **三种评估方法** | ① **手动评估**：建立直觉、产出人类标签作为 ground truth；② **代码评估**：确定性检查（JSON 有效性、关键词存在、SQL 执行、长度限制），快速、便宜、可重复，但**无法评估语义**；③ **LLM-as-a-judge**：用于需要理解语言的品质（相关性、语气、摘要质量） |\n| **3** | **LLM-as-a-judge 的局限性** | LLM 评审者不完美：不会自动像人类专家一样评分、需要针对人类偏好校准、可能与应用本身使用的 LLM 共享盲点（尤其同模型家族时） |\n| **4** | **Reference-based vs Reference-free** | **Reference-based**：与预定义期望输出对比（如正确答案/golden response）；**Reference-free**：独立评估输出，无需 ground truth。Reference-free 的优势是**可直接应用于生产数据** |\n| **5** | **何时建立评估器** | 先问：这是一次性修复还是泛化问题？简单 prompt 修改能解决的→直接改，不需要评估器；能清晰定义的反复出现的失败模式→才值得建评估器 |\n| **6** | **评估什么** | 避免\"helpfulness\"或\"quality\"这类模糊标准。定义越精确，评估器越有用。**推荐二分制（pass/fail）而非评分制（1-5）**，因为评分制引入\"3 和 4 有什么区别\"的歧义 |\n| **7** | **组合使用** | 成熟评估体系同时使用三种方法，每个关注的质量维度配一个独立评估器 |\n| **8** | **闭环** | 部署后，部分评估器应延伸到生产环境（reference-free 评估器、用户反馈信号等），确认生产品质与部署前一致。如果生产行为不符预期→捕获 traces→转为数据集条目→下一轮实验 |\n\n---\n\n### ⚔️ 与 Viv（@Vtrivedy10）观点的关键差异\n\n| 维度 | **Viv（LangChain）** | **Lotte（Langfuse）** |\n|------|---------------------|----------------------|\n| **视角性质** | 🧠 **哲学宣言**——9 点\"脑暴\"，重新定义 Evals 的本质 | 🛠️ **工程教程**——系统化的方法论，教你\"怎么做\" |\n| **核心隐喻** | Evals ≈ **Environments**（运行环境），Sim2Real gap | Evals = **AI 工程循环**中的一个判断节点 |\n| **Evals 的角色** | 多重身份：度量、回归测试、**训练数据**（`Agent = fit(model, evals)`） | 评估器（evaluator）——判断输出是否\"够好\"的工具 |\n| **从哪来** | 从生产 traces 中**发现**失败案例 → 转化为 evals | 从**手动审查**开始 → 识别失败模式 → 自动化 |\n| **对\"失败\"的态度** | 允许 evals 失败——有些是为下一代模型设计的目标 | 不讨论\"允许失败\"，关注的是**校准**和**持续审查** |\n| **方法论分类** | 不做方法分类，关注哲学层面 | 明确分三种：手动、代码、LLM-as-judge，并详细对比优劣 |\n| **评分方式** | 不涉及 | 明确推荐 **binary（pass/fail）** 优于 graded（1-5） |\n| **Reference 概念** | 不涉及 | 明确区分 **reference-based vs reference-free**，后者可用于生产数据 |\n| **LLM-as-judge** | 不涉及 | 深入讨论其局限性：需校准、共享盲点、不等于人类专家 |\n| **\"存在的 Eval\"** | 核心观点——克服白纸恐惧，从小的 unit-test 风格 evals 开始 | 不强调\"存在即好\"，而是强调**从手动审查开始的渐进路径** |\n| **闭环** | 隐含在\"从 traces 发现 evals\"中 | **显式描述**：生产→traces→数据集→实验→评估→发布→循环 |\n\n---\n\n### 🔑 最本质的差异总结\n\n1. **Viv 是\"为什么\"派，Lotte 是\"怎么做\"派。** Viv 重新定义了 Evals 的身份（环境、训练数据、回归测试），挑战你对 Evals 的根本理解；Lotte 则给你一张工程路线图，从手动审查到三种方法组合到闭环。\n\n2. **Viv 最激进的观点是 `Agent = fit(model, evals)`**——Agent 本质上在向 evals 拟合，Evals 即训练数据。Lotte 完全没有这个视角，她把 evals 严格定位为**质量判断工具**，不涉及\"拟合\"概念。\n\n3. **Lotte 独有的贡献**是方法论分类体系（手动/代码/LLM-as-judge）和 reference-based vs reference-free 的区分，以及\"binary 优于 graded\"的实操建议——这些都是 Viv 帖子中完全没有涉及的。\n\n4. **两者共同点**：都强调从生产 traces 中提取失败案例来构建 evals，都认为 evals 是持续迭代而非一次性的。但 Viv 把这上升到\"Sim2Real gap\"的哲学高度，Lotte 则落地为\"捕获 traces → 转为数据集条目 → 下一轮实验\"的具体步骤。\n\n---\n\n**证据产物**:\n- 原始 HTML: `$AWORLD_REPLAY_ARTIFACT_DIR/lotte_verheyden_page.html`（8378 bytes）\n- 提取文本: `$AWORLD_REPLAY_ARTIFACT_DIR/lotte_verheyden_text.txt`（8100 chars）\n- 证据清单: `$AWORLD_REPLAY_EVIDENCE_MANIFEST`（1 条记录）\n\n**覆盖情况**: 1/1 主题已覆盖（Lotte 的完整文章内容），无缺失主题。",
+            "metadata": {
+              "source_kind": "trajectory",
+              "source_path": "/Users/wuman/Documents/workspace/aworld/.aworld/self_evolve/evaluator/campaign-5da22855fc198ea4676c-cycle-003-held-out-llm-mutator-a4e1b3e4157c-candidate-e6b0c85a79686a96/llm-mutator-a4e1b3e4157c/held_out/trajectory.log",
+              "extraction_dir": "/Users/wuman/Documents/workspace/aworld/tmp/judge-recheck-a4"
+            }
+          }
+        },
+        "_expected": null,
+        "_max_turns": null,
+        "_timeout_seconds": null
+      },
+      "metrics": {
+        "score": {
+          "value": 91.4,
+          "status": "PASSED"
+        },
+        "verdict": {
+          "value": "Excellent"
+        },
+        "A1_groundedness": {
+          "value": 4,
+          "status": "PASSED"
+        },
+        "A2_completeness": {
+          "value": 5
+        },
+        "A3_relevance": {
+          "value": 5
+        },
+        "A4_readability": {
+          "value": 5
+        },
+        "B1_tool_use": {
+          "value": 4
+        },
+        "B2_efficiency": {
+          "value": 4
+        },
+        "B3_compliance": {
+          "value": 5
+        },
+        "B4_robustness": {
+          "value": 5
+        },
+        "veto_triggered": {
+          "value": false,
+          "status": "PASSED"
+        },
+        "evidence_block_count": {
+          "value": 2
+        },
+        "evidence_compacted": {
+          "value": false
+        },
+        "evidence_incomplete": {
+          "value": false
+        },
+        "has_evidence": {
+          "value": 1.0,
+          "status": "PASSED"
+        },
+        "agent_finished": {
+          "value": 1.0,
+          "status": "PASSED"
+        },
+        "predict_time_cost_ms": {
+          "value": 3.6420822143554688,
+          "status": "PASSED"
+        }
+      },
+      "judge": {
+        "score": 91.4,
+        "verdict": "Excellent",
+        "A1_groundedness": 4,
+        "A2_completeness": 5,
+        "A3_relevance": 5,
+        "A4_readability": 5,
+        "B1_tool_use": 4,
+        "B2_efficiency": 4,
+        "B3_compliance": 5,
+        "B4_robustness": 5,
+        "veto_triggered": false,
+        "has_evidence": true,
+        "evidence_block_count": 2,
+        "evidence_compacted": false,
+        "evidence_incomplete": false,
+        "evidence_quality": {
+          "has_evidence": true,
+          "evidence_block_count": 2,
+          "evidence_compacted": false,
+          "evidence_incomplete": false,
+          "evidence_issues": [
+            "canonical source artifact was fully readable; raw trajectory tool blocks were suppressed but not needed",
+            "minor artifact-count claim in final answer conflicts with canonical bundle metadata"
+          ]
+        },
+        "evidence_repair_constraints": [
+          {
+            "subject_kind": "evidence_manifest",
+            "failure_mode": "unsupported_claim",
+            "source_layer": "candidate_output",
+            "required_action": "support_or_omit",
+            "owner": "candidate",
+            "occurrence_count": 1
+          }
+        ],
+        "_judge_backend": "trajectory-evaluator-agent-md"
+      },
+      "judge_backend": {
+        "backend_id": "trajectory-evaluator-agent-md"
+      },
+      "state_summary": {
+        "answer": "I now have the complete article content. The evidence is fully collected — the full 8100-character article from Lotte (@lotte_verheyden) has been extracted, saved as an artifact, and the manifest entry recorded. This is a single-subject task, so I can now synthesize the final analysis.\n\n---\n\n## 📄 Lotte（@lotte_verheyden）的 Evals 观点深度分析\n\n**作者**: Lotte（@lotte_verheyden，关联 @langfuse）\n**发布时间**: 2026年5月19日\n**标题**: *Evals, explained*\n**系列**: Langfuse Academy — AI Engineering Loop 系列的一部分\n\n---\n\n### 🎯 Lotte 的核心框架：Evals 是\"AI 工程循环\"中的一个环节\n\nLotte 的视角与 Viv 截然不同。她不是在写\"哲学宣言\"，而是在写一篇**工程实践教程**。她的核心叙事结构是：\n\n> **生产（tracing/monitoring）→ 开发（datasets/experiments/evaluation）→ 发布 → 新数据 → 循环往复**\n\nEvals 是这个循环中\"运行实验之后、发布变更之前\"的判断步骤。\n\n---\n\n### 📋 Lotte 的核心观点梳理\n\n| # | 主题 | 关键内容 |\n|---|------|---------|\n| **1** | **评估方法的演进路径** | 手动审查 → 识别失败模式 → 自动化评估器。**手动审查不是一次性步骤**，成熟系统需要持续人工审查来发现新失败模式并校准自动评估器 |\n| **2** | **三种评估方法** | ① **手动评估**：建立直觉、产出人类标签作为 ground truth；② **代码评估**：确定性检查（JSON 有效性、关键词存在、SQL 执行、长度限制），快速、便宜、可重复，但**无法评估语义**；③ **LLM-as-a-judge**：用于需要理解语言的品质（相关性、语气、摘要质量） |\n| **3** | **LLM-as-a-judge 的局限性** | LLM 评审者不完美：不会自动像人类专家一样评分、需要针对人类偏好校准、可能与应用本身使用的 LLM 共享盲点（尤其同模型家族时） |\n| **4** | **Reference-based vs Reference-free** | **Reference-based**：与预定义期望输出对比（如正确答案/golden response）；**Reference-free**：独立评估输出，无需 ground truth。Reference-free 的优势是**可直接应用于生产数据** |\n| **5** | **何时建立评估器** | 先问：这是一次性修复还是泛化问题？简单 prompt 修改能解决的→直接改，不需要评估器；能清晰定义的反复出现的失败模式→才值得建评估器 |\n| **6** | **评估什么** | 避免\"helpfulness\"或\"quality\"这类模糊标准。定义越精确，评估器越有用。**推荐二分制（pass/fail）而非评分制（1-5）**，因为评分制引入\"3 和 4 有什么区别\"的歧义 |\n| **7** | **组合使用** | 成熟评估体系同时使用三种方法，每个关注的质量维度配一个独立评估器 |\n| **8** | **闭环** | 部署后，部分评估器应延伸到生产环境（reference-free 评估器、用户反馈信号等），确认生产品质与部署前一致。如果生产行为不符预期→捕获 traces→转为数据集条目→下一轮实验 |\n\n---\n\n### ⚔️ 与 Viv（@Vtrivedy10）观点的关键差异\n\n| 维度 | **Viv（LangChain）** | **Lotte（Langfuse）** |\n|------|---------------------|----------------------|\n| **视角性质** | 🧠 **哲学宣言**——9 点\"脑暴\"，重新定义 Evals 的本质 | 🛠️ **工程教程**——系统化的方法论，教你\"怎么做\" |\n| **核心隐喻** | Evals ≈ **Environments**（运行环境），Sim2Real gap | Evals = **AI 工程循环**中的一个判断节点 |\n| **Evals 的角色** | 多重身份：度量、回归测试、**训练数据**（`Agent = fit(model, evals)`） | 评估器（evaluator）——判断输出是否\"够好\"的工具 |\n| **从哪来** | 从生产 traces 中**发现**失败案例 → 转化为 evals | 从**手动审查**开始 → 识别失败模式 → 自动化 |\n| **对\"失败\"的态度** | 允许 evals 失败——有些是为下一代模型设计的目标 | 不讨论\"允许失败\"，关注的是**校准**和**持续审查** |\n| **方法论分类** | 不做方法分类，关注哲学层面 | 明确分三种：手动、代码、LLM-as-judge，并详细对比优劣 |\n| **评分方式** | 不涉及 | 明确推荐 **binary（pass/fail）** 优于 graded（1-5） |\n| **Reference 概念** | 不涉及 | 明确区分 **reference-based vs reference-free**，后者可用于生产数据 |\n| **LLM-as-judge** | 不涉及 | 深入讨论其局限性：需校准、共享盲点、不等于人类专家 |\n| **\"存在的 Eval\"** | 核心观点——克服白纸恐惧，从小的 unit-test 风格 evals 开始 | 不强调\"存在即好\"，而是强调**从手动审查开始的渐进路径** |\n| **闭环** | 隐含在\"从 traces 发现 evals\"中 | **显式描述**：生产→traces→数据集→实验→评估→发布→循环 |\n\n---\n\n### 🔑 最本质的差异总结\n\n1. **Viv 是\"为什么\"派，Lotte 是\"怎么做\"派。** Viv 重新定义了 Evals 的身份（环境、训练数据、回归测试），挑战你对 Evals 的根本理解；Lotte 则给你一张工程路线图，从手动审查到三种方法组合到闭环。\n\n2. **Viv 最激进的观点是 `Agent = fit(model, evals)`**——Agent 本质上在向 evals 拟合，Evals 即训练数据。Lotte 完全没有这个视角，她把 evals 严格定位为**质量判断工具**，不涉及\"拟合\"概念。\n\n3. **Lotte 独有的贡献**是方法论分类体系（手动/代码/LLM-as-judge）和 reference-based vs reference-free 的区分，以及\"binary 优于 graded\"的实操建议——这些都是 Viv 帖子中完全没有涉及的。\n\n4. **两者共同点**：都强调从生产 traces 中提取失败案例来构建 evals，都认为 evals 是持续迭代而非一次性的。但 Viv 把这上升到\"Sim2Real gap\"的哲学高度，Lotte 则落地为\"捕获 traces → 转为数据集条目 → 下一轮实验\"的具体步骤。\n\n---\n\n**证据产物**:\n- 原始 HTML: `$AWORLD_REPLAY_ARTIFACT_DIR/lotte_verheyden_page.html`（8378 bytes）\n- 提取文本: `$AWORLD_REPLAY_ARTIFACT_DIR/lotte_verheyden_text.txt`（8100 chars）\n- 证据清单: `$AWORLD_REPLAY_EVIDENCE_MANIFEST`（1 条记录）\n\n**覆盖情况**: 1/1 主题已覆盖（Lotte 的完整文章内容），无缺失主题。",
+        "completion_count": 1,
+        "trajectory_steps": 9,
+        "tool_call_count": 8,
+        "usage": {
+          "total_tokens": 0
+        },
+        "timing": {
+          "duration_ms": 0
+        },
+        "standard_metrics": {
+          "n_turns": 9,
+          "n_tool_calls": 8,
+          "n_tokens": 0,
+          "duration_ms": 0
+        },
+        "error": null
+      },
+      "artifacts": {
+        "outcome": {
+          "task_id": "task_20260521173650",
+          "question": "Recorded prior task context [same_session_predecessor; structured compact; retained 1 user anchors and 1 recent assistant turns from 2 turns]:\n- user [task_20260521171856:input]: http://127.0.0.1:59575/Vtrivedy10/status/2057175860910964967，这里面提到的eval相关观点有什么不同，和前面的内容有什么不同\n- assistant [task_20260521171856:step-3]: 完整获取了！这是 LangChain 应用研究员 **Viv（@Vtrivedy10）** 关于 Evals 的\"脑暴帖\"。下面是深度分析：\n\n---\n\n## 📄 帖子核心内容总览\n\n**作者**: Viv（LangChain Applied Research，前 AWS，Temple CS PhD）\n**发布时间**: 2026年5月21日\n**标题**: *Brain dump of how/why we use Evals to measure agents before & after shipping to prod*\n\n这是一篇关于 **Evals（评估集）** 哲学和实践的 9 点宣言，与前面三篇内容形成了非常有趣的对照。\n\n---\n\n## 🎯 帖子的 9 个核心观点\n\n| # | 观点 | 关键洞察 |\n|---|------|---------|\n| **1** | **Good Evals ≠ 随机基准** | Evals 要模拟**真实用户行为**，反映\"我们认为用户会怎么用\"的先验 |\n| **2** | **Evals 不是凭空创造，而是从 Traces 中\"发现\"** | 第一版 Agent 永远不完美，要从生产 traces 中提取失败案例 → 转化为 evals |\n| **3** | **Evals = 可比较的度量** | 让你能横向对比：\"今天的 agent vs 1个月后换新模型的 agent\" |\n| **4** | **Evals ≈ Environments**（核心创新观点） | Evals 不只是数据集，更是**运行环境**。环境与 prod 偏离越大，Sim2Real gap 越大 |\n| **5** | **Evals 是回归测试** | 防止\"修复 A 时打破上周的 B\" |\n| **6** | **Evals 是训练数据**（最激进的观点） | `Agent = fit(model, evals)`——Agent 本质上是在向 evals 拟合 |\n| **7** | **允许 Evals 失败** | 有些 evals 是为下一代模型设计的目标，不必今天就过 |\n| **8** | **\"存在的 Eval\"就是最好的 Eval** | 克服\"白纸恐惧症\"，从 unit-test 风格的小 evals 开始…\n\nCurrent task:\nhttp://127.0.0.1:59565/lotte_verheyden/status/2056754091817361670，这个关于evals又有什么不同的看法和观点呢？\n\nSelf-evolve replay evidence requirements:\n- Preserve the user task and use artifact-first evidence. Save large or unknown-size output under AWORLD_REPLAY_ARTIFACT_DIR (/Users/wuman/Documents/workspace/aworld/.aworld/self_evolve/campaign-5da22855fc198ea4676c-cycle-003/replay/llm-mutator-a4e1b3e4157c/members/task_20260521173650-69780f2267f4/llm-mutator-a4e1b3e4157c/evidence); never stream full pages, documents, JSON, or logs.\n- In every shell command, use the literal quoted variables \"$AWORLD_REPLAY_ARTIFACT_DIR\" and \"$AWORLD_REPLAY_EVIDENCE_MANIFEST\". Never paste their resolved parenthetical paths: replay workspaces can change after a resume.\n- Inspect only explicit byte-bounded excerpts or selected fields; `head -N` is not a byte bound.\n- Append one compact JSON line per source to AWORLD_REPLAY_EVIDENCE_MANIFEST (/Users/wuman/Documents/workspace/aworld/.aworld/self_evolve/campaign-5da22855fc198ea4676c-cycle-003/replay/llm-mutator-a4e1b3e4157c/members/task_20260521173650-69780f2267f4/llm-mutator-a4e1b3e4157c/evidence/evidence_manifest.jsonl). For a file use exactly {\"source_id\":\"...\",\"extraction_method\":\"...\",\"artifact_path\":\"...\",\"selected_fields\":{\"field\":\"bounded value\"}}; for non-file evidence use exactly {\"source_id\":\"...\",\"evidence_type\":\"metadata\",\"extraction_method\":\"...\",\"metadata\":{\"field\":\"bounded value\"}}.\n- Reject compacted, truncated, invalid, or unbounded evidence; retry once with a narrower extraction.\n- Persist every valid artifact-backed sample and its manifest entry immediately. Continue only until every evidence subject required by the user task is covered (for example, every item in a comparison), or until one materially different bounded attempt establishes that a subject is unavailable. Then stop collecting and return the answer with artifact paths, subject coverage counts, explicit missing subjects, and a concise claim ledger. Omit unsupported claims.\n\nSelf-evolve replay runtime contract:\n- Keep the original authorization boundary. Required task-plane actions are allowed; control-plane actions require explicit task authorization.\n- External prerequisites are attach-only: never terminate, restart, reconfigure, replace, or copy host credentials/sessions/private state.\n- Preserve supplied HOME, TMPDIR, XDG_*, and runtime roots. Use only AWORLD_REPLAY_ENDPOINT_* endpoints; never discover alternate host ports.\n- On terminal protocol mismatch, persist one bounded diagnostic and stop. If a bounded non-mutating prerequisite probe fails, return prerequisite-unavailable.\n- Keep created files in the workspace/artifact directory. Switch strategy once when no new evidence is possible, otherwise fail with the observed reason.\n- Evidence completion is terminal: once every required evidence subject is covered, or bounded insufficiency is established for the missing subjects, make no further tool call and synthesize the final response. A single sample is terminal only for a genuinely single-subject task.",
+          "evidence_blocks": 17,
+          "raw_evidence_blocks": 15,
+          "canonical_evidence_bundle_valid": true,
+          "canonical_evidence_bundle_entries": 2,
+          "num_steps": 9,
+          "is_finished": true,
+          "final_answer_len": 3547,
+          "extracted_path": "/Users/wuman/Documents/workspace/aworld/tmp/judge-recheck-a4/extracted_task_20260521173650.json"
+        },
+        "attempts": [],
+        "child_states": []
+      },
+      "judge_diagnostics": [
+        {
+          "phase": "initial_judge",
+          "round_index": 0,
+          "status": "succeeded",
+          "prompt_chars": 37882,
+          "system_prompt_chars": 11545,
+          "input_chars": 49427,
+          "estimated_input_tokens": 12357,
+          "artifact_request_count": 1,
+          "artifact_read_result_count": 0,
+          "artifact_read_count": 0,
+          "artifact_read_denied_count": 0,
+          "artifact_read_denial_reasons": [],
+          "artifact_read_denied_path_fingerprints": [],
+          "artifact_read_continuation_count": 0,
+          "artifact_read_budget_exhausted": false,
+          "artifact_read_projection_incomplete": false,
+          "artifact_read_chars": 0,
+          "timeout_seconds": 600.0,
+          "latency_ms": 5948.320415991475
+        },
+        {
+          "phase": "artifact_read_round_1",
+          "round_index": 1,
+          "status": "succeeded",
+          "prompt_chars": 47222,
+          "system_prompt_chars": 11545,
+          "input_chars": 58767,
+          "estimated_input_tokens": 14692,
+          "artifact_request_count": 0,
+          "artifact_read_result_count": 1,
+          "artifact_read_count": 1,
+          "artifact_read_denied_count": 0,
+          "artifact_read_denial_reasons": [],
+          "artifact_read_denied_path_fingerprints": [],
+          "artifact_read_continuation_count": 0,
+          "artifact_read_budget_exhausted": false,
+          "artifact_read_projection_incomplete": false,
+          "artifact_read_chars": 8100,
+          "timeout_seconds": 600.0,
+          "latency_ms": 10774.94149999984
+        }
+      ],
+      "metadata": {
+        "source_kind": "trajectory",
+        "source_path": "/Users/wuman/Documents/workspace/aworld/.aworld/self_evolve/evaluator/campaign-5da22855fc198ea4676c-cycle-003-held-out-llm-mutator-a4e1b3e4157c-candidate-e6b0c85a79686a96/llm-mutator-a4e1b3e4157c/held_out/trajectory.log",
+        "extraction_dir": "/Users/wuman/Documents/workspace/aworld/tmp/judge-recheck-a4",
+        "source_case_id": "task_20260521173650",
+        "extracted_path": "/Users/wuman/Documents/workspace/aworld/tmp/judge-recheck-a4/extracted_task_20260521173650.json",
+        "_target": {
+          "target_kind": "source",
+          "target_path": "/Users/wuman/Documents/workspace/aworld/.aworld/self_evolve/evaluator/campaign-5da22855fc198ea4676c-cycle-003-held-out-llm-mutator-a4e1b3e4157c-candidate-e6b0c85a79686a96/llm-mutator-a4e1b3e4157c/held_out/trajectory.log",
+          "source_kind": "trajectory",
+          "task_id": null,
+          "judge_agent": "/Users/wuman/Documents/agent.md",
+          "judge_agent_name": null,
+          "judge_backend_ref": null,
+          "agent": "Aworld",
+          "judge_timeout_seconds": 600.0,
+          "judge_model_profile": "gpt-5.5",
+          "source_out_dir": "/Users/wuman/Documents/workspace/aworld/tmp/judge-recheck-a4",
+          "report_output_path": "/Users/wuman/Documents/workspace/aworld/tmp/judge-recheck-a4-report.json"
+        },
+        "standard_metrics": {
+          "n_turns": 9,
+          "n_tool_calls": 8,
+          "n_tokens": 0,
+          "duration_ms": 0
+        }
+      },
+      "metric_details": {
+        "score": {
+          "score": 91.4,
+          "verdict": "Excellent",
+          "A1_groundedness": 4,
+          "A2_completeness": 5,
+          "A3_relevance": 5,
+          "A4_readability": 5,
+          "B1_tool_use": 4,
+          "B2_efficiency": 4,
+          "B3_compliance": 5,
+          "B4_robustness": 5,
+          "veto_triggered": false,
+          "has_evidence": true,
+          "evidence_block_count": 2,
+          "evidence_compacted": false,
+          "evidence_incomplete": false,
+          "evidence_quality": {
+            "has_evidence": true,
+            "evidence_block_count": 2,
+            "evidence_compacted": false,
+            "evidence_incomplete": false,
+            "evidence_issues": [
+              "canonical source artifact was fully readable; raw trajectory tool blocks were suppressed but not needed",
+              "minor artifact-count claim in final answer conflicts with canonical bundle metadata"
+            ]
+          },
+          "evidence_repair_constraints": [
+            {
+              "subject_kind": "evidence_manifest",
+              "failure_mode": "unsupported_claim",
+              "source_layer": "candidate_output",
+              "required_action": "support_or_omit",
+              "owner": "candidate",
+              "occurrence_count": 1
+            }
+          ],
+          "_judge_backend": "trajectory-evaluator-agent-md",
+          "_judge_diagnostics": [
+            {
+              "phase": "initial_judge",
+              "round_index": 0,
+              "status": "succeeded",
+              "prompt_chars": 37882,
+              "system_prompt_chars": 11545,
+              "input_chars": 49427,
+              "estimated_input_tokens": 12357,
+              "artifact_request_count": 1,
+              "artifact_read_result_count": 0,
+              "artifact_read_count": 0,
+              "artifact_read_denied_count": 0,
+              "artifact_read_denial_reasons": [],
+              "artifact_read_denied_path_fingerprints": [],
+              "artifact_read_continuation_count": 0,
+              "artifact_read_budget_exhausted": false,
+              "artifact_read_projection_incomplete": false,
+              "artifact_read_chars": 0,
+              "timeout_seconds": 600.0,
+              "latency_ms": 5948.320415991475
+            },
+            {
+              "phase": "artifact_read_round_1",
+              "round_index": 1,
+              "status": "succeeded",
+              "prompt_chars": 47222,
+              "system_prompt_chars": 11545,
+              "input_chars": 58767,
+              "estimated_input_tokens": 14692,
+              "artifact_request_count": 0,
+              "artifact_read_result_count": 1,
+              "artifact_read_count": 1,
+              "artifact_read_denied_count": 0,
+              "artifact_read_denial_reasons": [],
+              "artifact_read_denied_path_fingerprints": [],
+              "artifact_read_continuation_count": 0,
+              "artifact_read_budget_exhausted": false,
+              "artifact_read_projection_incomplete": false,
+              "artifact_read_chars": 8100,
+              "timeout_seconds": 600.0,
+              "latency_ms": 10774.94149999984
+            }
+          ]
+        },
+        "has_evidence": {
+          "passed": true,
+          "reason": "matched",
+          "source": "outcome",
+          "path": [
+            "evidence_blocks"
+          ],
+          "op": ">",
+          "expected": 0,
+          "actual": 17,
+          "weight": 1.0,
+          "required": true
+        },
+        "agent_finished": {
+          "passed": true,
+          "reason": "matched",
+          "source": "outcome",
+          "path": [
+            "is_finished"
+          ],
+          "op": "==",
+          "expected": true,
+          "actual": true,
+          "weight": 1.0,
+          "required": true
+        }
+      }
+    },
+    {
+      "case_id": "task_20260522111854",
+      "input": {
+        "task_id": "task_20260522111854",
+        "trajectory_log": "/Users/wuman/Documents/workspace/aworld/.aworld/self_evolve/evaluator/campaign-5da22855fc198ea4676c-cycle-003-held-out-llm-mutator-a4e1b3e4157c-candidate-e6b0c85a79686a96/llm-mutator-a4e1b3e4157c/held_out/trajectory.log",
+        "_target": {
+          "target_kind": "source",
+          "target_path": "/Users/wuman/Documents/workspace/aworld/.aworld/self_evolve/evaluator/campaign-5da22855fc198ea4676c-cycle-003-held-out-llm-mutator-a4e1b3e4157c-candidate-e6b0c85a79686a96/llm-mutator-a4e1b3e4157c/held_out/trajectory.log",
+          "source_kind": "trajectory",
+          "task_id": null,
+          "judge_agent": "/Users/wuman/Documents/agent.md",
+          "judge_agent_name": null,
+          "judge_backend_ref": null,
+          "agent": "Aworld",
+          "judge_timeout_seconds": 600.0,
+          "judge_model_profile": "gpt-5.5",
+          "source_out_dir": "/Users/wuman/Documents/workspace/aworld/tmp/judge-recheck-a4",
+          "report_output_path": "/Users/wuman/Documents/workspace/aworld/tmp/judge-recheck-a4-report.json"
+        },
+        "_case_metadata": {
+          "source_kind": "trajectory",
+          "source_path": "/Users/wuman/Documents/workspace/aworld/.aworld/self_evolve/evaluator/campaign-5da22855fc198ea4676c-cycle-003-held-out-llm-mutator-a4e1b3e4157c-candidate-e6b0c85a79686a96/llm-mutator-a4e1b3e4157c/held_out/trajectory.log",
+          "extraction_dir": "/Users/wuman/Documents/workspace/aworld/tmp/judge-recheck-a4",
+          "source_record": {
+            "case_id": "task_20260522111854",
+            "input": {
+              "task_id": "task_20260522111854",
+              "trajectory_log": "/Users/wuman/Documents/workspace/aworld/.aworld/self_evolve/evaluator/campaign-5da22855fc198ea4676c-cycle-003-held-out-llm-mutator-a4e1b3e4157c-candidate-e6b0c85a79686a96/llm-mutator-a4e1b3e4157c/held_out/trajectory.log"
+            },
+            "answer": "证据已收集并保存。两篇论文的摘要都直接支持了用户的提议。让我来综合一下答案。\n\n---\n\n## 🎯 你的直觉完全正确——而且论文 2 直接验证了这个思路\n\n> **\"先 off-policy 蒸馏（SFT），再 on-policy 蒸馏（OPD）优化\"** 不仅可行，而且正是论文 2（*The Many Faces of On-Policy Distillation*）提出的**关键修复手段之一**。\n\n---\n\n## 📌 论文证据\n\n### 论文 2 的原文（摘要最后一句）：\n\n> *\"We further show that **SFT-stabilized students** mitigate these failures.\"*\n\n这里的 **SFT-stabilized students** 就是你说的\"先 off-policy 训练一轮\"——用教师生成的数据做监督微调（SFT），本质就是 **off-policy distillation / SeqKD**，让学生先有一个不错的起点，然后再进入 on-policy 阶段。\n\n### 论文 2 识别的三个失败机制，以及为什么\"先 off-policy\"能修复：\n\n| 失败机制 | 为什么先 off-policy 能缓解 |\n|---|---|\n| **① 分布不匹配**：教师被迫在学生生成的前缀上打分，但教师从未在这种分布上训练过 | SFT 先让学生接近教师的输出分布，缩小 gap，后续 OPD 时学生前缀不会太离谱 |\n| **② 优化不稳定**：TopK reverse-KL 梯度有偏，直接从随机初始化做 OPD 容易崩 | SFT 提供了一个稳定的 warm-start，梯度不会在初期剧烈震荡 |\n| **③ OPSD 的 PI 缺失**：自蒸馏时学生学不到 instance-specific 的特权信息 | 这个机制 OPD（有外部教师）本身不受影响，但 SFT warm-start 仍然有帮助 |\n\n### 论文 1（ROPD）的间接支持：\n\nROPD 的核心创新是用 **rubric（评分标准）** 替代 teacher logits，使得 black-box 教师也能做 OPD。但 ROPD 的实验设置中，学生模型同样需要有一定的初始能力才能产生有意义的 rollout 供 rubric 评分——一个完全未训练的学生 rollout 质量太差，rubric 也打不出有区分度的分。所以 **off-policy warm-start → on-policy refinement** 的 pipeline 对 ROPD 同样适用。\n\n---\n\n## 🧪 完整 Pipeline 示意\n\n```\n┌─────────────────────────────────────────────────────────────┐\n│  Stage 1: Off-policy Distillation (SFT / SeqKD)            │\n│                                                             │\n│  教师 π_T 生成数据 → 学生 π_θ 做 SFT                        │\n│  • 数据来源：教师 rollout（off-policy）                      │\n│  • 目标：maximize log π_θ(y_T | x)                          │\n│  • 作用：warm-start，让学生快速接近教师分布                    │\n│  • 成本：低（一次前向 + 一次反向，无需在线 rollout）            │\n│                                                             │\n│  结果：π_θ' ≈ π_T 的粗略近似                                 │\n└──────────────────────────┬──────────────────────────────────┘\n                           ↓\n┌─────────────────────────────────────────────────────────────┐\n│  Stage 2: On-policy Distillation (OPD)                     │\n│                                                             │\n│  学生 π_θ' 自己 rollout → 教师在学生轨迹上提供监督            │\n│  • 数据来源：学生自己生成（on-policy）                        │\n│  • 目标：在学生分布上对齐教师信号                             │\n│  • 作用：精细优化，修正学生分布上的错误                        │\n│  • 成本：高（需要在线 rollout + 教师推理）                    │\n│                                                             │\n│  结果：π_θ'' 在学生自己的分布上得到教师级别的质量               │\n└─────────────────────────────────────────────────────────────┘\n```\n\n---\n\n## ⚡ 为什么这个两阶段策略比纯 on-policy 更好？\n\n| 维度 | 纯 OPD（无 warm-start） | Off-policy → On-policy |\n|---|---|---|\n| **初始 rollout 质量** | 差（学生从随机/弱基线开始） | 好（SFT 后学生已接近教师） |\n| **梯度稳定性** | 低（初期分布偏移大，梯度方差大） | 高（warm-start 缩小 gap） |\n| **样本效率** | 低（大量 rollout 浪费在低质量样本上） | 高（论文 1 报告 10x 提升，部分归功于更好的起点） |\n| **训练崩溃风险** | 高（论文 2 报告 instability & degradation） | 低（SFT-stabilized） |\n| **总计算成本** | 可能更高（需要更多 OPD 迭代来收敛） | 更优（off-policy 阶段便宜，OPD 阶段收敛快） |\n\n---\n\n## 🔑 实践中的注意事项\n\n1. **SFT 不要过拟合**：如果 Stage 1 SFT 太久，学生完全坍缩到教师分布，Stage 2 的 on-policy 优化空间就小了。论文 2 的 \"SFT-stabilized\" 强调的是**适度**稳定，不是完全收敛。\n\n2. **教师选择仍然关键**：论文 2 明确指出 \"OPD on mathematical reasoning is highly sensitive to teacher choice\"。即使有 SFT warm-start，如果教师本身在学生分布上表现差（distribution mismatch），OPD 仍然会出问题。论文 2 建议 **RLVR-adapted teachers**——让教师先适应学生的分布。\n\n3. **Loss formulation 要选对**：论文 2 发现 **stop-gradient TopK objectives** 能缓解 biased gradient 问题。在 Stage 2 中应考虑使用这种 loss。\n\n4. **Rubric-based OPD（论文 1）的额外优势**：如果教师是黑盒（如 GPT-4），传统 logit-based OPD 无法使用。ROPD 用 rubric 替代 logits，使得这个两阶段 pipeline 在**黑盒教师**场景下也能跑。\n\n---\n\n## 📝 总结\n\n你的提议——**先 off-policy SFT warm-start，再 on-policy OPD 精细优化**——是一个**被论文直接验证的有效策略**。论文 2 将其称为 \"SFT-stabilized students\"，并证明这能缓解 OPD 的三大失败机制。这个两阶段 pipeline 在工业实践中也是主流做法（如先 SFT 再 RLHF/DPO 的 pipeline 本质上也是 off-policy → on-policy 的思路）。\n\n**证据文件：**\n- 论文 1 摘要：`$AWORLD_REPLAY_ARTIFACT_DIR/paper1_2605.07396_abstract.txt`\n- 论文 2 摘要：`$AWORLD_REPLAY_ARTIFACT_DIR/paper2_2605.11182_abstract.txt`\n- 证据清单：`$AWORLD_REPLAY_EVIDENCE_MANIFEST`",
+            "metadata": {
+              "source_kind": "trajectory",
+              "source_path": "/Users/wuman/Documents/workspace/aworld/.aworld/self_evolve/evaluator/campaign-5da22855fc198ea4676c-cycle-003-held-out-llm-mutator-a4e1b3e4157c-candidate-e6b0c85a79686a96/llm-mutator-a4e1b3e4157c/held_out/trajectory.log",
+              "extraction_dir": "/Users/wuman/Documents/workspace/aworld/tmp/judge-recheck-a4"
+            }
+          }
+        },
+        "_expected": null,
+        "_max_turns": null,
+        "_timeout_seconds": null
+      },
+      "metrics": {
+        "score": {
+          "value": 66.4,
+          "status": "FAILED"
+        },
+        "verdict": {
+          "value": "Pass"
+        },
+        "A1_groundedness": {
+          "value": 3,
+          "status": "PASSED"
+        },
+        "A2_completeness": {
+          "value": 4
+        },
+        "A3_relevance": {
+          "value": 5
+        },
+        "A4_readability": {
+          "value": 4
+        },
+        "B1_tool_use": {
+          "value": 4
+        },
+        "B2_efficiency": {
+          "value": 3
+        },
+        "B3_compliance": {
+          "value": 4
+        },
+        "B4_robustness": {
+          "value": 4
+        },
+        "veto_triggered": {
+          "value": false,
+          "status": "PASSED"
+        },
+        "evidence_block_count": {
+          "value": 2
+        },
+        "evidence_compacted": {
+          "value": false
+        },
+        "evidence_incomplete": {
+          "value": true
+        },
+        "has_evidence": {
+          "value": 1.0,
+          "status": "PASSED"
+        },
+        "agent_finished": {
+          "value": 1.0,
+          "status": "PASSED"
+        },
+        "predict_time_cost_ms": {
+          "value": 4.270792007446289,
+          "status": "PASSED"
+        }
+      },
+      "judge": {
+        "score": 66.4,
+        "verdict": "Pass",
+        "A1_groundedness": 3,
+        "A2_completeness": 4,
+        "A3_relevance": 5,
+        "A4_readability": 4,
+        "B1_tool_use": 4,
+        "B2_efficiency": 3,
+        "B3_compliance": 4,
+        "B4_robustness": 4,
+        "veto_triggered": false,
+        "has_evidence": true,
+        "evidence_block_count": 2,
+        "evidence_compacted": false,
+        "evidence_incomplete": true,
+        "evidence_quality": {
+          "has_evidence": true,
+          "evidence_block_count": 2,
+          "evidence_compacted": false,
+          "evidence_incomplete": true,
+          "evidence_issues": [
+            "canonical evidence bundle is valid and contains two paper abstract artifacts",
+            "final answer includes several specific claims not supported by the abstracts",
+            "raw tool outputs were compacted, but canonical bundle provides usable source evidence"
+          ]
+        },
+        "evidence_repair_constraints": [
+          {
+            "subject_kind": "general_claim",
+            "failure_mode": "support_incomplete",
+            "source_layer": "candidate_output",
+            "required_action": "support_or_omit",
+            "owner": "candidate",
+            "occurrence_count": 4
+          },
+          {
+            "subject_kind": "quantitative_claim",
+            "failure_mode": "unsupported_claim",
+            "source_layer": "candidate_output",
+            "required_action": "support_or_omit",
+            "owner": "candidate",
+            "occurrence_count": 1
+          },
+          {
+            "subject_kind": "bibliographic_claim",
+            "failure_mode": "source_mismatch",
+            "source_layer": "candidate_output",
+            "required_action": "reconcile_source",
+            "owner": "candidate",
+            "occurrence_count": 1
+          }
+        ],
+        "_judge_backend": "trajectory-evaluator-agent-md"
+      },
+      "judge_backend": {
+        "backend_id": "trajectory-evaluator-agent-md"
+      },
+      "state_summary": {
+        "answer": "证据已收集并保存。两篇论文的摘要都直接支持了用户的提议。让我来综合一下答案。\n\n---\n\n## 🎯 你的直觉完全正确——而且论文 2 直接验证了这个思路\n\n> **\"先 off-policy 蒸馏（SFT），再 on-policy 蒸馏（OPD）优化\"** 不仅可行，而且正是论文 2（*The Many Faces of On-Policy Distillation*）提出的**关键修复手段之一**。\n\n---\n\n## 📌 论文证据\n\n### 论文 2 的原文（摘要最后一句）：\n\n> *\"We further show that **SFT-stabilized students** mitigate these failures.\"*\n\n这里的 **SFT-stabilized students** 就是你说的\"先 off-policy 训练一轮\"——用教师生成的数据做监督微调（SFT），本质就是 **off-policy distillation / SeqKD**，让学生先有一个不错的起点，然后再进入 on-policy 阶段。\n\n### 论文 2 识别的三个失败机制，以及为什么\"先 off-policy\"能修复：\n\n| 失败机制 | 为什么先 off-policy 能缓解 |\n|---|---|\n| **① 分布不匹配**：教师被迫在学生生成的前缀上打分，但教师从未在这种分布上训练过 | SFT 先让学生接近教师的输出分布，缩小 gap，后续 OPD 时学生前缀不会太离谱 |\n| **② 优化不稳定**：TopK reverse-KL 梯度有偏，直接从随机初始化做 OPD 容易崩 | SFT 提供了一个稳定的 warm-start，梯度不会在初期剧烈震荡 |\n| **③ OPSD 的 PI 缺失**：自蒸馏时学生学不到 instance-specific 的特权信息 | 这个机制 OPD（有外部教师）本身不受影响，但 SFT warm-start 仍然有帮助 |\n\n### 论文 1（ROPD）的间接支持：\n\nROPD 的核心创新是用 **rubric（评分标准）** 替代 teacher logits，使得 black-box 教师也能做 OPD。但 ROPD 的实验设置中，学生模型同样需要有一定的初始能力才能产生有意义的 rollout 供 rubric 评分——一个完全未训练的学生 rollout 质量太差，rubric 也打不出有区分度的分。所以 **off-policy warm-start → on-policy refinement** 的 pipeline 对 ROPD 同样适用。\n\n---\n\n## 🧪 完整 Pipeline 示意\n\n```\n┌─────────────────────────────────────────────────────────────┐\n│  Stage 1: Off-policy Distillation (SFT / SeqKD)            │\n│                                                             │\n│  教师 π_T 生成数据 → 学生 π_θ 做 SFT                        │\n│  • 数据来源：教师 rollout（off-policy）                      │\n│  • 目标：maximize log π_θ(y_T | x)                          │\n│  • 作用：warm-start，让学生快速接近教师分布                    │\n│  • 成本：低（一次前向 + 一次反向，无需在线 rollout）            │\n│                                                             │\n│  结果：π_θ' ≈ π_T 的粗略近似                                 │\n└──────────────────────────┬──────────────────────────────────┘\n                           ↓\n┌─────────────────────────────────────────────────────────────┐\n│  Stage 2: On-policy Distillation (OPD)                     │\n│                                                             │\n│  学生 π_θ' 自己 rollout → 教师在学生轨迹上提供监督            │\n│  • 数据来源：学生自己生成（on-policy）                        │\n│  • 目标：在学生分布上对齐教师信号                             │\n│  • 作用：精细优化，修正学生分布上的错误                        │\n│  • 成本：高（需要在线 rollout + 教师推理）                    │\n│                                                             │\n│  结果：π_θ'' 在学生自己的分布上得到教师级别的质量               │\n└─────────────────────────────────────────────────────────────┘\n```\n\n---\n\n## ⚡ 为什么这个两阶段策略比纯 on-policy 更好？\n\n| 维度 | 纯 OPD（无 warm-start） | Off-policy → On-policy |\n|---|---|---|\n| **初始 rollout 质量** | 差（学生从随机/弱基线开始） | 好（SFT 后学生已接近教师） |\n| **梯度稳定性** | 低（初期分布偏移大，梯度方差大） | 高（warm-start 缩小 gap） |\n| **样本效率** | 低（大量 rollout 浪费在低质量样本上） | 高（论文 1 报告 10x 提升，部分归功于更好的起点） |\n| **训练崩溃风险** | 高（论文 2 报告 instability & degradation） | 低（SFT-stabilized） |\n| **总计算成本** | 可能更高（需要更多 OPD 迭代来收敛） | 更优（off-policy 阶段便宜，OPD 阶段收敛快） |\n\n---\n\n## 🔑 实践中的注意事项\n\n1. **SFT 不要过拟合**：如果 Stage 1 SFT 太久，学生完全坍缩到教师分布，Stage 2 的 on-policy 优化空间就小了。论文 2 的 \"SFT-stabilized\" 强调的是**适度**稳定，不是完全收敛。\n\n2. **教师选择仍然关键**：论文 2 明确指出 \"OPD on mathematical reasoning is highly sensitive to teacher choice\"。即使有 SFT warm-start，如果教师本身在学生分布上表现差（distribution mismatch），OPD 仍然会出问题。论文 2 建议 **RLVR-adapted teachers**——让教师先适应学生的分布。\n\n3. **Loss formulation 要选对**：论文 2 发现 **stop-gradient TopK objectives** 能缓解 biased gradient 问题。在 Stage 2 中应考虑使用这种 loss。\n\n4. **Rubric-based OPD（论文 1）的额外优势**：如果教师是黑盒（如 GPT-4），传统 logit-based OPD 无法使用。ROPD 用 rubric 替代 logits，使得这个两阶段 pipeline 在**黑盒教师**场景下也能跑。\n\n---\n\n## 📝 总结\n\n你的提议——**先 off-policy SFT warm-start，再 on-policy OPD 精细优化**——是一个**被论文直接验证的有效策略**。论文 2 将其称为 \"SFT-stabilized students\"，并证明这能缓解 OPD 的三大失败机制。这个两阶段 pipeline 在工业实践中也是主流做法（如先 SFT 再 RLHF/DPO 的 pipeline 本质上也是 off-policy → on-policy 的思路）。\n\n**证据文件：**\n- 论文 1 摘要：`$AWORLD_REPLAY_ARTIFACT_DIR/paper1_2605.07396_abstract.txt`\n- 论文 2 摘要：`$AWORLD_REPLAY_ARTIFACT_DIR/paper2_2605.11182_abstract.txt`\n- 证据清单：`$AWORLD_REPLAY_EVIDENCE_MANIFEST`",
+        "completion_count": 1,
+        "trajectory_steps": 7,
+        "tool_call_count": 6,
+        "usage": {
+          "total_tokens": 0
+        },
+        "timing": {
+          "duration_ms": 0
+        },
+        "standard_metrics": {
+          "n_turns": 7,
+          "n_tool_calls": 6,
+          "n_tokens": 0,
+          "duration_ms": 0
+        },
+        "error": null
+      },
+      "artifacts": {
+        "outcome": {
+          "task_id": "task_20260522111854",
+          "question": "Recorded prior task context [same_session_predecessor; structured compact; retained 4 user anchors and 2 recent assistant turns from 10 turns]:\n- user [task_20260522081541:input]: http://127.0.0.1:60271/abs/2605.07396，看看这篇paper的核心观点吧\n- user [task_20260522081711:input]: http://127.0.0.1:60255/abs/2605.11182，结合这个进行交叉分析\n- user [task_20260522105248:input]: On-policy Distillation (OPD) 是一种强大的模型对齐范式：让学生模型自己 rollout，然后用教师模型的信号去对齐。这个不对吧？不应该是rollou阶段让教师去执行获得trajectory,然后在学生模型去训练吗？\n- assistant [task_20260522105248:step-1]: 这是个非常关键的概念问题，值得认真澄清。直接说结论：\n\n---\n\n## 🎯 结论先行\n\n> **你描述的\"教师 rollout，学生学\"是 off-policy distillation（经典 KD / SeqKD），不是 on-policy distillation。**\n> **On-policy distillation 的定义本质就是：rollout 由学生自己产生，教师只在学生轨迹上提供监督信号。**\n\n所以我上一轮的说法**是对的**——但我应该早一点把这个核心定义讲清楚，是我没说透。下面把两个范式正面对照一下，并用论文原文证据钉死这个定义。\n\n---\n\n## 🔍 两种范式的对比\n\n```\n                 蒸馏的两种范式\n                 \n┌─────────────────────────────────────────────────────┐\n│   Off-policy Distillation  (经典 KD / SeqKD)        │\n│                                                     │\n│   ① 教师 π_T 自己 rollout 一堆 trajectory y ~ π_T    │\n│   ② 学生在 (x, y) 上做监督学习：                     │\n│      最大化 log π_θ(y | x)                          │\n│                                                     │\n│   = 学生从未\"自己说话\"，只是模仿教师                  │\n└─────────────────────────────────────────────────────┘\n\n┌─────────────────────────────────────────────────────┐\n│   On-policy Distillation (OPD)  ← 这两篇论文        │\n│                                                     │\n│   ① 学生 π_θ 自己…\n- user [task_20260522110125:input]: 对比一下on-policy off-policy\n- assistant [task_20260522110125:step-1]: 好，这次系统地把 **on-policy vs off-policy** 这对概念讲清楚。需要分两个层面讲，因为这两个词在 **RL** 和 **蒸馏（KD）** 里语境不同，但底层逻辑一致——很多人混淆就是因为没区分这两个语境。\n\n---\n\n## 🎯 一句话核心区分\n\n> **判断标准：训练时用的数据，是不是由\"当前正在被更新的那个策略\"产生的？**\n>\n> - **是** → on-policy\n> - **不是**（来自其他策略 / 历史策略 / 外部数据） → off-policy\n\n---\n\n## 📐 第一层：RL 中的 on-policy vs off-policy\n\n### 定义\n\n| | On-policy | Off-policy |\n|---|---|---|\n| **数据来源** | 当前策略 $\\pi_\\theta$ 自己采的 | 其他策略采的（旧的 $\\pi_{\\theta_{old}}$、行为策略 $\\mu$、人类数据、replay buffer 等） |\n| **是否需要 importance sampling** | 不需要 | **需要**（修正分布差异） |\n| **样本效率** | 低（每次更新后旧数据作废） | 高（数据可反复使用） |\n| **稳定性** | 高（数据分布与目标一致） | 较低（分布偏移、IS 方差大） |\n| **典型算法** | REINFORCE, A2C, **PPO（近 on-policy）**, GRPO | Q-learning, DQN, DDPG, SAC, **off-policy actor-critic** |\n\n### 直观比喻\n\n```\n🟢 On-policy（\"我练我教\"）\n    我现在打球的水平                我现在打球的水平\n        ↓ 打一场                       ↑ 学习\n  ┌─────────────┐  数据    ┌─────────────┐\n  │ 当前策略 πθ │ ───────→ │   更新 πθ    │\n  └─────────────┘          └─────────────┘\n    每次更新后，旧的录像就作废了，必须重新打一场\n\n\n🔴 Off-policy（\"用别人的录像学\"）…\n\nCurrent task:\n那应该可以先off policy进行一次模型训练，然后再用on policy进行一轮优化来提升学生模型的能力\n\nSelf-evolve replay evidence requirements:\n- Preserve the user task and use artifact-first evidence. Save large or unknown-size output under AWORLD_REPLAY_ARTIFACT_DIR (/Users/wuman/Documents/workspace/aworld/.aworld/self_evolve/campaign-5da22855fc198ea4676c-cycle-003/replay/llm-mutator-a4e1b3e4157c/members/task_20260522111854-e6a788537c02/llm-mutator-a4e1b3e4157c/evidence); never stream full pages, documents, JSON, or logs.\n- In every shell command, use the literal quoted variables \"$AWORLD_REPLAY_ARTIFACT_DIR\" and \"$AWORLD_REPLAY_EVIDENCE_MANIFEST\". Never paste their resolved parenthetical paths: replay workspaces can change after a resume.\n- Inspect only explicit byte-bounded excerpts or selected fields; `head -N` is not a byte bound.\n- Append one compact JSON line per source to AWORLD_REPLAY_EVIDENCE_MANIFEST (/Users/wuman/Documents/workspace/aworld/.aworld/self_evolve/campaign-5da22855fc198ea4676c-cycle-003/replay/llm-mutator-a4e1b3e4157c/members/task_20260522111854-e6a788537c02/llm-mutator-a4e1b3e4157c/evidence/evidence_manifest.jsonl). For a file use exactly {\"source_id\":\"...\",\"extraction_method\":\"...\",\"artifact_path\":\"...\",\"selected_fields\":{\"field\":\"bounded value\"}}; for non-file evidence use exactly {\"source_id\":\"...\",\"evidence_type\":\"metadata\",\"extraction_method\":\"...\",\"metadata\":{\"field\":\"bounded value\"}}.\n- Reject compacted, truncated, invalid, or unbounded evidence; retry once with a narrower extraction.\n- Persist every valid artifact-backed sample and its manifest entry immediately. Continue only until every evidence subject required by the user task is covered (for example, every item in a comparison), or until one materially different bounded attempt establishes that a subject is unavailable. Then stop collecting and return the answer with artifact paths, subject coverage counts, explicit missing subjects, and a concise claim ledger. Omit unsupported claims.\n\nSelf-evolve replay runtime contract:\n- Keep the original authorization boundary. Required task-plane actions are allowed; control-plane actions require explicit task authorization.\n- External prerequisites are attach-only: never terminate, restart, reconfigure, replace, or copy host credentials/sessions/private state.\n- Preserve supplied HOME, TMPDIR, XDG_*, and runtime roots. Use only AWORLD_REPLAY_ENDPOINT_* endpoints; never discover alternate host ports.\n- On terminal protocol mismatch, persist one bounded diagnostic and stop. If a bounded non-mutating prerequisite probe fails, return prerequisite-unavailable.\n- Keep created files in the workspace/artifact directory. Switch strategy once when no new evidence is possible, otherwise fail with the observed reason.\n- Evidence completion is terminal: once every required evidence subject is covered, or bounded insufficiency is established for the missing subjects, make no further tool call and synthesize the final response. A single sample is terminal only for a genuinely single-subject task.",
+          "evidence_blocks": 13,
+          "raw_evidence_blocks": 11,
+          "canonical_evidence_bundle_valid": true,
+          "canonical_evidence_bundle_entries": 2,
+          "num_steps": 7,
+          "is_finished": true,
+          "final_answer_len": 3935,
+          "extracted_path": "/Users/wuman/Documents/workspace/aworld/tmp/judge-recheck-a4/extracted_task_20260522111854.json"
+        },
+        "attempts": [],
+        "child_states": []
+      },
+      "judge_diagnostics": [
+        {
+          "phase": "initial_judge",
+          "round_index": 0,
+          "status": "succeeded",
+          "prompt_chars": 31522,
+          "system_prompt_chars": 11545,
+          "input_chars": 43067,
+          "estimated_input_tokens": 10767,
+          "artifact_request_count": 0,
+          "artifact_read_result_count": 0,
+          "artifact_read_count": 0,
+          "artifact_read_denied_count": 0,
+          "artifact_read_denial_reasons": [],
+          "artifact_read_denied_path_fingerprints": [],
+          "artifact_read_continuation_count": 0,
+          "artifact_read_budget_exhausted": false,
+          "artifact_read_projection_incomplete": false,
+          "artifact_read_chars": 0,
+          "timeout_seconds": 600.0,
+          "latency_ms": 10792.193041997962
+        }
+      ],
+      "metadata": {
+        "source_kind": "trajectory",
+        "source_path": "/Users/wuman/Documents/workspace/aworld/.aworld/self_evolve/evaluator/campaign-5da22855fc198ea4676c-cycle-003-held-out-llm-mutator-a4e1b3e4157c-candidate-e6b0c85a79686a96/llm-mutator-a4e1b3e4157c/held_out/trajectory.log",
+        "extraction_dir": "/Users/wuman/Documents/workspace/aworld/tmp/judge-recheck-a4",
+        "source_case_id": "task_20260522111854",
+        "extracted_path": "/Users/wuman/Documents/workspace/aworld/tmp/judge-recheck-a4/extracted_task_20260522111854.json",
+        "_target": {
+          "target_kind": "source",
+          "target_path": "/Users/wuman/Documents/workspace/aworld/.aworld/self_evolve/evaluator/campaign-5da22855fc198ea4676c-cycle-003-held-out-llm-mutator-a4e1b3e4157c-candidate-e6b0c85a79686a96/llm-mutator-a4e1b3e4157c/held_out/trajectory.log",
+          "source_kind": "trajectory",
+          "task_id": null,
+          "judge_agent": "/Users/wuman/Documents/agent.md",
+          "judge_agent_name": null,
+          "judge_backend_ref": null,
+          "agent": "Aworld",
+          "judge_timeout_seconds": 600.0,
+          "judge_model_profile": "gpt-5.5",
+          "source_out_dir": "/Users/wuman/Documents/workspace/aworld/tmp/judge-recheck-a4",
+          "report_output_path": "/Users/wuman/Documents/workspace/aworld/tmp/judge-recheck-a4-report.json"
+        },
+        "standard_metrics": {
+          "n_turns": 7,
+          "n_tool_calls": 6,
+          "n_tokens": 0,
+          "duration_ms": 0
+        }
+      },
+      "metric_details": {
+        "score": {
+          "score": 66.4,
+          "verdict": "Pass",
+          "A1_groundedness": 3,
+          "A2_completeness": 4,
+          "A3_relevance": 5,
+          "A4_readability": 4,
+          "B1_tool_use": 4,
+          "B2_efficiency": 3,
+          "B3_compliance": 4,
+          "B4_robustness": 4,
+          "veto_triggered": false,
+          "has_evidence": true,
+          "evidence_block_count": 2,
+          "evidence_compacted": false,
+          "evidence_incomplete": true,
+          "evidence_quality": {
+            "has_evidence": true,
+            "evidence_block_count": 2,
+            "evidence_compacted": false,
+            "evidence_incomplete": true,
+            "evidence_issues": [
+              "canonical evidence bundle is valid and contains two paper abstract artifacts",
+              "final answer includes several specific claims not supported by the abstracts",
+              "raw tool outputs were compacted, but canonical bundle provides usable source evidence"
+            ]
+          },
+          "evidence_repair_constraints": [
+            {
+              "subject_kind": "general_claim",
+              "failure_mode": "support_incomplete",
+              "source_layer": "candidate_output",
+              "required_action": "support_or_omit",
+              "owner": "candidate",
+              "occurrence_count": 4
+            },
+            {
+              "subject_kind": "quantitative_claim",
+              "failure_mode": "unsupported_claim",
+              "source_layer": "candidate_output",
+              "required_action": "support_or_omit",
+              "owner": "candidate",
+              "occurrence_count": 1
+            },
+            {
+              "subject_kind": "bibliographic_claim",
+              "failure_mode": "source_mismatch",
+              "source_layer": "candidate_output",
+              "required_action": "reconcile_source",
+              "owner": "candidate",
+              "occurrence_count": 1
+            }
+          ],
+          "_judge_backend": "trajectory-evaluator-agent-md",
+          "_judge_diagnostics": [
+            {
+              "phase": "initial_judge",
+              "round_index": 0,
+              "status": "succeeded",
+              "prompt_chars": 31522,
+              "system_prompt_chars": 11545,
+              "input_chars": 43067,
+              "estimated_input_tokens": 10767,
+              "artifact_request_count": 0,
+              "artifact_read_result_count": 0,
+              "artifact_read_count": 0,
+              "artifact_read_denied_count": 0,
+              "artifact_read_denial_reasons": [],
+              "artifact_read_denied_path_fingerprints": [],
+              "artifact_read_continuation_count": 0,
+              "artifact_read_budget_exhausted": false,
+              "artifact_read_projection_incomplete": false,
+              "artifact_read_chars": 0,
+              "timeout_seconds": 600.0,
+              "latency_ms": 10792.193041997962
+            }
+          ]
+        },
+        "has_evidence": {
+          "passed": true,
+          "reason": "matched",
+          "source": "outcome",
+          "path": [
+            "evidence_blocks"
+          ],
+          "op": ">",
+          "expected": 0,
+          "actual": 13,
+          "weight": 1.0,
+          "required": true
+        },
+        "agent_finished": {
+          "passed": true,
+          "reason": "matched",
+          "source": "outcome",
+          "path": [
+            "is_finished"
+          ],
+          "op": "==",
+          "expected": true,
+          "actual": true,
+          "weight": 1.0,
+          "required": true
+        }
+      }
+    },
+    {
+      "case_id": "task_20260522083917",
+      "input": {
+        "task_id": "task_20260522083917",
+        "trajectory_log": "/Users/wuman/Documents/workspace/aworld/.aworld/self_evolve/evaluator/campaign-5da22855fc198ea4676c-cycle-003-held-out-llm-mutator-a4e1b3e4157c-candidate-e6b0c85a79686a96/llm-mutator-a4e1b3e4157c/held_out/trajectory.log",
+        "_target": {
+          "target_kind": "source",
+          "target_path": "/Users/wuman/Documents/workspace/aworld/.aworld/self_evolve/evaluator/campaign-5da22855fc198ea4676c-cycle-003-held-out-llm-mutator-a4e1b3e4157c-candidate-e6b0c85a79686a96/llm-mutator-a4e1b3e4157c/held_out/trajectory.log",
+          "source_kind": "trajectory",
+          "task_id": null,
+          "judge_agent": "/Users/wuman/Documents/agent.md",
+          "judge_agent_name": null,
+          "judge_backend_ref": null,
+          "agent": "Aworld",
+          "judge_timeout_seconds": 600.0,
+          "judge_model_profile": "gpt-5.5",
+          "source_out_dir": "/Users/wuman/Documents/workspace/aworld/tmp/judge-recheck-a4",
+          "report_output_path": "/Users/wuman/Documents/workspace/aworld/tmp/judge-recheck-a4-report.json"
+        },
+        "_case_metadata": {
+          "source_kind": "trajectory",
+          "source_path": "/Users/wuman/Documents/workspace/aworld/.aworld/self_evolve/evaluator/campaign-5da22855fc198ea4676c-cycle-003-held-out-llm-mutator-a4e1b3e4157c-candidate-e6b0c85a79686a96/llm-mutator-a4e1b3e4157c/held_out/trajectory.log",
+          "extraction_dir": "/Users/wuman/Documents/workspace/aworld/tmp/judge-recheck-a4",
+          "source_record": {
+            "case_id": "task_20260522083917",
+            "input": {
+              "task_id": "task_20260522083917",
+              "trajectory_log": "/Users/wuman/Documents/workspace/aworld/.aworld/self_evolve/evaluator/campaign-5da22855fc198ea4676c-cycle-003-held-out-llm-mutator-a4e1b3e4157c-candidate-e6b0c85a79686a96/llm-mutator-a4e1b3e4157c/held_out/trajectory.log"
+            },
+            "answer": "Both papers' abstracts have been extracted and saved as artifacts. The evidence subjects (Paper A and Paper B) are both covered. Let me now synthesize the final answer.\n\n---\n\n## 🎯 Rollout 阶段的策略对比\n\n你问的是两篇论文在 **rollout（采样/生成）阶段** 具体怎么做的。这是 on-policy 训练的核心环节——\"学生模型自己生成什么，以及生成之后怎么用\"。从两篇摘要中可以提取出清晰的 rollout 策略差异：\n\n---\n\n### 📄 Paper A · ROPD（2605.07396）的 Rollout 策略\n\n> **核心流程：学生自己生成 rollout → 用 rubric 打分 → 分数作为优化信号**\n\n摘要原文关键句：\n> *\"ROPD induces prompt-specific rubrics from teacher-student contrasts, and then utilizes these rubrics to **score the student rollouts** for on-policy optimization.\"*\n\n拆解 rollout 阶段的三个步骤：\n\n| 步骤 | 具体操作 |\n|---|---|\n| **1. Rollout 生成** | 学生模型（student policy）用自己的当前策略对给定 prompt 生成 response（rollout） |\n| **2. Rubric 构造** | 从 teacher–student 的**对比差异**中归纳出 prompt-specific 的 rubric（评分标准） |\n| **3. Rollout 打分** | 用这个 rubric 对学生生成的 rollout **逐条打分**，分数作为 on-policy 优化的信号 |\n\n**关键特征：**\n- Rollout 是**学生自己生成的**（on-policy）\n- 打分方式是 **rubric-based**（语义评分标准），不是 logit-based\n- 这使得整个流程**黑盒兼容**——只需要 teacher 的 response，不需要 teacher 的 logits\n- Rubric 充当了类似 RLHF 中 reward model 的角色\n\n---\n\n### 📄 Paper B · Many Faces（2605.11182）的 Rollout 策略\n\n> **核心流程：学生自己生成 trajectory → teacher 在学生前缀上条件化提供 token-level 监督 → 但这会导致分布失配**\n\n摘要原文关键句：\n> *\"offering dense token-level supervision on **trajectories sampled from the model's own policy**\"*\n> *\"distribution mismatch between teacher and student caused by **conditioning on student-generated prefixes**\"*\n\n拆解 rollout 阶段的机制和问题：\n\n| 步骤 | 具体操作 | 问题 |\n|---|---|---|\n| **1. Rollout 生成** | 学生模型用自己的策略生成 trajectory（on-policy 采样） | ✅ 正常 |\n| **2. Teacher 条件化** | Teacher 在**学生生成的前缀**上条件化，给出后续 token 的分布 | ⚠️ **分布失配** |\n| **3. Token-level KL** | 用 reverse-KL / TopK reverse-KL 做 token-level 分布匹配 | ⚠️ **梯度有偏** |\n\n**Paper B 发现的三个 rollout 阶段失败机制：**\n\n1. **分布失配**：Teacher 在学生前缀上条件化 → teacher 看到的上下文不是它自己会生成的 → teacher 的输出分布与\"正确\"分布不一致\n2. **梯度有偏**：TopK reverse-KL 的梯度有偏 → 优化不稳定\n3. **PI 缺失**（OPSD 特有）：学生学到的是 PI-free policy，但 teacher 是 PI-conditioned 的 → 当 PI 是 instance-specific 时，学生无法恢复正确策略\n\n**Paper B 提出的 rollout 阶段修复策略：**\n\n| 修复手段 | 作用 |\n|---|---|\n| **Stop-gradient TopK** | 阻止梯度通过学生前缀回流 → 缓解分布失配导致的梯度偏差 |\n| **RLVR-adapted teachers** | 让 teacher 适应学生的分布 → 减小 teacher-student 分布差距 |\n| **SFT-stabilized students** | 用 SFT 稳定学生 → 防止 rollout 分布漂移过大 |\n\n---\n\n### 🔍 两篇论文 Rollout 策略的核心差异\n\n| 维度 | Paper A (ROPD) | Paper B (Many Faces) |\n|---|---|---|\n| **谁生成 rollout** | 学生自己（on-policy） | 学生自己（on-policy） |\n| **Rollout 后做什么** | 用 rubric **打分**（response-level） | Teacher 在学生前缀上**条件化**，做 token-level KL |\n| **监督粒度** | **Response-level**（整条 response 一个分数） | **Token-level**（逐 token 分布匹配） |\n| **Teacher 角色** | 提供 response 作为对比样本 → 生成 rubric | 在学生前缀上条件化 → 提供后续 token 分布 |\n| **是否需要 teacher logits** | ❌ 不需要（黑盒兼容） | ✅ 需要（白盒蒸馏） |\n| **Rollout 阶段的核心问题** | 无（ROPD 的创新点恰好在 rollout 后的打分方式） | **分布失配**（teacher 条件化在学生前缀上） |\n| **Rollout 阶段的修复** | N/A | stop-gradient / RLVR-adapted teacher / SFT-stabilized student |\n\n---\n\n### 💡 一句话总结\n\n> **两篇论文的 rollout 都是由学生模型自己生成（on-policy sampling），但区别在于 rollout 之后怎么用：**\n> - **ROPD**：rollout → rubric 打分 → response-level 优化信号（类似 RLHF 的 reward）\n> - **Many Faces**：rollout → teacher 在学生前缀上条件化 → token-level KL 蒸馏（但发现这会导致分布失配，需要 stop-gradient 等修复）\n\n---\n\n**⚠️ 证据局限说明：** 以上分析基于两篇论文的摘要（abstract）。摘要中明确提到了 rollout 的生成方式（学生自己采样）和后续处理（rubric 打分 / teacher 条件化），但更细节的 rollout 策略（如采样温度、rollout 数量、是否使用 nucleus sampling 等）需要查看 PDF 正文才能确认。代理端点目前只返回了摘要页面，未能获取完整 HTML/PDF 内容。\n\n**证据产物路径：**\n- Paper A 摘要：`$AWORLD_REPLAY_ARTIFACT_DIR/paper_a_ropd_abstract.txt`\n- Paper B 摘要：`$AWORLD_REPLAY_ARTIFACT_DIR/paper_b_many_faces_abstract.txt`\n- 证据清单：`$AWORLD_REPLAY_EVIDENCE_MANIFEST`（2 条记录，覆盖 2 个证据主体）",
+            "metadata": {
+              "source_kind": "trajectory",
+              "source_path": "/Users/wuman/Documents/workspace/aworld/.aworld/self_evolve/evaluator/campaign-5da22855fc198ea4676c-cycle-003-held-out-llm-mutator-a4e1b3e4157c-candidate-e6b0c85a79686a96/llm-mutator-a4e1b3e4157c/held_out/trajectory.log",
+              "extraction_dir": "/Users/wuman/Documents/workspace/aworld/tmp/judge-recheck-a4"
+            }
+          }
+        },
+        "_expected": null,
+        "_max_turns": null,
+        "_timeout_seconds": null
+      },
+      "metrics": {
+        "score": {
+          "value": 76.2,
+          "status": "PASSED"
+        },
+        "verdict": {
+          "value": "Excellent"
+        },
+        "A1_groundedness": {
+          "value": 4,
+          "status": "PASSED"
+        },
+        "A2_completeness": {
+          "value": 4
+        },
+        "A3_relevance": {
+          "value": 4
+        },
+        "A4_readability": {
+          "value": 5
+        },
+        "B1_tool_use": {
+          "value": 4
+        },
+        "B2_efficiency": {
+          "value": 5
+        },
+        "B3_compliance": {
+          "value": 5
+        },
+        "B4_robustness": {
+          "value": 4
+        },
+        "veto_triggered": {
+          "value": false,
+          "status": "PASSED"
+        },
+        "evidence_block_count": {
+          "value": 5
+        },
+        "evidence_compacted": {
+          "value": true
+        },
+        "evidence_incomplete": {
+          "value": true
+        },
+        "has_evidence": {
+          "value": 1.0,
+          "status": "PASSED"
+        },
+        "agent_finished": {
+          "value": 1.0,
+          "status": "PASSED"
+        },
+        "predict_time_cost_ms": {
+          "value": 2.874135971069336,
+          "status": "PASSED"
+        }
+      },
+      "judge": {
+        "score": 76.2,
+        "verdict": "Excellent",
+        "A1_groundedness": 4,
+        "A2_completeness": 4,
+        "A3_relevance": 4,
+        "A4_readability": 5,
+        "B1_tool_use": 4,
+        "B2_efficiency": 5,
+        "B3_compliance": 5,
+        "B4_robustness": 4,
+        "veto_triggered": false,
+        "has_evidence": true,
+        "evidence_block_count": 5,
+        "evidence_compacted": true,
+        "evidence_incomplete": true,
+        "evidence_quality": {
+          "has_evidence": true,
+          "evidence_block_count": 5,
+          "evidence_compacted": true,
+          "evidence_incomplete": true,
+          "evidence_issues": [
+            "canonical bundle is valid and includes two abstract text artifacts plus raw arXiv projections",
+            "some raw HTML/projection entries are bounded/omitted",
+            "final answer makes several method-level details that abstracts only partially support"
+          ],
+          "evidence_repair_constraints": null
+        },
+        "evidence_repair_constraints": [
+          {
+            "subject_kind": "general_claim",
+            "failure_mode": "support_incomplete",
+            "source_layer": "candidate_output",
+            "required_action": "support_or_omit",
+            "owner": "candidate",
+            "occurrence_count": 3
+          },
+          {
+            "subject_kind": "artifact",
+            "failure_mode": "support_incomplete",
+            "source_layer": "candidate_output",
+            "required_action": "support_or_omit",
+            "owner": "candidate",
+            "occurrence_count": 2
+          }
+        ],
+        "_judge_backend": "trajectory-evaluator-agent-md"
+      },
+      "judge_backend": {
+        "backend_id": "trajectory-evaluator-agent-md"
+      },
+      "state_summary": {
+        "answer": "Both papers' abstracts have been extracted and saved as artifacts. The evidence subjects (Paper A and Paper B) are both covered. Let me now synthesize the final answer.\n\n---\n\n## 🎯 Rollout 阶段的策略对比\n\n你问的是两篇论文在 **rollout（采样/生成）阶段** 具体怎么做的。这是 on-policy 训练的核心环节——\"学生模型自己生成什么，以及生成之后怎么用\"。从两篇摘要中可以提取出清晰的 rollout 策略差异：\n\n---\n\n### 📄 Paper A · ROPD（2605.07396）的 Rollout 策略\n\n> **核心流程：学生自己生成 rollout → 用 rubric 打分 → 分数作为优化信号**\n\n摘要原文关键句：\n> *\"ROPD induces prompt-specific rubrics from teacher-student contrasts, and then utilizes these rubrics to **score the student rollouts** for on-policy optimization.\"*\n\n拆解 rollout 阶段的三个步骤：\n\n| 步骤 | 具体操作 |\n|---|---|\n| **1. Rollout 生成** | 学生模型（student policy）用自己的当前策略对给定 prompt 生成 response（rollout） |\n| **2. Rubric 构造** | 从 teacher–student 的**对比差异**中归纳出 prompt-specific 的 rubric（评分标准） |\n| **3. Rollout 打分** | 用这个 rubric 对学生生成的 rollout **逐条打分**，分数作为 on-policy 优化的信号 |\n\n**关键特征：**\n- Rollout 是**学生自己生成的**（on-policy）\n- 打分方式是 **rubric-based**（语义评分标准），不是 logit-based\n- 这使得整个流程**黑盒兼容**——只需要 teacher 的 response，不需要 teacher 的 logits\n- Rubric 充当了类似 RLHF 中 reward model 的角色\n\n---\n\n### 📄 Paper B · Many Faces（2605.11182）的 Rollout 策略\n\n> **核心流程：学生自己生成 trajectory → teacher 在学生前缀上条件化提供 token-level 监督 → 但这会导致分布失配**\n\n摘要原文关键句：\n> *\"offering dense token-level supervision on **trajectories sampled from the model's own policy**\"*\n> *\"distribution mismatch between teacher and student caused by **conditioning on student-generated prefixes**\"*\n\n拆解 rollout 阶段的机制和问题：\n\n| 步骤 | 具体操作 | 问题 |\n|---|---|---|\n| **1. Rollout 生成** | 学生模型用自己的策略生成 trajectory（on-policy 采样） | ✅ 正常 |\n| **2. Teacher 条件化** | Teacher 在**学生生成的前缀**上条件化，给出后续 token 的分布 | ⚠️ **分布失配** |\n| **3. Token-level KL** | 用 reverse-KL / TopK reverse-KL 做 token-level 分布匹配 | ⚠️ **梯度有偏** |\n\n**Paper B 发现的三个 rollout 阶段失败机制：**\n\n1. **分布失配**：Teacher 在学生前缀上条件化 → teacher 看到的上下文不是它自己会生成的 → teacher 的输出分布与\"正确\"分布不一致\n2. **梯度有偏**：TopK reverse-KL 的梯度有偏 → 优化不稳定\n3. **PI 缺失**（OPSD 特有）：学生学到的是 PI-free policy，但 teacher 是 PI-conditioned 的 → 当 PI 是 instance-specific 时，学生无法恢复正确策略\n\n**Paper B 提出的 rollout 阶段修复策略：**\n\n| 修复手段 | 作用 |\n|---|---|\n| **Stop-gradient TopK** | 阻止梯度通过学生前缀回流 → 缓解分布失配导致的梯度偏差 |\n| **RLVR-adapted teachers** | 让 teacher 适应学生的分布 → 减小 teacher-student 分布差距 |\n| **SFT-stabilized students** | 用 SFT 稳定学生 → 防止 rollout 分布漂移过大 |\n\n---\n\n### 🔍 两篇论文 Rollout 策略的核心差异\n\n| 维度 | Paper A (ROPD) | Paper B (Many Faces) |\n|---|---|---|\n| **谁生成 rollout** | 学生自己（on-policy） | 学生自己（on-policy） |\n| **Rollout 后做什么** | 用 rubric **打分**（response-level） | Teacher 在学生前缀上**条件化**，做 token-level KL |\n| **监督粒度** | **Response-level**（整条 response 一个分数） | **Token-level**（逐 token 分布匹配） |\n| **Teacher 角色** | 提供 response 作为对比样本 → 生成 rubric | 在学生前缀上条件化 → 提供后续 token 分布 |\n| **是否需要 teacher logits** | ❌ 不需要（黑盒兼容） | ✅ 需要（白盒蒸馏） |\n| **Rollout 阶段的核心问题** | 无（ROPD 的创新点恰好在 rollout 后的打分方式） | **分布失配**（teacher 条件化在学生前缀上） |\n| **Rollout 阶段的修复** | N/A | stop-gradient / RLVR-adapted teacher / SFT-stabilized student |\n\n---\n\n### 💡 一句话总结\n\n> **两篇论文的 rollout 都是由学生模型自己生成（on-policy sampling），但区别在于 rollout 之后怎么用：**\n> - **ROPD**：rollout → rubric 打分 → response-level 优化信号（类似 RLHF 的 reward）\n> - **Many Faces**：rollout → teacher 在学生前缀上条件化 → token-level KL 蒸馏（但发现这会导致分布失配，需要 stop-gradient 等修复）\n\n---\n\n**⚠️ 证据局限说明：** 以上分析基于两篇论文的摘要（abstract）。摘要中明确提到了 rollout 的生成方式（学生自己采样）和后续处理（rubric 打分 / teacher 条件化），但更细节的 rollout 策略（如采样温度、rollout 数量、是否使用 nucleus sampling 等）需要查看 PDF 正文才能确认。代理端点目前只返回了摘要页面，未能获取完整 HTML/PDF 内容。\n\n**证据产物路径：**\n- Paper A 摘要：`$AWORLD_REPLAY_ARTIFACT_DIR/paper_a_ropd_abstract.txt`\n- Paper B 摘要：`$AWORLD_REPLAY_ARTIFACT_DIR/paper_b_many_faces_abstract.txt`\n- 证据清单：`$AWORLD_REPLAY_EVIDENCE_MANIFEST`（2 条记录，覆盖 2 个证据主体）",
+        "completion_count": 1,
+        "trajectory_steps": 1,
+        "tool_call_count": 0,
+        "usage": {
+          "total_tokens": 0
+        },
+        "timing": {
+          "duration_ms": 0
+        },
+        "standard_metrics": {
+          "n_turns": 1,
+          "n_tool_calls": 0,
+          "n_tokens": 0,
+          "duration_ms": 0
+        },
+        "error": null
+      },
+      "artifacts": {
+        "outcome": {
+          "task_id": "task_20260522083917",
+          "question": null,
+          "evidence_blocks": 5,
+          "raw_evidence_blocks": 0,
+          "canonical_evidence_bundle_valid": true,
+          "canonical_evidence_bundle_entries": 5,
+          "num_steps": 1,
+          "is_finished": true,
+          "final_answer_len": 3610,
+          "extracted_path": "/Users/wuman/Documents/workspace/aworld/tmp/judge-recheck-a4/extracted_task_20260522083917.json"
+        },
+        "attempts": [],
+        "child_states": []
+      },
+      "judge_diagnostics": [
+        {
+          "phase": "initial_judge",
+          "round_index": 0,
+          "status": "succeeded",
+          "prompt_chars": 49896,
+          "system_prompt_chars": 11545,
+          "input_chars": 61441,
+          "estimated_input_tokens": 15361,
+          "artifact_request_count": 0,
+          "artifact_read_result_count": 0,
+          "artifact_read_count": 0,
+          "artifact_read_denied_count": 0,
+          "artifact_read_denial_reasons": [],
+          "artifact_read_denied_path_fingerprints": [],
+          "artifact_read_continuation_count": 0,
+          "artifact_read_budget_exhausted": false,
+          "artifact_read_projection_incomplete": false,
+          "artifact_read_chars": 0,
+          "timeout_seconds": 600.0,
+          "latency_ms": 13704.699333000463
+        }
+      ],
+      "metadata": {
+        "source_kind": "trajectory",
+        "source_path": "/Users/wuman/Documents/workspace/aworld/.aworld/self_evolve/evaluator/campaign-5da22855fc198ea4676c-cycle-003-held-out-llm-mutator-a4e1b3e4157c-candidate-e6b0c85a79686a96/llm-mutator-a4e1b3e4157c/held_out/trajectory.log",
+        "extraction_dir": "/Users/wuman/Documents/workspace/aworld/tmp/judge-recheck-a4",
+        "source_case_id": "task_20260522083917",
+        "extracted_path": "/Users/wuman/Documents/workspace/aworld/tmp/judge-recheck-a4/extracted_task_20260522083917.json",
+        "_target": {
+          "target_kind": "source",
+          "target_path": "/Users/wuman/Documents/workspace/aworld/.aworld/self_evolve/evaluator/campaign-5da22855fc198ea4676c-cycle-003-held-out-llm-mutator-a4e1b3e4157c-candidate-e6b0c85a79686a96/llm-mutator-a4e1b3e4157c/held_out/trajectory.log",
+          "source_kind": "trajectory",
+          "task_id": null,
+          "judge_agent": "/Users/wuman/Documents/agent.md",
+          "judge_agent_name": null,
+          "judge_backend_ref": null,
+          "agent": "Aworld",
+          "judge_timeout_seconds": 600.0,
+          "judge_model_profile": "gpt-5.5",
+          "source_out_dir": "/Users/wuman/Documents/workspace/aworld/tmp/judge-recheck-a4",
+          "report_output_path": "/Users/wuman/Documents/workspace/aworld/tmp/judge-recheck-a4-report.json"
+        },
+        "standard_metrics": {
+          "n_turns": 1,
+          "n_tool_calls": 0,
+          "n_tokens": 0,
+          "duration_ms": 0
+        }
+      },
+      "metric_details": {
+        "score": {
+          "score": 76.2,
+          "verdict": "Excellent",
+          "A1_groundedness": 4,
+          "A2_completeness": 4,
+          "A3_relevance": 4,
+          "A4_readability": 5,
+          "B1_tool_use": 4,
+          "B2_efficiency": 5,
+          "B3_compliance": 5,
+          "B4_robustness": 4,
+          "veto_triggered": false,
+          "has_evidence": true,
+          "evidence_block_count": 5,
+          "evidence_compacted": true,
+          "evidence_incomplete": true,
+          "evidence_quality": {
+            "has_evidence": true,
+            "evidence_block_count": 5,
+            "evidence_compacted": true,
+            "evidence_incomplete": true,
+            "evidence_issues": [
+              "canonical bundle is valid and includes two abstract text artifacts plus raw arXiv projections",
+              "some raw HTML/projection entries are bounded/omitted",
+              "final answer makes several method-level details that abstracts only partially support"
+            ],
+            "evidence_repair_constraints": null
+          },
+          "evidence_repair_constraints": [
+            {
+              "subject_kind": "general_claim",
+              "failure_mode": "support_incomplete",
+              "source_layer": "candidate_output",
+              "required_action": "support_or_omit",
+              "owner": "candidate",
+              "occurrence_count": 3
+            },
+            {
+              "subject_kind": "artifact",
+              "failure_mode": "support_incomplete",
+              "source_layer": "candidate_output",
+              "required_action": "support_or_omit",
+              "owner": "candidate",
+              "occurrence_count": 2
+            }
+          ],
+          "_judge_backend": "trajectory-evaluator-agent-md",
+          "_judge_diagnostics": [
+            {
+              "phase": "initial_judge",
+              "round_index": 0,
+              "status": "succeeded",
+              "prompt_chars": 49896,
+              "system_prompt_chars": 11545,
+              "input_chars": 61441,
+              "estimated_input_tokens": 15361,
+              "artifact_request_count": 0,
+              "artifact_read_result_count": 0,
+              "artifact_read_count": 0,
+              "artifact_read_denied_count": 0,
+              "artifact_read_denial_reasons": [],
+              "artifact_read_denied_path_fingerprints": [],
+              "artifact_read_continuation_count": 0,
+              "artifact_read_budget_exhausted": false,
+              "artifact_read_projection_incomplete": false,
+              "artifact_read_chars": 0,
+              "timeout_seconds": 600.0,
+              "latency_ms": 13704.699333000463
+            }
+          ]
+        },
+        "has_evidence": {
+          "passed": true,
+          "reason": "matched",
+          "source": "outcome",
+          "path": [
+            "evidence_blocks"
+          ],
+          "op": ">",
+          "expected": 0,
+          "actual": 5,
+          "weight": 1.0,
+          "required": true
+        },
+        "agent_finished": {
+          "passed": true,
+          "reason": "matched",
+          "source": "outcome",
+          "path": [
+            "is_finished"
+          ],
+          "op": "==",
+          "expected": true,
+          "actual": true,
+          "weight": 1.0,
+          "required": true
+        }
+      }
+    }
+  ],
+  "result_counts": {
+    "cases_total": 4,
+    "cases_with_metrics": 4,
+    "cases_with_judge": 4
+  },
+  "approval": {
+    "required": false,
+    "resolved": false,
+    "approved": null
+  },
+  "suite_metadata": {
+    "agent": "Aworld",
+    "source_backed": true
+  },
+  "trial_policy": {
+    "num_trials": 1,
+    "pass_at_k": [],
+    "pass_caret_k": [],
+    "success_metric": null
+  },
+  "trial_counts": {
+    "original_cases": 4,
+    "trials_total": 4
+  },
+  "judge_schema": {
+    "$defs": {
+      "EvidenceRepairConstraintOutput": {
+        "description": "Payload-free evidence diagnosis emitted once per distinct issue type.",
+        "properties": {
+          "subject_kind": {
+            "enum": [
+              "artifact",
+              "bibliographic_claim",
+              "configuration_claim",
+              "evidence_manifest",
+              "general_claim",
+              "quantitative_claim",
+              "quote",
+              "symbolic_claim"
+            ],
+            "title": "Subject Kind",
+            "type": "string"
+          },
+          "failure_mode": {
+            "enum": [
+              "invalid_manifest",
+              "missing_source",
+              "projection_compacted",
+              "source_mismatch",
+              "support_incomplete",
+              "unreadable_artifact",
+              "unsupported_claim"
+            ],
+            "title": "Failure Mode",
+            "type": "string"
+          },
+          "source_layer": {
+            "enum": [
+              "artifact_capture",
+              "artifact_projection",
+              "candidate_output",
+              "evidence_manifest",
+              "judge_runtime"
+            ],
+            "title": "Source Layer",
+            "type": "string"
+          },
+          "required_action": {
+            "enum": [
+              "capture_artifact",
+              "expand_bounded_projection",
+              "reconcile_source",
+              "repair_artifact_reference",
+              "support_or_omit",
+              "validate_manifest"
+            ],
+            "title": "Required Action",
+            "type": "string"
+          },
+          "owner": {
+            "enum": [
+              "candidate",
+              "framework",
+              "infrastructure",
+              "task"
+            ],
+            "title": "Owner",
+            "type": "string"
+          },
+          "occurrence_count": {
+            "default": 1,
+            "minimum": 1,
+            "title": "Occurrence Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "subject_kind",
+          "failure_mode",
+          "source_layer",
+          "required_action",
+          "owner"
+        ],
+        "title": "EvidenceRepairConstraintOutput",
+        "type": "object"
+      }
+    },
+    "properties": {
+      "score": {
+        "title": "Score",
+        "type": "number"
+      },
+      "verdict": {
+        "enum": [
+          "Excellent",
+          "Pass",
+          "Marginal",
+          "Fail"
+        ],
+        "title": "Verdict",
+        "type": "string"
+      },
+      "A1_groundedness": {
+        "title": "A1 Groundedness",
+        "type": "integer"
+      },
+      "A2_completeness": {
+        "title": "A2 Completeness",
+        "type": "integer"
+      },
+      "A3_relevance": {
+        "title": "A3 Relevance",
+        "type": "integer"
+      },
+      "A4_readability": {
+        "title": "A4 Readability",
+        "type": "integer"
+      },
+      "B1_tool_use": {
+        "title": "B1 Tool Use",
+        "type": "integer"
+      },
+      "B2_efficiency": {
+        "title": "B2 Efficiency",
+        "type": "integer"
+      },
+      "B3_compliance": {
+        "title": "B3 Compliance",
+        "type": "integer"
+      },
+      "B4_robustness": {
+        "title": "B4 Robustness",
+        "type": "integer"
+      },
+      "veto_triggered": {
+        "default": false,
+        "title": "Veto Triggered",
+        "type": "boolean"
+      },
+      "has_evidence": {
+        "default": false,
+        "title": "Has Evidence",
+        "type": "boolean"
+      },
+      "evidence_block_count": {
+        "default": 0,
+        "title": "Evidence Block Count",
+        "type": "integer"
+      },
+      "evidence_compacted": {
+        "default": false,
+        "title": "Evidence Compacted",
+        "type": "boolean"
+      },
+      "evidence_incomplete": {
+        "default": false,
+        "title": "Evidence Incomplete",
+        "type": "boolean"
+      },
+      "evidence_quality": {
+        "additionalProperties": true,
+        "title": "Evidence Quality",
+        "type": "object"
+      },
+      "evidence_repair_constraints": {
+        "items": {
+          "$ref": "#/$defs/EvidenceRepairConstraintOutput"
+        },
+        "title": "Evidence Repair Constraints",
+        "type": "array"
+      }
+    },
+    "required": [
+      "score",
+      "verdict",
+      "A1_groundedness",
+      "A2_completeness",
+      "A3_relevance",
+      "A4_readability",
+      "B1_tool_use",
+      "B2_efficiency",
+      "B3_compliance",
+      "B4_robustness"
+    ],
+    "title": "TrajectoryEvalJudgeOutput",
+    "type": "object"
+  },
+  "judge_backend": {
+    "backend_id": "trajectory-evaluator-agent-md"
+  },
+  "gate": {
+    "status": "pass",
+    "metric_name": null,
+    "value": null,
+    "matched_conditions": [
+      {
+        "metric_name": "score",
+        "op": ">=",
+        "threshold": 70.0
+      },
+      {
+        "metric_name": "A1_groundedness",
+        "op": ">=",
+        "threshold": 3
+      },
+      {
+        "metric_name": "veto_triggered",
+        "op": "==",
+        "threshold": false
+      },
+      {
+        "metric_name": "has_evidence",
+        "op": "==",
+        "threshold": 1.0
+      },
+      {
+        "metric_name": "agent_finished",
+        "op": "==",
+        "threshold": 1.0
+      }
+    ],
+    "failed_conditions": []
+  },
+  "source_selection": {
+    "mode": "source",
+    "input": "/Users/wuman/Documents/workspace/aworld/.aworld/self_evolve/evaluator/campaign-5da22855fc198ea4676c-cycle-003-held-out-llm-mutator-a4e1b3e4157c-candidate-e6b0c85a79686a96/llm-mutator-a4e1b3e4157c/held_out/trajectory.log",
+    "kind": "trajectory",
+    "task_id": null,
+    "judge_agent": "/Users/wuman/Documents/agent.md",
+    "judge_agent_name": null,
+    "judge_backend_ref": null,
+    "agent": "Aworld",
+    "judge_timeout_seconds": 600.0,
+    "judge_model_profile": "gpt-5.5"
+  },
+  "automation": {
+    "gate_status": "pass",
+    "metric_name": null,
+    "metric_value": null,
+    "approval_required": false,
+    "approval_resolved": false,
+    "approved": null,
+    "suggested_exit_code": 0,
+    "case_count": 4,
+    "judge_backend": "trajectory-evaluator-agent-md",
+    "source_kind": "trajectory",
+    "source_input": "/Users/wuman/Documents/workspace/aworld/.aworld/self_evolve/evaluator/campaign-5da22855fc198ea4676c-cycle-003-held-out-llm-mutator-a4e1b3e4157c-candidate-e6b0c85a79686a96/llm-mutator-a4e1b3e4157c/held_out/trajectory.log",
+    "task_id": null,
+    "agent": "Aworld"
+  },
+  "report_path": "/Users/wuman/Documents/workspace/aworld/tmp/judge-recheck-a4-report.json"
+}

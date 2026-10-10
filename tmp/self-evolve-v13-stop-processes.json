@@ -1,0 +1,7 @@
+[
+  {
+    "pid": 42137,
+    "ppid": 1842,
+    "command": "/Users/wuman/miniconda3/bin/python /Users/wuman/miniconda3/bin/aworld-cli optimize --target skill:agent-browser --from-trajectory /Users/wuman/Documents/trajectory1.log --apply verified_only --judge-agent /Users/wuman/Documents/agent.md --judge-timeout 600 --judge-model-profile gpt-5.5 --replay-timeout 900 --replay-total-timeout 3600"
+  }
+]

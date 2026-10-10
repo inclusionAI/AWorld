@@ -1,0 +1,798 @@
+{
+  "report_version": 1,
+  "report_format": {
+    "id": "aworld.evaluator.report",
+    "version": 1
+  },
+  "generated_at": "2026-09-17T04:48:04.902710Z",
+  "suite_id": "trajectory-source-evaluator",
+  "target": {
+    "target_kind": "source",
+    "target_path": "/Users/wuman/Documents/workspace/aworld/.aworld/self_evolve/evaluator/campaign-d26617143d9336989f32-cycle-001-held-out-llm-mutator-e9dcfc473856-baseline-4d14ef093e3a5ea9/baseline/held_out/trajectory.log",
+    "source_kind": "trajectory",
+    "task_id": "task_20260522081541",
+    "judge_agent": "/Users/wuman/Documents/agent.md",
+    "judge_agent_name": null,
+    "judge_backend_ref": null,
+    "agent": null,
+    "judge_timeout_seconds": 60.0,
+    "judge_model_profile": "gpt-5.5",
+    "source_out_dir": "/Users/wuman/Documents/workspace/aworld/tmp/self-evolve-judge-preflight-20260917/extracted",
+    "report_output_path": "/Users/wuman/Documents/workspace/aworld/tmp/self-evolve-judge-preflight-20260917/report.json"
+  },
+  "summary": {
+    "trajectory-source-evaluator": {
+      "score": {
+        "mean": 91.2,
+        "min": 91.2,
+        "max": 91.2,
+        "std": 0.0,
+        "eval_status": "PASSED"
+      },
+      "verdict": {
+        "value": "Excellent"
+      },
+      "A1_groundedness": {
+        "mean": 5.0,
+        "min": 5,
+        "max": 5,
+        "std": 0.0
+      },
+      "A2_completeness": {
+        "mean": 4.0,
+        "min": 4,
+        "max": 4,
+        "std": 0.0
+      },
+      "A3_relevance": {
+        "mean": 5.0,
+        "min": 5,
+        "max": 5,
+        "std": 0.0
+      },
+      "A4_readability": {
+        "mean": 5.0,
+        "min": 5,
+        "max": 5,
+        "std": 0.0
+      },
+      "B1_tool_use": {
+        "mean": 4.0,
+        "min": 4,
+        "max": 4,
+        "std": 0.0
+      },
+      "B2_efficiency": {
+        "mean": 4.0,
+        "min": 4,
+        "max": 4,
+        "std": 0.0
+      },
+      "B3_compliance": {
+        "mean": 5.0,
+        "min": 5,
+        "max": 5,
+        "std": 0.0
+      },
+      "B4_robustness": {
+        "mean": 5.0,
+        "min": 5,
+        "max": 5,
+        "std": 0.0
+      },
+      "veto_triggered": {
+        "true_count": 0,
+        "true_rate": 0.0
+      },
+      "evidence_block_count": {
+        "mean": 2.0,
+        "min": 2,
+        "max": 2,
+        "std": 0.0
+      },
+      "evidence_compacted": {
+        "true_count": 1,
+        "true_rate": 1.0
+      },
+      "evidence_incomplete": {
+        "true_count": 0,
+        "true_rate": 0.0
+      }
+    },
+    "runtime_outcome": {
+      "has_evidence": {
+        "mean": 1.0,
+        "min": 1.0,
+        "max": 1.0,
+        "std": 0.0,
+        "eval_status": "PASSED"
+      },
+      "agent_finished": {
+        "mean": 1.0,
+        "min": 1.0,
+        "max": 1.0,
+        "std": 0.0,
+        "eval_status": "PASSED"
+      }
+    },
+    "TimeCostScorer": {
+      "predict_time_cost_ms": {
+        "mean": 2.3148059844970703,
+        "min": 2.3148059844970703,
+        "max": 2.3148059844970703,
+        "std": 0.0,
+        "eval_status": "PASSED"
+      }
+    }
+  },
+  "metrics": {
+    "score": {
+      "mean": 91.2,
+      "min": 91.2,
+      "max": 91.2,
+      "std": 0.0,
+      "eval_status": "PASSED"
+    },
+    "verdict": {
+      "value": "Excellent"
+    },
+    "A1_groundedness": {
+      "mean": 5.0,
+      "min": 5,
+      "max": 5,
+      "std": 0.0,
+      "eval_status": "PASSED"
+    },
+    "A2_completeness": {
+      "mean": 4.0,
+      "min": 4,
+      "max": 4,
+      "std": 0.0
+    },
+    "A3_relevance": {
+      "mean": 5.0,
+      "min": 5,
+      "max": 5,
+      "std": 0.0
+    },
+    "A4_readability": {
+      "mean": 5.0,
+      "min": 5,
+      "max": 5,
+      "std": 0.0
+    },
+    "B1_tool_use": {
+      "mean": 4.0,
+      "min": 4,
+      "max": 4,
+      "std": 0.0
+    },
+    "B2_efficiency": {
+      "mean": 4.0,
+      "min": 4,
+      "max": 4,
+      "std": 0.0
+    },
+    "B3_compliance": {
+      "mean": 5.0,
+      "min": 5,
+      "max": 5,
+      "std": 0.0
+    },
+    "B4_robustness": {
+      "mean": 5.0,
+      "min": 5,
+      "max": 5,
+      "std": 0.0
+    },
+    "veto_triggered": {
+      "true_count": 0,
+      "true_rate": 0.0,
+      "eval_status": "PASSED"
+    },
+    "evidence_block_count": {
+      "mean": 2.0,
+      "min": 2,
+      "max": 2,
+      "std": 0.0
+    },
+    "evidence_compacted": {
+      "true_count": 1,
+      "true_rate": 1.0
+    },
+    "evidence_incomplete": {
+      "true_count": 0,
+      "true_rate": 0.0
+    },
+    "has_evidence": {
+      "mean": 1.0,
+      "min": 1.0,
+      "max": 1.0,
+      "std": 0.0,
+      "eval_status": "PASSED"
+    },
+    "agent_finished": {
+      "mean": 1.0,
+      "min": 1.0,
+      "max": 1.0,
+      "std": 0.0,
+      "eval_status": "PASSED"
+    },
+    "predict_time_cost_ms": {
+      "mean": 2.3148059844970703,
+      "min": 2.3148059844970703,
+      "max": 2.3148059844970703,
+      "std": 0.0,
+      "eval_status": "PASSED"
+    }
+  },
+  "results": [
+    {
+      "case_id": "task_20260522081541",
+      "input": {
+        "task_id": "task_20260522081541",
+        "trajectory_log": "/Users/wuman/Documents/workspace/aworld/.aworld/self_evolve/evaluator/campaign-d26617143d9336989f32-cycle-001-held-out-llm-mutator-e9dcfc473856-baseline-4d14ef093e3a5ea9/baseline/held_out/trajectory.log",
+        "_target": {
+          "target_kind": "source",
+          "target_path": "/Users/wuman/Documents/workspace/aworld/.aworld/self_evolve/evaluator/campaign-d26617143d9336989f32-cycle-001-held-out-llm-mutator-e9dcfc473856-baseline-4d14ef093e3a5ea9/baseline/held_out/trajectory.log",
+          "source_kind": "trajectory",
+          "task_id": "task_20260522081541",
+          "judge_agent": "/Users/wuman/Documents/agent.md",
+          "judge_agent_name": null,
+          "judge_backend_ref": null,
+          "agent": null,
+          "judge_timeout_seconds": 60.0,
+          "judge_model_profile": "gpt-5.5",
+          "source_out_dir": "/Users/wuman/Documents/workspace/aworld/tmp/self-evolve-judge-preflight-20260917/extracted",
+          "report_output_path": "/Users/wuman/Documents/workspace/aworld/tmp/self-evolve-judge-preflight-20260917/report.json"
+        },
+        "_case_metadata": {
+          "source_kind": "trajectory",
+          "source_path": "/Users/wuman/Documents/workspace/aworld/.aworld/self_evolve/evaluator/campaign-d26617143d9336989f32-cycle-001-held-out-llm-mutator-e9dcfc473856-baseline-4d14ef093e3a5ea9/baseline/held_out/trajectory.log",
+          "extraction_dir": "tmp/self-evolve-judge-preflight-20260917/extracted",
+          "source_record": {
+            "case_id": "task_20260522081541",
+            "input": {
+              "task_id": "task_20260522081541",
+              "trajectory_log": "/Users/wuman/Documents/workspace/aworld/.aworld/self_evolve/evaluator/campaign-d26617143d9336989f32-cycle-001-held-out-llm-mutator-e9dcfc473856-baseline-4d14ef093e3a5ea9/baseline/held_out/trajectory.log"
+            },
+            "answer": "证据已完整收集并持久化。以下是这篇论文的核心观点总结：\n\n---\n\n## 📄 论文：Rubric-based On-policy Distillation (ROPD)\n\n**arXiv ID**: 2605.07396 | **日期**: 2026/05/08  \n**作者**: Fang Junfeng, Hong Zhepei, Zheng Mao, Song Mingyang, Li Gengsheng, Jiang Houcheng, Zhang Dan, Guo Haiyun, Wang Xiang, Chua Tat-Seng  \n**代码**: https://github.com/Peregrine123/ROPD_official\n\n---\n\n### 核心观点\n\n**1. 问题：传统 OPD 依赖 teacher logits，局限于白盒场景**\n\nOn-policy distillation (OPD) 是模型对齐的强大范式，但它依赖教师模型的 logits（输出概率分布），这意味着只能用于白盒场景（即教师模型参数可访问的情况），无法用于闭源/商用 LLM。\n\n**2. 核心主张：结构化语义 rubric 可替代 teacher logits**\n\n论文提出，**结构化的语义评分标准（rubric）** 可以作为 teacher logits 的可扩展替代方案，使得 OPD 只需教师生成的回答即可完成，无需访问教师模型内部参数。\n\n**3. 方法：ROPD 框架**\n\n论文引入 **ROPD** (Rubric-based On-policy Distillation) 框架，具体包含两步：\n- **Rubric 诱导**：从教师-学生的回答对比中，自动生成针对特定 prompt 的评分标准\n- **Rubric 评分 + 在策略优化**：用这些 rubric 对学生模型的 rollout 进行打分，用于 on-policy 优化\n\n**4. 实验结果**\n\n- ROPD 在大多数场景下**超越了先进的 logit-based OPD 方法**\n- 实现了高达 **10 倍的样本效率提升**\n- 作为一种灵活的、**黑盒兼容**的替代方案，适用于闭源和开源 LLM 之间的蒸馏\n\n---\n\n### 一句话总结\n\n> ROPD 用\"语义评分标准\"替代\"教师 logits\"，让 on-policy distillation 不再需要白盒访问教师模型，在黑盒场景下也能高效蒸馏，且效果和样本效率均优于传统方法。\n\n---\n\n**证据文件**:\n- 原始页面: `paper_2605.07396.html`\n- 提取结果: `paper_2605.07396_extracted.json`\n- Manifest 已记录",
+            "metadata": {
+              "source_kind": "trajectory",
+              "source_path": "/Users/wuman/Documents/workspace/aworld/.aworld/self_evolve/evaluator/campaign-d26617143d9336989f32-cycle-001-held-out-llm-mutator-e9dcfc473856-baseline-4d14ef093e3a5ea9/baseline/held_out/trajectory.log",
+              "extraction_dir": "tmp/self-evolve-judge-preflight-20260917/extracted"
+            }
+          }
+        },
+        "_expected": null,
+        "_max_turns": null,
+        "_timeout_seconds": null
+      },
+      "metrics": {
+        "score": {
+          "value": 91.2,
+          "status": "PASSED"
+        },
+        "verdict": {
+          "value": "Excellent"
+        },
+        "A1_groundedness": {
+          "value": 5,
+          "status": "PASSED"
+        },
+        "A2_completeness": {
+          "value": 4
+        },
+        "A3_relevance": {
+          "value": 5
+        },
+        "A4_readability": {
+          "value": 5
+        },
+        "B1_tool_use": {
+          "value": 4
+        },
+        "B2_efficiency": {
+          "value": 4
+        },
+        "B3_compliance": {
+          "value": 5
+        },
+        "B4_robustness": {
+          "value": 5
+        },
+        "veto_triggered": {
+          "value": false,
+          "status": "PASSED"
+        },
+        "evidence_block_count": {
+          "value": 2
+        },
+        "evidence_compacted": {
+          "value": true
+        },
+        "evidence_incomplete": {
+          "value": false
+        },
+        "has_evidence": {
+          "value": 1.0,
+          "status": "PASSED"
+        },
+        "agent_finished": {
+          "value": 1.0,
+          "status": "PASSED"
+        },
+        "predict_time_cost_ms": {
+          "value": 2.3148059844970703,
+          "status": "PASSED"
+        }
+      },
+      "judge": {
+        "score": 91.2,
+        "verdict": "Excellent",
+        "A1_groundedness": 5,
+        "A2_completeness": 4,
+        "A3_relevance": 5,
+        "A4_readability": 5,
+        "B1_tool_use": 4,
+        "B2_efficiency": 4,
+        "B3_compliance": 5,
+        "B4_robustness": 5,
+        "veto_triggered": false,
+        "has_evidence": true,
+        "evidence_block_count": 2,
+        "evidence_compacted": true,
+        "evidence_incomplete": false,
+        "evidence_quality": {
+          "has_evidence": true,
+          "evidence_block_count": 2,
+          "evidence_compacted": true,
+          "evidence_incomplete": false,
+          "evidence_issues": [
+            "raw tool outputs were prompt-compacted/suppressed, but valid canonical bundle contains usable title, authors, date, abstract, and code URL",
+            "final answer is mainly grounded in abstract-level evidence rather than full paper body"
+          ]
+        },
+        "evidence_repair_constraints": []
+      },
+      "judge_backend": {
+        "backend_id": "trajectory-evaluator-agent-md"
+      },
+      "state_summary": {
+        "answer": "证据已完整收集并持久化。以下是这篇论文的核心观点总结：\n\n---\n\n## 📄 论文：Rubric-based On-policy Distillation (ROPD)\n\n**arXiv ID**: 2605.07396 | **日期**: 2026/05/08  \n**作者**: Fang Junfeng, Hong Zhepei, Zheng Mao, Song Mingyang, Li Gengsheng, Jiang Houcheng, Zhang Dan, Guo Haiyun, Wang Xiang, Chua Tat-Seng  \n**代码**: https://github.com/Peregrine123/ROPD_official\n\n---\n\n### 核心观点\n\n**1. 问题：传统 OPD 依赖 teacher logits，局限于白盒场景**\n\nOn-policy distillation (OPD) 是模型对齐的强大范式，但它依赖教师模型的 logits（输出概率分布），这意味着只能用于白盒场景（即教师模型参数可访问的情况），无法用于闭源/商用 LLM。\n\n**2. 核心主张：结构化语义 rubric 可替代 teacher logits**\n\n论文提出，**结构化的语义评分标准（rubric）** 可以作为 teacher logits 的可扩展替代方案，使得 OPD 只需教师生成的回答即可完成，无需访问教师模型内部参数。\n\n**3. 方法：ROPD 框架**\n\n论文引入 **ROPD** (Rubric-based On-policy Distillation) 框架，具体包含两步：\n- **Rubric 诱导**：从教师-学生的回答对比中，自动生成针对特定 prompt 的评分标准\n- **Rubric 评分 + 在策略优化**：用这些 rubric 对学生模型的 rollout 进行打分，用于 on-policy 优化\n\n**4. 实验结果**\n\n- ROPD 在大多数场景下**超越了先进的 logit-based OPD 方法**\n- 实现了高达 **10 倍的样本效率提升**\n- 作为一种灵活的、**黑盒兼容**的替代方案，适用于闭源和开源 LLM 之间的蒸馏\n\n---\n\n### 一句话总结\n\n> ROPD 用\"语义评分标准\"替代\"教师 logits\"，让 on-policy distillation 不再需要白盒访问教师模型，在黑盒场景下也能高效蒸馏，且效果和样本效率均优于传统方法。\n\n---\n\n**证据文件**:\n- 原始页面: `paper_2605.07396.html`\n- 提取结果: `paper_2605.07396_extracted.json`\n- Manifest 已记录",
+        "completion_count": 1,
+        "trajectory_steps": 7,
+        "tool_call_count": 6,
+        "usage": {
+          "total_tokens": 0
+        },
+        "timing": {
+          "duration_ms": 0
+        },
+        "standard_metrics": {
+          "n_turns": 7,
+          "n_tool_calls": 6,
+          "n_tokens": 0,
+          "duration_ms": 0
+        },
+        "error": null
+      },
+      "artifacts": {
+        "outcome": {
+          "task_id": "task_20260522081541",
+          "question": "https://www.alphaxiv.org/abs/2605.07396，看看这篇paper的核心观点吧",
+          "evidence_blocks": 13,
+          "raw_evidence_blocks": 11,
+          "canonical_evidence_bundle_valid": true,
+          "canonical_evidence_bundle_entries": 2,
+          "num_steps": 7,
+          "is_finished": true,
+          "final_answer_len": 1185,
+          "extracted_path": "tmp/self-evolve-judge-preflight-20260917/extracted/extracted_task_20260522081541.json"
+        },
+        "attempts": [],
+        "child_states": []
+      },
+      "judge_diagnostics": [
+        {
+          "phase": "initial_judge",
+          "round_index": 0,
+          "status": "succeeded",
+          "prompt_chars": 30293,
+          "system_prompt_chars": 12234,
+          "input_chars": 42527,
+          "estimated_input_tokens": 10632,
+          "artifact_request_count": 0,
+          "artifact_read_result_count": 0,
+          "artifact_read_count": 0,
+          "artifact_read_denied_count": 0,
+          "artifact_read_denial_reasons": [],
+          "artifact_read_denied_path_fingerprints": [],
+          "artifact_read_continuation_count": 0,
+          "artifact_read_budget_exhausted": false,
+          "artifact_read_projection_incomplete": false,
+          "artifact_read_chars": 0,
+          "timeout_seconds": 60.0,
+          "latency_ms": 10287.781417006045
+        }
+      ],
+      "metadata": {
+        "source_kind": "trajectory",
+        "source_path": "/Users/wuman/Documents/workspace/aworld/.aworld/self_evolve/evaluator/campaign-d26617143d9336989f32-cycle-001-held-out-llm-mutator-e9dcfc473856-baseline-4d14ef093e3a5ea9/baseline/held_out/trajectory.log",
+        "extraction_dir": "tmp/self-evolve-judge-preflight-20260917/extracted",
+        "source_case_id": "task_20260522081541",
+        "extracted_path": "tmp/self-evolve-judge-preflight-20260917/extracted/extracted_task_20260522081541.json",
+        "_target": {
+          "target_kind": "source",
+          "target_path": "/Users/wuman/Documents/workspace/aworld/.aworld/self_evolve/evaluator/campaign-d26617143d9336989f32-cycle-001-held-out-llm-mutator-e9dcfc473856-baseline-4d14ef093e3a5ea9/baseline/held_out/trajectory.log",
+          "source_kind": "trajectory",
+          "task_id": "task_20260522081541",
+          "judge_agent": "/Users/wuman/Documents/agent.md",
+          "judge_agent_name": null,
+          "judge_backend_ref": null,
+          "agent": null,
+          "judge_timeout_seconds": 60.0,
+          "judge_model_profile": "gpt-5.5",
+          "source_out_dir": "/Users/wuman/Documents/workspace/aworld/tmp/self-evolve-judge-preflight-20260917/extracted",
+          "report_output_path": "/Users/wuman/Documents/workspace/aworld/tmp/self-evolve-judge-preflight-20260917/report.json"
+        },
+        "standard_metrics": {
+          "n_turns": 7,
+          "n_tool_calls": 6,
+          "n_tokens": 0,
+          "duration_ms": 0
+        }
+      },
+      "metric_details": {
+        "score": {
+          "score": 91.2,
+          "verdict": "Excellent",
+          "A1_groundedness": 5,
+          "A2_completeness": 4,
+          "A3_relevance": 5,
+          "A4_readability": 5,
+          "B1_tool_use": 4,
+          "B2_efficiency": 4,
+          "B3_compliance": 5,
+          "B4_robustness": 5,
+          "veto_triggered": false,
+          "has_evidence": true,
+          "evidence_block_count": 2,
+          "evidence_compacted": true,
+          "evidence_incomplete": false,
+          "evidence_quality": {
+            "has_evidence": true,
+            "evidence_block_count": 2,
+            "evidence_compacted": true,
+            "evidence_incomplete": false,
+            "evidence_issues": [
+              "raw tool outputs were prompt-compacted/suppressed, but valid canonical bundle contains usable title, authors, date, abstract, and code URL",
+              "final answer is mainly grounded in abstract-level evidence rather than full paper body"
+            ]
+          },
+          "evidence_repair_constraints": [],
+          "_judge_backend": "trajectory-evaluator-agent-md",
+          "_judge_diagnostics": [
+            {
+              "phase": "initial_judge",
+              "round_index": 0,
+              "status": "succeeded",
+              "prompt_chars": 30293,
+              "system_prompt_chars": 12234,
+              "input_chars": 42527,
+              "estimated_input_tokens": 10632,
+              "artifact_request_count": 0,
+              "artifact_read_result_count": 0,
+              "artifact_read_count": 0,
+              "artifact_read_denied_count": 0,
+              "artifact_read_denial_reasons": [],
+              "artifact_read_denied_path_fingerprints": [],
+              "artifact_read_continuation_count": 0,
+              "artifact_read_budget_exhausted": false,
+              "artifact_read_projection_incomplete": false,
+              "artifact_read_chars": 0,
+              "timeout_seconds": 60.0,
+              "latency_ms": 10287.781417006045
+            }
+          ]
+        },
+        "has_evidence": {
+          "passed": true,
+          "reason": "matched",
+          "source": "outcome",
+          "path": [
+            "evidence_blocks"
+          ],
+          "op": ">",
+          "expected": 0,
+          "actual": 13,
+          "weight": 1.0,
+          "required": true
+        },
+        "agent_finished": {
+          "passed": true,
+          "reason": "matched",
+          "source": "outcome",
+          "path": [
+            "is_finished"
+          ],
+          "op": "==",
+          "expected": true,
+          "actual": true,
+          "weight": 1.0,
+          "required": true
+        }
+      }
+    }
+  ],
+  "result_counts": {
+    "cases_total": 1,
+    "cases_with_metrics": 1,
+    "cases_with_judge": 1
+  },
+  "approval": {
+    "required": false,
+    "resolved": false,
+    "approved": null
+  },
+  "suite_metadata": {
+    "source_backed": true
+  },
+  "trial_policy": {
+    "num_trials": 1,
+    "pass_at_k": [],
+    "pass_caret_k": [],
+    "success_metric": null
+  },
+  "trial_counts": {
+    "original_cases": 1,
+    "trials_total": 1
+  },
+  "judge_schema": {
+    "$defs": {
+      "EvidenceRepairConstraintOutput": {
+        "description": "Payload-free evidence diagnosis emitted once per distinct issue type.",
+        "properties": {
+          "subject_kind": {
+            "enum": [
+              "artifact",
+              "bibliographic_claim",
+              "configuration_claim",
+              "evidence_manifest",
+              "general_claim",
+              "quantitative_claim",
+              "quote",
+              "symbolic_claim"
+            ],
+            "title": "Subject Kind",
+            "type": "string"
+          },
+          "failure_mode": {
+            "enum": [
+              "invalid_manifest",
+              "missing_source",
+              "projection_compacted",
+              "source_mismatch",
+              "support_incomplete",
+              "unreadable_artifact",
+              "unsupported_claim"
+            ],
+            "title": "Failure Mode",
+            "type": "string"
+          },
+          "source_layer": {
+            "enum": [
+              "artifact_capture",
+              "artifact_projection",
+              "candidate_output",
+              "evidence_manifest",
+              "judge_runtime"
+            ],
+            "title": "Source Layer",
+            "type": "string"
+          },
+          "required_action": {
+            "enum": [
+              "capture_artifact",
+              "expand_bounded_projection",
+              "reconcile_source",
+              "repair_artifact_reference",
+              "support_or_omit",
+              "validate_manifest"
+            ],
+            "title": "Required Action",
+            "type": "string"
+          },
+          "owner": {
+            "enum": [
+              "candidate",
+              "framework",
+              "infrastructure",
+              "task"
+            ],
+            "title": "Owner",
+            "type": "string"
+          },
+          "occurrence_count": {
+            "default": 1,
+            "minimum": 1,
+            "title": "Occurrence Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "subject_kind",
+          "failure_mode",
+          "source_layer",
+          "required_action",
+          "owner"
+        ],
+        "title": "EvidenceRepairConstraintOutput",
+        "type": "object"
+      }
+    },
+    "properties": {
+      "score": {
+        "title": "Score",
+        "type": "number"
+      },
+      "verdict": {
+        "enum": [
+          "Excellent",
+          "Pass",
+          "Marginal",
+          "Fail"
+        ],
+        "title": "Verdict",
+        "type": "string"
+      },
+      "A1_groundedness": {
+        "title": "A1 Groundedness",
+        "type": "integer"
+      },
+      "A2_completeness": {
+        "title": "A2 Completeness",
+        "type": "integer"
+      },
+      "A3_relevance": {
+        "title": "A3 Relevance",
+        "type": "integer"
+      },
+      "A4_readability": {
+        "title": "A4 Readability",
+        "type": "integer"
+      },
+      "B1_tool_use": {
+        "title": "B1 Tool Use",
+        "type": "integer"
+      },
+      "B2_efficiency": {
+        "title": "B2 Efficiency",
+        "type": "integer"
+      },
+      "B3_compliance": {
+        "title": "B3 Compliance",
+        "type": "integer"
+      },
+      "B4_robustness": {
+        "title": "B4 Robustness",
+        "type": "integer"
+      },
+      "veto_triggered": {
+        "default": false,
+        "title": "Veto Triggered",
+        "type": "boolean"
+      },
+      "has_evidence": {
+        "default": false,
+        "title": "Has Evidence",
+        "type": "boolean"
+      },
+      "evidence_block_count": {
+        "default": 0,
+        "title": "Evidence Block Count",
+        "type": "integer"
+      },
+      "evidence_compacted": {
+        "default": false,
+        "title": "Evidence Compacted",
+        "type": "boolean"
+      },
+      "evidence_incomplete": {
+        "default": false,
+        "title": "Evidence Incomplete",
+        "type": "boolean"
+      },
+      "evidence_quality": {
+        "additionalProperties": true,
+        "title": "Evidence Quality",
+        "type": "object"
+      },
+      "evidence_repair_constraints": {
+        "items": {
+          "$ref": "#/$defs/EvidenceRepairConstraintOutput"
+        },
+        "title": "Evidence Repair Constraints",
+        "type": "array"
+      }
+    },
+    "required": [
+      "score",
+      "verdict",
+      "A1_groundedness",
+      "A2_completeness",
+      "A3_relevance",
+      "A4_readability",
+      "B1_tool_use",
+      "B2_efficiency",
+      "B3_compliance",
+      "B4_robustness"
+    ],
+    "title": "TrajectoryEvalJudgeOutput",
+    "type": "object"
+  },
+  "judge_backend": {
+    "backend_id": "trajectory-evaluator-agent-md"
+  },
+  "gate": {
+    "status": "pass",
+    "metric_name": null,
+    "value": null,
+    "matched_conditions": [
+      {
+        "metric_name": "score",
+        "op": ">=",
+        "threshold": 70.0
+      },
+      {
+        "metric_name": "A1_groundedness",
+        "op": ">=",
+        "threshold": 3
+      },
+      {
+        "metric_name": "veto_triggered",
+        "op": "==",
+        "threshold": false
+      },
+      {
+        "metric_name": "has_evidence",
+        "op": "==",
+        "threshold": 1.0
+      },
+      {
+        "metric_name": "agent_finished",
+        "op": "==",
+        "threshold": 1.0
+      }
+    ],
+    "failed_conditions": []
+  },
+  "source_selection": {
+    "mode": "source",
+    "input": "/Users/wuman/Documents/workspace/aworld/.aworld/self_evolve/evaluator/campaign-d26617143d9336989f32-cycle-001-held-out-llm-mutator-e9dcfc473856-baseline-4d14ef093e3a5ea9/baseline/held_out/trajectory.log",
+    "kind": "trajectory",
+    "task_id": "task_20260522081541",
+    "judge_agent": "/Users/wuman/Documents/agent.md",
+    "judge_agent_name": null,
+    "judge_backend_ref": null,
+    "agent": null,
+    "judge_timeout_seconds": 60.0,
+    "judge_model_profile": "gpt-5.5"
+  },
+  "automation": {
+    "gate_status": "pass",
+    "metric_name": null,
+    "metric_value": null,
+    "approval_required": false,
+    "approval_resolved": false,
+    "approved": null,
+    "suggested_exit_code": 0,
+    "case_count": 1,
+    "judge_backend": "trajectory-evaluator-agent-md",
+    "source_kind": "trajectory",
+    "source_input": "/Users/wuman/Documents/workspace/aworld/.aworld/self_evolve/evaluator/campaign-d26617143d9336989f32-cycle-001-held-out-llm-mutator-e9dcfc473856-baseline-4d14ef093e3a5ea9/baseline/held_out/trajectory.log",
+    "task_id": "task_20260522081541",
+    "agent": null
+  },
+  "report_path": "/Users/wuman/Documents/workspace/aworld/tmp/self-evolve-judge-preflight-20260917/report.json"
+}

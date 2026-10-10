@@ -1,0 +1,47 @@
+{
+  "command": [
+    "<LOCAL_PATH>",
+    "-I",
+    "<LOCAL_PATH>",
+    "--parent-pid",
+    "13141",
+    "--",
+    "<LOCAL_PATH>",
+    "-I",
+    "-c",
+    "import json\nimport os\nimport resource\nimport sys\n\nlimits = json.loads(sys.argv[1])\ncommand = json.loads(sys.argv[2])\n\n\ndef finite(value):\n    return value not in (-1, resource.RLIM_INFINITY) and value > 0\n\n\ndef apply_limit(kind, soft, hard=None):\n    current_soft, current_hard = resource.getrlimit(kind)\n    requested_hard = soft if hard is None else hard\n    effective_hard = requested_hard\n    if finite(current_hard):\n        effective_hard = min(effective_hard, current_hard)\n    effective_soft = min(soft, effective_hard)\n    resource.setrlimit(kind, (effective_soft, effective_hard))\n\n\napply_limit(resource.RLIMIT_FSIZE, limits[\"file_bytes\"])\napply_limit(resource.RLIMIT_CPU, limits[\"cpu_seconds\"], limits[\"cpu_seconds\"] + 1)\nif sys.platform != \"darwin\" and hasattr(resource, \"RLIMIT_AS\"):\n    apply_limit(resource.RLIMIT_AS, limits[\"memory_bytes\"])\nif hasattr(resource, \"RLIMIT_NPROC\"):\n    apply_limit(resource.RLIMIT_NPROC, 32)\nos.execv(command[0], command)",
+    "{\"cpu_seconds\":600,\"file_bytes\":8388608,\"memory_bytes\":536870912}",
+    "[\"/usr/bin/sandbox-exec\",\"-p\",\"(version 1) (deny default) (import \\\"system.sb\\\") (allow process-info*) (allow sysctl-read) (deny process-fork) (deny process-exec) (allow process-exec (literal \\\"<LOCAL_PATH>\")) (allow network-bind (local ip \\\"localhost:*\\\")) (allow network-inbound (local ip \\\"localhost:*\\\")) (allow file-read* (subpath \\\"<LOCAL_PATH>\")) (allow file-read* (subpath \\\"<LOCAL_PATH>\")) (allow file-read* (subpath \\\"<LOCAL_PATH>\")) (allow file-read* (subpath \\\"<LOCAL_PATH>\")) (allow file-write* (subpath \\\"<LOCAL_PATH>\"))\",\"<LOCAL_PATH>\",\"-I\",\"<LOCAL_PATH>\",\"--port\",\"51660\",\"--fixture\",\"<LOCAL_PATH>\",\"--scratch\",\"<LOCAL_PATH>\"]"
+  ],
+  "command_fingerprint": "sha256:d6dfaf463aa27368614bf124c5c6b45347a507618f163678f9ca696d64653333",
+  "command_truncated": false,
+  "environment_keys": [
+    "AWORLD_REPLAY_FIXTURE_PATH",
+    "AWORLD_REPLAY_REQUIREMENT_ID",
+    "AWORLD_REPLAY_RESPONSE_INDEX",
+    "AWORLD_REPLAY_RESPONSE_RECORD_ID",
+    "AWORLD_REPLAY_SERVICE_ID",
+    "PATH",
+    "PYTHONDONTWRITEBYTECODE",
+    "PYTHONIOENCODING",
+    "PYTHONUNBUFFERED"
+  ],
+  "error_type": null,
+  "host": "127.0.0.1",
+  "port": 51660,
+  "process_id": 13207,
+  "process_returncode": null,
+  "protocol_probe_count": 1,
+  "readiness": {
+    "kind": "http",
+    "path": "/_readiness",
+    "timeout_seconds": 10.0
+  },
+  "requirement_id": "requirement-3dee7da1dbe1a3300e56",
+  "runtime_entrypoint": "replay/runtime.py",
+  "schema_version": "aworld.replay.service_launch_diagnostic.v1",
+  "service_id": "svc_requirement-3dee7da1dbe1a3300e56",
+  "started_at": 1789199832.8106828,
+  "status": "started",
+  "transport": "skill_runtime"
+}

@@ -1,0 +1,12 @@
+{
+  "pid": 47007,
+  "caffeinate_wrapper_pids": [
+    47011
+  ],
+  "exec_session": 68350,
+  "head": "20519c7bce83444ef3418165dd446f492c1cb2ee",
+  "run_id": "campaign-9463c6a408362f33e443-cycle-001",
+  "log": "tmp/self-evolve-acceptance-20260918-v19.log",
+  "updated_at": 1789724200.78605,
+  "pending_source_fix": null
+}

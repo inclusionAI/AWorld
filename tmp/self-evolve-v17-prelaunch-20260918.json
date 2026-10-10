@@ -1,0 +1,10 @@
+{
+  "created_at": 1789698546.302581,
+  "head": "9d069598f832d02cfc8397f9c3be6170a5061c21",
+  "command": "aworld-cli optimize --target skill:agent-browser --from-trajectory ~/Documents/trajectory1.log --apply verified_only --judge-agent ~/Documents/agent.md --judge-timeout 600 --judge-model-profile gpt-5.5 --replay-timeout 900 --replay-total-timeout 3600",
+  "input_sha256": {
+    "/Users/wuman/Documents/workspace/aworld/aworld-skills/agent-browser/SKILL.md": "d1af996f1f0339d98ce8a58362003d36b4f11143e040a94a17322768b816dc12",
+    "/Users/wuman/Documents/trajectory1.log": "fa031fbd04f7f79048a05550b09bd031d3ce84b38941f49955182a0fd5d98a20",
+    "/Users/wuman/Documents/agent.md": "9964969ef3468853eaa15e1c0cfe391b81f910175f4bb4b66336b369eb0d7fc7"
+  }
+}

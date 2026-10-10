@@ -1,0 +1,90 @@
+{
+  "verified_at": "2026-09-18T11:11:04.509212+00:00",
+  "execution_head": "20519c7bce83444ef3418165dd446f492c1cb2ee",
+  "command": "aworld-cli optimize --target skill:agent-browser --from-trajectory ~/Documents/trajectory1.log --apply verified_only --judge-agent ~/Documents/agent.md --judge-timeout 600 --judge-model-profile gpt-5.5 --replay-timeout 900 --replay-total-timeout 3600",
+  "verifier_exit_code": 0,
+  "verification": {
+    "status": "succeeded",
+    "candidate_id": "llm-mutator-cb9b242e4400",
+    "confidence": "verified",
+    "gates_passed": 31,
+    "post_apply_status": "accepted",
+    "journal_status": "accepted",
+    "verified_target_path": "/Users/wuman/Documents/workspace/aworld/.aworld/self_evolve/campaign-9463c6a408362f33e443-cycle-002/verified_targets/agent-browser/SKILL.md",
+    "verified_content_fingerprint": "sha256:b26cb8fcccfb007e6abfc3fa50e1e47c878ad483ce8b96cdde8cdcbf90e3dfe8",
+    "isolated_registry_load": "verified",
+    "candidate_package_closed": true,
+    "candidate_file_count": 3,
+    "source_unchanged": true,
+    "published": false,
+    "report_path": "/Users/wuman/Documents/workspace/aworld/.aworld/self_evolve/campaign-9463c6a408362f33e443-cycle-002/report.json"
+  },
+  "input_fingerprints": {
+    "/Users/wuman/Documents/workspace/aworld/aworld-skills/agent-browser/SKILL.md": {
+      "expected_sha256": "d1af996f1f0339d98ce8a58362003d36b4f11143e040a94a17322768b816dc12",
+      "actual_sha256": "d1af996f1f0339d98ce8a58362003d36b4f11143e040a94a17322768b816dc12"
+    },
+    "/Users/wuman/Documents/trajectory1.log": {
+      "expected_sha256": "fa031fbd04f7f79048a05550b09bd031d3ce84b38941f49955182a0fd5d98a20",
+      "actual_sha256": "fa031fbd04f7f79048a05550b09bd031d3ce84b38941f49955182a0fd5d98a20"
+    },
+    "/Users/wuman/Documents/agent.md": {
+      "expected_sha256": "9964969ef3468853eaa15e1c0cfe391b81f910175f4bb4b66336b369eb0d7fc7",
+      "actual_sha256": "9964969ef3468853eaa15e1c0cfe391b81f910175f4bb4b66336b369eb0d7fc7"
+    }
+  },
+  "native_report_sha256": "a07e8f56af8ba2a1ae636d971964e757c1290ec1aae0d1f524fdeb63b4b6cbe1",
+  "cli_log_sha256": "c38b3ae2f7380b3065a9182c0de46651e8c5e23a4808ce4d48e4d9103a67c74e",
+  "cli_status_succeeded": true,
+  "campaign_complete": true,
+  "delivery": {
+    "branch": "codex/self-evolve-followup",
+    "commit": "9ebaacc873229668d7b2d8e292a144341fdf52cd",
+    "normal_push_succeeded": true,
+    "independent_ls_remote_match": true
+  },
+  "independent_package_audit": {
+    "file_count": 6,
+    "method": "Native bytes/size/mode tree fingerprint with in-memory restoration of pre-normalization candidate SKILL.md",
+    "pre_normalization_package_fingerprint": "sha256:1c4dc6cf7b217c19d3492238c90732c9f92160e74ad9d152c3a1cd92be649d92",
+    "journal_fingerprint_matches": true,
+    "on_disk_package_unchanged": true
+  },
+  "native_regression_evidence": {
+    "fingerprint": "sha256:2d6bffa2a5616bbcaf1a87ab3b0f7be2988b0fa58719d462bf2305466052b0c0",
+    "report_fingerprint_match": true,
+    "suites": [
+      {
+        "execution_id": "target-contract-agent-browser-eb5407f43ea7-1789729228570783000-5d1c564b0bef",
+        "gate_count": 4,
+        "all_gates_passed": true,
+        "baseline": 89.76666666666667,
+        "candidate": 93.60000000000001,
+        "delta": 3.8333333333,
+        "confidence_lower_bound": 1.336779192566952,
+        "confidence_upper_bound": 6.329887474099719
+      },
+      {
+        "execution_id": "challenger-target-contract-agent-browser-eb5407f43ea7-c16be4885854-1789729495814975000-43f7e2ff8ee1",
+        "gate_count": 4,
+        "all_gates_passed": true,
+        "baseline": 91.96666666666665,
+        "candidate": 92.5,
+        "delta": 0.5333333333,
+        "confidence_lower_bound": -1.490102336785959,
+        "confidence_upper_bound": 2.5567690034526263
+      }
+    ]
+  },
+  "independent_regression_audit": {
+    "verdict": "passed",
+    "raw_scores_compared": 24,
+    "all_raw_scores_match_native_summaries": true,
+    "judge_call_count": 25,
+    "scoring_call_count": 24,
+    "artifact_request_count": 1,
+    "extra_tiebreak_used": false,
+    "cross_round_pooling_used": false,
+    "blocking_findings": []
+  }
+}

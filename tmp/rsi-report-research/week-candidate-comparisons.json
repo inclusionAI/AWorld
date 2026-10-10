@@ -1,0 +1,1521 @@
+{
+  "source_scope": "Existing native v18/v19 reports; no experiments rerun; do not compare unpaired scores across rows",
+  "rows": [
+    {
+      "version": "v18",
+      "cycle": "001",
+      "candidate_id": "llm-mutator-7abd195e713f",
+      "parents": [
+        "llm-mutator-106c047aec1b"
+      ],
+      "source_report": "/Users/wuman/Documents/workspace/aworld/.aworld/self_evolve/campaign-f731a97f9fbde74e0968-cycle-001/report.json",
+      "source_sha256": "7e9c2c43d091bc6892384c773f13a3a402bc6575fb27a19990a3f3c925743b33",
+      "baseline_score": 87.25,
+      "candidate_score": 87.18333333333334,
+      "score_gate": {
+        "details": {
+          "baseline": 87.25,
+          "candidate": 87.18333333333334,
+          "causal_failure_events": [
+            {
+              "affected_case_identity_digests": [],
+              "affected_case_ids": [],
+              "affected_member_count": 0,
+              "aggregate_digest": "replay-aggregate-sha256-5dc9474a27f594d95c03fdca2103247e51c0c4a6fe6236e2d5dfe7e1123b7512",
+              "batch_id": "replay-batch-sha256-783f8e92c90848782abf2b7e83423143e0e9d968a7754cf6261ff4a3d4bdc0c0",
+              "capability_identity_digest": null,
+              "category": "verification_gate",
+              "code": "score_improvement_inconclusive",
+              "contract_identity_digest": null,
+              "distinct_source_count": 0,
+              "emission_id": "replay-emission-sha256-1bb618675f0f31d9b29da0206b228d8082fca83a05ab8062c5f74d9de2a16819",
+              "occurrence_count": 1,
+              "occurrence_ids": [
+                "replay-event-32e1a1eb931b43f3b439fdfcd6751423"
+              ],
+              "owner": "candidate",
+              "repairable": true,
+              "requirement_identity_digest": null,
+              "schema_version": "aworld.self_evolve.replay_failure_aggregate.v2",
+              "scope": "candidate",
+              "semantic_key": "replay-failure-0775ecd396579b8fef8bf23a0da9481706fa5820dadf76cc6a03641e86a4d97e",
+              "source_candidate_ids": [],
+              "source_identity_digests": [],
+              "source_kinds": [
+                "native"
+              ],
+              "source_run_ids": [],
+              "source_task_ids": [],
+              "stage": "evaluation"
+            }
+          ],
+          "code": "score_improvement_inconclusive",
+          "comparability": {
+            "baseline_effective_case_count": 4.0,
+            "baseline_plan_fingerprint": "sha256:ad3684f93bcaa687db8b8994e237a494c5e8ae3b44b3b7fab0be9e1c48102a5c",
+            "candidate_effective_case_count": 4.0,
+            "candidate_plan_fingerprint": "sha256:ad3684f93bcaa687db8b8994e237a494c5e8ae3b44b3b7fab0be9e1c48102a5c",
+            "comparable": true,
+            "reasons": []
+          },
+          "confidence_z": 1.96,
+          "decision": "inconclusive",
+          "delta": -0.0666666667,
+          "delta_confidence_lower_bound": -4.615498000652408,
+          "delta_confidence_upper_bound": 4.482164667319075,
+          "failure_class": "candidate",
+          "failure_event": {
+            "affected_case_identity_digests": [],
+            "affected_case_ids": [],
+            "affected_member_count": 0,
+            "aggregate_digest": "replay-aggregate-sha256-5dc9474a27f594d95c03fdca2103247e51c0c4a6fe6236e2d5dfe7e1123b7512",
+            "batch_id": "replay-batch-sha256-783f8e92c90848782abf2b7e83423143e0e9d968a7754cf6261ff4a3d4bdc0c0",
+            "capability_identity_digest": null,
+            "category": "verification_gate",
+            "code": "score_improvement_inconclusive",
+            "contract_identity_digest": null,
+            "distinct_source_count": 0,
+            "emission_id": "replay-emission-sha256-1bb618675f0f31d9b29da0206b228d8082fca83a05ab8062c5f74d9de2a16819",
+            "occurrence_count": 1,
+            "occurrence_ids": [
+              "replay-event-32e1a1eb931b43f3b439fdfcd6751423"
+            ],
+            "owner": "candidate",
+            "repairable": true,
+            "requirement_identity_digest": null,
+            "schema_version": "aworld.self_evolve.replay_failure_aggregate.v2",
+            "scope": "candidate",
+            "semantic_key": "replay-failure-0775ecd396579b8fef8bf23a0da9481706fa5820dadf76cc6a03641e86a4d97e",
+            "source_candidate_ids": [],
+            "source_identity_digests": [],
+            "source_kinds": [
+              "native"
+            ],
+            "source_run_ids": [],
+            "source_task_ids": [],
+            "stage": "evaluation"
+          },
+          "failure_owner": "candidate",
+          "failure_scope": "candidate",
+          "minimum_delta": 0.0,
+          "noninferiority_margin": 1.745,
+          "paired_delta_standard_error": 2.3208323132580313,
+          "paired_delta_std": 8.039598964821037,
+          "paired_sample_count": 12,
+          "repairable": true,
+          "tiebreak_eligible": false,
+          "tiebreak_ineligible_reason": "point_estimate_below_minimum_delta",
+          "uncertainty_model": "paired_standard_error"
+        },
+        "gate_name": "score_improvement",
+        "passed": false,
+        "reason": "score improvement is inconclusive under paired judge variance"
+      },
+      "cost_latency_gate": {
+        "details": {
+          "comparability": {
+            "baseline_effective_case_count": 4.0,
+            "baseline_plan_fingerprint": "sha256:ad3684f93bcaa687db8b8994e237a494c5e8ae3b44b3b7fab0be9e1c48102a5c",
+            "candidate_effective_case_count": 4.0,
+            "candidate_plan_fingerprint": "sha256:ad3684f93bcaa687db8b8994e237a494c5e8ae3b44b3b7fab0be9e1c48102a5c",
+            "comparable": true,
+            "reasons": []
+          },
+          "cost_metric": "replay_total_tokens",
+          "cost_regression_ratio": -0.11784133504899375,
+          "latency_metric": "replay_latency_ms",
+          "latency_regression_ratio": -0.03447986979953681,
+          "normalization": "per_effective_case_when_available",
+          "resource_evidence_required": true
+        },
+        "gate_name": "cost_latency_regression",
+        "passed": true,
+        "reason": "cost and latency regressions are within policy"
+      },
+      "evidence_gates": [
+        {
+          "details": {
+            "baseline_evidence_repair_constraints": [],
+            "dataset_split": "validation",
+            "evidence_block_count": 1,
+            "evidence_bundle_entry_count": 0,
+            "evidence_bundle_valid": true,
+            "evidence_compacted": true,
+            "evidence_compacted_regressed": false,
+            "evidence_comparison_mode": "baseline_relative",
+            "evidence_constraint_count": 0,
+            "evidence_constraint_regressions": [],
+            "evidence_incomplete": false,
+            "evidence_incomplete_regressed": false,
+            "evidence_manifest_entry_count": 0,
+            "evidence_manifest_invalid_entry_count": 0,
+            "evidence_repair_constraints": [],
+            "evidence_strategy_passed": false,
+            "failure_class": "candidate",
+            "failure_owner": "candidate",
+            "failure_scope": "candidate",
+            "failure_source": "native",
+            "has_evidence": true,
+            "repairable": true,
+            "resolved_evidence_constraints": []
+          },
+          "gate_name": "evidence_quality",
+          "passed": true,
+          "reason": "evaluation evidence is present and not compacted"
+        },
+        {
+          "details": {
+            "baseline_evidence_repair_constraints": [],
+            "causal_failure_events": [
+              {
+                "affected_case_identity_digests": [],
+                "affected_case_ids": [],
+                "affected_member_count": 0,
+                "aggregate_digest": "replay-aggregate-sha256-8ae90b302956ff17d4e0eb434ca60718d300a450809c09ab2ec460673e67a3d1",
+                "batch_id": "replay-batch-sha256-e046cdb03b75e73a7d3e9cd1678731b8f1cbe0f4c72dd38c7fe372323f366590",
+                "capability_identity_digest": null,
+                "category": "verification_gate",
+                "code": "evidence_quality",
+                "contract_identity_digest": null,
+                "distinct_source_count": 0,
+                "emission_id": "replay-emission-sha256-261093457ea08a7412cc258886802f54401f3909e9507a966adc1c72852a75ab",
+                "occurrence_count": 1,
+                "occurrence_ids": [
+                  "replay-event-c64c93e430ac4f3594a0cc31e8c2ce73"
+                ],
+                "owner": "candidate",
+                "repairable": true,
+                "requirement_identity_digest": null,
+                "schema_version": "aworld.self_evolve.replay_failure_aggregate.v2",
+                "scope": "candidate",
+                "semantic_key": "replay-failure-7443cf3903159e1e71ca48d8246b71ac6aa455c382de4b08418f301802803d68",
+                "source_candidate_ids": [],
+                "source_identity_digests": [],
+                "source_kinds": [
+                  "native"
+                ],
+                "source_run_ids": [],
+                "source_task_ids": [],
+                "stage": "evaluation"
+              }
+            ],
+            "dataset_split": "held_out",
+            "evidence_block_count": 1,
+            "evidence_bundle_entry_count": 0,
+            "evidence_bundle_valid": true,
+            "evidence_compacted": true,
+            "evidence_compacted_regressed": false,
+            "evidence_comparison_mode": "baseline_relative",
+            "evidence_constraint_count": 1,
+            "evidence_constraint_regressions": [
+              {
+                "baseline_occurrence_count": 0,
+                "candidate_occurrence_count": 1,
+                "constraint_identity_digest": "97fcbcd867ffe7ca5da7c292703aaea41c5d830c0dfff51f27c327e1f6e71a2c",
+                "failure_mode": "support_incomplete",
+                "occurrence_count": 1,
+                "occurrence_delta": 1,
+                "owner": "candidate",
+                "required_action": "support_or_omit",
+                "schema_version": "aworld.self_evolve.evidence_repair_constraint.v1",
+                "source_layer": "candidate_output",
+                "subject_kind": "general_claim"
+              }
+            ],
+            "evidence_incomplete": true,
+            "evidence_incomplete_regressed": true,
+            "evidence_manifest_entry_count": 0,
+            "evidence_manifest_invalid_entry_count": 0,
+            "evidence_repair_constraints": [
+              {
+                "constraint_identity_digest": "97fcbcd867ffe7ca5da7c292703aaea41c5d830c0dfff51f27c327e1f6e71a2c",
+                "failure_mode": "support_incomplete",
+                "occurrence_count": 1,
+                "owner": "candidate",
+                "required_action": "support_or_omit",
+                "schema_version": "aworld.self_evolve.evidence_repair_constraint.v1",
+                "source_layer": "candidate_output",
+                "subject_kind": "general_claim"
+              }
+            ],
+            "evidence_strategy_passed": false,
+            "failure_class": "candidate",
+            "failure_event": {
+              "affected_case_identity_digests": [],
+              "affected_case_ids": [],
+              "affected_member_count": 0,
+              "aggregate_digest": "replay-aggregate-sha256-8ae90b302956ff17d4e0eb434ca60718d300a450809c09ab2ec460673e67a3d1",
+              "batch_id": "replay-batch-sha256-e046cdb03b75e73a7d3e9cd1678731b8f1cbe0f4c72dd38c7fe372323f366590",
+              "capability_identity_digest": null,
+              "category": "verification_gate",
+              "code": "evidence_quality",
+              "contract_identity_digest": null,
+              "distinct_source_count": 0,
+              "emission_id": "replay-emission-sha256-261093457ea08a7412cc258886802f54401f3909e9507a966adc1c72852a75ab",
+              "occurrence_count": 1,
+              "occurrence_ids": [
+                "replay-event-c64c93e430ac4f3594a0cc31e8c2ce73"
+              ],
+              "owner": "candidate",
+              "repairable": true,
+              "requirement_identity_digest": null,
+              "schema_version": "aworld.self_evolve.replay_failure_aggregate.v2",
+              "scope": "candidate",
+              "semantic_key": "replay-failure-7443cf3903159e1e71ca48d8246b71ac6aa455c382de4b08418f301802803d68",
+              "source_candidate_ids": [],
+              "source_identity_digests": [],
+              "source_kinds": [
+                "native"
+              ],
+              "source_run_ids": [],
+              "source_task_ids": [],
+              "stage": "evaluation"
+            },
+            "failure_owner": "candidate",
+            "failure_scope": "candidate",
+            "failure_source": "native",
+            "has_evidence": true,
+            "repairable": true,
+            "resolved_evidence_constraints": []
+          },
+          "gate_name": "evidence_quality",
+          "passed": false,
+          "reason": "candidate evidence quality regressed relative to baseline"
+        }
+      ],
+      "replay_confidence": {
+        "candidate_executed_count": 11,
+        "candidate_successful_repetition_count": 11,
+        "member_count": 11
+      },
+      "failed_gates": [
+        "score_improvement",
+        "evidence_quality"
+      ]
+    },
+    {
+      "version": "v18",
+      "cycle": "003",
+      "candidate_id": "llm-mutator-3f7f80a2edba",
+      "parents": [
+        "llm-mutator-7abd195e713f"
+      ],
+      "source_report": "/Users/wuman/Documents/workspace/aworld/.aworld/self_evolve/campaign-f731a97f9fbde74e0968-cycle-003/report.json",
+      "source_sha256": "f3c75600582cc496c736509877e6e61d017bab57aba26f967e5feceb66e13acd",
+      "baseline_score": 87.30833333333334,
+      "candidate_score": 88.01666666666667,
+      "score_gate": {
+        "details": {
+          "baseline": 87.30833333333334,
+          "candidate": 88.01666666666667,
+          "code": "score_improvement_paired_noninferior",
+          "comparability": {
+            "baseline_effective_case_count": 4.0,
+            "baseline_plan_fingerprint": "sha256:e05b5714f86c167105a5fa2703f54c22beaa7322498c098a4a4892dee3eb7919",
+            "candidate_effective_case_count": 4.0,
+            "candidate_plan_fingerprint": "sha256:e05b5714f86c167105a5fa2703f54c22beaa7322498c098a4a4892dee3eb7919",
+            "comparable": true,
+            "reasons": []
+          },
+          "confidence_z": 1.96,
+          "decision": "accepted",
+          "delta": 0.7083333333,
+          "delta_confidence_lower_bound": -1.6671006000735034,
+          "delta_confidence_upper_bound": 3.083767266740171,
+          "initial_baseline_execution_id": "sha256:e55abafe64a34a09fdfa4572aa2a4a30327138925df12a3a2ee4ef9676bc1288",
+          "initial_candidate_execution_id": "sha256:121988e227a94b4e96e72e454274d38d110575c33bae14732a1086cae0e86605",
+          "initial_decision": {
+            "baseline": 88.48333333333333,
+            "candidate": 88.7,
+            "code": "score_improvement_inconclusive",
+            "comparability": {
+              "baseline_effective_case_count": 4.0,
+              "baseline_plan_fingerprint": "sha256:e05b5714f86c167105a5fa2703f54c22beaa7322498c098a4a4892dee3eb7919",
+              "candidate_effective_case_count": 4.0,
+              "candidate_plan_fingerprint": "sha256:e05b5714f86c167105a5fa2703f54c22beaa7322498c098a4a4892dee3eb7919",
+              "comparable": true,
+              "reasons": []
+            },
+            "confidence_z": 1.96,
+            "decision": "inconclusive",
+            "delta": 0.2166666667,
+            "delta_confidence_lower_bound": -3.517310133940796,
+            "delta_confidence_upper_bound": 3.9506434672741304,
+            "failure_class": "framework",
+            "failure_owner": "framework",
+            "failure_scope": "shared_run",
+            "minimum_delta": 0.0,
+            "noninferiority_margin": 1.774,
+            "paired_delta_standard_error": 1.905090204391563,
+            "paired_delta_std": 6.599426054015928,
+            "paired_sample_count": 12,
+            "repairable": false,
+            "tiebreak_eligible": true,
+            "tiebreak_ineligible_reason": null,
+            "uncertainty_model": "paired_standard_error"
+          },
+          "minimum_delta": 0.0,
+          "noninferiority_margin": 1.7603333333333333,
+          "paired_delta_standard_error": 1.2119560884728762,
+          "paired_delta_std": 5.937348014835863,
+          "paired_sample_count": 24,
+          "tiebreak_round": 1,
+          "uncertainty_model": "paired_standard_error"
+        },
+        "gate_name": "score_improvement",
+        "passed": true,
+        "reason": "positive paired score delta clears the practical noninferiority bound"
+      },
+      "cost_latency_gate": {
+        "details": {
+          "baseline_effective_case_count": null,
+          "baseline_normalized_value": 132746.73217818385,
+          "candidate_effective_case_count": null,
+          "candidate_normalized_value": 225117.99647709067,
+          "causal_failure_events": [
+            {
+              "affected_case_identity_digests": [],
+              "affected_case_ids": [],
+              "affected_member_count": 0,
+              "aggregate_digest": "replay-aggregate-sha256-e49ace2af632e17c94daa66becb44ec1b029d1bf39614a205ea1332a896971a6",
+              "batch_id": "replay-batch-sha256-a048342470918954ded33d91604e56f368af0dab5f3adf85ac1fe39168831cb9",
+              "capability_identity_digest": null,
+              "category": "verification_gate",
+              "code": "latency_regression_exceeds_policy",
+              "contract_identity_digest": null,
+              "distinct_source_count": 0,
+              "emission_id": "replay-emission-sha256-1a6affa8abcc91f293d3a46ff68e29107d90583af7795664e4b795a21befc39c",
+              "occurrence_count": 1,
+              "occurrence_ids": [
+                "replay-event-1934bad09a764971a184bf3525569c07"
+              ],
+              "owner": "candidate",
+              "repairable": true,
+              "requirement_identity_digest": null,
+              "schema_version": "aworld.self_evolve.replay_failure_aggregate.v2",
+              "scope": "candidate",
+              "semantic_key": "replay-failure-4251a9edaee3bfd1fc732f29fdd73b02ec484088a86fdfbfa6359d9cc7286330",
+              "source_candidate_ids": [],
+              "source_identity_digests": [],
+              "source_kinds": [
+                "native"
+              ],
+              "source_run_ids": [],
+              "source_task_ids": [],
+              "stage": "evaluation"
+            }
+          ],
+          "code": "latency_regression_exceeds_policy",
+          "failure_class": "candidate",
+          "failure_event": {
+            "affected_case_identity_digests": [],
+            "affected_case_ids": [],
+            "affected_member_count": 0,
+            "aggregate_digest": "replay-aggregate-sha256-e49ace2af632e17c94daa66becb44ec1b029d1bf39614a205ea1332a896971a6",
+            "batch_id": "replay-batch-sha256-a048342470918954ded33d91604e56f368af0dab5f3adf85ac1fe39168831cb9",
+            "capability_identity_digest": null,
+            "category": "verification_gate",
+            "code": "latency_regression_exceeds_policy",
+            "contract_identity_digest": null,
+            "distinct_source_count": 0,
+            "emission_id": "replay-emission-sha256-1a6affa8abcc91f293d3a46ff68e29107d90583af7795664e4b795a21befc39c",
+            "occurrence_count": 1,
+            "occurrence_ids": [
+              "replay-event-1934bad09a764971a184bf3525569c07"
+            ],
+            "owner": "candidate",
+            "repairable": true,
+            "requirement_identity_digest": null,
+            "schema_version": "aworld.self_evolve.replay_failure_aggregate.v2",
+            "scope": "candidate",
+            "semantic_key": "replay-failure-4251a9edaee3bfd1fc732f29fdd73b02ec484088a86fdfbfa6359d9cc7286330",
+            "source_candidate_ids": [],
+            "source_identity_digests": [],
+            "source_kinds": [
+              "native"
+            ],
+            "source_run_ids": [],
+            "source_task_ids": [],
+            "stage": "evaluation"
+          },
+          "failure_owner": "candidate",
+          "failure_scope": "candidate",
+          "latency_metric": "replay_latency_ms",
+          "latency_regression_ratio": 0.6958458621408345,
+          "normalization": "per_effective_case_when_available",
+          "repairable": true
+        },
+        "gate_name": "cost_latency_regression",
+        "passed": false,
+        "reason": "latency regression exceeds policy"
+      },
+      "evidence_gates": [
+        {
+          "details": {
+            "baseline_evidence_repair_constraints": [
+              {
+                "constraint_identity_digest": "97fcbcd867ffe7ca5da7c292703aaea41c5d830c0dfff51f27c327e1f6e71a2c",
+                "failure_mode": "support_incomplete",
+                "occurrence_count": 1,
+                "owner": "candidate",
+                "required_action": "support_or_omit",
+                "schema_version": "aworld.self_evolve.evidence_repair_constraint.v1",
+                "source_layer": "candidate_output",
+                "subject_kind": "general_claim"
+              }
+            ],
+            "dataset_split": "validation",
+            "evidence_block_count": 1,
+            "evidence_bundle_entry_count": 0,
+            "evidence_bundle_valid": true,
+            "evidence_compacted": true,
+            "evidence_compacted_regressed": false,
+            "evidence_comparison_mode": "baseline_relative",
+            "evidence_constraint_count": 0,
+            "evidence_constraint_regressions": [],
+            "evidence_incomplete": false,
+            "evidence_incomplete_regressed": false,
+            "evidence_manifest_entry_count": 0,
+            "evidence_manifest_invalid_entry_count": 0,
+            "evidence_repair_constraints": [],
+            "evidence_strategy_passed": false,
+            "failure_class": "candidate",
+            "failure_owner": "candidate",
+            "failure_scope": "candidate",
+            "failure_source": "native",
+            "has_evidence": true,
+            "repairable": true,
+            "resolved_evidence_constraints": [
+              {
+                "baseline_occurrence_count": 1,
+                "candidate_occurrence_count": 0,
+                "constraint_identity_digest": "97fcbcd867ffe7ca5da7c292703aaea41c5d830c0dfff51f27c327e1f6e71a2c",
+                "failure_mode": "support_incomplete",
+                "occurrence_count": 1,
+                "occurrence_delta": -1,
+                "owner": "candidate",
+                "required_action": "support_or_omit",
+                "schema_version": "aworld.self_evolve.evidence_repair_constraint.v1",
+                "source_layer": "candidate_output",
+                "subject_kind": "general_claim"
+              }
+            ]
+          },
+          "gate_name": "evidence_quality",
+          "passed": true,
+          "reason": "evaluation evidence is present and not compacted"
+        },
+        {
+          "details": {
+            "baseline_evidence_repair_constraints": [
+              {
+                "constraint_identity_digest": "97fcbcd867ffe7ca5da7c292703aaea41c5d830c0dfff51f27c327e1f6e71a2c",
+                "failure_mode": "support_incomplete",
+                "occurrence_count": 1,
+                "owner": "candidate",
+                "required_action": "support_or_omit",
+                "schema_version": "aworld.self_evolve.evidence_repair_constraint.v1",
+                "source_layer": "candidate_output",
+                "subject_kind": "general_claim"
+              }
+            ],
+            "dataset_split": "held_out",
+            "evidence_block_count": 2,
+            "evidence_bundle_entry_count": 0,
+            "evidence_bundle_valid": true,
+            "evidence_compacted": true,
+            "evidence_compacted_regressed": false,
+            "evidence_comparison_mode": "baseline_relative",
+            "evidence_constraint_count": 1,
+            "evidence_constraint_regressions": [],
+            "evidence_incomplete": true,
+            "evidence_incomplete_regressed": false,
+            "evidence_manifest_entry_count": 0,
+            "evidence_manifest_invalid_entry_count": 0,
+            "evidence_repair_constraints": [
+              {
+                "constraint_identity_digest": "97fcbcd867ffe7ca5da7c292703aaea41c5d830c0dfff51f27c327e1f6e71a2c",
+                "failure_mode": "support_incomplete",
+                "occurrence_count": 1,
+                "owner": "candidate",
+                "required_action": "support_or_omit",
+                "schema_version": "aworld.self_evolve.evidence_repair_constraint.v1",
+                "source_layer": "candidate_output",
+                "subject_kind": "general_claim"
+              }
+            ],
+            "evidence_strategy_passed": false,
+            "failure_class": "candidate",
+            "failure_owner": "candidate",
+            "failure_scope": "candidate",
+            "failure_source": "native",
+            "has_evidence": true,
+            "repairable": true,
+            "resolved_evidence_constraints": []
+          },
+          "gate_name": "evidence_quality",
+          "passed": true,
+          "reason": "evaluation evidence is present and not compacted"
+        }
+      ],
+      "replay_confidence": {
+        "candidate_executed_count": 11,
+        "candidate_successful_repetition_count": 11,
+        "member_count": 11
+      },
+      "failed_gates": [
+        "cost_latency_regression"
+      ]
+    },
+    {
+      "version": "v18",
+      "cycle": "005",
+      "candidate_id": "llm-mutator-bfdf538f4287",
+      "parents": [
+        "llm-mutator-7abd195e713f"
+      ],
+      "source_report": "/Users/wuman/Documents/workspace/aworld/.aworld/self_evolve/campaign-f731a97f9fbde74e0968-cycle-005/report.json",
+      "source_sha256": "14a585aa8ccab5fca4a8a51ef88ebd532db4552787d1b2ab1f0f04237477cf9a",
+      "baseline_score": 86.5,
+      "candidate_score": 85.775,
+      "score_gate": {
+        "details": {
+          "baseline": 86.5,
+          "candidate": 85.775,
+          "causal_failure_events": [
+            {
+              "affected_case_identity_digests": [],
+              "affected_case_ids": [],
+              "affected_member_count": 0,
+              "aggregate_digest": "replay-aggregate-sha256-ec6411f5793179a1b1ca703df6d0a965d1c1e8ca637ce9a86440c24f28b26f3b",
+              "batch_id": "replay-batch-sha256-acdd6ce757a6b5400195697b55b6196048017f15deaeb45d0ca96c0d7e35eba9",
+              "capability_identity_digest": null,
+              "category": "verification_gate",
+              "code": "score_improvement_inconclusive",
+              "contract_identity_digest": null,
+              "distinct_source_count": 0,
+              "emission_id": "replay-emission-sha256-5cbd442d194f0f3226320bca3cdd739fd131698d5630d826a7610951b9376a03",
+              "occurrence_count": 1,
+              "occurrence_ids": [
+                "replay-event-48a1017277cc4d5f9470d6b1ff70a531"
+              ],
+              "owner": "candidate",
+              "repairable": true,
+              "requirement_identity_digest": null,
+              "schema_version": "aworld.self_evolve.replay_failure_aggregate.v2",
+              "scope": "candidate",
+              "semantic_key": "replay-failure-0775ecd396579b8fef8bf23a0da9481706fa5820dadf76cc6a03641e86a4d97e",
+              "source_candidate_ids": [],
+              "source_identity_digests": [],
+              "source_kinds": [
+                "native"
+              ],
+              "source_run_ids": [],
+              "source_task_ids": [],
+              "stage": "evaluation"
+            }
+          ],
+          "code": "score_improvement_inconclusive",
+          "comparability": {
+            "baseline_effective_case_count": 4.0,
+            "baseline_plan_fingerprint": "sha256:de134aa778d445dc91cbe14f53ddf76d9ce4d3f6a9dbf073801b8a30e2d98077",
+            "candidate_effective_case_count": 4.0,
+            "candidate_plan_fingerprint": "sha256:de134aa778d445dc91cbe14f53ddf76d9ce4d3f6a9dbf073801b8a30e2d98077",
+            "comparable": true,
+            "reasons": []
+          },
+          "confidence_z": 1.96,
+          "decision": "inconclusive",
+          "delta": -0.725,
+          "delta_confidence_lower_bound": -4.797061979896171,
+          "delta_confidence_upper_bound": 3.347061979896175,
+          "failure_class": "candidate",
+          "failure_event": {
+            "affected_case_identity_digests": [],
+            "affected_case_ids": [],
+            "affected_member_count": 0,
+            "aggregate_digest": "replay-aggregate-sha256-ec6411f5793179a1b1ca703df6d0a965d1c1e8ca637ce9a86440c24f28b26f3b",
+            "batch_id": "replay-batch-sha256-acdd6ce757a6b5400195697b55b6196048017f15deaeb45d0ca96c0d7e35eba9",
+            "capability_identity_digest": null,
+            "category": "verification_gate",
+            "code": "score_improvement_inconclusive",
+            "contract_identity_digest": null,
+            "distinct_source_count": 0,
+            "emission_id": "replay-emission-sha256-5cbd442d194f0f3226320bca3cdd739fd131698d5630d826a7610951b9376a03",
+            "occurrence_count": 1,
+            "occurrence_ids": [
+              "replay-event-48a1017277cc4d5f9470d6b1ff70a531"
+            ],
+            "owner": "candidate",
+            "repairable": true,
+            "requirement_identity_digest": null,
+            "schema_version": "aworld.self_evolve.replay_failure_aggregate.v2",
+            "scope": "candidate",
+            "semantic_key": "replay-failure-0775ecd396579b8fef8bf23a0da9481706fa5820dadf76cc6a03641e86a4d97e",
+            "source_candidate_ids": [],
+            "source_identity_digests": [],
+            "source_kinds": [
+              "native"
+            ],
+            "source_run_ids": [],
+            "source_task_ids": [],
+            "stage": "evaluation"
+          },
+          "failure_owner": "candidate",
+          "failure_scope": "candidate",
+          "initial_baseline_execution_id": "sha256:f617dfcedc81ce816fb8ed814e18e3f06d2132d863ae0a851f19842904caf216",
+          "initial_candidate_execution_id": "sha256:603b53240c76b82d8d0f195f88c5581daac428e96792f9e3dfd7bcd1109d91a0",
+          "initial_decision": {
+            "baseline": 85.76666666666667,
+            "candidate": 86.35000000000001,
+            "code": "score_improvement_inconclusive",
+            "comparability": {
+              "baseline_effective_case_count": 4.0,
+              "baseline_plan_fingerprint": "sha256:de134aa778d445dc91cbe14f53ddf76d9ce4d3f6a9dbf073801b8a30e2d98077",
+              "candidate_effective_case_count": 4.0,
+              "candidate_plan_fingerprint": "sha256:de134aa778d445dc91cbe14f53ddf76d9ce4d3f6a9dbf073801b8a30e2d98077",
+              "comparable": true,
+              "reasons": []
+            },
+            "confidence_z": 1.96,
+            "decision": "inconclusive",
+            "delta": 0.5833333333,
+            "delta_confidence_lower_bound": -6.192138826590206,
+            "delta_confidence_upper_bound": 7.358805493256879,
+            "failure_class": "framework",
+            "failure_owner": "framework",
+            "failure_scope": "shared_run",
+            "minimum_delta": 0.0,
+            "noninferiority_margin": 1.7270000000000003,
+            "paired_delta_standard_error": 3.4568735509813995,
+            "paired_delta_std": 11.97496125128165,
+            "paired_sample_count": 12,
+            "repairable": false,
+            "tiebreak_eligible": true,
+            "tiebreak_ineligible_reason": null,
+            "uncertainty_model": "paired_standard_error"
+          },
+          "minimum_delta": 0.0,
+          "noninferiority_margin": 1.73,
+          "paired_delta_standard_error": 2.07758264280417,
+          "paired_delta_std": 10.178034746666363,
+          "paired_sample_count": 24,
+          "repairable": true,
+          "tiebreak_eligible": false,
+          "tiebreak_ineligible_reason": "point_estimate_below_minimum_delta",
+          "tiebreak_round": 1,
+          "uncertainty_model": "paired_standard_error"
+        },
+        "gate_name": "score_improvement",
+        "passed": false,
+        "reason": "score improvement is inconclusive under paired judge variance"
+      },
+      "cost_latency_gate": {
+        "details": {
+          "comparability": {
+            "baseline_effective_case_count": 4.0,
+            "baseline_plan_fingerprint": "sha256:de134aa778d445dc91cbe14f53ddf76d9ce4d3f6a9dbf073801b8a30e2d98077",
+            "candidate_effective_case_count": 4.0,
+            "candidate_plan_fingerprint": "sha256:de134aa778d445dc91cbe14f53ddf76d9ce4d3f6a9dbf073801b8a30e2d98077",
+            "comparable": true,
+            "reasons": []
+          },
+          "cost_metric": null,
+          "cost_regression_ratio": null,
+          "latency_metric": "replay_latency_ms",
+          "latency_regression_ratio": 0.3801165520580042,
+          "normalization": "per_effective_case_when_available",
+          "resource_evidence_required": true
+        },
+        "gate_name": "cost_latency_regression",
+        "passed": true,
+        "reason": "cost and latency regressions are within policy"
+      },
+      "evidence_gates": [
+        {
+          "details": {
+            "baseline_evidence_repair_constraints": [],
+            "causal_failure_events": [
+              {
+                "affected_case_identity_digests": [],
+                "affected_case_ids": [],
+                "affected_member_count": 0,
+                "aggregate_digest": "replay-aggregate-sha256-602fb0c5d443999e1b7d635da669ade528183c592231762c37d1b8703a8d5323",
+                "batch_id": "replay-batch-sha256-c8a15b8c7b22cf4ded1d11f02aa092d908a4121bc5881bfa84ff67acc87c74e5",
+                "capability_identity_digest": null,
+                "category": "verification_gate",
+                "code": "evidence_quality",
+                "contract_identity_digest": null,
+                "distinct_source_count": 0,
+                "emission_id": "replay-emission-sha256-4b96d75c7f37a1189b0a4ebd40e9c28dc43097f377174dfd5e6c76f2c9a0a9e4",
+                "occurrence_count": 1,
+                "occurrence_ids": [
+                  "replay-event-4384d0cf35d942139e54c2f153d5200a"
+                ],
+                "owner": "candidate",
+                "repairable": true,
+                "requirement_identity_digest": null,
+                "schema_version": "aworld.self_evolve.replay_failure_aggregate.v2",
+                "scope": "candidate",
+                "semantic_key": "replay-failure-7443cf3903159e1e71ca48d8246b71ac6aa455c382de4b08418f301802803d68",
+                "source_candidate_ids": [],
+                "source_identity_digests": [],
+                "source_kinds": [
+                  "native"
+                ],
+                "source_run_ids": [],
+                "source_task_ids": [],
+                "stage": "evaluation"
+              }
+            ],
+            "dataset_split": "validation",
+            "evidence_block_count": 1,
+            "evidence_bundle_entry_count": 0,
+            "evidence_bundle_valid": true,
+            "evidence_compacted": true,
+            "evidence_compacted_regressed": false,
+            "evidence_comparison_mode": "baseline_relative",
+            "evidence_constraint_count": 1,
+            "evidence_constraint_regressions": [
+              {
+                "baseline_occurrence_count": 0,
+                "candidate_occurrence_count": 1,
+                "constraint_identity_digest": "97fcbcd867ffe7ca5da7c292703aaea41c5d830c0dfff51f27c327e1f6e71a2c",
+                "failure_mode": "support_incomplete",
+                "occurrence_count": 1,
+                "occurrence_delta": 1,
+                "owner": "candidate",
+                "required_action": "support_or_omit",
+                "schema_version": "aworld.self_evolve.evidence_repair_constraint.v1",
+                "source_layer": "candidate_output",
+                "subject_kind": "general_claim"
+              }
+            ],
+            "evidence_incomplete": true,
+            "evidence_incomplete_regressed": true,
+            "evidence_manifest_entry_count": 0,
+            "evidence_manifest_invalid_entry_count": 0,
+            "evidence_repair_constraints": [
+              {
+                "constraint_identity_digest": "97fcbcd867ffe7ca5da7c292703aaea41c5d830c0dfff51f27c327e1f6e71a2c",
+                "failure_mode": "support_incomplete",
+                "occurrence_count": 1,
+                "owner": "candidate",
+                "required_action": "support_or_omit",
+                "schema_version": "aworld.self_evolve.evidence_repair_constraint.v1",
+                "source_layer": "candidate_output",
+                "subject_kind": "general_claim"
+              }
+            ],
+            "evidence_strategy_passed": false,
+            "failure_class": "candidate",
+            "failure_event": {
+              "affected_case_identity_digests": [],
+              "affected_case_ids": [],
+              "affected_member_count": 0,
+              "aggregate_digest": "replay-aggregate-sha256-602fb0c5d443999e1b7d635da669ade528183c592231762c37d1b8703a8d5323",
+              "batch_id": "replay-batch-sha256-c8a15b8c7b22cf4ded1d11f02aa092d908a4121bc5881bfa84ff67acc87c74e5",
+              "capability_identity_digest": null,
+              "category": "verification_gate",
+              "code": "evidence_quality",
+              "contract_identity_digest": null,
+              "distinct_source_count": 0,
+              "emission_id": "replay-emission-sha256-4b96d75c7f37a1189b0a4ebd40e9c28dc43097f377174dfd5e6c76f2c9a0a9e4",
+              "occurrence_count": 1,
+              "occurrence_ids": [
+                "replay-event-4384d0cf35d942139e54c2f153d5200a"
+              ],
+              "owner": "candidate",
+              "repairable": true,
+              "requirement_identity_digest": null,
+              "schema_version": "aworld.self_evolve.replay_failure_aggregate.v2",
+              "scope": "candidate",
+              "semantic_key": "replay-failure-7443cf3903159e1e71ca48d8246b71ac6aa455c382de4b08418f301802803d68",
+              "source_candidate_ids": [],
+              "source_identity_digests": [],
+              "source_kinds": [
+                "native"
+              ],
+              "source_run_ids": [],
+              "source_task_ids": [],
+              "stage": "evaluation"
+            },
+            "failure_owner": "candidate",
+            "failure_scope": "candidate",
+            "failure_source": "native",
+            "has_evidence": true,
+            "repairable": true,
+            "resolved_evidence_constraints": []
+          },
+          "gate_name": "evidence_quality",
+          "passed": false,
+          "reason": "candidate evidence quality regressed relative to baseline"
+        },
+        {
+          "details": {
+            "baseline_evidence_repair_constraints": [
+              {
+                "constraint_identity_digest": "97fcbcd867ffe7ca5da7c292703aaea41c5d830c0dfff51f27c327e1f6e71a2c",
+                "failure_mode": "support_incomplete",
+                "occurrence_count": 1,
+                "owner": "candidate",
+                "required_action": "support_or_omit",
+                "schema_version": "aworld.self_evolve.evidence_repair_constraint.v1",
+                "source_layer": "candidate_output",
+                "subject_kind": "general_claim"
+              }
+            ],
+            "dataset_split": "held_out",
+            "evidence_block_count": 1,
+            "evidence_bundle_entry_count": 0,
+            "evidence_bundle_valid": true,
+            "evidence_compacted": true,
+            "evidence_compacted_regressed": false,
+            "evidence_comparison_mode": "baseline_relative",
+            "evidence_constraint_count": 1,
+            "evidence_constraint_regressions": [],
+            "evidence_incomplete": true,
+            "evidence_incomplete_regressed": false,
+            "evidence_manifest_entry_count": 0,
+            "evidence_manifest_invalid_entry_count": 0,
+            "evidence_repair_constraints": [
+              {
+                "constraint_identity_digest": "97fcbcd867ffe7ca5da7c292703aaea41c5d830c0dfff51f27c327e1f6e71a2c",
+                "failure_mode": "support_incomplete",
+                "occurrence_count": 1,
+                "owner": "candidate",
+                "required_action": "support_or_omit",
+                "schema_version": "aworld.self_evolve.evidence_repair_constraint.v1",
+                "source_layer": "candidate_output",
+                "subject_kind": "general_claim"
+              }
+            ],
+            "evidence_strategy_passed": false,
+            "failure_class": "candidate",
+            "failure_owner": "candidate",
+            "failure_scope": "candidate",
+            "failure_source": "native",
+            "has_evidence": true,
+            "repairable": true,
+            "resolved_evidence_constraints": []
+          },
+          "gate_name": "evidence_quality",
+          "passed": true,
+          "reason": "evaluation evidence is present and not compacted"
+        }
+      ],
+      "replay_confidence": {
+        "candidate_executed_count": 11,
+        "candidate_successful_repetition_count": 11,
+        "member_count": 11
+      },
+      "failed_gates": [
+        "score_improvement",
+        "evidence_quality"
+      ]
+    },
+    {
+      "version": "v18",
+      "cycle": "006",
+      "candidate_id": "llm-mutator-134be633b70a",
+      "parents": [
+        "llm-mutator-7abd195e713f"
+      ],
+      "source_report": "/Users/wuman/Documents/workspace/aworld/.aworld/self_evolve/campaign-f731a97f9fbde74e0968-cycle-006/report.json",
+      "source_sha256": "4a8876a78ee4ef4fe5dbbc1874644e845ae3d5f06d39ca4931ecc686a382767d",
+      "baseline_score": 90.5,
+      "candidate_score": 89.05,
+      "score_gate": {
+        "details": {
+          "baseline": 90.5,
+          "candidate": 89.05,
+          "causal_failure_events": [
+            {
+              "affected_case_identity_digests": [],
+              "affected_case_ids": [],
+              "affected_member_count": 0,
+              "aggregate_digest": "replay-aggregate-sha256-2f89cb6d9b50caf2167307a1ffa8537d0158a5804220c746ecfc168f5266a725",
+              "batch_id": "replay-batch-sha256-66447faa84df6add1819ecc4ab655c2d38ed10c1d3f464a8783abc0dfc677e9b",
+              "capability_identity_digest": null,
+              "category": "verification_gate",
+              "code": "score_improvement_inconclusive",
+              "contract_identity_digest": null,
+              "distinct_source_count": 0,
+              "emission_id": "replay-emission-sha256-162c446ed9d0c46fa423b18baedf9a8b03fa9b8928e99ed64467b0a8a5545ebc",
+              "occurrence_count": 1,
+              "occurrence_ids": [
+                "replay-event-1d0a0c2463fc4e40a862b9f229e99d00"
+              ],
+              "owner": "candidate",
+              "repairable": true,
+              "requirement_identity_digest": null,
+              "schema_version": "aworld.self_evolve.replay_failure_aggregate.v2",
+              "scope": "candidate",
+              "semantic_key": "replay-failure-0775ecd396579b8fef8bf23a0da9481706fa5820dadf76cc6a03641e86a4d97e",
+              "source_candidate_ids": [],
+              "source_identity_digests": [],
+              "source_kinds": [
+                "native"
+              ],
+              "source_run_ids": [],
+              "source_task_ids": [],
+              "stage": "evaluation"
+            }
+          ],
+          "code": "score_improvement_inconclusive",
+          "comparability": {
+            "baseline_effective_case_count": 4.0,
+            "baseline_plan_fingerprint": "sha256:bc2c1ad671aa2a6a55fd0ab5a9515afbb7cf8a5000f691cf56f7716b6c123cf8",
+            "candidate_effective_case_count": 4.0,
+            "candidate_plan_fingerprint": "sha256:bc2c1ad671aa2a6a55fd0ab5a9515afbb7cf8a5000f691cf56f7716b6c123cf8",
+            "comparable": true,
+            "reasons": []
+          },
+          "confidence_z": 1.96,
+          "decision": "inconclusive",
+          "delta": -1.45,
+          "delta_confidence_lower_bound": -4.701232325805655,
+          "delta_confidence_upper_bound": 1.8012323258056522,
+          "failure_class": "candidate",
+          "failure_event": {
+            "affected_case_identity_digests": [],
+            "affected_case_ids": [],
+            "affected_member_count": 0,
+            "aggregate_digest": "replay-aggregate-sha256-2f89cb6d9b50caf2167307a1ffa8537d0158a5804220c746ecfc168f5266a725",
+            "batch_id": "replay-batch-sha256-66447faa84df6add1819ecc4ab655c2d38ed10c1d3f464a8783abc0dfc677e9b",
+            "capability_identity_digest": null,
+            "category": "verification_gate",
+            "code": "score_improvement_inconclusive",
+            "contract_identity_digest": null,
+            "distinct_source_count": 0,
+            "emission_id": "replay-emission-sha256-162c446ed9d0c46fa423b18baedf9a8b03fa9b8928e99ed64467b0a8a5545ebc",
+            "occurrence_count": 1,
+            "occurrence_ids": [
+              "replay-event-1d0a0c2463fc4e40a862b9f229e99d00"
+            ],
+            "owner": "candidate",
+            "repairable": true,
+            "requirement_identity_digest": null,
+            "schema_version": "aworld.self_evolve.replay_failure_aggregate.v2",
+            "scope": "candidate",
+            "semantic_key": "replay-failure-0775ecd396579b8fef8bf23a0da9481706fa5820dadf76cc6a03641e86a4d97e",
+            "source_candidate_ids": [],
+            "source_identity_digests": [],
+            "source_kinds": [
+              "native"
+            ],
+            "source_run_ids": [],
+            "source_task_ids": [],
+            "stage": "evaluation"
+          },
+          "failure_owner": "candidate",
+          "failure_scope": "candidate",
+          "minimum_delta": 0.0,
+          "noninferiority_margin": 1.81,
+          "paired_delta_standard_error": 1.6587920029620684,
+          "paired_delta_std": 5.746224056638492,
+          "paired_sample_count": 12,
+          "repairable": true,
+          "tiebreak_eligible": false,
+          "tiebreak_ineligible_reason": "point_estimate_below_minimum_delta",
+          "uncertainty_model": "paired_standard_error"
+        },
+        "gate_name": "score_improvement",
+        "passed": false,
+        "reason": "score improvement is inconclusive under paired judge variance"
+      },
+      "cost_latency_gate": {
+        "details": {
+          "comparability": {
+            "baseline_effective_case_count": 4.0,
+            "baseline_plan_fingerprint": "sha256:bc2c1ad671aa2a6a55fd0ab5a9515afbb7cf8a5000f691cf56f7716b6c123cf8",
+            "candidate_effective_case_count": 4.0,
+            "candidate_plan_fingerprint": "sha256:bc2c1ad671aa2a6a55fd0ab5a9515afbb7cf8a5000f691cf56f7716b6c123cf8",
+            "comparable": true,
+            "reasons": []
+          },
+          "cost_metric": null,
+          "cost_regression_ratio": null,
+          "latency_metric": "replay_latency_ms",
+          "latency_regression_ratio": -0.06254365608156856,
+          "normalization": "per_effective_case_when_available",
+          "resource_evidence_required": true
+        },
+        "gate_name": "cost_latency_regression",
+        "passed": true,
+        "reason": "cost and latency regressions are within policy"
+      },
+      "evidence_gates": [
+        {
+          "details": {
+            "baseline_evidence_repair_constraints": [
+              {
+                "constraint_identity_digest": "97fcbcd867ffe7ca5da7c292703aaea41c5d830c0dfff51f27c327e1f6e71a2c",
+                "failure_mode": "support_incomplete",
+                "occurrence_count": 1,
+                "owner": "candidate",
+                "required_action": "support_or_omit",
+                "schema_version": "aworld.self_evolve.evidence_repair_constraint.v1",
+                "source_layer": "candidate_output",
+                "subject_kind": "general_claim"
+              }
+            ],
+            "dataset_split": "validation",
+            "evidence_block_count": 1,
+            "evidence_bundle_entry_count": 0,
+            "evidence_bundle_valid": true,
+            "evidence_compacted": true,
+            "evidence_compacted_regressed": false,
+            "evidence_comparison_mode": "baseline_relative",
+            "evidence_constraint_count": 0,
+            "evidence_constraint_regressions": [],
+            "evidence_incomplete": false,
+            "evidence_incomplete_regressed": false,
+            "evidence_manifest_entry_count": 0,
+            "evidence_manifest_invalid_entry_count": 0,
+            "evidence_repair_constraints": [],
+            "evidence_strategy_passed": false,
+            "failure_class": "candidate",
+            "failure_owner": "candidate",
+            "failure_scope": "candidate",
+            "failure_source": "native",
+            "has_evidence": true,
+            "repairable": true,
+            "resolved_evidence_constraints": [
+              {
+                "baseline_occurrence_count": 1,
+                "candidate_occurrence_count": 0,
+                "constraint_identity_digest": "97fcbcd867ffe7ca5da7c292703aaea41c5d830c0dfff51f27c327e1f6e71a2c",
+                "failure_mode": "support_incomplete",
+                "occurrence_count": 1,
+                "occurrence_delta": -1,
+                "owner": "candidate",
+                "required_action": "support_or_omit",
+                "schema_version": "aworld.self_evolve.evidence_repair_constraint.v1",
+                "source_layer": "candidate_output",
+                "subject_kind": "general_claim"
+              }
+            ]
+          },
+          "gate_name": "evidence_quality",
+          "passed": true,
+          "reason": "evaluation evidence is present and not compacted"
+        },
+        {
+          "details": {
+            "baseline_evidence_repair_constraints": [
+              {
+                "constraint_identity_digest": "97fcbcd867ffe7ca5da7c292703aaea41c5d830c0dfff51f27c327e1f6e71a2c",
+                "failure_mode": "support_incomplete",
+                "occurrence_count": 1,
+                "owner": "candidate",
+                "required_action": "support_or_omit",
+                "schema_version": "aworld.self_evolve.evidence_repair_constraint.v1",
+                "source_layer": "candidate_output",
+                "subject_kind": "general_claim"
+              }
+            ],
+            "dataset_split": "held_out",
+            "evidence_block_count": 1,
+            "evidence_bundle_entry_count": 0,
+            "evidence_bundle_valid": true,
+            "evidence_compacted": true,
+            "evidence_compacted_regressed": false,
+            "evidence_comparison_mode": "baseline_relative",
+            "evidence_constraint_count": 1,
+            "evidence_constraint_regressions": [],
+            "evidence_incomplete": true,
+            "evidence_incomplete_regressed": false,
+            "evidence_manifest_entry_count": 0,
+            "evidence_manifest_invalid_entry_count": 0,
+            "evidence_repair_constraints": [
+              {
+                "constraint_identity_digest": "97fcbcd867ffe7ca5da7c292703aaea41c5d830c0dfff51f27c327e1f6e71a2c",
+                "failure_mode": "support_incomplete",
+                "occurrence_count": 1,
+                "owner": "candidate",
+                "required_action": "support_or_omit",
+                "schema_version": "aworld.self_evolve.evidence_repair_constraint.v1",
+                "source_layer": "candidate_output",
+                "subject_kind": "general_claim"
+              }
+            ],
+            "evidence_strategy_passed": false,
+            "failure_class": "candidate",
+            "failure_owner": "candidate",
+            "failure_scope": "candidate",
+            "failure_source": "native",
+            "has_evidence": true,
+            "repairable": true,
+            "resolved_evidence_constraints": []
+          },
+          "gate_name": "evidence_quality",
+          "passed": true,
+          "reason": "evaluation evidence is present and not compacted"
+        }
+      ],
+      "replay_confidence": {
+        "candidate_executed_count": 11,
+        "candidate_successful_repetition_count": 11,
+        "member_count": 11
+      },
+      "failed_gates": [
+        "score_improvement"
+      ]
+    },
+    {
+      "version": "v19",
+      "cycle": "001",
+      "candidate_id": "llm-mutator-6ac4892bd886",
+      "parents": [
+        "llm-mutator-a21856ddc897"
+      ],
+      "source_report": "/Users/wuman/Documents/workspace/aworld/.aworld/self_evolve/campaign-9463c6a408362f33e443-cycle-001/report.json",
+      "source_sha256": "299bb4dbaaba08173106ef64720b3ffa8457e6395fca9b159ca9b48e5b5f03ab",
+      "baseline_score": 88.73333333333333,
+      "candidate_score": 88.13333333333333,
+      "score_gate": {
+        "details": {
+          "baseline": 88.73333333333333,
+          "candidate": 88.13333333333333,
+          "causal_failure_events": [
+            {
+              "affected_case_identity_digests": [],
+              "affected_case_ids": [],
+              "affected_member_count": 0,
+              "aggregate_digest": "replay-aggregate-sha256-0c3c65457641147ff4638e88ba51b866579d80a0972fa2ada9f19009ad5f4d02",
+              "batch_id": "replay-batch-sha256-855d6acd2ae5dca94ed95bc5efd5d864e4a4e04e919da75c5efb004639945715",
+              "capability_identity_digest": null,
+              "category": "verification_gate",
+              "code": "score_improvement_inconclusive",
+              "contract_identity_digest": null,
+              "distinct_source_count": 0,
+              "emission_id": "replay-emission-sha256-1fedb4d21442be7612c51dab557badbfdec8fa816e92e77cecdb15a178f026d3",
+              "occurrence_count": 1,
+              "occurrence_ids": [
+                "replay-event-ceb7306fd0004a79b2fcc9315a35c134"
+              ],
+              "owner": "candidate",
+              "repairable": true,
+              "requirement_identity_digest": null,
+              "schema_version": "aworld.self_evolve.replay_failure_aggregate.v2",
+              "scope": "candidate",
+              "semantic_key": "replay-failure-0775ecd396579b8fef8bf23a0da9481706fa5820dadf76cc6a03641e86a4d97e",
+              "source_candidate_ids": [],
+              "source_identity_digests": [],
+              "source_kinds": [
+                "native"
+              ],
+              "source_run_ids": [],
+              "source_task_ids": [],
+              "stage": "evaluation"
+            }
+          ],
+          "code": "score_improvement_inconclusive",
+          "comparability": {
+            "baseline_effective_case_count": 4.0,
+            "baseline_plan_fingerprint": "sha256:f8923debfd3dd7a0e7beb04a89a91d4846b99806a466cd91310ce20ed21f6efd",
+            "candidate_effective_case_count": 4.0,
+            "candidate_plan_fingerprint": "sha256:f8923debfd3dd7a0e7beb04a89a91d4846b99806a466cd91310ce20ed21f6efd",
+            "comparable": true,
+            "reasons": []
+          },
+          "confidence_z": 1.96,
+          "decision": "inconclusive",
+          "delta": -0.6,
+          "delta_confidence_lower_bound": -2.637463187992425,
+          "delta_confidence_upper_bound": 1.4374631879924178,
+          "failure_class": "candidate",
+          "failure_event": {
+            "affected_case_identity_digests": [],
+            "affected_case_ids": [],
+            "affected_member_count": 0,
+            "aggregate_digest": "replay-aggregate-sha256-0c3c65457641147ff4638e88ba51b866579d80a0972fa2ada9f19009ad5f4d02",
+            "batch_id": "replay-batch-sha256-855d6acd2ae5dca94ed95bc5efd5d864e4a4e04e919da75c5efb004639945715",
+            "capability_identity_digest": null,
+            "category": "verification_gate",
+            "code": "score_improvement_inconclusive",
+            "contract_identity_digest": null,
+            "distinct_source_count": 0,
+            "emission_id": "replay-emission-sha256-1fedb4d21442be7612c51dab557badbfdec8fa816e92e77cecdb15a178f026d3",
+            "occurrence_count": 1,
+            "occurrence_ids": [
+              "replay-event-ceb7306fd0004a79b2fcc9315a35c134"
+            ],
+            "owner": "candidate",
+            "repairable": true,
+            "requirement_identity_digest": null,
+            "schema_version": "aworld.self_evolve.replay_failure_aggregate.v2",
+            "scope": "candidate",
+            "semantic_key": "replay-failure-0775ecd396579b8fef8bf23a0da9481706fa5820dadf76cc6a03641e86a4d97e",
+            "source_candidate_ids": [],
+            "source_identity_digests": [],
+            "source_kinds": [
+              "native"
+            ],
+            "source_run_ids": [],
+            "source_task_ids": [],
+            "stage": "evaluation"
+          },
+          "failure_owner": "candidate",
+          "failure_scope": "candidate",
+          "minimum_delta": 0.0,
+          "noninferiority_margin": 1.7746666666666666,
+          "paired_delta_standard_error": 1.039522034690011,
+          "paired_delta_std": 3.6010099593409515,
+          "paired_sample_count": 12,
+          "repairable": true,
+          "tiebreak_eligible": false,
+          "tiebreak_ineligible_reason": "point_estimate_below_minimum_delta",
+          "uncertainty_model": "paired_standard_error"
+        },
+        "gate_name": "score_improvement",
+        "passed": false,
+        "reason": "score improvement is inconclusive under paired judge variance"
+      },
+      "cost_latency_gate": {
+        "details": {
+          "comparability": {
+            "baseline_effective_case_count": 4.0,
+            "baseline_plan_fingerprint": "sha256:f8923debfd3dd7a0e7beb04a89a91d4846b99806a466cd91310ce20ed21f6efd",
+            "candidate_effective_case_count": 4.0,
+            "candidate_plan_fingerprint": "sha256:f8923debfd3dd7a0e7beb04a89a91d4846b99806a466cd91310ce20ed21f6efd",
+            "comparable": true,
+            "reasons": []
+          },
+          "cost_metric": null,
+          "cost_regression_ratio": null,
+          "latency_metric": "replay_latency_ms",
+          "latency_regression_ratio": 0.36244747701509716,
+          "normalization": "per_effective_case_when_available",
+          "resource_evidence_required": true
+        },
+        "gate_name": "cost_latency_regression",
+        "passed": true,
+        "reason": "cost and latency regressions are within policy"
+      },
+      "evidence_gates": [
+        {
+          "details": {
+            "baseline_evidence_repair_constraints": [],
+            "dataset_split": "validation",
+            "evidence_block_count": 1,
+            "evidence_bundle_entry_count": 0,
+            "evidence_bundle_valid": true,
+            "evidence_compacted": true,
+            "evidence_compacted_regressed": false,
+            "evidence_comparison_mode": "baseline_relative",
+            "evidence_constraint_count": 0,
+            "evidence_constraint_regressions": [],
+            "evidence_incomplete": false,
+            "evidence_incomplete_regressed": false,
+            "evidence_manifest_entry_count": 0,
+            "evidence_manifest_invalid_entry_count": 0,
+            "evidence_repair_constraints": [],
+            "evidence_strategy_passed": false,
+            "failure_class": "candidate",
+            "failure_owner": "candidate",
+            "failure_scope": "candidate",
+            "failure_source": "native",
+            "has_evidence": true,
+            "repairable": true,
+            "resolved_evidence_constraints": []
+          },
+          "gate_name": "evidence_quality",
+          "passed": true,
+          "reason": "evaluation evidence is present and not compacted"
+        },
+        {
+          "details": {
+            "baseline_evidence_repair_constraints": [],
+            "dataset_split": "held_out",
+            "evidence_block_count": 2,
+            "evidence_bundle_entry_count": 0,
+            "evidence_bundle_valid": true,
+            "evidence_compacted": true,
+            "evidence_compacted_regressed": false,
+            "evidence_comparison_mode": "baseline_relative",
+            "evidence_constraint_count": 0,
+            "evidence_constraint_regressions": [],
+            "evidence_incomplete": false,
+            "evidence_incomplete_regressed": false,
+            "evidence_manifest_entry_count": 0,
+            "evidence_manifest_invalid_entry_count": 0,
+            "evidence_repair_constraints": [],
+            "evidence_strategy_passed": false,
+            "failure_class": "candidate",
+            "failure_owner": "candidate",
+            "failure_scope": "candidate",
+            "failure_source": "native",
+            "has_evidence": true,
+            "repairable": true,
+            "resolved_evidence_constraints": []
+          },
+          "gate_name": "evidence_quality",
+          "passed": true,
+          "reason": "evaluation evidence is present and not compacted"
+        }
+      ],
+      "replay_confidence": {
+        "candidate_executed_count": 11,
+        "candidate_successful_repetition_count": 11,
+        "member_count": 11
+      },
+      "failed_gates": [
+        "score_improvement"
+      ]
+    },
+    {
+      "version": "v19",
+      "cycle": "002",
+      "candidate_id": "llm-mutator-cb9b242e4400",
+      "parents": [
+        "llm-mutator-6ac4892bd886"
+      ],
+      "source_report": "/Users/wuman/Documents/workspace/aworld/.aworld/self_evolve/campaign-9463c6a408362f33e443-cycle-002/report.json",
+      "source_sha256": "a07e8f56af8ba2a1ae636d971964e757c1290ec1aae0d1f524fdeb63b4b6cbe1",
+      "baseline_score": 86.66666666666667,
+      "candidate_score": 89.46666666666665,
+      "score_gate": {
+        "details": {
+          "baseline": 86.66666666666667,
+          "candidate": 89.46666666666665,
+          "code": "score_improvement_confident",
+          "comparability": {
+            "baseline_effective_case_count": 4.0,
+            "baseline_plan_fingerprint": "sha256:a132318dc386566ef29e9d6b59e70c1f48ad2b460bebf734dc001df4e39ad9a2",
+            "candidate_effective_case_count": 4.0,
+            "candidate_plan_fingerprint": "sha256:a132318dc386566ef29e9d6b59e70c1f48ad2b460bebf734dc001df4e39ad9a2",
+            "comparable": true,
+            "reasons": []
+          },
+          "confidence_z": 1.96,
+          "decision": "accepted",
+          "delta": 2.8,
+          "delta_confidence_lower_bound": 0.16949881489315866,
+          "delta_confidence_upper_bound": 5.43050118510684,
+          "minimum_delta": 0.0,
+          "noninferiority_margin": 1.7893333333333332,
+          "paired_delta_standard_error": 1.3420924413810411,
+          "paired_delta_std": 4.649144593852236,
+          "paired_sample_count": 12,
+          "uncertainty_model": "paired_standard_error"
+        },
+        "gate_name": "score_improvement",
+        "passed": true,
+        "reason": "score improvement clears the paired confidence bound"
+      },
+      "cost_latency_gate": {
+        "details": {
+          "comparability": {
+            "baseline_effective_case_count": 4.0,
+            "baseline_plan_fingerprint": "sha256:a132318dc386566ef29e9d6b59e70c1f48ad2b460bebf734dc001df4e39ad9a2",
+            "candidate_effective_case_count": 4.0,
+            "candidate_plan_fingerprint": "sha256:a132318dc386566ef29e9d6b59e70c1f48ad2b460bebf734dc001df4e39ad9a2",
+            "comparable": true,
+            "reasons": []
+          },
+          "cost_metric": "replay_total_tokens",
+          "cost_regression_ratio": 0.014271377728678909,
+          "latency_metric": "replay_latency_ms",
+          "latency_regression_ratio": -0.09329209755777694,
+          "normalization": "per_effective_case_when_available",
+          "resource_evidence_required": true
+        },
+        "gate_name": "cost_latency_regression",
+        "passed": true,
+        "reason": "cost and latency regressions are within policy"
+      },
+      "evidence_gates": [
+        {
+          "details": {
+            "baseline_evidence_repair_constraints": [],
+            "dataset_split": "validation",
+            "evidence_block_count": 1,
+            "evidence_bundle_entry_count": 0,
+            "evidence_bundle_valid": true,
+            "evidence_compacted": true,
+            "evidence_compacted_regressed": false,
+            "evidence_comparison_mode": "baseline_relative",
+            "evidence_constraint_count": 0,
+            "evidence_constraint_regressions": [],
+            "evidence_incomplete": false,
+            "evidence_incomplete_regressed": false,
+            "evidence_manifest_entry_count": 0,
+            "evidence_manifest_invalid_entry_count": 0,
+            "evidence_repair_constraints": [],
+            "evidence_strategy_passed": false,
+            "failure_class": "candidate",
+            "failure_owner": "candidate",
+            "failure_scope": "candidate",
+            "failure_source": "native",
+            "has_evidence": true,
+            "repairable": true,
+            "resolved_evidence_constraints": []
+          },
+          "gate_name": "evidence_quality",
+          "passed": true,
+          "reason": "evaluation evidence is present and not compacted"
+        },
+        {
+          "details": {
+            "baseline_evidence_repair_constraints": [
+              {
+                "constraint_identity_digest": "97fcbcd867ffe7ca5da7c292703aaea41c5d830c0dfff51f27c327e1f6e71a2c",
+                "failure_mode": "support_incomplete",
+                "occurrence_count": 1,
+                "owner": "candidate",
+                "required_action": "support_or_omit",
+                "schema_version": "aworld.self_evolve.evidence_repair_constraint.v1",
+                "source_layer": "candidate_output",
+                "subject_kind": "general_claim"
+              }
+            ],
+            "dataset_split": "held_out",
+            "evidence_block_count": 1,
+            "evidence_bundle_entry_count": 0,
+            "evidence_bundle_valid": true,
+            "evidence_compacted": true,
+            "evidence_compacted_regressed": false,
+            "evidence_comparison_mode": "baseline_relative",
+            "evidence_constraint_count": 1,
+            "evidence_constraint_regressions": [],
+            "evidence_incomplete": true,
+            "evidence_incomplete_regressed": false,
+            "evidence_manifest_entry_count": 0,
+            "evidence_manifest_invalid_entry_count": 0,
+            "evidence_repair_constraints": [
+              {
+                "constraint_identity_digest": "97fcbcd867ffe7ca5da7c292703aaea41c5d830c0dfff51f27c327e1f6e71a2c",
+                "failure_mode": "support_incomplete",
+                "occurrence_count": 1,
+                "owner": "candidate",
+                "required_action": "support_or_omit",
+                "schema_version": "aworld.self_evolve.evidence_repair_constraint.v1",
+                "source_layer": "candidate_output",
+                "subject_kind": "general_claim"
+              }
+            ],
+            "evidence_strategy_passed": false,
+            "failure_class": "candidate",
+            "failure_owner": "candidate",
+            "failure_scope": "candidate",
+            "failure_source": "native",
+            "has_evidence": true,
+            "repairable": true,
+            "resolved_evidence_constraints": []
+          },
+          "gate_name": "evidence_quality",
+          "passed": true,
+          "reason": "evaluation evidence is present and not compacted"
+        }
+      ],
+      "replay_confidence": {
+        "candidate_executed_count": 11,
+        "candidate_successful_repetition_count": 11,
+        "member_count": 11
+      },
+      "failed_gates": []
+    }
+  ]
+}

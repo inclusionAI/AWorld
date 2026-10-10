@@ -1,0 +1,373 @@
+{
+  "source": "retained launch.json files only; no task success or teardown inference",
+  "round_count": 12,
+  "launch_count": 60,
+  "status_counts": {
+    "started": 60
+  },
+  "error_type_counts": {
+    "None": 60
+  },
+  "records": [
+    {
+      "path": "/Users/wuman/Documents/workspace/aworld/tmp/replay-preflight-stress/0/replay_services/svc_requirement-380b35c80ed0ad4259f2/launch.json",
+      "round": "0",
+      "status": "started",
+      "error_type": null
+    },
+    {
+      "path": "/Users/wuman/Documents/workspace/aworld/tmp/replay-preflight-stress/0/replay_services/svc_requirement-3dee7da1dbe1a3300e56/launch.json",
+      "round": "0",
+      "status": "started",
+      "error_type": null
+    },
+    {
+      "path": "/Users/wuman/Documents/workspace/aworld/tmp/replay-preflight-stress/0/replay_services/svc_requirement-72705b317b0ed555ab53/launch.json",
+      "round": "0",
+      "status": "started",
+      "error_type": null
+    },
+    {
+      "path": "/Users/wuman/Documents/workspace/aworld/tmp/replay-preflight-stress/0/replay_services/svc_requirement-ba545725190097ec76f4/launch.json",
+      "round": "0",
+      "status": "started",
+      "error_type": null
+    },
+    {
+      "path": "/Users/wuman/Documents/workspace/aworld/tmp/replay-preflight-stress/0/replay_services/svc_requirement-e37564caccdb7fa2d800/launch.json",
+      "round": "0",
+      "status": "started",
+      "error_type": null
+    },
+    {
+      "path": "/Users/wuman/Documents/workspace/aworld/tmp/replay-preflight-stress/1/replay_services/svc_requirement-380b35c80ed0ad4259f2/launch.json",
+      "round": "1",
+      "status": "started",
+      "error_type": null
+    },
+    {
+      "path": "/Users/wuman/Documents/workspace/aworld/tmp/replay-preflight-stress/1/replay_services/svc_requirement-3dee7da1dbe1a3300e56/launch.json",
+      "round": "1",
+      "status": "started",
+      "error_type": null
+    },
+    {
+      "path": "/Users/wuman/Documents/workspace/aworld/tmp/replay-preflight-stress/1/replay_services/svc_requirement-72705b317b0ed555ab53/launch.json",
+      "round": "1",
+      "status": "started",
+      "error_type": null
+    },
+    {
+      "path": "/Users/wuman/Documents/workspace/aworld/tmp/replay-preflight-stress/1/replay_services/svc_requirement-ba545725190097ec76f4/launch.json",
+      "round": "1",
+      "status": "started",
+      "error_type": null
+    },
+    {
+      "path": "/Users/wuman/Documents/workspace/aworld/tmp/replay-preflight-stress/1/replay_services/svc_requirement-e37564caccdb7fa2d800/launch.json",
+      "round": "1",
+      "status": "started",
+      "error_type": null
+    },
+    {
+      "path": "/Users/wuman/Documents/workspace/aworld/tmp/replay-preflight-stress/10/replay_services/svc_requirement-380b35c80ed0ad4259f2/launch.json",
+      "round": "10",
+      "status": "started",
+      "error_type": null
+    },
+    {
+      "path": "/Users/wuman/Documents/workspace/aworld/tmp/replay-preflight-stress/10/replay_services/svc_requirement-3dee7da1dbe1a3300e56/launch.json",
+      "round": "10",
+      "status": "started",
+      "error_type": null
+    },
+    {
+      "path": "/Users/wuman/Documents/workspace/aworld/tmp/replay-preflight-stress/10/replay_services/svc_requirement-72705b317b0ed555ab53/launch.json",
+      "round": "10",
+      "status": "started",
+      "error_type": null
+    },
+    {
+      "path": "/Users/wuman/Documents/workspace/aworld/tmp/replay-preflight-stress/10/replay_services/svc_requirement-ba545725190097ec76f4/launch.json",
+      "round": "10",
+      "status": "started",
+      "error_type": null
+    },
+    {
+      "path": "/Users/wuman/Documents/workspace/aworld/tmp/replay-preflight-stress/10/replay_services/svc_requirement-e37564caccdb7fa2d800/launch.json",
+      "round": "10",
+      "status": "started",
+      "error_type": null
+    },
+    {
+      "path": "/Users/wuman/Documents/workspace/aworld/tmp/replay-preflight-stress/11/replay_services/svc_requirement-380b35c80ed0ad4259f2/launch.json",
+      "round": "11",
+      "status": "started",
+      "error_type": null
+    },
+    {
+      "path": "/Users/wuman/Documents/workspace/aworld/tmp/replay-preflight-stress/11/replay_services/svc_requirement-3dee7da1dbe1a3300e56/launch.json",
+      "round": "11",
+      "status": "started",
+      "error_type": null
+    },
+    {
+      "path": "/Users/wuman/Documents/workspace/aworld/tmp/replay-preflight-stress/11/replay_services/svc_requirement-72705b317b0ed555ab53/launch.json",
+      "round": "11",
+      "status": "started",
+      "error_type": null
+    },
+    {
+      "path": "/Users/wuman/Documents/workspace/aworld/tmp/replay-preflight-stress/11/replay_services/svc_requirement-ba545725190097ec76f4/launch.json",
+      "round": "11",
+      "status": "started",
+      "error_type": null
+    },
+    {
+      "path": "/Users/wuman/Documents/workspace/aworld/tmp/replay-preflight-stress/11/replay_services/svc_requirement-e37564caccdb7fa2d800/launch.json",
+      "round": "11",
+      "status": "started",
+      "error_type": null
+    },
+    {
+      "path": "/Users/wuman/Documents/workspace/aworld/tmp/replay-preflight-stress/2/replay_services/svc_requirement-380b35c80ed0ad4259f2/launch.json",
+      "round": "2",
+      "status": "started",
+      "error_type": null
+    },
+    {
+      "path": "/Users/wuman/Documents/workspace/aworld/tmp/replay-preflight-stress/2/replay_services/svc_requirement-3dee7da1dbe1a3300e56/launch.json",
+      "round": "2",
+      "status": "started",
+      "error_type": null
+    },
+    {
+      "path": "/Users/wuman/Documents/workspace/aworld/tmp/replay-preflight-stress/2/replay_services/svc_requirement-72705b317b0ed555ab53/launch.json",
+      "round": "2",
+      "status": "started",
+      "error_type": null
+    },
+    {
+      "path": "/Users/wuman/Documents/workspace/aworld/tmp/replay-preflight-stress/2/replay_services/svc_requirement-ba545725190097ec76f4/launch.json",
+      "round": "2",
+      "status": "started",
+      "error_type": null
+    },
+    {
+      "path": "/Users/wuman/Documents/workspace/aworld/tmp/replay-preflight-stress/2/replay_services/svc_requirement-e37564caccdb7fa2d800/launch.json",
+      "round": "2",
+      "status": "started",
+      "error_type": null
+    },
+    {
+      "path": "/Users/wuman/Documents/workspace/aworld/tmp/replay-preflight-stress/3/replay_services/svc_requirement-380b35c80ed0ad4259f2/launch.json",
+      "round": "3",
+      "status": "started",
+      "error_type": null
+    },
+    {
+      "path": "/Users/wuman/Documents/workspace/aworld/tmp/replay-preflight-stress/3/replay_services/svc_requirement-3dee7da1dbe1a3300e56/launch.json",
+      "round": "3",
+      "status": "started",
+      "error_type": null
+    },
+    {
+      "path": "/Users/wuman/Documents/workspace/aworld/tmp/replay-preflight-stress/3/replay_services/svc_requirement-72705b317b0ed555ab53/launch.json",
+      "round": "3",
+      "status": "started",
+      "error_type": null
+    },
+    {
+      "path": "/Users/wuman/Documents/workspace/aworld/tmp/replay-preflight-stress/3/replay_services/svc_requirement-ba545725190097ec76f4/launch.json",
+      "round": "3",
+      "status": "started",
+      "error_type": null
+    },
+    {
+      "path": "/Users/wuman/Documents/workspace/aworld/tmp/replay-preflight-stress/3/replay_services/svc_requirement-e37564caccdb7fa2d800/launch.json",
+      "round": "3",
+      "status": "started",
+      "error_type": null
+    },
+    {
+      "path": "/Users/wuman/Documents/workspace/aworld/tmp/replay-preflight-stress/4/replay_services/svc_requirement-380b35c80ed0ad4259f2/launch.json",
+      "round": "4",
+      "status": "started",
+      "error_type": null
+    },
+    {
+      "path": "/Users/wuman/Documents/workspace/aworld/tmp/replay-preflight-stress/4/replay_services/svc_requirement-3dee7da1dbe1a3300e56/launch.json",
+      "round": "4",
+      "status": "started",
+      "error_type": null
+    },
+    {
+      "path": "/Users/wuman/Documents/workspace/aworld/tmp/replay-preflight-stress/4/replay_services/svc_requirement-72705b317b0ed555ab53/launch.json",
+      "round": "4",
+      "status": "started",
+      "error_type": null
+    },
+    {
+      "path": "/Users/wuman/Documents/workspace/aworld/tmp/replay-preflight-stress/4/replay_services/svc_requirement-ba545725190097ec76f4/launch.json",
+      "round": "4",
+      "status": "started",
+      "error_type": null
+    },
+    {
+      "path": "/Users/wuman/Documents/workspace/aworld/tmp/replay-preflight-stress/4/replay_services/svc_requirement-e37564caccdb7fa2d800/launch.json",
+      "round": "4",
+      "status": "started",
+      "error_type": null
+    },
+    {
+      "path": "/Users/wuman/Documents/workspace/aworld/tmp/replay-preflight-stress/5/replay_services/svc_requirement-380b35c80ed0ad4259f2/launch.json",
+      "round": "5",
+      "status": "started",
+      "error_type": null
+    },
+    {
+      "path": "/Users/wuman/Documents/workspace/aworld/tmp/replay-preflight-stress/5/replay_services/svc_requirement-3dee7da1dbe1a3300e56/launch.json",
+      "round": "5",
+      "status": "started",
+      "error_type": null
+    },
+    {
+      "path": "/Users/wuman/Documents/workspace/aworld/tmp/replay-preflight-stress/5/replay_services/svc_requirement-72705b317b0ed555ab53/launch.json",
+      "round": "5",
+      "status": "started",
+      "error_type": null
+    },
+    {
+      "path": "/Users/wuman/Documents/workspace/aworld/tmp/replay-preflight-stress/5/replay_services/svc_requirement-ba545725190097ec76f4/launch.json",
+      "round": "5",
+      "status": "started",
+      "error_type": null
+    },
+    {
+      "path": "/Users/wuman/Documents/workspace/aworld/tmp/replay-preflight-stress/5/replay_services/svc_requirement-e37564caccdb7fa2d800/launch.json",
+      "round": "5",
+      "status": "started",
+      "error_type": null
+    },
+    {
+      "path": "/Users/wuman/Documents/workspace/aworld/tmp/replay-preflight-stress/6/replay_services/svc_requirement-380b35c80ed0ad4259f2/launch.json",
+      "round": "6",
+      "status": "started",
+      "error_type": null
+    },
+    {
+      "path": "/Users/wuman/Documents/workspace/aworld/tmp/replay-preflight-stress/6/replay_services/svc_requirement-3dee7da1dbe1a3300e56/launch.json",
+      "round": "6",
+      "status": "started",
+      "error_type": null
+    },
+    {
+      "path": "/Users/wuman/Documents/workspace/aworld/tmp/replay-preflight-stress/6/replay_services/svc_requirement-72705b317b0ed555ab53/launch.json",
+      "round": "6",
+      "status": "started",
+      "error_type": null
+    },
+    {
+      "path": "/Users/wuman/Documents/workspace/aworld/tmp/replay-preflight-stress/6/replay_services/svc_requirement-ba545725190097ec76f4/launch.json",
+      "round": "6",
+      "status": "started",
+      "error_type": null
+    },
+    {
+      "path": "/Users/wuman/Documents/workspace/aworld/tmp/replay-preflight-stress/6/replay_services/svc_requirement-e37564caccdb7fa2d800/launch.json",
+      "round": "6",
+      "status": "started",
+      "error_type": null
+    },
+    {
+      "path": "/Users/wuman/Documents/workspace/aworld/tmp/replay-preflight-stress/7/replay_services/svc_requirement-380b35c80ed0ad4259f2/launch.json",
+      "round": "7",
+      "status": "started",
+      "error_type": null
+    },
+    {
+      "path": "/Users/wuman/Documents/workspace/aworld/tmp/replay-preflight-stress/7/replay_services/svc_requirement-3dee7da1dbe1a3300e56/launch.json",
+      "round": "7",
+      "status": "started",
+      "error_type": null
+    },
+    {
+      "path": "/Users/wuman/Documents/workspace/aworld/tmp/replay-preflight-stress/7/replay_services/svc_requirement-72705b317b0ed555ab53/launch.json",
+      "round": "7",
+      "status": "started",
+      "error_type": null
+    },
+    {
+      "path": "/Users/wuman/Documents/workspace/aworld/tmp/replay-preflight-stress/7/replay_services/svc_requirement-ba545725190097ec76f4/launch.json",
+      "round": "7",
+      "status": "started",
+      "error_type": null
+    },
+    {
+      "path": "/Users/wuman/Documents/workspace/aworld/tmp/replay-preflight-stress/7/replay_services/svc_requirement-e37564caccdb7fa2d800/launch.json",
+      "round": "7",
+      "status": "started",
+      "error_type": null
+    },
+    {
+      "path": "/Users/wuman/Documents/workspace/aworld/tmp/replay-preflight-stress/8/replay_services/svc_requirement-380b35c80ed0ad4259f2/launch.json",
+      "round": "8",
+      "status": "started",
+      "error_type": null
+    },
+    {
+      "path": "/Users/wuman/Documents/workspace/aworld/tmp/replay-preflight-stress/8/replay_services/svc_requirement-3dee7da1dbe1a3300e56/launch.json",
+      "round": "8",
+      "status": "started",
+      "error_type": null
+    },
+    {
+      "path": "/Users/wuman/Documents/workspace/aworld/tmp/replay-preflight-stress/8/replay_services/svc_requirement-72705b317b0ed555ab53/launch.json",
+      "round": "8",
+      "status": "started",
+      "error_type": null
+    },
+    {
+      "path": "/Users/wuman/Documents/workspace/aworld/tmp/replay-preflight-stress/8/replay_services/svc_requirement-ba545725190097ec76f4/launch.json",
+      "round": "8",
+      "status": "started",
+      "error_type": null
+    },
+    {
+      "path": "/Users/wuman/Documents/workspace/aworld/tmp/replay-preflight-stress/8/replay_services/svc_requirement-e37564caccdb7fa2d800/launch.json",
+      "round": "8",
+      "status": "started",
+      "error_type": null
+    },
+    {
+      "path": "/Users/wuman/Documents/workspace/aworld/tmp/replay-preflight-stress/9/replay_services/svc_requirement-380b35c80ed0ad4259f2/launch.json",
+      "round": "9",
+      "status": "started",
+      "error_type": null
+    },
+    {
+      "path": "/Users/wuman/Documents/workspace/aworld/tmp/replay-preflight-stress/9/replay_services/svc_requirement-3dee7da1dbe1a3300e56/launch.json",
+      "round": "9",
+      "status": "started",
+      "error_type": null
+    },
+    {
+      "path": "/Users/wuman/Documents/workspace/aworld/tmp/replay-preflight-stress/9/replay_services/svc_requirement-72705b317b0ed555ab53/launch.json",
+      "round": "9",
+      "status": "started",
+      "error_type": null
+    },
+    {
+      "path": "/Users/wuman/Documents/workspace/aworld/tmp/replay-preflight-stress/9/replay_services/svc_requirement-ba545725190097ec76f4/launch.json",
+      "round": "9",
+      "status": "started",
+      "error_type": null
+    },
+    {
+      "path": "/Users/wuman/Documents/workspace/aworld/tmp/replay-preflight-stress/9/replay_services/svc_requirement-e37564caccdb7fa2d800/launch.json",
+      "round": "9",
+      "status": "started",
+      "error_type": null
+    }
+  ]
+}

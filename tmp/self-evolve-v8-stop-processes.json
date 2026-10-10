@@ -1,0 +1,32 @@
+[
+  {
+    "pid": 52951,
+    "ppid": 1842,
+    "command": "/Users/wuman/miniconda3/bin/python"
+  },
+  {
+    "pid": 83230,
+    "ppid": 52951,
+    "command": "/Users/wuman/miniconda3/bin/python"
+  },
+  {
+    "pid": 83231,
+    "ppid": 83230,
+    "command": "/Users/wuman/miniconda3/bin/python"
+  },
+  {
+    "pid": 83232,
+    "ppid": 52951,
+    "command": "/Users/wuman/miniconda3/bin/python"
+  },
+  {
+    "pid": 83244,
+    "ppid": 83232,
+    "command": "/Users/wuman/miniconda3/bin/python"
+  },
+  {
+    "pid": 83250,
+    "ppid": 83232,
+    "command": "/Users/wuman/miniconda3/bin/python"
+  }
+]

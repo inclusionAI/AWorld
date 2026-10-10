@@ -1,0 +1,37 @@
+{
+  "run_id": "campaign-f731a97f9fbde74e0968-cycle-001",
+  "pid": 35668,
+  "exec_session": 19129,
+  "head": "4af992283fd9d13369dd712d01aac9adc30e93c1",
+  "log": "tmp/self-evolve-acceptance-20260918-v18.log",
+  "caffeinate_idle_session": 87410,
+  "caffeinate_system_session": 98835,
+  "host_sleep_observation": {
+    "sleep_start": "2026-09-18 12:11:27 +0800",
+    "full_wake": "2026-09-18 13:37:39 +0800",
+    "affected_member": "task_20260522081711",
+    "native_result": "replay_task_timeout_with_recoverable_evidence",
+    "power_source_at_mitigation": "AC Power",
+    "mitigation": "caffeinate -is -w 35668"
+  },
+  "updated_at": 1789723369.74876,
+  "current_cycle": 6,
+  "current_candidate": "llm-mutator-134be633b70a",
+  "latest_report_cycle": 5,
+  "source_fixes_committed_pushed": true,
+  "full_test_result": "2814 passed, 1 skipped",
+  "current_objective": "continue exact command until real Status: succeeded; no success yet",
+  "pending_source_fix": {
+    "commit": "b8157cee936b665d3ecf9ef20cf0176866eebf03",
+    "worktree": "/Users/wuman/Documents/workspace/aworld-self-evolve-history-window-20260918",
+    "tests": "2836 passed, 1 skipped",
+    "review": "approved",
+    "native_ab": "old12 allcycle001/focus7abd;new12 covers003/005/001/focusbfdf;18 native hashes unchanged",
+    "integration": "wait current exact command terminal result; do not change active source"
+  },
+  "cycle1_summary": "106 timeout coincided with host sleep;7abd completed11/11, failed validation score(-0.0667) and held_out support_incomplete;8a judge preflight budget denied",
+  "cycle2_summary": "0 generated due scope growth and protected fenced block deletions",
+  "cycle3_summary": "3f7 completed11/11;score/evidence passed, latency+69.58% failed;metric and cache audit correct",
+  "cycle5_summary": "bfdf completed11/11;latency passed, score/evidence failed;real parsed abstract truncation/unsupported claims",
+  "cycle6_summary": "134 parent7abd due confirmed champion/feedback starvation bug;10/11 successful, last candidate arm running"
+}
