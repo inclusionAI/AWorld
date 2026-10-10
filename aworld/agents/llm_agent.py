@@ -317,6 +317,14 @@ DEFAULT_LLM_EXECUTION_TIMEOUT_SECONDS = 360.0
 EXECUTION_PROTOCOL_REVIEW_UNARMED_ENV = (
     "AWORLD_EXECUTION_PROTOCOL_REVIEW_UNARMED_CANDIDATES"
 )
+SUCCESS_FIRST_ENV = "AWORLD_SUCCESS_FIRST"
+
+
+def _success_first_enabled() -> bool:
+    """Return whether success-first semantics are enabled (the default)."""
+
+    raw = os.environ.get(SUCCESS_FIRST_ENV)
+    return raw is None or raw.strip().lower() not in {"0", "false", "no", "off"}
 
 
 def _monotonic_now() -> float:
@@ -997,6 +1005,22 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         """Use an explicit override or AWorld's default convergence policy."""
         if self._explicit_execution_protocol_policy is not None:
             return self._explicit_execution_protocol_policy
+        if _success_first_enabled():
+            # Benchmark callers already own a hard task deadline, maximum agent
+            # steps, per-call timeouts, and process-tree cleanup.  Keep protocol
+            # observations for telemetry without letting convergence,
+            # diagnostic quotas, review limits, or finalization reserves revoke
+            # ordinary Tools before those outer bounds are reached.
+            return ExecutionProtocolPolicy(
+                mode=ProtocolMode.OBSERVE,
+                review_unarmed_candidates=False,
+                independent_acceptance_enabled=False,
+                semantic_progress_enabled=True,
+                max_final_reviews=None,
+                max_repairs=None,
+                finalization_reserve_seconds=0.0,
+                candidate_decision_reserve_seconds=0.0,
+            )
         skill = (self.skill_configs or {}).get("long-running-agent")
         active = isinstance(skill, dict) and skill.get("active") is True
         # Convergence is a baseline AWorld capability, not a Skill toggle.

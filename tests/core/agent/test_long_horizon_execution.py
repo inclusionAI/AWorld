@@ -1014,7 +1014,8 @@ def test_agent_rejects_untyped_execution_protocol_policy() -> None:
         )
 
 
-def test_agent_uses_default_convergence_with_skill_specific_review() -> None:
+def test_agent_can_restore_legacy_guide_with_skill_specific_review(monkeypatch) -> None:
+    monkeypatch.setenv("AWORLD_SUCCESS_FIRST", "false")
     agent = Agent(
         name="Aworld",
         conf=AgentConfig(
@@ -1047,6 +1048,51 @@ def test_explicit_off_policy_remains_a_developer_rollback() -> None:
     assert agent._resolve_execution_protocol_policy().mode is ProtocolMode.OFF
 
 
+def test_success_first_is_default_and_observes_without_early_control(monkeypatch) -> None:
+    monkeypatch.delenv("AWORLD_SUCCESS_FIRST", raising=False)
+    monkeypatch.setenv("AWORLD_INDEPENDENT_ACCEPTANCE_CRITIC", "true")
+    agent = Agent(
+        name="Aworld",
+        conf=AgentConfig(
+            llm_provider="openai",
+            llm_model_name="offline",
+            llm_api_key="offline",
+        ),
+    )
+    agent.skill_configs = {"long-running-agent": {"active": True}}
+
+    policy = agent._resolve_execution_protocol_policy()
+
+    assert policy.mode is ProtocolMode.OBSERVE
+    assert policy.review_unarmed_candidates is False
+    assert policy.independent_acceptance_enabled is False
+    assert policy.semantic_progress_enabled is True
+    assert policy.max_final_reviews is None
+    assert policy.max_repairs is None
+    assert policy.finalization_reserve_seconds == 0
+    assert policy.candidate_decision_reserve_seconds == 0
+
+
+def test_explicit_protocol_policy_wins_over_success_first(monkeypatch) -> None:
+    monkeypatch.setenv("AWORLD_SUCCESS_FIRST", "true")
+    explicit = ExecutionProtocolPolicy(
+        mode=ProtocolMode.GUIDE,
+        finalization_reserve_seconds=12,
+        candidate_decision_reserve_seconds=30,
+    )
+    agent = Agent(
+        name="Aworld",
+        conf=AgentConfig(
+            llm_provider="openai",
+            llm_model_name="offline",
+            llm_api_key="offline",
+        ),
+        execution_protocol_policy=explicit,
+    )
+
+    assert agent._resolve_execution_protocol_policy() is explicit
+
+
 def test_long_running_skill_can_disable_review_for_unarmed_candidates(
     monkeypatch,
 ) -> None:
@@ -1067,6 +1113,7 @@ def test_long_running_skill_can_disable_review_for_unarmed_candidates(
 
 
 def test_runtime_can_enable_model_review_for_every_candidate(monkeypatch) -> None:
+    monkeypatch.setenv("AWORLD_SUCCESS_FIRST", "false")
     monkeypatch.delenv("AWORLD_INDEPENDENT_ACCEPTANCE_CRITIC", raising=False)
     monkeypatch.delenv("AWORLD_SEMANTIC_PROGRESS_LEDGER", raising=False)
     monkeypatch.setenv("AWORLD_EXECUTION_PROTOCOL_REVIEW_UNARMED_CANDIDATES", "true")
@@ -1089,6 +1136,7 @@ def test_runtime_can_enable_model_review_for_every_candidate(monkeypatch) -> Non
 
 
 def test_runtime_canary_flags_can_disable_new_protocol_features(monkeypatch) -> None:
+    monkeypatch.setenv("AWORLD_SUCCESS_FIRST", "false")
     monkeypatch.setenv("AWORLD_INDEPENDENT_ACCEPTANCE_CRITIC", "false")
     monkeypatch.setenv("AWORLD_SEMANTIC_PROGRESS_LEDGER", "0")
     agent = Agent(
@@ -1110,6 +1158,7 @@ def test_runtime_canary_flags_can_disable_new_protocol_features(monkeypatch) -> 
 def test_review_every_candidate_env_does_not_expand_disabled_skill_review(
     monkeypatch,
 ) -> None:
+    monkeypatch.setenv("AWORLD_SUCCESS_FIRST", "false")
     monkeypatch.setenv("AWORLD_EXECUTION_PROTOCOL_REVIEW_UNARMED_CANDIDATES", "true")
     agent = Agent(
         name="Aworld",
@@ -2864,11 +2913,13 @@ async def test_malformed_decision_cannot_loop_past_one_retry() -> None:
         (3753.0, 60.0, 105.0),
     ],
 )
-def test_default_protocol_derives_three_part_finalization_budget(
+def test_legacy_guide_derives_three_part_finalization_budget(
+    monkeypatch,
     total: float,
     external: float,
     expected: float,
 ) -> None:
+    monkeypatch.setenv("AWORLD_SUCCESS_FIRST", "false")
     context = Context(task_id="adaptive-reserve")
     context.set_task(
         Task(
