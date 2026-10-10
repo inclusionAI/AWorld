@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
@@ -1360,6 +1361,56 @@ def test_agent_offers_required_initial_model_decision_before_real_tools() -> Non
         plan["properties"]["next_action_arguments"]["description"].rsplit(": ", 1)[1]
     )
     assert contract_table["terminal__execute"] == '{"command":string!}'
+
+
+def test_success_first_terminal_checkpoint_exposes_decision_tool() -> None:
+    context = Context(task_id="success-first-terminal-checkpoint")
+    context.set_task(Task(id="success-first-terminal-checkpoint", timeout=600))
+    policy = ExecutionProtocolPolicy(
+        mode=ProtocolMode.OBSERVE,
+        terminal_review_gate_enabled=True,
+        candidate_decision_reserve_seconds=480,
+        finalization_reserve_seconds=180,
+    )
+    agent = _agent(context, policy)
+    configure_execution_protocol(context, agent.id(), policy)
+    store = ExecutionProtocolStore(context, agent.id(), policy)
+    store.save(
+        replace(
+            store.load(),
+            long_horizon_armed=True,
+            candidate_decision_count=1,
+            replan_count=1,
+            replan_requested_count=1,
+            decision_checkpoint_pending=True,
+            decision_checkpoint_reason=DecisionReason.CANDIDATE_DECISION_RESERVE,
+            decision_checkpoint_candidate_present=True,
+        )
+    )
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "terminal__execute",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"command": {"type": "string"}},
+                    "required": ["command"],
+                },
+            },
+        }
+    ]
+
+    augmented, offer = agent._with_long_horizon_execution_profile(tools, context)
+
+    assert offer.decision_boundary == "initial"
+    assert offer.carrier_function_name == "aworld__execution_decision"
+    assert len(augmented) == 1
+    assert augmented[0]["function"]["name"] == "aworld__execution_decision"
+    assert set(augmented[0]["function"]["parameters"]["required"]) == {
+        "__aworld_execution_profile",
+        "__aworld_plan_update",
+    }
 
 
 def test_initial_decision_schema_does_not_duplicate_across_large_tool_catalog():

@@ -1540,12 +1540,14 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         # Solver planning and self-check controls must not enter that surface.
         if acceptance_critic_active(context, self.id()):
             return tools, empty_offer
-        # OBSERVE is telemetry-only. It must never alter the provider request,
-        # Tool schema, tool_choice, or task catalog.
-        if execution_protocol_policy(context, self.id()).mode is not ProtocolMode.GUIDE:
-            return tools, empty_offer
-
+        policy = execution_protocol_policy(context, self.id())
         boundary = execution_protocol_model_decision_boundary(context, self.id())
+        # OBSERVE is telemetry-only until the explicitly enabled terminal gate
+        # reaches its one bounded candidate-decision checkpoint.  That
+        # checkpoint is control-plane owned and must be exposed even though the
+        # earlier success-first execution phase deliberately remains OBSERVE.
+        if policy.mode is not ProtocolMode.GUIDE and boundary is None:
+            return tools, empty_offer
         if boundary == "initial" and not self._long_horizon_skill_active():
             try:
                 state = ExecutionProtocolStore(
