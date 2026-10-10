@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import os
@@ -774,6 +775,82 @@ def _count_tool_calls(native_items: list[dict[str, Any]]) -> int:
     return count
 
 
+def _normalized_native_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Remove capture-plane placeholders and duplicate provider actions.
+
+    Provider-call counts remain authoritative in the control plane. The ATIF
+    step list represents visible assistant actions, so a blank journal
+    mutation must not become an ``agent`` step and one request ID must not be
+    rendered twice.
+    """
+
+    from aworld_cli.durable_scope import normalize_scope, scope_key
+
+    normalized: list[dict[str, Any]] = []
+    positions: dict[tuple[tuple[Any, ...], str], int] = {}
+
+    def quality(item: dict[str, Any]) -> tuple[int, int, int]:
+        action = _as_dict(item.get("action"))
+        raw_content = action.get("content")
+        content = (
+            raw_content if isinstance(raw_content, str) else str(raw_content or "")
+        )
+        calls = [
+            call for call in action.get("tool_calls") or [] if isinstance(call, dict)
+        ]
+        return (
+            1 if content.strip() or calls else 0,
+            1 if content.strip() else 0,
+            len(calls),
+        )
+
+    for original in items:
+        item = copy.deepcopy(original)
+        meta = _as_dict(item.get("meta"))
+        action = _as_dict(item.get("action"))
+        raw_content = action.get("content")
+        content = (
+            raw_content if isinstance(raw_content, str) else str(raw_content or "")
+        )
+        calls = [
+            call for call in action.get("tool_calls") or [] if isinstance(call, dict)
+        ]
+        response_kind = str(meta.get("assistant_response_kind") or "")
+        if not content.strip() and not calls and response_kind not in {
+            "empty_response_retry",
+            "reasoning_only",
+            "reasoning_only_retry",
+        }:
+            continue
+
+        request_id = meta.get("llm_request_id")
+        identity = None
+        if isinstance(request_id, str) and request_id:
+            item_scope = scope_key(normalize_scope(meta))
+            if item_scope is not None:
+                identity = (item_scope, request_id)
+        if identity is None or identity not in positions:
+            if identity is not None:
+                positions[identity] = len(normalized)
+            normalized.append(item)
+            continue
+
+        position = positions[identity]
+        existing = normalized[position]
+        if quality(item) > quality(existing):
+            preferred, fallback = item, existing
+        else:
+            preferred, fallback = existing, item
+        preferred_meta = preferred.setdefault("meta", {})
+        fallback_meta = _as_dict(fallback.get("meta"))
+        if isinstance(preferred_meta, dict):
+            for key, value in fallback_meta.items():
+                if value is not None:
+                    preferred_meta.setdefault(key, value)
+        normalized[position] = preferred
+    return normalized
+
+
 def _run_metric(
     run_outcome: dict[str, Any],
     trajectory_payload: dict[str, Any],
@@ -915,11 +992,13 @@ def build_atif_trajectory(
 ) -> dict[str, Any]:
     """Convert AWorld's direct-run trajectory payload to ATIF v1.7."""
     normalized_outcome = _as_dict(run_outcome)
-    native_items = [
-        item
-        for item in trajectory_payload.get("trajectory") or []
-        if isinstance(item, dict)
-    ]
+    native_items = _normalized_native_items(
+        [
+            item
+            for item in trajectory_payload.get("trajectory") or []
+            if isinstance(item, dict)
+        ]
+    )
     session_id = next(
         (
             str(_as_dict(item.get("meta")).get("session_id"))
@@ -1001,15 +1080,25 @@ def build_atif_trajectory(
         len(captured_agent_steps),
     )
 
-    # Native captured steps each represent one provider action.  Reconcile the
-    # per-step ATIF counters to the authoritative control-plane total without
-    # fabricating extra assistant messages on partial failures.
-    remaining_llm_calls = llm_call_count
+    # Attribute at most one provider call to each unique captured request.
+    # Older native trajectories may not carry request IDs, so retain a bounded
+    # one-call fallback for those visible actions. Any remaining control-plane
+    # calls are real but cannot be assigned to a specific assistant step.
+    seen_request_ids: set[str] = set()
+    attributed_llm_calls = 0
     for step in captured_agent_steps:
-        step["llm_call_count"] = 1 if remaining_llm_calls > 0 else 0
-        remaining_llm_calls = max(0, remaining_llm_calls - 1)
-    if captured_agent_steps and remaining_llm_calls:
-        captured_agent_steps[-1]["llm_call_count"] += remaining_llm_calls
+        extra = _as_dict(step.get("extra"))
+        request_id = extra.get("aworld_llm_request_id")
+        if isinstance(request_id, str) and request_id:
+            count = 0 if request_id in seen_request_ids else 1
+            seen_request_ids.add(request_id)
+        else:
+            count = 1
+        if attributed_llm_calls >= llm_call_count:
+            count = 0
+        step["llm_call_count"] = count
+        attributed_llm_calls += count
+    unattributed_llm_calls = max(0, llm_call_count - attributed_llm_calls)
 
     agent: dict[str, Any] = {
         "name": agent_name,
@@ -1032,6 +1121,10 @@ def build_atif_trajectory(
             "action_count": action_count,
         },
     }
+    if unattributed_llm_calls:
+        final_metrics["extra"]["unattributed_llm_call_count"] = (
+            unattributed_llm_calls
+        )
     # Keep the ATIF shape stable without manufacturing cache misses. An exact
     # provider receipt produces an integer (including a genuine zero); missing
     # or partial provider cache usage remains JSON null.

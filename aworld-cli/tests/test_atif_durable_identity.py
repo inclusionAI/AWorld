@@ -456,6 +456,97 @@ def test_live_summary_never_trades_trajectory_for_more_inflight_calls(
     assert live_summary.snapshot() is retained
     assert live_summary.snapshot() is retained
 
+
+def test_terminal_live_summary_replaces_longer_partial_checkpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    partial = {
+        "results": [
+            {
+                "llm_calls": [
+                    {"request_id": "request-1"},
+                    {"request_id": "request-2"},
+                ],
+                "trajectory": [
+                    {"meta": {"step": 1}},
+                    {"meta": {"step": 2}},
+                ],
+            }
+        ]
+    }
+    terminal = {
+        "results": [
+            {
+                "semantic_status": "succeeded",
+                "llm_calls": [{"request_id": "request-1"}],
+                "trajectory": [{"meta": {"step": 1}}],
+            }
+        ]
+    }
+    snapshots = iter((partial, terminal))
+    monkeypatch.setattr(
+        main_module,
+        "_partial_summary_from_agent_executor",
+        lambda *_args, **_kwargs: next(snapshots),
+    )
+    live_summary = DirectRunLiveSummary()
+    live_summary.bind(SimpleNamespace())
+
+    assert live_summary.snapshot() is partial
+    assert live_summary.snapshot() is terminal
+
+
+def test_live_trajectory_omits_untyped_empty_provider_record() -> None:
+    empty = {
+        "request_id": "request-empty",
+        "task_id": "task",
+        "agent_id": "Aworld",
+        "response": {
+            "message": {"content": "", "tool_calls": []},
+            "finish_reason": "stop",
+        },
+    }
+
+    assert _live_trajectory_from_llm_calls(
+        [empty],
+        context=SimpleNamespace(task_id="task", session_id="session"),
+    ) == []
+
+
+def test_merge_removes_repeated_request_id_empty_suffix() -> None:
+    complete = {
+        "meta": {
+            "task_id": "task",
+            "session_id": "session",
+            "task_epoch": 1,
+            "run_boundary_id": "run",
+            "llm_request_id": "request-1",
+            "step": 1,
+        },
+        "action": {"content": "Task complete.", "tool_calls": []},
+    }
+    duplicate_empty = {
+        "meta": {
+            "task_id": "task",
+            "session_id": "session",
+            "task_epoch": 1,
+            "run_boundary_id": "run",
+            "llm_request_id": "request-1",
+            "assistant_response_kind": "empty_response",
+            "step": 1,
+        },
+        "action": {"content": "", "tool_calls": []},
+    }
+
+    merged = _merge_native_and_live_trajectory(
+        [complete, duplicate_empty],
+        [complete, duplicate_empty],
+    )
+
+    assert len(merged) == 1
+    assert merged[0]["action"]["content"] == "Task complete."
+
+
 def test_live_trajectory_never_relabels_explicit_record_scope() -> None:
     record = _provider_call(
         request_id="request-old",

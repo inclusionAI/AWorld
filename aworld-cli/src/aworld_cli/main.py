@@ -2059,6 +2059,14 @@ def _live_trajectory_from_llm_calls(
                 )
             elif reasoning_observed:
                 response_kind = "reasoning_only"
+            else:
+                # A provider journal can expose an in-flight, cancelled, or
+                # stale mutation with an empty message. It is call evidence,
+                # but it is not an assistant action. Keep the authoritative
+                # call counter in ``llm_calls`` without manufacturing a blank
+                # trajectory step. Explicit framework retries remain visible
+                # through their typed response_kind above.
+                continue
         if content is None and not tool_calls and response_kind is None:
             continue
         request_id = record.get("request_id")
@@ -2099,8 +2107,6 @@ def _merge_native_and_live_trajectory(
 
     merged = copy.deepcopy([item for item in native_items if isinstance(item, dict)])
     live = [copy.deepcopy(item) for item in live_items if isinstance(item, dict)]
-    if not merged:
-        return live
     live_scopes = {
         key
         for item in live
@@ -2123,6 +2129,75 @@ def _merge_native_and_live_trajectory(
                 if scope_key(normalize_scope(item.get("meta"))) == expected_scope_key
             )
         )
+
+    def request_identity(item: dict) -> tuple[tuple[object, ...], str] | None:
+        meta = item.get("meta") if isinstance(item.get("meta"), dict) else {}
+        request_id = meta.get("llm_request_id")
+        if not isinstance(request_id, str) or not request_id:
+            return None
+        partial_scope = normalize_scope(meta)
+        if expected_scope is not None:
+            if any(
+                key in partial_scope and partial_scope[key] != value
+                for key, value in expected_scope.items()
+            ):
+                return None
+            partial_scope = {**expected_scope, **partial_scope}
+        item_scope = scope_key(partial_scope)
+        return (item_scope, request_id) if item_scope is not None else None
+
+    def evidence_quality(item: dict) -> tuple[int, int, int, int]:
+        meta = item.get("meta") if isinstance(item.get("meta"), dict) else {}
+        action = item.get("action") if isinstance(item.get("action"), dict) else {}
+        content = action.get("content")
+        content = content if isinstance(content, str) else str(content or "")
+        calls = [
+            call for call in action.get("tool_calls") or [] if isinstance(call, dict)
+        ]
+        typed_retry = meta.get("assistant_response_kind") in {
+            "empty_response_retry",
+            "reasoning_only_retry",
+        }
+        return (
+            1 if content.strip() or calls else 0,
+            1 if content.strip() else 0,
+            len(calls),
+            1 if typed_retry else 0,
+        )
+
+    def deduplicate(items: list[dict]) -> list[dict]:
+        result: list[dict] = []
+        positions: dict[tuple[tuple[object, ...], str], int] = {}
+        for item in items:
+            identity = request_identity(item)
+            if identity is None or identity not in positions:
+                if identity is not None:
+                    positions[identity] = len(result)
+                result.append(item)
+                continue
+            position = positions[identity]
+            existing = result[position]
+            if evidence_quality(item) > evidence_quality(existing):
+                preferred, fallback = copy.deepcopy(item), existing
+            else:
+                preferred, fallback = existing, item
+            preferred_meta = preferred.setdefault("meta", {})
+            fallback_meta = fallback.get("meta")
+            if isinstance(preferred_meta, dict) and isinstance(fallback_meta, dict):
+                for key, value in fallback_meta.items():
+                    if value is not None:
+                        preferred_meta.setdefault(key, value)
+            result[position] = preferred
+        return result
+
+    # A periodic checkpoint may already contain a live suffix that a later
+    # native capture represents again. Normalize both sides before anchoring
+    # so a repeated request cannot survive merely because it was observed in
+    # two capture planes.
+    merged = deduplicate(merged)
+    live = deduplicate(live)
+    if not merged:
+        return live
 
     def aliases(item: dict) -> set[tuple[object, ...]]:
         meta = item.get("meta") if isinstance(item.get("meta"), dict) else {}
@@ -2198,7 +2273,7 @@ def _merge_native_and_live_trajectory(
         appended = copy.deepcopy(item)
         appended.setdefault("meta", {})["step"] = len(merged) + 1
         merged.append(appended)
-    return merged
+    return deduplicate(merged)
 
 
 class DirectRunLiveSummary:
@@ -2267,6 +2342,21 @@ class DirectRunLiveSummary:
             allow_unique_durable_run=True,
         )
         if recovered is not None and _direct_run_has_provider_evidence(recovered):
+            def terminal(summary: dict) -> bool:
+                return any(
+                    str(result.get("semantic_status") or "").lower()
+                    in {
+                        "succeeded",
+                        "task_failed",
+                        "incomplete",
+                        "budget_exhausted",
+                        "cancelled",
+                        "infrastructure_failed",
+                    }
+                    for result in summary.get("results") or []
+                    if isinstance(result, dict)
+                )
+
             def score(summary: dict) -> tuple[int, int]:
                 results = summary.get("results") or []
                 return (
@@ -2282,14 +2372,15 @@ class DirectRunLiveSummary:
                     ),
                 )
 
-            if (
-                self._last_evidenced_summary is None
-                or all(
-                    current >= retained
-                    for current, retained in zip(
-                        score(recovered),
-                        score(self._last_evidenced_summary),
-                    )
+            retained = self._last_evidenced_summary
+            terminal_upgrade = (
+                retained is not None and terminal(recovered) and not terminal(retained)
+            )
+            if retained is None or terminal_upgrade or (
+                terminal(recovered) == terminal(retained)
+                and all(
+                    current >= previous
+                    for current, previous in zip(score(recovered), score(retained))
                 )
             ):
                 self._last_evidenced_summary = recovered

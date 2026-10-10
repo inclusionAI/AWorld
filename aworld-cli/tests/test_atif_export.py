@@ -396,6 +396,47 @@ def test_atif_labels_tool_call_only_turn_without_claiming_empty_response():
     assert "empty response" not in step["message"]
 
 
+def test_atif_deduplicates_request_ids_and_drops_blank_placeholders():
+    scope = {
+        "task_id": "task-1",
+        "session_id": "session-1",
+        "task_epoch": 0,
+        "run_boundary_id": "run-1",
+    }
+    complete = {
+        "meta": {**scope, "step": 1, "llm_request_id": "request-1"},
+        "action": {"content": "Task complete.", "tool_calls": []},
+    }
+    duplicate = {
+        "meta": {
+            **scope,
+            "step": 1,
+            "llm_request_id": "request-1",
+            "assistant_response_kind": "empty_response",
+        },
+        "action": {"content": "", "tool_calls": []},
+    }
+    placeholder = {
+        "meta": {**scope, "step": 1, "assistant_response_kind": "empty_response"},
+        "action": {"content": "", "tool_calls": []},
+    }
+
+    trajectory = build_atif_trajectory(
+        {
+            "trajectory": [complete, duplicate, placeholder],
+            "llm_calls": [{"request_id": "request-1"}],
+        },
+        prompt="Do the task",
+        agent_name="Aworld",
+        agent_version="dev",
+        run_outcome={"llm_call_count": 1},
+    )
+
+    assert len(trajectory["steps"]) == 2
+    assert trajectory["steps"][1]["message"] == "Task complete."
+    assert trajectory["steps"][1]["llm_call_count"] == 1
+
+
 def test_live_atif_distinguishes_reasoning_only_framework_retry():
     raw_call = {
         "id": "call-2",
@@ -974,9 +1015,10 @@ def test_build_failed_partial_atif_preserves_authoritative_counts():
         },
     )
 
-    assert sum(step.get("llm_call_count", 0) for step in trajectory["steps"]) == 3
+    assert sum(step.get("llm_call_count", 0) for step in trajectory["steps"]) == 1
     final_extra = trajectory["final_metrics"]["extra"]
     assert final_extra["llm_call_count"] == 3
+    assert final_extra["unattributed_llm_call_count"] == 2
     assert final_extra["tool_call_count"] == 1
     assert final_extra["action_count"] == 1
     assert final_extra["llm_diagnostics"]["call_count"] == 3

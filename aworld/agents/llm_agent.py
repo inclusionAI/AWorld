@@ -8789,6 +8789,16 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
     def _discard_active_generation_task(task: asyncio.Task) -> None:
         with _GENERATION_TASKS_LOCK:
             _ACTIVE_GENERATION_TASKS.discard(task)
+        # A task can finish between ``asyncio.wait`` cancellation and the
+        # caller's result retrieval. Always observe its exception here so a
+        # concurrent async-generator close cannot escape as "Task exception
+        # was never retrieved". Reading the exception does not prevent a later
+        # await/result call from seeing it.
+        if task.done():
+            try:
+                task.exception()
+            except BaseException:
+                pass
 
     @classmethod
     def _create_generation_task(cls, awaitable) -> asyncio.Task | None:
@@ -8858,6 +8868,15 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             return
         close_task: asyncio.Task | None = None
         try:
+            if getattr(resp_stream, "ag_running", False):
+                # ``aclose`` on a currently-running async generator raises
+                # RuntimeError. Its owner is still responsible for leaving the
+                # iteration; a competing closer must not race it.
+                logger.debug(
+                    "Skipping model stream cleanup because the async generator "
+                    "is still running"
+                )
+                return
             close = getattr(resp_stream, "aclose", None)
             if not callable(close):
                 return

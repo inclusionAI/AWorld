@@ -511,3 +511,27 @@ hard_exit_direct_run_if_configured(0)
 
     assert completed.returncode == 0
     assert "stream outcome finalized" in completed.stdout
+
+
+@pytest.mark.asyncio
+async def test_generation_stream_cleanup_does_not_race_running_async_generator(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from aworld.agents.llm_agent import LLMAgent
+
+    class RunningStream:
+        ag_running = True
+
+        def __init__(self) -> None:
+            self.close_called = False
+
+        async def aclose(self) -> None:
+            self.close_called = True
+            raise RuntimeError("aclose(): asynchronous generator is already running")
+
+    monkeypatch.delenv("AWORLD_DIRECT_RUN_SHUTDOWN_TIMEOUT_SECONDS", raising=False)
+    stream = RunningStream()
+
+    await LLMAgent._close_generation_stream(stream)
+
+    assert stream.close_called is False
