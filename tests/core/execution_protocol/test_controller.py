@@ -2194,12 +2194,27 @@ def test_observe_mode_terminal_gate_enforces_only_terminal_review_and_repair():
         max_final_reviews=2,
         max_repairs=1,
     )
-    finalizing = transition_execution_protocol(
+    checkpoint = transition_execution_protocol(
         _armed_state(), _tool(remaining_seconds=59.5), policy
     )
 
-    assert finalizing.decision.action is ControllerAction.ENTER_FINALIZATION
+    assert checkpoint.decision.action is ControllerAction.REQUEST_REPLAN
+    assert checkpoint.decision.reason is DecisionReason.CANDIDATE_DECISION_RESERVE
+    assert checkpoint.state.phase is ProtocolPhase.EXECUTE
+    assert checkpoint.state.candidate_decision_count == 1
+
+    finalizing = transition_execution_protocol(
+        checkpoint.state,
+        ExecutionProtocolEvent(
+            kind=EventKind.MODEL_PLAN_UPDATE,
+            model_plan_update=_plan_update(intent="submit_current", tool=None),
+        ),
+        policy,
+    )
+
     assert finalizing.state.phase is ProtocolPhase.FINALIZE
+    assert finalizing.state.finalization_entered is True
+    assert finalizing.state.candidate_decision_recorded is True
 
     reviewing = transition_execution_protocol(
         finalizing.state,

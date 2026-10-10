@@ -654,6 +654,22 @@ def transition_execution_protocol(
             and not next_state.finalization_entered
         )
         if reserve_reached:
+            # A slow provider or Tool turn can jump across the entire candidate
+            # window.  The terminal gate must still expose its one bounded
+            # model-owned submission decision before ordinary Tools are
+            # removed; otherwise success-first falls straight back to the old
+            # implicit-acceptance deadline path.
+            if (
+                policy.terminal_review_gate_enabled
+                and next_state.candidate_decision_count == 0
+                and not next_state.decision_checkpoint_pending
+            ):
+                return _checkpoint_transition(
+                    next_state,
+                    policy,
+                    reason=DecisionReason.CANDIDATE_DECISION_RESERVE,
+                    candidate_present=event.candidate_present,
+                )
             next_state = replace(
                 next_state,
                 phase=ProtocolPhase.FINALIZE,
