@@ -318,12 +318,20 @@ EXECUTION_PROTOCOL_REVIEW_UNARMED_ENV = (
     "AWORLD_EXECUTION_PROTOCOL_REVIEW_UNARMED_CANDIDATES"
 )
 SUCCESS_FIRST_ENV = "AWORLD_SUCCESS_FIRST"
+SUCCESS_FIRST_TERMINAL_GATE_ENV = "AWORLD_SUCCESS_FIRST_TERMINAL_GATE"
 
 
 def _success_first_enabled() -> bool:
     """Return whether success-first semantics are enabled (the default)."""
 
     raw = os.environ.get(SUCCESS_FIRST_ENV)
+    return raw is None or raw.strip().lower() not in {"0", "false", "no", "off"}
+
+
+def _success_first_terminal_gate_enabled() -> bool:
+    """Return whether success-first retains bounded terminal control."""
+
+    raw = os.environ.get(SUCCESS_FIRST_TERMINAL_GATE_ENV)
     return raw is None or raw.strip().lower() not in {"0", "false", "no", "off"}
 
 
@@ -1005,42 +1013,53 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         """Use an explicit override or AWorld's default convergence policy."""
         if self._explicit_execution_protocol_policy is not None:
             return self._explicit_execution_protocol_policy
-        if _success_first_enabled():
-            # Benchmark callers already own a hard task deadline, maximum agent
-            # steps, per-call timeouts, and process-tree cleanup.  Keep protocol
-            # observations for telemetry without letting convergence,
-            # diagnostic quotas, review limits, or finalization reserves revoke
-            # ordinary Tools before those outer bounds are reached.
-            return ExecutionProtocolPolicy(
+        success_first = _success_first_enabled()
+        if success_first:
+            # Benchmark callers already own a hard task deadline, per-call
+            # timeouts, and process-tree cleanup. Keep ordinary execution in
+            # observe mode, but retain one bounded terminal path so a finished
+            # candidate cannot spend the entire caller budget on further
+            # inspection without ever reaching review and finalization.
+            terminal_gate = _success_first_terminal_gate_enabled()
+            policy = ExecutionProtocolPolicy(
                 mode=ProtocolMode.OBSERVE,
                 review_unarmed_candidates=False,
+                terminal_review_gate_enabled=terminal_gate,
                 independent_acceptance_enabled=False,
                 semantic_progress_enabled=True,
-                max_final_reviews=None,
-                max_repairs=None,
-                finalization_reserve_seconds=0.0,
-                candidate_decision_reserve_seconds=0.0,
+                max_final_reviews=2 if terminal_gate else None,
+                max_repairs=1 if terminal_gate else None,
+                finalization_reserve_seconds=60.0 if terminal_gate else 0.0,
+                candidate_decision_reserve_seconds=(
+                    240.0 if terminal_gate else 0.0
+                ),
+                final_review_timeout_seconds=120.0 if terminal_gate else None,
             )
-        skill = (self.skill_configs or {}).get("long-running-agent")
-        active = isinstance(skill, dict) and skill.get("active") is True
-        # Convergence is a baseline AWorld capability, not a Skill toggle.
-        # The long-running Skill retains only its broader review behavior;
-        # callers may still pass an explicit OFF/OBSERVE policy for rollback or
-        # controlled experiments.
-        review_unarmed_candidates = _default_on_env(
-            EXECUTION_PROTOCOL_REVIEW_UNARMED_ENV
-        )
-        policy = ExecutionProtocolPolicy(
-            mode=ProtocolMode.GUIDE,
-            review_unarmed_candidates=(review_unarmed_candidates if active else False),
-            independent_acceptance_enabled=_default_on_env(
-                INDEPENDENT_ACCEPTANCE_CRITIC_ENV
-            ),
-            semantic_progress_enabled=_default_on_env(
-                SEMANTIC_PROGRESS_LEDGER_ENV
-            ),
-        )
-        if context is None:
+        else:
+            skill = (self.skill_configs or {}).get("long-running-agent")
+            active = isinstance(skill, dict) and skill.get("active") is True
+            # Convergence is a baseline AWorld capability, not a Skill toggle.
+            # The long-running Skill retains only its broader review behavior;
+            # callers may still pass an explicit OFF/OBSERVE policy for rollback or
+            # controlled experiments.
+            review_unarmed_candidates = _default_on_env(
+                EXECUTION_PROTOCOL_REVIEW_UNARMED_ENV
+            )
+            policy = ExecutionProtocolPolicy(
+                mode=ProtocolMode.GUIDE,
+                review_unarmed_candidates=(
+                    review_unarmed_candidates if active else False
+                ),
+                independent_acceptance_enabled=_default_on_env(
+                    INDEPENDENT_ACCEPTANCE_CRITIC_ENV
+                ),
+                semantic_progress_enabled=_default_on_env(
+                    SEMANTIC_PROGRESS_LEDGER_ENV
+                ),
+            )
+        if context is None or (
+            success_first and not policy.terminal_review_gate_enabled
+        ):
             return policy
 
         # Derive a stable three-part deadline once from typed Task budget:
@@ -5732,6 +5751,16 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                         )
                         self._finished = True
                         return list(review_fallback)
+                    if policy.terminal_review_gate_enabled:
+                        record_execution_state(
+                            message.context,
+                            self.id(),
+                            "succeeded",
+                            "terminal_review_unavailable_submit_current",
+                            recoverable=False,
+                        )
+                        self._finished = True
+                        return list(review_fallback)
                     record_execution_state(
                         message.context,
                         self.id(),
@@ -5991,6 +6020,16 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                             "incomplete",
                             "independent_acceptance_review_budget_stop",
                             recoverable=True,
+                        )
+                        self._finished = True
+                        return list(review_fallback)
+                    if policy.terminal_review_gate_enabled:
+                        record_execution_state(
+                            message.context,
+                            self.id(),
+                            "succeeded",
+                            "terminal_review_budget_stop_submit_current",
+                            recoverable=False,
                         )
                         self._finished = True
                         return list(review_fallback)

@@ -8,6 +8,8 @@ review is public-task-only, fresh-context, answer-only, read-only, and advisory.
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+import hashlib
 import inspect
 import json
 import re
@@ -47,8 +49,9 @@ _MAX_EVIDENCE_CHARS = 4_096
 _MAX_DELIVERABLES = 16
 _MAX_DELIVERABLE_CHARS = 512
 _MAX_REPORT_CHARS = 4_096
-_REVIEW_TOKEN_BUDGET = 32_768
-_REVIEW_MAX_TURNS = 4
+_REVIEW_TOKEN_BUDGET = 16_384
+_REVIEW_MAX_TURNS = 2
+_REVIEW_WALL_CLOCK_SECONDS = 120.0
 _READ_ONLY_FILESYSTEM_ACTIONS = frozenset(
     {
         "list_allowed_directories",
@@ -286,6 +289,7 @@ class LazyVerifierFactory:
         self._builder_loader = builder_loader or self._load_builder
         self._review_runner = review_runner or self._run_with_subagent_manager
         self._construction_count = 0
+        self._review_attempt_keys: set[str] = set()
 
     @property
     def construction_count(self) -> int:
@@ -364,6 +368,53 @@ class LazyVerifierFactory:
                     ),
                     reason_code=request_error,
                 )
+            context_info = getattr(context, "context_info", None)
+            gate = None
+            if isinstance(context_info, Mapping):
+                gate = context_info.get("execution_protocol_mutation_gate")
+                if not isinstance(gate, Mapping):
+                    gate = next(
+                        (
+                            value
+                            for key, value in context_info.items()
+                            if isinstance(key, str)
+                            and key.startswith("execution_protocol_mutation_gate:")
+                            and isinstance(value, Mapping)
+                        ),
+                        None,
+                    )
+            candidate_fingerprint = (
+                gate.get("candidate_fingerprint")
+                if isinstance(gate, Mapping)
+                else None
+            )
+            attempt_key = hashlib.sha256(
+                json.dumps(
+                    {
+                        "public_task": public_task,
+                        "candidate_claim": request.candidate_claim,
+                        "deliverables": request.deliverables,
+                        "evidence_summary": request.evidence_summary,
+                        "candidate_fingerprint": candidate_fingerprint,
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ).hexdigest()
+            if attempt_key in self._review_attempt_keys:
+                return AdvisoryReviewResult(
+                    status="unavailable",
+                    decision="uncertain",
+                    report=(
+                        "The current candidate has already received this bounded "
+                        "advisory review attempt. The root agent should use the "
+                        "existing result or continue with an explicitly revised "
+                        "candidate."
+                    ),
+                    reason_code="duplicate_candidate_review",
+                )
+            self._review_attempt_keys.add(attempt_key)
             verifier = self._construct_verifier()
             authoritative_deliverables = _authoritative_delivery_paths(context)
             authoritative_validation_receipts = _authoritative_validation_receipts(
@@ -444,6 +495,34 @@ class LazyVerifierFactory:
             )
 
     @staticmethod
+    def _review_deadline(context: Any) -> datetime:
+        """Return a finite child deadline without consuming caller persistence time."""
+
+        available = _REVIEW_WALL_CLOCK_SECONDS
+        get_task = getattr(context, "get_task", None)
+        try:
+            task = get_task() if callable(get_task) else None
+            remaining = task.remaining_seconds() if task is not None else None
+            reserve = (
+                getattr(task, "completion_reserve_seconds", 0.0)
+                if task is not None
+                else 0.0
+            )
+        except Exception:
+            remaining = None
+            reserve = 0.0
+        if isinstance(remaining, (int, float)) and not isinstance(remaining, bool):
+            safe_reserve = (
+                float(reserve)
+                if isinstance(reserve, (int, float))
+                and not isinstance(reserve, bool)
+                and reserve >= 0
+                else 0.0
+            )
+            available = min(available, max(0.001, float(remaining) - safe_reserve))
+        return datetime.now(timezone.utc) + timedelta(seconds=available)
+
+    @staticmethod
     async def _run_with_subagent_manager(
         parent_agent: BaseAgent,
         verifier: BaseAgent,
@@ -484,7 +563,7 @@ class LazyVerifierFactory:
                 max_output_tokens=_MAX_REPORT_CHARS,
                 max_turns=_REVIEW_MAX_TURNS,
                 max_depth=1,
-                deadline=None,
+                deadline=LazyVerifierFactory._review_deadline(context),
                 expected_output_schema={
                     "type": "string",
                     "minLength": 1,

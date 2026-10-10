@@ -1,4 +1,5 @@
 import asyncio
+from datetime import datetime, timezone
 import json
 import os
 import subprocess
@@ -510,6 +511,9 @@ async def test_default_runner_uses_private_manager_and_exact_caller_context(
     assert isinstance(delegation_spec, DelegationSpec)
     assert delegation_spec.objective == "public directive"
     assert delegation_spec.expected_output_schema["type"] == "string"
+    assert delegation_spec.deadline is not None
+    assert delegation_spec.deadline.tzinfo is not None
+    assert delegation_spec.deadline > datetime.now(timezone.utc)
     assert not hasattr(parent, "subagent_manager")
 
 
@@ -615,6 +619,49 @@ async def test_deadline_failure_is_uncertain_and_fails_open() -> None:
     assert result.reason_code == "deadline_exceeded"
     assert result.repair_recommended is False
     assert "retains completion authority" in result.report
+
+
+@pytest.mark.asyncio
+async def test_duplicate_candidate_review_is_bounded_without_second_child() -> None:
+    captured = {}
+    factory = _factory(captured=captured)
+    request = AdvisoryReviewRequest(
+        candidate_claim="The same candidate is ready.",
+        deliverables=("/app/result.json",),
+    )
+    context = _context()
+
+    first = await factory.review(request, context=context)
+    second = await factory.review(request, context=context)
+
+    assert first.status == "completed"
+    assert second.status == "unavailable"
+    assert second.decision == "uncertain"
+    assert second.reason_code == "duplicate_candidate_review"
+    assert captured["builder_loads"] == 1
+
+
+@pytest.mark.asyncio
+async def test_changed_candidate_fingerprint_allows_one_fresh_review() -> None:
+    captured = {}
+    factory = _factory(captured=captured)
+    request = AdvisoryReviewRequest(candidate_claim="The candidate is ready.")
+    context = _context()
+    context.context_info = {
+        "execution_protocol_mutation_gate:root-id": {
+            "candidate_fingerprint": "sha256:first",
+        }
+    }
+
+    first = await factory.review(request, context=context)
+    context.context_info["execution_protocol_mutation_gate:root-id"] = {
+        "candidate_fingerprint": "sha256:second",
+    }
+    second = await factory.review(request, context=context)
+
+    assert first.status == "completed"
+    assert second.status == "completed"
+    assert captured["builder_loads"] == 2
 
 
 @pytest.mark.asyncio

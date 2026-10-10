@@ -57,6 +57,22 @@ def _observed_action(
     return guide if mode is ProtocolMode.GUIDE else observe
 
 
+def _terminal_action(
+    policy: ExecutionProtocolPolicy,
+    *,
+    guide: ControllerAction,
+    observe: ControllerAction,
+) -> ControllerAction:
+    """Enforce only terminal liveness while preserving observe-only execution."""
+
+    return (
+        guide
+        if policy.mode is ProtocolMode.GUIDE
+        or policy.terminal_review_gate_enabled
+        else observe
+    )
+
+
 def _is_progress(event: ExecutionProtocolEvent) -> bool:
     return event.evidence_advanced or event.goal_progress is True
 
@@ -210,27 +226,34 @@ def _checkpoint_transition(
             state,
             candidate_decision_count=state.candidate_decision_count + 1,
         )
+    terminal_checkpoint = bool(
+        policy.terminal_review_gate_enabled
+        and reason is DecisionReason.CANDIDATE_DECISION_RESERVE
+    )
+    control_enabled = bool(
+        policy.mode is ProtocolMode.GUIDE or terminal_checkpoint
+    )
     next_state = replace(
         state,
         replan_count=state.replan_count + 1,
         replan_requested_count=(
             state.replan_requested_count + 1
-            if policy.mode is ProtocolMode.GUIDE
+            if control_enabled
             else state.replan_requested_count
         ),
-        decision_checkpoint_pending=policy.mode is ProtocolMode.GUIDE,
+        decision_checkpoint_pending=control_enabled,
         decision_checkpoint_reason=(
-            reason if policy.mode is ProtocolMode.GUIDE else None
+            reason if control_enabled else None
         ),
         decision_checkpoint_candidate_present=(
-            candidate_present if policy.mode is ProtocolMode.GUIDE else None
+            candidate_present if control_enabled else None
         ),
         last_replan_attempt_epoch=state.attempt_epoch,
     )
-    action = _observed_action(
-        policy.mode,
-        guide=ControllerAction.REQUEST_REPLAN,
-        observe=ControllerAction.WOULD_REQUEST_REPLAN,
+    action = (
+        ControllerAction.REQUEST_REPLAN
+        if control_enabled
+        else ControllerAction.WOULD_REQUEST_REPLAN
     )
     return ProtocolTransition(next_state, _decision(action, reason))
 
@@ -421,8 +444,8 @@ def transition_execution_protocol(
             pending_next_action_plan_sequence=None,
             pending_next_action_call_id=None,
         )
-        action = _observed_action(
-            policy.mode,
+        action = _terminal_action(
+            policy,
             guide=ControllerAction.ENTER_FINALIZATION,
             observe=ControllerAction.WOULD_ENTER_FINALIZATION,
         )
@@ -636,8 +659,8 @@ def transition_execution_protocol(
                 phase=ProtocolPhase.FINALIZE,
                 finalization_entered=True,
             )
-            action = _observed_action(
-                policy.mode,
+            action = _terminal_action(
+                policy,
                 guide=ControllerAction.ENTER_FINALIZATION,
                 observe=ControllerAction.WOULD_ENTER_FINALIZATION,
             )
@@ -947,7 +970,10 @@ def transition_execution_protocol(
                     DecisionReason.REVIEW_BOUNDARY_UNAVAILABLE,
                 ),
             )
-        if next_state.phase is ProtocolPhase.FINALIZE:
+        if (
+            next_state.phase is ProtocolPhase.FINALIZE
+            and not policy.terminal_review_gate_enabled
+        ):
             next_state = replace(
                 next_state,
                 phase=ProtocolPhase.REVIEW,
@@ -999,8 +1025,8 @@ def transition_execution_protocol(
                 final_review_count=next_state.final_review_count + 1,
                 review_pending=True,
             )
-            action = _observed_action(
-                policy.mode,
+            action = _terminal_action(
+                policy,
                 guide=ControllerAction.REQUEST_FINAL_REVIEW,
                 observe=ControllerAction.WOULD_REQUEST_FINAL_REVIEW,
             )
@@ -1059,8 +1085,8 @@ def transition_execution_protocol(
                     phase=ProtocolPhase.REPAIR,
                     repair_count=next_state.repair_count + 1,
                 )
-                action = _observed_action(
-                    policy.mode,
+                action = _terminal_action(
+                    policy,
                     guide=ControllerAction.REQUEST_REPAIR,
                     observe=ControllerAction.WOULD_REQUEST_REPAIR,
                 )

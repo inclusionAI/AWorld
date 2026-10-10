@@ -362,6 +362,7 @@ def test_model_execution_profile_rejects_unknown_fields():
         ("final_review_timeout_seconds", 0),
         ("final_review_timeout_seconds", 86_401),
         ("review_unarmed_candidates", "yes"),
+        ("terminal_review_gate_enabled", "yes"),
     ],
 )
 def test_policy_rejects_invalid_bounds(field, value):
@@ -419,6 +420,7 @@ def test_policy_has_a_stable_serialized_round_trip():
         history_limit=9,
         activation_event_threshold=15,
         review_unarmed_candidates=True,
+        terminal_review_gate_enabled=True,
         max_replans=1,
         finalization_reserve_seconds=42.5,
         final_review_timeout_seconds=30,

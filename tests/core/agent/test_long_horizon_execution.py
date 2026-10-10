@@ -263,6 +263,51 @@ async def test_review_model_error_returns_original_candidate_as_incomplete() -> 
     )
 
 
+@pytest.mark.asyncio
+async def test_success_first_terminal_review_error_submits_current_candidate() -> None:
+    context = Context(task_id="terminal-review-error")
+    context.set_task(
+        Task(id="terminal-review-error", input="finish the task", timeout=600)
+    )
+    policy = ExecutionProtocolPolicy(
+        mode=ProtocolMode.OBSERVE,
+        terminal_review_gate_enabled=True,
+        independent_acceptance_enabled=False,
+        final_review_timeout_seconds=0.01,
+    )
+    agent = _agent(context, policy)
+    configure_execution_protocol(context, agent.id(), policy)
+    _declare_long_horizon(context, agent.id())
+    transition = record_candidate_final(context, agent.id())
+    assert transition is not None
+    assert transition.decision.action is ControllerAction.REQUEST_FINAL_REVIEW
+    fallback = ActionModel(agent_name=agent.id(), policy_info="best current result")
+    calls = 0
+
+    async def attempt(observation, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return _LongHorizonReviewContinuation(
+                observation=Observation(content="review current evidence"),
+                kwargs={},
+                fallback_actions=(fallback,),
+            )
+        raise RuntimeError("review provider unavailable")
+
+    agent._async_policy_once = attempt
+    message = Message(category=Constants.AGENT, headers={"context": context})
+
+    result = await agent.async_policy(Observation(content="candidate"), message=message)
+
+    assert result == [fallback]
+    assert agent.finished is True
+    assert get_execution_state(context)["status"] == "succeeded"
+    assert get_execution_state(context)["reason"] == (
+        "terminal_review_unavailable_submit_current"
+    )
+
+
 def _independent_review_failure_fixture(
     task_id: str,
 ) -> tuple[Context, Agent, ExecutionProtocolPolicy, ActionModel]:
@@ -1048,7 +1093,9 @@ def test_explicit_off_policy_remains_a_developer_rollback() -> None:
     assert agent._resolve_execution_protocol_policy().mode is ProtocolMode.OFF
 
 
-def test_success_first_is_default_and_observes_without_early_control(monkeypatch) -> None:
+def test_success_first_observes_execution_but_retains_terminal_control(
+    monkeypatch,
+) -> None:
     monkeypatch.delenv("AWORLD_SUCCESS_FIRST", raising=False)
     monkeypatch.setenv("AWORLD_INDEPENDENT_ACCEPTANCE_CRITIC", "true")
     agent = Agent(
@@ -1065,12 +1112,77 @@ def test_success_first_is_default_and_observes_without_early_control(monkeypatch
 
     assert policy.mode is ProtocolMode.OBSERVE
     assert policy.review_unarmed_candidates is False
+    assert policy.terminal_review_gate_enabled is True
     assert policy.independent_acceptance_enabled is False
     assert policy.semantic_progress_enabled is True
+    assert policy.max_final_reviews == 2
+    assert policy.max_repairs == 1
+    assert policy.finalization_reserve_seconds == 60
+    assert policy.candidate_decision_reserve_seconds == 240
+    assert policy.final_review_timeout_seconds == 120
+
+
+def test_success_first_derives_bounded_terminal_reserves_from_task_budget(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("AWORLD_SUCCESS_FIRST", "true")
+    context = Context(task_id="success-first-terminal-gate")
+    context.set_task(
+        Task(
+            id="success-first-terminal-gate",
+            input="complete the task",
+            timeout=5895.85,
+            completion_reserve_seconds=60,
+        )
+    )
+    agent = Agent(
+        name="Aworld",
+        conf=AgentConfig(
+            llm_provider="openai",
+            llm_model_name="offline",
+            llm_api_key="offline",
+        ),
+    )
+
+    policy = agent._resolve_execution_protocol_policy(context)
+
+    assert policy.mode is ProtocolMode.OBSERVE
+    assert policy.terminal_review_gate_enabled is True
+    assert policy.finalization_reserve_seconds == pytest.approx(180.0)
+    assert policy.candidate_decision_reserve_seconds == pytest.approx(480.0)
+    assert policy.final_review_timeout_seconds == pytest.approx(120.0)
+
+
+def test_success_first_terminal_gate_has_an_exact_rollback(monkeypatch) -> None:
+    monkeypatch.setenv("AWORLD_SUCCESS_FIRST", "true")
+    monkeypatch.setenv("AWORLD_SUCCESS_FIRST_TERMINAL_GATE", "false")
+    context = Context(task_id="success-first-terminal-rollback")
+    context.set_task(
+        Task(
+            id="success-first-terminal-rollback",
+            input="complete the task",
+            timeout=5895.85,
+            completion_reserve_seconds=60,
+        )
+    )
+    agent = Agent(
+        name="Aworld",
+        conf=AgentConfig(
+            llm_provider="openai",
+            llm_model_name="offline",
+            llm_api_key="offline",
+        ),
+    )
+
+    policy = agent._resolve_execution_protocol_policy(context)
+
+    assert policy.mode is ProtocolMode.OBSERVE
+    assert policy.terminal_review_gate_enabled is False
     assert policy.max_final_reviews is None
     assert policy.max_repairs is None
     assert policy.finalization_reserve_seconds == 0
     assert policy.candidate_decision_reserve_seconds == 0
+    assert policy.final_review_timeout_seconds is None
 
 
 def test_explicit_protocol_policy_wins_over_success_first(monkeypatch) -> None:

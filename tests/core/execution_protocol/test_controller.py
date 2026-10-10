@@ -2184,6 +2184,62 @@ def test_finalization_reserve_is_generic_and_emitted_once():
     assert second.decision.action is ControllerAction.CONTINUE
 
 
+def test_observe_mode_terminal_gate_enforces_only_terminal_review_and_repair():
+    policy = ExecutionProtocolPolicy(
+        mode="observe",
+        terminal_review_gate_enabled=True,
+        independent_acceptance_enabled=False,
+        finalization_reserve_seconds=60,
+        candidate_decision_reserve_seconds=180,
+        max_final_reviews=2,
+        max_repairs=1,
+    )
+    finalizing = transition_execution_protocol(
+        _armed_state(), _tool(remaining_seconds=59.5), policy
+    )
+
+    assert finalizing.decision.action is ControllerAction.ENTER_FINALIZATION
+    assert finalizing.state.phase is ProtocolPhase.FINALIZE
+
+    reviewing = transition_execution_protocol(
+        finalizing.state,
+        ExecutionProtocolEvent(kind=EventKind.CANDIDATE_FINAL),
+        policy,
+    )
+
+    assert reviewing.decision.action is ControllerAction.REQUEST_FINAL_REVIEW
+    assert reviewing.state.phase is ProtocolPhase.REVIEW
+    assert reviewing.state.review_pending is True
+
+    repairing = transition_execution_protocol(
+        reviewing.state,
+        ExecutionProtocolEvent(
+            kind=EventKind.REVIEW_RESULT,
+            review_outcome=ReviewOutcome.REPAIR,
+        ),
+        policy,
+    )
+
+    assert repairing.decision.action is ControllerAction.REQUEST_REPAIR
+    assert repairing.state.phase is ProtocolPhase.REPAIR
+    assert repairing.state.repair_count == 1
+
+
+def test_observe_mode_without_terminal_gate_remains_diagnostic_only():
+    policy = ExecutionProtocolPolicy(
+        mode="observe",
+        terminal_review_gate_enabled=False,
+        finalization_reserve_seconds=60,
+        candidate_decision_reserve_seconds=180,
+    )
+
+    transition = transition_execution_protocol(
+        _armed_state(), _tool(remaining_seconds=59.5), policy
+    )
+
+    assert transition.decision.action is ControllerAction.WOULD_ENTER_FINALIZATION
+
+
 def test_unprofiled_task_does_not_enter_finalization_reserve():
     transition = transition_execution_protocol(
         _state(),

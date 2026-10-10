@@ -612,6 +612,83 @@ def test_pre_generation_candidate_decision_is_typed_and_one_shot(tmp_path) -> No
     )
 
 
+def test_success_first_terminal_gate_owns_only_late_candidate_boundary(
+    tmp_path,
+) -> None:
+    context = _context("success-first-terminal-boundary")
+    output = tmp_path / "candidate.txt"
+    output.write_text("candidate", encoding="utf-8")
+    context.context_info["public_deliverable_contract"] = {
+        "schema_version": "aworld.public-deliverables/v1",
+        "authority": "public_task_advisory",
+        "source": "public_task_text",
+        "artifacts": [
+            {
+                "deliverable_id": "public-output-1",
+                "path": str(output),
+                "display_path": "candidate.txt",
+                "kind": "file",
+                "authority": "public_task_advisory",
+            }
+        ],
+    }
+    policy = ExecutionProtocolPolicy(
+        mode=ProtocolMode.OBSERVE,
+        terminal_review_gate_enabled=True,
+        independent_acceptance_enabled=False,
+        finalization_reserve_seconds=60,
+        candidate_decision_reserve_seconds=180,
+        final_review_timeout_seconds=30,
+    )
+    configure_execution_protocol(context, "agent", policy)
+    _declare_long_horizon(context)
+
+    context.get_task().remaining_seconds = lambda: 150
+    checkpoint = record_pre_generation_delivery_decision(
+        context, "agent", policy=policy
+    )
+
+    assert checkpoint is not None
+    assert checkpoint.decision.action is ControllerAction.REQUEST_REPLAN
+    assert execution_protocol_model_decision_boundary(context, "agent") == "replan"
+    assert not execution_protocol_requires_tool_free_finalization(context, "agent")
+
+    context.get_task().remaining_seconds = lambda: 59
+    finalizing = record_tool_protocol_event(
+        context,
+        "agent",
+        _semantic_state(
+            candidate_present=True,
+            public_deliverable_declared=True,
+            public_candidate_mutated=True,
+            workspace_mutated=True,
+        ),
+    )
+
+    assert finalizing is not None
+    assert finalizing.decision.action is ControllerAction.ENTER_FINALIZATION
+    assert execution_protocol_requires_tool_free_finalization(context, "agent")
+
+    reviewing = record_candidate_final(
+        context,
+        "agent",
+        [ActionModel(agent_name="agent", policy_info="current candidate")],
+        review_boundary_available=True,
+    )
+    assert reviewing is not None
+    assert reviewing.decision.action is ControllerAction.REQUEST_FINAL_REVIEW
+
+    accepted = record_candidate_final(
+        context,
+        "agent",
+        [ActionModel(agent_name="agent", policy_info="reviewed candidate")],
+        review_boundary_available=True,
+    )
+    assert accepted is not None
+    assert accepted.decision.action is ControllerAction.SUBMIT_CURRENT_RESULT
+    assert accepted.state.phase is ProtocolPhase.COMPLETE
+
+
 def test_short_profile_gets_candidate_decision_for_public_deliverable(tmp_path) -> None:
     context = _context("short-public-candidate-reserve")
     context.context_info["public_deliverable_contract"] = {

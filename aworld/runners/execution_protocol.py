@@ -4570,9 +4570,15 @@ def execution_protocol_accepts_model_profile(context, agent_id: str) -> bool:
 def execution_protocol_model_decision_boundary(context, agent_id: str) -> str | None:
     """Return the pending framework boundary, never a semantic decision."""
     policy = execution_protocol_policy(context, agent_id)
-    if policy.mode is not ProtocolMode.GUIDE:
-        return None
     state = ExecutionProtocolStore(context, agent_id, policy).load()
+    terminal_checkpoint = bool(
+        policy.terminal_review_gate_enabled
+        and state.decision_checkpoint_pending
+        and state.decision_checkpoint_reason
+        is DecisionReason.CANDIDATE_DECISION_RESERVE
+    )
+    if policy.mode is not ProtocolMode.GUIDE and not terminal_checkpoint:
+        return None
     if state.convergence_constraint_active:
         return None
     attempts = _normalized_decision_attempts(
@@ -5607,7 +5613,10 @@ def _execution_protocol_requires_tool_free_finalization_locked(
     from aworld.core.execution_protocol import ProtocolPhase
 
     policy = execution_protocol_policy(context, agent_id)
-    if policy.mode is not ProtocolMode.GUIDE:
+    if (
+        policy.mode is not ProtocolMode.GUIDE
+        and not policy.terminal_review_gate_enabled
+    ):
         return False
     state = ExecutionProtocolStore(context, agent_id, policy).load()
     if state.phase is ProtocolPhase.FINALIZE:

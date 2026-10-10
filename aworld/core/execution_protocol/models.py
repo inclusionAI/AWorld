@@ -812,6 +812,12 @@ class ExecutionProtocolPolicy:
     # still makes no semantic judgement: the review model accepts by returning
     # a final response or requests repair by using Tools.
     review_unarmed_candidates: bool = False
+    # Success-first callers may keep ordinary execution in OBSERVE mode while
+    # still retaining a narrow, deadline-bound terminal path.  This flag never
+    # enables ordinary replans or mutation gating; it only authorizes the
+    # existing finalization/review/repair state machine once a terminal boundary
+    # has been reached.
+    terminal_review_gate_enabled: bool = False
     independent_acceptance_enabled: bool = True
     semantic_progress_enabled: bool = True
     history_limit: int = 32
@@ -853,6 +859,7 @@ class ExecutionProtocolPolicy:
                 raise ValueError("mode must be off, observe, or guide") from exc
         for name in (
             "review_unarmed_candidates",
+            "terminal_review_gate_enabled",
             "independent_acceptance_enabled",
             "semantic_progress_enabled",
         ):
@@ -936,6 +943,7 @@ class ExecutionProtocolPolicy:
             "schema_version": self.SCHEMA_VERSION,
             "mode": self.mode.value,
             "review_unarmed_candidates": self.review_unarmed_candidates,
+            "terminal_review_gate_enabled": self.terminal_review_gate_enabled,
             "independent_acceptance_enabled": self.independent_acceptance_enabled,
             "semantic_progress_enabled": self.semantic_progress_enabled,
             "history_limit": self.history_limit,
@@ -977,6 +985,9 @@ class ExecutionProtocolPolicy:
             mode=value.get("mode"),
             # Additive v1 field.  Older policies retain the short-task bypass.
             review_unarmed_candidates=value.get("review_unarmed_candidates", False),
+            terminal_review_gate_enabled=value.get(
+                "terminal_review_gate_enabled", False
+            ),
             independent_acceptance_enabled=value.get(
                 "independent_acceptance_enabled", True
             ),
