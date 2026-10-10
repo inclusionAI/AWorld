@@ -1395,6 +1395,36 @@ def test_continue_checkpoint_acknowledges_request_without_claiming_replan_applie
     assert acknowledged.decision.reason is DecisionReason.MODEL_PLAN_CHECKPOINT
 
 
+def test_unavailable_terminal_checkpoint_enters_fail_open_finalization():
+    policy = ExecutionProtocolPolicy(
+        mode="observe",
+        terminal_review_gate_enabled=True,
+    )
+    pending = replace(
+        _armed_state(),
+        decision_checkpoint_pending=True,
+        decision_checkpoint_reason=DecisionReason.CANDIDATE_DECISION_RESERVE,
+        decision_checkpoint_candidate_present=True,
+        candidate_decision_count=1,
+    )
+
+    finalized = transition_execution_protocol(
+        pending,
+        ExecutionProtocolEvent(kind=EventKind.TERMINAL_CHECKPOINT_UNAVAILABLE),
+        policy,
+    )
+
+    assert finalized.decision.action is ControllerAction.ENTER_FINALIZATION
+    assert (
+        finalized.decision.reason
+        is DecisionReason.TERMINAL_CHECKPOINT_UNAVAILABLE
+    )
+    assert finalized.state.phase is ProtocolPhase.FINALIZE
+    assert finalized.state.finalization_entered is True
+    assert finalized.state.decision_checkpoint_pending is False
+    assert finalized.state.decision_checkpoint_reason is None
+
+
 def test_convergence_constraint_stops_future_replan_requests_and_advances_stage():
     policy = ExecutionProtocolPolicy(mode="guide", repetition_threshold=1)
     requested = transition_execution_protocol(

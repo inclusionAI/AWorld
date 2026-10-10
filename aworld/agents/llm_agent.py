@@ -9962,11 +9962,41 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                             llm_response, incomplete_reason
                         )
                     from aworld.core.context.execution_state import (
+                        execution_resolution_observation,
                         record_execution_resolution,
                         record_execution_state,
                     )
 
-                    if surface_rejection_codes:
+                    if (
+                        incomplete_action_recovery_attempted
+                        and context is not None
+                        and llm_response is not None
+                        and not surface_rejection_codes
+                        and (llm_response.tool_calls or llm_response.content)
+                    ):
+                        # The blocker was created by an incomplete provider
+                        # response earlier in this same bounded request.  A
+                        # complete internal retry is causal evidence that this
+                        # model-response blocker recovered, including on an
+                        # execution-checkpoint control turn.  Do not leave the
+                        # stale blocker for _async_policy_once to misclassify
+                        # the recovered decision as unavailable.
+                        observation = execution_resolution_observation(
+                            context, self.id()
+                        )
+                        record_execution_resolution(
+                            context,
+                            self.id(),
+                            evidence_kind=(
+                                "complete_provider_tool_action"
+                                if llm_response.tool_calls
+                                else "complete_provider_final_action"
+                            ),
+                            status="running",
+                            reason="model_response_recovered",
+                            observation=observation,
+                        )
+                    elif surface_rejection_codes:
                         # The parser will emit the stable typed rejection and
                         # preserve its existing validation-feedback behavior.
                         # A call outside this request's immutable surface cannot

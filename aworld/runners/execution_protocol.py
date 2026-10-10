@@ -34,6 +34,7 @@ from aworld.core.execution_protocol import (
     ModelPlanUpdate,
     NextActionAlignment,
     ProtocolMode,
+    ProtocolPhase,
     ProtocolTransition,
     ReviewOutcome,
     action_signature,
@@ -4648,6 +4649,8 @@ def record_model_decision_attempt_failure(
     _update_runtime_value(
         context, agent_id, EXECUTION_PROTOCOL_MODEL_DECISIONS_KEY, update
     )
+    if not retry and _finalize_unavailable_terminal_checkpoint(context, agent_id):
+        return False
     if not retry and boundary == "replan":
         _apply_event(
             context,
@@ -4656,6 +4659,31 @@ def record_model_decision_attempt_failure(
         )
         _activate_convergence_after_unapplied_limit(context, agent_id)
     return retry
+
+
+def _finalize_unavailable_terminal_checkpoint(context, agent_id: str) -> bool:
+    """Fail open from a bounded terminal checkpoint without losing liveness."""
+
+    policy = execution_protocol_policy(context, agent_id)
+    state = ExecutionProtocolStore(context, agent_id, policy).load()
+    if not (
+        policy.terminal_review_gate_enabled
+        and state.decision_checkpoint_pending
+        and state.decision_checkpoint_reason
+        is DecisionReason.CANDIDATE_DECISION_RESERVE
+    ):
+        return False
+    transition = _apply_event(
+        context,
+        agent_id,
+        ExecutionProtocolEvent(kind=EventKind.TERMINAL_CHECKPOINT_UNAVAILABLE),
+    )
+    return bool(
+        transition.decision.action is ControllerAction.ENTER_FINALIZATION
+        and transition.state.phase is ProtocolPhase.FINALIZE
+        and transition.state.finalization_entered
+        and not transition.state.decision_checkpoint_pending
+    )
 
 
 def record_model_decision_unavailable(
@@ -4671,7 +4699,9 @@ def record_model_decision_unavailable(
     not model-owned semantic choices.  They therefore must not consume the
     malformed-decision retry loop or keep ordinary task Tools hidden.  The
     boundary remains explicitly unacknowledged/unknown and never becomes
-    evidence for completion or a short-task bypass.
+    evidence for completion or a short-task bypass. Ordinary checkpoints
+    restore normal Tools; an enabled terminal checkpoint instead clears its
+    pending latch and enters fail-open finalization with the current best work.
     """
     if boundary not in {"initial", "replan"}:
         return False
@@ -4725,6 +4755,8 @@ def record_model_decision_unavailable(
     _update_runtime_value(
         context, agent_id, EXECUTION_PROTOCOL_MODEL_DECISIONS_KEY, update
     )
+    if _finalize_unavailable_terminal_checkpoint(context, agent_id):
+        return True
     if boundary == "replan":
         _apply_event(
             context,

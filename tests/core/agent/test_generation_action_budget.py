@@ -1188,6 +1188,66 @@ async def test_tool_free_incomplete_response_recovery_preserves_final_budget(
 
 
 @pytest.mark.asyncio
+async def test_control_turn_complete_retry_resolves_its_incomplete_response(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent = _agent(
+        policy=GenerationBudgetPolicy(total_timeout_seconds=5),
+        attempts=2,
+    )
+    message = _message("control-response-recovery")
+    provider_calls: list[dict] = []
+
+    async def provider(*_args, **kwargs):
+        provider_calls.append(kwargs)
+        if len(provider_calls) == 1:
+            return ModelResponse(
+                id="truncated-control",
+                model="fake-model",
+                reasoning_content="prepare the checkpoint",
+                finish_reason="length",
+            )
+        return ModelResponse(
+            id="recovered-control",
+            model="fake-model",
+            finish_reason="tool_calls",
+            tool_calls=[
+                ToolCall(
+                    id="checkpoint-decision",
+                    function=Function(
+                        name="aworld__execution_decision",
+                        arguments='{"decision":"submit_current"}',
+                    ),
+                )
+            ],
+        )
+
+    monkeypatch.setattr(llm_agent_module, "acall_llm_model", provider)
+    response = await agent.invoke_model(
+        messages=[{"role": "user", "content": "record checkpoint"}],
+        message=message,
+        prepared_tools=[
+            {
+                "type": "function",
+                "function": {
+                    "name": "aworld__execution_decision",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            }
+        ],
+        stream=False,
+        _execution_state_resolution_mode="checkpoint",
+    )
+
+    assert response.finish_reason == "tool_calls"
+    assert len(provider_calls) == 2
+    state = get_execution_state(message.context, agent_id=agent.id())
+    assert state is not None
+    assert state["status"] == "running"
+    assert state["unresolved_blockers"] == []
+
+
+@pytest.mark.asyncio
 async def test_truncated_model_action_has_bounded_outer_recovery() -> None:
     agent = _long_running_generation_agent(armed=False)
     agent.context.set_task(

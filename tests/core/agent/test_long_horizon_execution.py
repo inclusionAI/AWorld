@@ -1416,6 +1416,57 @@ def test_success_first_terminal_checkpoint_exposes_decision_tool() -> None:
     }
 
 
+@pytest.mark.parametrize(
+    "failure_kind",
+    ["malformed", "unavailable"],
+)
+def test_success_first_terminal_checkpoint_failure_finalizes_fail_open(
+    failure_kind: str,
+) -> None:
+    context = Context(task_id=f"terminal-checkpoint-{failure_kind}")
+    context.set_task(Task(id=f"terminal-checkpoint-{failure_kind}", timeout=600))
+    policy = ExecutionProtocolPolicy(
+        mode=ProtocolMode.OBSERVE,
+        terminal_review_gate_enabled=True,
+    )
+    agent = _agent(context, policy)
+    configure_execution_protocol(context, agent.id(), policy)
+    store = ExecutionProtocolStore(context, agent.id(), policy)
+    store.save(
+        replace(
+            store.load(),
+            long_horizon_armed=True,
+            candidate_decision_count=1,
+            replan_count=1,
+            replan_requested_count=1,
+            decision_checkpoint_pending=True,
+            decision_checkpoint_reason=DecisionReason.CANDIDATE_DECISION_RESERVE,
+            decision_checkpoint_candidate_present=True,
+        )
+    )
+
+    if failure_kind == "malformed":
+        assert record_model_decision_attempt_failure(
+            context, agent.id(), boundary="initial"
+        ) is True
+        assert record_model_decision_attempt_failure(
+            context, agent.id(), boundary="initial"
+        ) is False
+    else:
+        assert record_model_decision_unavailable(
+            context,
+            agent.id(),
+            boundary="initial",
+            reason="provider_unavailable",
+        ) is True
+
+    state = ExecutionProtocolStore(context, agent.id(), policy).load()
+    assert state.phase is ProtocolPhase.FINALIZE
+    assert state.finalization_entered is True
+    assert state.decision_checkpoint_pending is False
+    assert execution_protocol_model_decision_boundary(context, agent.id()) is None
+
+
 def test_initial_decision_schema_does_not_duplicate_across_large_tool_catalog():
     context = Context(task_id="profile-schema-large")
     context.set_task(Task(id="profile-schema-large", timeout=600))

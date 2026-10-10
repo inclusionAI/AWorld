@@ -909,6 +909,40 @@ def transition_execution_protocol(
             ),
         )
 
+    if event.kind is EventKind.TERMINAL_CHECKPOINT_UNAVAILABLE:
+        if not (
+            policy.terminal_review_gate_enabled
+            and state.decision_checkpoint_pending
+            and state.decision_checkpoint_reason
+            is DecisionReason.CANDIDATE_DECISION_RESERVE
+        ):
+            return ProtocolTransition(
+                next_state,
+                _decision(ControllerAction.CONTINUE, DecisionReason.INVALID_EVENT),
+            )
+        next_state = replace(
+            next_state,
+            phase=ProtocolPhase.FINALIZE,
+            finalization_entered=True,
+            decision_checkpoint_pending=False,
+            decision_checkpoint_reason=None,
+            decision_checkpoint_candidate_present=None,
+            next_action_alignment_pending=False,
+            pending_next_action_plan_sequence=None,
+            pending_next_action_call_id=None,
+        )
+        return ProtocolTransition(
+            next_state,
+            _decision(
+                _terminal_action(
+                    policy,
+                    guide=ControllerAction.ENTER_FINALIZATION,
+                    observe=ControllerAction.WOULD_ENTER_FINALIZATION,
+                ),
+                DecisionReason.TERMINAL_CHECKPOINT_UNAVAILABLE,
+            ),
+        )
+
     if event.kind is EventKind.CANDIDATE_FINAL:
         next_state = replace(
             next_state,
