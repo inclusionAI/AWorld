@@ -122,11 +122,15 @@ async def test_verifier_forces_second_turn_report_only_and_never_calls_third_mod
     verifier = next(iter(build_verifier_swarm().agents.values()))
     report_only_values = []
 
-    async def fake_policy(self, observation, info=None, message=None, **kwargs):
-        report_only_values.append(self._bounded_review_report_only)
-        return [ActionModel(agent_name=self.id(), policy_info="model result")]
+    async def forbidden_generic_policy(*args, **kwargs):
+        raise AssertionError("generic recovery loop must not run for verifier")
 
-    monkeypatch.setattr(Agent, "async_policy", fake_policy)
+    async def fake_policy_once(observation, info=None, message=None, **kwargs):
+        report_only_values.append(verifier._bounded_review_report_only)
+        return [ActionModel(agent_name=verifier.id(), policy_info="model result")]
+
+    monkeypatch.setattr(Agent, "async_policy", forbidden_generic_policy)
+    monkeypatch.setattr(verifier, "_async_policy_once", fake_policy_once)
 
     first = await verifier.async_policy(SimpleNamespace())
     second = await verifier.async_policy(SimpleNamespace())

@@ -31,6 +31,21 @@ class TaskVerifierAgent(FreshAnswerOnlyCollaborator):
     reasoning_phase_override = "review"
     failed_request_diagnostics_enabled = False
 
+    def _bounded_uncertain_action(self) -> list[ActionModel]:
+        return [
+            ActionModel(
+                agent_name=self.id(),
+                policy_info=(
+                    "- Decision: `uncertain`\n"
+                    "- Evidence: the bounded verifier could not produce a "
+                    "complete report\n"
+                    "- Gaps: no valid final report was produced in two model "
+                    "calls\n"
+                    "- Recommended next action: preserve the current candidate"
+                ),
+            )
+        ]
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._bounded_review_model_turns = 0
@@ -54,25 +69,19 @@ class TaskVerifierAgent(FreshAnswerOnlyCollaborator):
         """Use one inspection turn and one forced report turn, never a third."""
 
         if self._bounded_review_model_turns >= 2:
-            return [
-                ActionModel(
-                    agent_name=self.id(),
-                    policy_info=(
-                        "- Decision: `uncertain`\n"
-                        "- Evidence: the bounded verifier turn limit was reached\n"
-                        "- Gaps: no valid final report was produced in two turns\n"
-                        "- Recommended next action: preserve the current candidate"
-                    ),
-                )
-            ]
+            return self._bounded_uncertain_action()
         self._bounded_review_report_only = self._bounded_review_model_turns == 1
         try:
-            return await super().async_policy(
-                observation,
-                info=info or {},
-                message=message,
-                **kwargs,
+            # A verifier turn owns exactly one provider request.  Calling the
+            # generic ``LLMAgent.async_policy`` here would enable its internal
+            # incomplete-response continuation loop and silently turn one
+            # bounded review turn into several provider calls.
+            result = await self._async_policy_once(
+                observation, info=info or {}, message=message, **kwargs
             )
+            return result if isinstance(result, list) else self._bounded_uncertain_action()
+        except Exception:
+            return self._bounded_uncertain_action()
         finally:
             self._bounded_review_model_turns += 1
             self._bounded_review_report_only = False
