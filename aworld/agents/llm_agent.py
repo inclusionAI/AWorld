@@ -6314,6 +6314,22 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         pending_decision_boundary = execution_protocol_model_decision_boundary(
             message.context, self.id()
         )
+        if pending_decision_boundary is not None:
+            timing = self._terminal_checkpoint_episode_timing(message.context)
+            if timing is not None and timing["effective_remaining_seconds"] <= 0:
+                from aworld.runners.execution_protocol import (
+                    record_model_decision_unavailable,
+                )
+
+                record_model_decision_unavailable(
+                    message.context,
+                    self.id(),
+                    boundary=pending_decision_boundary,
+                    reason="checkpoint_deadline_exceeded",
+                )
+                pending_decision_boundary = execution_protocol_model_decision_boundary(
+                    message.context, self.id()
+                )
 
         independent_acceptance_review = acceptance_critic_active(
             message.context, self.id()
@@ -8637,34 +8653,16 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
 
         if context is None:
             return None
-        try:
-            from aworld.runners.execution_protocol import (
-                execution_protocol_model_decision_boundary,
-                execution_protocol_policy,
-            )
-
-            if execution_protocol_model_decision_boundary(context, self.id()) is None:
-                return None
-            protocol_policy = execution_protocol_policy(context, self.id())
-            task = context.get_task()
-            remaining = task.remaining_seconds() if task is not None else None
-        except Exception:
+        timing = self._terminal_checkpoint_episode_timing(context)
+        if timing is None:
             return None
-        if (
-            isinstance(remaining, bool)
-            or not isinstance(remaining, (int, float))
-            or not math.isfinite(float(remaining))
-        ):
-            timeout = _LONG_HORIZON_DECISION_TIMEOUT_SECONDS
-        else:
-            timeout = min(
-                _LONG_HORIZON_DECISION_TIMEOUT_SECONDS,
-                max(
-                    0.1,
-                    float(remaining)
-                    - float(protocol_policy.finalization_reserve_seconds),
-                ),
-            )
+        timeout = max(0.1, float(timing["effective_remaining_seconds"]))
+        metrics = context.context_info.get("terminal_checkpoint_metrics")
+        if not isinstance(metrics, dict):
+            metrics = {}
+        metrics["last_effective_timeout_seconds"] = timeout
+        metrics["last_elapsed_seconds"] = timing["elapsed_seconds"]
+        context.context_info["terminal_checkpoint_metrics"] = metrics
         return GenerationBudgetPolicy(
             total_timeout_seconds=timeout,
             stream_idle_timeout_seconds=timeout,
@@ -8672,6 +8670,53 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             action_repair_timeout_seconds=None,
             action_repair_enabled=False,
         )
+
+    def _terminal_checkpoint_episode_timing(
+        self,
+        context: Context | None,
+    ) -> dict[str, float] | None:
+        """Return remaining time in the one absolute checkpoint episode."""
+
+        if context is None:
+            return None
+        try:
+            from aworld.runners.execution_protocol import (
+                execution_protocol_policy,
+                terminal_checkpoint_episode,
+            )
+
+            episode = terminal_checkpoint_episode(context, self.id())
+            if episode is None:
+                return None
+            protocol_policy = execution_protocol_policy(context, self.id())
+            task = context.get_task()
+            task_remaining = task.remaining_seconds() if task is not None else None
+        except Exception:
+            return None
+        now = _monotonic_now()
+        created = float(episode["created_at_monotonic"])
+        deadline = float(episode["deadline_at_monotonic"])
+        episode_remaining = max(0.0, deadline - now)
+        effective_remaining = episode_remaining
+        if (
+            isinstance(task_remaining, (int, float))
+            and not isinstance(task_remaining, bool)
+            and math.isfinite(float(task_remaining))
+        ):
+            effective_remaining = min(
+                effective_remaining,
+                max(
+                    0.0,
+                    float(task_remaining)
+                    - float(protocol_policy.finalization_reserve_seconds),
+                ),
+            )
+        return {
+            "created_at_monotonic": created,
+            "deadline_at_monotonic": deadline,
+            "elapsed_seconds": max(0.0, now - created),
+            "effective_remaining_seconds": effective_remaining,
+        }
 
     def _automatic_generation_budget_policy(
         self,
@@ -8786,6 +8831,39 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             action_repair_enabled=False,
         )
 
+    @staticmethod
+    def _compose_terminal_decision_generation_policy(
+        decision: GenerationBudgetPolicy,
+        caller: GenerationBudgetPolicy | None,
+    ) -> GenerationBudgetPolicy:
+        """Intersect the episode deadline with stricter caller-owned caps."""
+
+        if caller is None:
+            return decision
+
+        def minimum(*values: float | None) -> float | None:
+            finite = [float(value) for value in values if value is not None]
+            return min(finite) if finite else None
+
+        return GenerationBudgetPolicy(
+            total_timeout_seconds=minimum(
+                decision.total_timeout_seconds,
+                caller.total_timeout_seconds,
+            ),
+            stream_idle_timeout_seconds=minimum(
+                decision.stream_idle_timeout_seconds,
+                caller.stream_idle_timeout_seconds,
+            ),
+            active_tool_free_timeout_seconds=caller.active_tool_free_timeout_seconds,
+            action_repair_timeout_seconds=None,
+            action_repair_max_output_tokens=caller.action_repair_max_output_tokens,
+            response_recovery_max_output_tokens=(
+                caller.response_recovery_max_output_tokens
+            ),
+            partial_response_context_chars=caller.partial_response_context_chars,
+            action_repair_enabled=False,
+        )
+
     def _resolve_generation_budget_policy(
         self,
         context: Context | None = None,
@@ -8818,13 +8896,6 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 }
             return policy
 
-        if decision_turn:
-            decision = self._decision_generation_budget_policy(context)
-            if decision is not None:
-                return publish(decision, "terminal_checkpoint")
-
-        if self._explicit_generation_budget_policy is not None:
-            return publish(self._explicit_generation_budget_policy, "explicit_policy")
         llm_config = getattr(self.conf, "llm_config", None)
         compiler_config = getattr(llm_config, "context_compiler", None)
 
@@ -8832,6 +8903,61 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             if isinstance(compiler_config, dict):
                 return compiler_config.get(name, default)
             return getattr(compiler_config, name, default)
+
+        def configured_policy() -> GenerationBudgetPolicy:
+            return GenerationBudgetPolicy(
+                total_timeout_seconds=configured(
+                    "generation_total_timeout_seconds", None
+                ),
+                stream_idle_timeout_seconds=configured(
+                    "generation_stream_idle_timeout_seconds", None
+                ),
+                active_tool_free_timeout_seconds=configured(
+                    "generation_active_tool_free_timeout_seconds", None
+                ),
+                action_repair_timeout_seconds=configured(
+                    "generation_action_repair_timeout_seconds", None
+                ),
+                action_repair_max_output_tokens=configured(
+                    "generation_action_repair_max_output_tokens", 1024
+                ),
+                response_recovery_max_output_tokens=configured(
+                    "generation_response_recovery_max_output_tokens", None
+                ),
+                partial_response_context_chars=configured(
+                    "generation_partial_response_context_chars", 8192
+                ),
+                action_repair_enabled=configured(
+                    "generation_action_repair_enabled", False
+                ),
+            )
+
+        if decision_turn:
+            decision = self._decision_generation_budget_policy(context)
+            if decision is not None:
+                caller = self._explicit_generation_budget_policy
+                if caller is None and self._generation_budget_explicit_fields:
+                    caller = configured_policy()
+                composed = self._compose_terminal_decision_generation_policy(
+                    decision,
+                    caller,
+                )
+                if metric_context is not None:
+                    metrics = metric_context.context_info.get(
+                        "terminal_checkpoint_metrics"
+                    )
+                    if not isinstance(metrics, dict):
+                        metrics = {}
+                    metrics["last_effective_timeout_seconds"] = (
+                        composed.total_timeout_seconds
+                    )
+                    metric_context.context_info[
+                        "terminal_checkpoint_metrics"
+                    ] = metrics
+                return publish(composed, "terminal_checkpoint")
+
+        if self._explicit_generation_budget_policy is not None:
+            return publish(self._explicit_generation_budget_policy, "explicit_policy")
 
         if finalization_turn and not self._generation_budget_explicit_fields:
             finalization = self._finalization_generation_budget_policy(context)
@@ -8845,29 +8971,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         # Generation watchdogs are opt-in. A long reasoning/tool-selection
         # turn must not be cut short by an implicit budget before the generic
         # long-horizon protocol has armed for the current task.
-        total_timeout = configured("generation_total_timeout_seconds", None)
-        policy = GenerationBudgetPolicy(
-            total_timeout_seconds=total_timeout,
-            stream_idle_timeout_seconds=configured(
-                "generation_stream_idle_timeout_seconds", None
-            ),
-            active_tool_free_timeout_seconds=configured(
-                "generation_active_tool_free_timeout_seconds", None
-            ),
-            action_repair_timeout_seconds=configured(
-                "generation_action_repair_timeout_seconds", None
-            ),
-            action_repair_max_output_tokens=configured(
-                "generation_action_repair_max_output_tokens", 1024
-            ),
-            response_recovery_max_output_tokens=configured(
-                "generation_response_recovery_max_output_tokens", None
-            ),
-            partial_response_context_chars=configured(
-                "generation_partial_response_context_chars", 8192
-            ),
-            action_repair_enabled=configured("generation_action_repair_enabled", False),
-        )
+        policy = configured_policy()
         source = (
             "explicit_config"
             if self._generation_budget_explicit_fields

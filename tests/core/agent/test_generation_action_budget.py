@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 import aworld.agents.llm_agent as llm_agent_module
+import aworld.runners.execution_protocol as execution_protocol_module
 from aworld.agents.llm_agent import Agent
 from aworld.config.conf import AgentConfig
 from aworld.core.common import ActionModel, Observation
@@ -29,7 +30,9 @@ from aworld.models.reasoning_policy import OPENAI_REASONING_CAPABILITY
 from aworld.runners.execution_protocol import (
     build_execution_protocol_telemetry,
     configure_execution_protocol,
+    record_model_decision_attempt_failure,
     record_model_execution_profile,
+    record_pre_generation_delivery_decision,
     record_tool_protocol_event,
 )
 
@@ -358,9 +361,229 @@ def test_terminal_decision_generation_budget_is_absolute_and_reserve_bounded(
         decision_turn=True,
     )
 
-    assert budget.total_timeout_seconds == pytest.approx(expected_timeout)
-    assert budget.stream_idle_timeout_seconds == pytest.approx(expected_timeout)
+    assert budget.total_timeout_seconds == pytest.approx(expected_timeout, abs=0.01)
+    assert budget.stream_idle_timeout_seconds == pytest.approx(
+        expected_timeout,
+        abs=0.01,
+    )
     assert budget.action_repair_enabled is False
+
+
+def test_terminal_decision_budget_preserves_stricter_explicit_caller_caps(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    explicit = GenerationBudgetPolicy(
+        total_timeout_seconds=3.0,
+        stream_idle_timeout_seconds=2.0,
+        active_tool_free_timeout_seconds=1.0,
+        action_repair_timeout_seconds=1.0,
+        action_repair_enabled=True,
+    )
+    agent = _long_running_generation_agent(
+        armed=True,
+        generation_policy=explicit,
+    )
+    context = agent.context
+    context.get_task().timeout = 600
+    protocol = agent._resolve_execution_protocol_policy(context)
+    configure_execution_protocol(context, agent.id(), protocol)
+    monkeypatch.setattr(context.get_task(), "remaining_seconds", lambda: 150.0)
+    assert record_pre_generation_delivery_decision(
+        context,
+        agent.id(),
+        policy=protocol,
+    ) is not None
+
+    budget = agent._resolve_generation_budget_policy(
+        context,
+        decision_turn=True,
+    )
+
+    assert budget.total_timeout_seconds == pytest.approx(3.0)
+    assert budget.stream_idle_timeout_seconds == pytest.approx(2.0)
+    assert budget.active_tool_free_timeout_seconds == pytest.approx(1.0)
+    assert budget.action_repair_enabled is False
+
+
+def test_terminal_checkpoint_episode_deadline_does_not_reset_between_attempts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = {"now": 100.0}
+    monkeypatch.setattr(
+        execution_protocol_module,
+        "_monotonic_now",
+        lambda: clock["now"],
+    )
+    monkeypatch.setattr(
+        llm_agent_module,
+        "_monotonic_now",
+        lambda: clock["now"],
+    )
+    agent = _long_running_generation_agent(armed=True)
+    context = agent.context
+    context.get_task().timeout = 600
+    protocol = agent._resolve_execution_protocol_policy(context)
+    configure_execution_protocol(context, agent.id(), protocol)
+    monkeypatch.setattr(context.get_task(), "remaining_seconds", lambda: 150.0)
+    assert record_pre_generation_delivery_decision(
+        context,
+        agent.id(),
+        policy=protocol,
+    ) is not None
+
+    first = agent._resolve_generation_budget_policy(context, decision_turn=True)
+    assert record_model_decision_attempt_failure(
+        context,
+        agent.id(),
+        boundary="initial",
+    ) is True
+    clock["now"] = 130.0
+    second = agent._resolve_generation_budget_policy(context, decision_turn=True)
+
+    assert first.total_timeout_seconds == pytest.approx(45.0)
+    assert second.total_timeout_seconds == pytest.approx(15.0)
+    metrics = context.context_info["terminal_checkpoint_metrics"]
+    assert metrics["created_count"] == 1
+    assert metrics["created_at_monotonic"] == pytest.approx(100.0)
+    assert metrics["deadline_at_monotonic"] == pytest.approx(145.0)
+    assert metrics["last_effective_timeout_seconds"] == pytest.approx(15.0)
+    assert metrics["last_elapsed_seconds"] == pytest.approx(30.0)
+    telemetry = build_execution_protocol_telemetry(context, agent.id())
+    assert telemetry["terminal_checkpoint_created_count"] == 1
+    assert telemetry["terminal_checkpoint_created_at_monotonic"] == pytest.approx(
+        100.0
+    )
+    assert telemetry["terminal_checkpoint_deadline_at_monotonic"] == pytest.approx(
+        145.0
+    )
+    assert telemetry["terminal_checkpoint_effective_timeout_seconds"] == (
+        pytest.approx(15.0)
+    )
+    assert telemetry["terminal_checkpoint_elapsed_seconds"] == pytest.approx(30.0)
+
+
+def test_restored_terminal_checkpoint_monotonic_deadline_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = {"now": 100.0}
+    monkeypatch.setattr(
+        execution_protocol_module,
+        "_monotonic_now",
+        lambda: clock["now"],
+    )
+    monkeypatch.setattr(
+        llm_agent_module,
+        "_monotonic_now",
+        lambda: clock["now"],
+    )
+    agent = _long_running_generation_agent(armed=True)
+    context = agent.context
+    context.get_task().timeout = 600
+    protocol = agent._resolve_execution_protocol_policy(context)
+    configure_execution_protocol(context, agent.id(), protocol)
+    monkeypatch.setattr(context.get_task(), "remaining_seconds", lambda: 150.0)
+    assert record_pre_generation_delivery_decision(
+        context,
+        agent.id(),
+        policy=protocol,
+    ) is not None
+    episode = execution_protocol_module.terminal_checkpoint_episode(
+        context,
+        agent.id(),
+    )
+    assert episode is not None
+    episode["process_identity"] = "restored-from-another-process"
+    execution_protocol_module._write_runtime_value(
+        context,
+        agent.id(),
+        execution_protocol_module.EXECUTION_PROTOCOL_TERMINAL_CHECKPOINT_EPISODE_KEY,
+        episode,
+    )
+
+    recovered = execution_protocol_module.terminal_checkpoint_episode(
+        context,
+        agent.id(),
+    )
+    timing = agent._terminal_checkpoint_episode_timing(context)
+
+    assert recovered is not None
+    assert recovered["recovered_process_mismatch"] is True
+    assert recovered["deadline_at_monotonic"] == recovered["created_at_monotonic"]
+    assert timing is not None
+    assert timing["effective_remaining_seconds"] == 0.0
+
+
+@pytest.mark.asyncio
+async def test_expired_terminal_checkpoint_fails_open_before_prompt_preparation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = {"now": 100.0}
+    monkeypatch.setattr(
+        execution_protocol_module,
+        "_monotonic_now",
+        lambda: clock["now"],
+    )
+    monkeypatch.setattr(
+        llm_agent_module,
+        "_monotonic_now",
+        lambda: clock["now"],
+    )
+    agent = _long_running_generation_agent(armed=True)
+    agent._llm = object()
+    context = agent.context
+    context._session = Session(session_id="expired-terminal-checkpoint-s")
+    context.get_task().timeout = 600
+    protocol = agent._resolve_execution_protocol_policy(context)
+    configure_execution_protocol(context, agent.id(), protocol)
+    monkeypatch.setattr(context.get_task(), "remaining_seconds", lambda: 150.0)
+    assert record_pre_generation_delivery_decision(
+        context,
+        agent.id(),
+        policy=protocol,
+    ) is not None
+    clock["now"] = 146.0
+    prompt_states: list[tuple[str, bool]] = []
+    provider_calls: list[dict] = []
+
+    async def build_after_fail_open(observation, info=None, message=None, **kwargs):
+        state = ExecutionProtocolStore(context, agent.id(), protocol).load()
+        prompt_states.append((state.phase.value, state.decision_checkpoint_pending))
+        return [{"role": "user", "content": "finalize"}]
+
+    async def provider(*args, **kwargs):
+        provider_calls.append(kwargs)
+        return ModelResponse(
+            id="expired-checkpoint-finalization",
+            model="fake-model",
+            content="Preserved current work.",
+            message={"role": "assistant", "content": "Preserved current work."},
+            finish_reason="stop",
+            usage={"prompt_tokens": 1, "completion_tokens": 1},
+        )
+
+    async def no_op(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(agent, "build_llm_input", build_after_fail_open)
+    monkeypatch.setattr(agent, "_add_message_to_memory", no_op)
+    monkeypatch.setattr(agent, "send_agent_response_output", no_op)
+    monkeypatch.setattr(llm_agent_module, "acall_llm_model", provider)
+    message = Message(
+        category=Constants.AGENT,
+        payload=Observation(content="finish"),
+        receiver=agent.id(),
+        headers={"context": context},
+    )
+
+    actions = await agent.async_policy(message.payload, message=message, stream=False)
+
+    assert prompt_states[0] == ("finalize", False)
+    assert provider_calls[0]["tools"] is None
+    assert actions[0].policy_info == "Preserved current work."
+    telemetry = build_execution_protocol_telemetry(context, agent.id())
+    assert telemetry["initial_decision_fail_open_reason"] == (
+        "checkpoint_deadline_exceeded"
+    )
 
 
 @pytest.mark.parametrize("armed", [False, True])

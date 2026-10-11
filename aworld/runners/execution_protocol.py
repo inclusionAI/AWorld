@@ -12,10 +12,12 @@ from dataclasses import replace
 from enum import Enum
 import hashlib
 import json
+import math
 import os
 import re
 import secrets
 import shlex
+import time
 from typing import Any, Mapping, Sequence
 
 from aworld.core.context.execution_state import state_context
@@ -57,6 +59,9 @@ EXECUTION_PROTOCOL_METRICS_KEY = "execution_protocol_metrics"
 EXECUTION_PROTOCOL_FALLBACK_KEY = "execution_protocol_candidate_fallback"
 EXECUTION_PROTOCOL_MODEL_PROFILE_KEY = "execution_protocol_model_profile_attempt"
 EXECUTION_PROTOCOL_MODEL_DECISIONS_KEY = "execution_protocol_model_decisions"
+EXECUTION_PROTOCOL_TERMINAL_CHECKPOINT_EPISODE_KEY = (
+    "execution_protocol_terminal_checkpoint_episode"
+)
 EXECUTION_PROTOCOL_HYPOTHESES_KEY = "execution_protocol_hypotheses"
 EXECUTION_PROTOCOL_CRITIC_KEY = "execution_protocol_acceptance_critic"
 EXECUTION_PROTOCOL_PUBLIC_PROBES_KEY = "execution_protocol_public_probes"
@@ -82,6 +87,11 @@ _MAX_TELEMETRY_COUNTER = 1_000_000
 _PUBLIC_DELIVERABLE_SCHEMA = "aworld.public-deliverables/v1"
 _PUBLIC_DELIVERABLE_AUTHORITY = "public_task_advisory"
 _MAX_DECISION_ATTEMPTS = 2
+_TERMINAL_CHECKPOINT_EPISODE_SCHEMA = "aworld.terminal-checkpoint-episode/v1"
+_TERMINAL_CHECKPOINT_TIMEOUT_SECONDS = 45.0
+_TERMINAL_CHECKPOINT_PROCESS_IDENTITY = (
+    f"{os.getpid()}:{secrets.token_hex(16)}"
+)
 _MAX_CONSECUTIVE_UNAPPLIED_REPLANS = 2
 _MUTATION_GATE_READ_ONLY_THRESHOLD = 8
 _MUTATION_GATE_DEADLINE_MIN_READS = 3
@@ -2209,11 +2219,13 @@ def project_execution_protocol_telemetry(value: Any) -> dict[str, Any] | None:
             "provider_unavailable",
             "model_response_incomplete",
             "decision_schema_overflow",
+            "checkpoint_deadline_exceeded",
         },
         "replan_decision_fail_open_reason": {
             "provider_unavailable",
             "model_response_incomplete",
             "decision_schema_overflow",
+            "checkpoint_deadline_exceeded",
         },
         "decision_checkpoint_reason": {
             "stagnation_detected",
@@ -2305,8 +2317,15 @@ def project_execution_protocol_telemetry(value: Any) -> dict[str, Any] | None:
         "analysis_progress_count",
         "analysis_stagnation_count",
         "analysis_runway_reset_count",
+        "terminal_checkpoint_created_count",
     }
-    allowed = {"schema_version", *enums, *booleans, *counters}
+    numbers = {
+        "terminal_checkpoint_created_at_monotonic",
+        "terminal_checkpoint_deadline_at_monotonic",
+        "terminal_checkpoint_effective_timeout_seconds",
+        "terminal_checkpoint_elapsed_seconds",
+    }
+    allowed = {"schema_version", *enums, *booleans, *counters, *numbers}
     if set(value) - allowed:
         return None
     v2_fields = {
@@ -2328,6 +2347,8 @@ def project_execution_protocol_telemetry(value: Any) -> dict[str, Any] | None:
         "analysis_progress_count",
         "analysis_stagnation_count",
         "analysis_runway_reset_count",
+        "terminal_checkpoint_created_count",
+        *numbers,
     }
     if (
         value.get("schema_version") == "aworld.execution-protocol-telemetry/v1"
@@ -2350,6 +2371,14 @@ def project_execution_protocol_telemetry(value: Any) -> dict[str, Any] | None:
                 return None
         elif key in enums:
             if item not in enums[key]:
+                return None
+        elif key in numbers:
+            if (
+                isinstance(item, bool)
+                or not isinstance(item, (int, float))
+                or not math.isfinite(float(item))
+                or float(item) < 0.0
+            ):
                 return None
         else:
             return None
@@ -2376,6 +2405,11 @@ def build_execution_protocol_telemetry(context, agent_id: str) -> dict[str, Any]
     )
     if not isinstance(runtime_metrics, Mapping):
         runtime_metrics = {}
+    terminal_metrics = getattr(owner, "context_info", {}).get(
+        "terminal_checkpoint_metrics"
+    )
+    if not isinstance(terminal_metrics, Mapping):
+        terminal_metrics = {}
     telemetry = {
         "schema_version": "aworld.execution-protocol-telemetry/v2",
         "mode": policy.mode.value,
@@ -2389,6 +2423,21 @@ def build_execution_protocol_telemetry(context, agent_id: str) -> dict[str, Any]
         ),
         "model_expected_tool_actions_overrun_count": runtime_metrics.get(
             "model_expected_tool_actions_overrun_count"
+        ),
+        "terminal_checkpoint_created_count": terminal_metrics.get(
+            "created_count"
+        ),
+        "terminal_checkpoint_created_at_monotonic": terminal_metrics.get(
+            "created_at_monotonic"
+        ),
+        "terminal_checkpoint_deadline_at_monotonic": terminal_metrics.get(
+            "deadline_at_monotonic"
+        ),
+        "terminal_checkpoint_effective_timeout_seconds": terminal_metrics.get(
+            "last_effective_timeout_seconds"
+        ),
+        "terminal_checkpoint_elapsed_seconds": terminal_metrics.get(
+            "last_elapsed_seconds"
         ),
         "legacy_activation_fields_ignored": False,
         "event_count": state.event_count,
@@ -4443,6 +4492,13 @@ def _record_pending_checkpoint(
 ) -> None:
     """Project one controller checkpoint into the bounded model boundary."""
 
+    if (
+        transition.decision.action is ControllerAction.REQUEST_REPLAN
+        and transition.decision.reason is DecisionReason.CANDIDATE_DECISION_RESERVE
+        and transition.state.decision_checkpoint_pending
+    ):
+        _ensure_terminal_checkpoint_episode(context, agent_id, transition)
+
     if transition.decision.action is ControllerAction.REQUEST_REPLAN:
         expected_scope = _model_decision_scope(context, agent_id)
         attempts = _normalized_decision_attempts(
@@ -4504,6 +4560,149 @@ def _record_pending_checkpoint(
                 ),
             },
         )
+
+
+def _monotonic_now() -> float:
+    """Return the process clock used by one terminal-checkpoint episode."""
+
+    return time.monotonic()
+
+
+def _ensure_terminal_checkpoint_episode(
+    context,
+    agent_id: str,
+    transition: ProtocolTransition,
+) -> dict[str, Any]:
+    """Bind the first pending terminal checkpoint to one absolute deadline."""
+
+    return _ensure_terminal_checkpoint_episode_for_state(
+        context,
+        agent_id,
+        transition.state,
+    )
+
+
+def _ensure_terminal_checkpoint_episode_for_state(
+    context,
+    agent_id: str,
+    state,
+) -> dict[str, Any]:
+    """Create an episode once for a validated pending terminal state."""
+
+    scope = _model_decision_scope(context, agent_id)
+    request_sequence = state.replan_requested_count
+    current = _read_runtime_value(
+        context,
+        agent_id,
+        EXECUTION_PROTOCOL_TERMINAL_CHECKPOINT_EPISODE_KEY,
+    )
+    if (
+        isinstance(current, Mapping)
+        and current.get("schema_version") == _TERMINAL_CHECKPOINT_EPISODE_SCHEMA
+        and current.get("scope") == scope
+        and current.get("request_sequence") == request_sequence
+        and current.get("process_identity")
+        == _TERMINAL_CHECKPOINT_PROCESS_IDENTITY
+        and isinstance(current.get("created_at_monotonic"), (int, float))
+        and isinstance(current.get("deadline_at_monotonic"), (int, float))
+    ):
+        return dict(current)
+    created = _monotonic_now()
+    episode = {
+        "schema_version": _TERMINAL_CHECKPOINT_EPISODE_SCHEMA,
+        "scope": scope,
+        "request_sequence": request_sequence,
+        "process_identity": _TERMINAL_CHECKPOINT_PROCESS_IDENTITY,
+        "created_at_monotonic": created,
+        "deadline_at_monotonic": (
+            created + _TERMINAL_CHECKPOINT_TIMEOUT_SECONDS
+        ),
+    }
+    _write_runtime_value(
+        context,
+        agent_id,
+        EXECUTION_PROTOCOL_TERMINAL_CHECKPOINT_EPISODE_KEY,
+        episode,
+    )
+    owner = state_context(context)
+    if owner is not None:
+        metrics = getattr(owner, "context_info", {}).get(
+            "terminal_checkpoint_metrics"
+        )
+        if not isinstance(metrics, dict):
+            metrics = {}
+        metrics["created_count"] = int(metrics.get("created_count", 0) or 0) + 1
+        metrics["created_at_monotonic"] = created
+        metrics["deadline_at_monotonic"] = episode["deadline_at_monotonic"]
+        owner.context_info["terminal_checkpoint_metrics"] = metrics
+        if owner is not context:
+            context.context_info["terminal_checkpoint_metrics"] = dict(metrics)
+    return episode
+
+
+def terminal_checkpoint_episode(
+    context,
+    agent_id: str,
+) -> dict[str, Any] | None:
+    """Return the exact active terminal-checkpoint episode, if still pending."""
+
+    policy = execution_protocol_policy(context, agent_id)
+    state = ExecutionProtocolStore(context, agent_id, policy).load()
+    if not (
+        policy.terminal_review_gate_enabled
+        and state.decision_checkpoint_pending
+        and state.decision_checkpoint_reason
+        is DecisionReason.CANDIDATE_DECISION_RESERVE
+    ):
+        return None
+    value = _read_runtime_value(
+        context,
+        agent_id,
+        EXECUTION_PROTOCOL_TERMINAL_CHECKPOINT_EPISODE_KEY,
+    )
+    scope = _model_decision_scope(context, agent_id)
+    process_mismatch = bool(
+        isinstance(value, Mapping)
+        and value.get("schema_version") == _TERMINAL_CHECKPOINT_EPISODE_SCHEMA
+        and value.get("scope") == scope
+        and value.get("request_sequence") == state.replan_requested_count
+        and value.get("process_identity")
+        != _TERMINAL_CHECKPOINT_PROCESS_IDENTITY
+    )
+    if process_mismatch:
+        # A monotonic timestamp has meaning only in its creating process. A
+        # restored pending latch must fail open instead of receiving a fresh
+        # 45-second episode that could extend the caller-owned deadline.
+        now = _monotonic_now()
+        return {
+            "schema_version": _TERMINAL_CHECKPOINT_EPISODE_SCHEMA,
+            "scope": scope,
+            "request_sequence": state.replan_requested_count,
+            "process_identity": _TERMINAL_CHECKPOINT_PROCESS_IDENTITY,
+            "created_at_monotonic": now,
+            "deadline_at_monotonic": now,
+            "recovered_process_mismatch": True,
+        }
+    if not (
+        isinstance(value, Mapping)
+        and value.get("schema_version") == _TERMINAL_CHECKPOINT_EPISODE_SCHEMA
+        and value.get("scope") == scope
+        and value.get("request_sequence") == state.replan_requested_count
+        and value.get("process_identity")
+        == _TERMINAL_CHECKPOINT_PROCESS_IDENTITY
+        and isinstance(value.get("created_at_monotonic"), (int, float))
+        and not isinstance(value.get("created_at_monotonic"), bool)
+        and isinstance(value.get("deadline_at_monotonic"), (int, float))
+        and not isinstance(value.get("deadline_at_monotonic"), bool)
+        and float(value["deadline_at_monotonic"])
+        >= float(value["created_at_monotonic"])
+    ):
+        return _ensure_terminal_checkpoint_episode_for_state(
+            context,
+            agent_id,
+            state,
+        )
+    return dict(value)
 
 
 def record_pre_generation_delivery_decision(
@@ -4733,6 +4932,7 @@ def record_model_decision_unavailable(
         "provider_unavailable",
         "model_response_incomplete",
         "decision_schema_overflow",
+        "checkpoint_deadline_exceeded",
     }:
         return False
     if execution_protocol_model_decision_boundary(context, agent_id) != boundary:
@@ -5789,6 +5989,7 @@ __all__ = [
     "EXECUTION_PROTOCOL_FALLBACK_KEY",
     "EXECUTION_PROTOCOL_MODEL_PROFILE_KEY",
     "EXECUTION_PROTOCOL_MODEL_DECISIONS_KEY",
+    "EXECUTION_PROTOCOL_TERMINAL_CHECKPOINT_EPISODE_KEY",
     "EXECUTION_PROTOCOL_HYPOTHESES_KEY",
     "EXECUTION_PROTOCOL_CRITIC_KEY",
     "EXECUTION_PROTOCOL_CONVERGENCE_GUIDANCE_KEY",
@@ -5836,4 +6037,5 @@ __all__ = [
     "load_acceptance_critic_state",
     "project_execution_protocol_telemetry",
     "store_candidate_fallback",
+    "terminal_checkpoint_episode",
 ]

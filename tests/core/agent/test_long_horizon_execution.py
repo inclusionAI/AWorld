@@ -1453,13 +1453,14 @@ def test_terminal_checkpoint_exposes_decision_tool_without_ordinary_tools() -> N
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("remaining_seconds", "convergence_active"),
-    [(150.0, True), (59.0, False)],
+    ("remaining_seconds", "convergence_active", "decision_request_expected"),
+    [(150.0, True, True), (59.0, False, False)],
 )
 async def test_terminal_checkpoint_precedes_convergence_and_generic_finalization(
     monkeypatch: pytest.MonkeyPatch,
     remaining_seconds: float,
     convergence_active: bool,
+    decision_request_expected: bool,
 ) -> None:
     captured_tools = []
 
@@ -1576,15 +1577,22 @@ async def test_terminal_checkpoint_precedes_convergence_and_generic_finalization
         stream=False,
     )
 
-    assert isinstance(result, _ExecutionDecisionContinuation)
     assert len(captured_tools) == 1
-    assert [tool["function"]["name"] for tool in captured_tools[0]] == [
-        "aworld__execution_decision"
-    ]
     state = load_execution_protocol_state(context, agent.id())
     assert state.decision_checkpoint_pending is False
-    assert state.candidate_decision_recorded is True
-    assert state.phase is ProtocolPhase.FINALIZE
+    if decision_request_expected:
+        assert isinstance(result, _ExecutionDecisionContinuation)
+        assert [tool["function"]["name"] for tool in captured_tools[0]] == [
+            "aworld__execution_decision"
+        ]
+        assert state.candidate_decision_recorded is True
+        assert state.phase is ProtocolPhase.FINALIZE
+    else:
+        assert captured_tools[0] is None
+        telemetry = build_execution_protocol_telemetry(context, agent.id())
+        assert telemetry["replan_decision_fail_open_reason"] == (
+            "checkpoint_deadline_exceeded"
+        )
 
 
 @pytest.mark.parametrize(
