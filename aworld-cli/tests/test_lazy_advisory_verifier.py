@@ -1074,6 +1074,27 @@ async def test_review_omits_stale_unbound_and_wrong_agent_receipts() -> None:
 
 
 @pytest.mark.asyncio
+async def test_long_bounded_report_parses_decision_before_public_truncation() -> None:
+    report = (
+        "Evidence detail. " * 220
+        + "\n- Decision: `ready`\n"
+        + "- Evidence: inspected the current deliverable\n"
+        + "- Gaps: none\n"
+        + "- Recommended next action: submit current result"
+    )
+    assert 2_048 < len(report) < 8_192
+
+    result = await _factory(report=report).review(
+        AdvisoryReviewRequest(candidate_claim="Result is complete."),
+        context=_context(),
+    )
+
+    assert result.status == "completed"
+    assert result.decision == "ready"
+    assert len(result.report) == 2_048
+
+
+@pytest.mark.asyncio
 async def test_review_rejects_non_hex_candidate_fingerprint() -> None:
     captured = {}
     factory = _factory(captured=captured)

@@ -53,6 +53,7 @@ _MAX_EVIDENCE_CHARS = 1_024
 _MAX_DELIVERABLES = 8
 _MAX_DELIVERABLE_CHARS = 256
 _MAX_REPORT_CHARS = 2_048
+_MAX_RAW_REPORT_CHARS = 8_192
 _REVIEW_INPUT_TOKENS_PER_TURN = 7_168
 _REVIEW_OUTPUT_TOKENS_PER_TURN = 1_024
 _REVIEW_MAX_TURNS = 2
@@ -448,27 +449,27 @@ class LazyVerifierFactory:
                 return child_failure
             if isinstance(result, ChildResult):
                 result = result.answer
-            report = str(result or "").strip()[:_MAX_REPORT_CHARS]
-            if not report:
+            raw_report = str(result or "").strip()[:_MAX_RAW_REPORT_CHARS]
+            if not raw_report:
                 return AdvisoryReviewResult(
                     status="unavailable",
                     decision="uncertain",
                     report="The advisory verifier returned no report.",
                     reason_code="empty_report",
                 )
-            if report.startswith(("[Error]", "[Exception]")):
+            if raw_report.startswith(("[Error]", "[Exception]")):
                 return AdvisoryReviewResult(
                     status="unavailable",
                     decision="uncertain",
-                    report=report,
+                    report=raw_report[:_MAX_REPORT_CHARS],
                     reason_code="reviewer_execution_failed",
                 )
-            matches = list(_DECISION_PATTERN.finditer(report))
+            matches = list(_DECISION_PATTERN.finditer(raw_report))
             if len(matches) != 1:
                 return AdvisoryReviewResult(
                     status="inconclusive",
                     decision="uncertain",
-                    report=report,
+                    report=raw_report[:_MAX_REPORT_CHARS],
                     reason_code=(
                         "decision_unparseable"
                         if not matches
@@ -479,7 +480,7 @@ class LazyVerifierFactory:
             return AdvisoryReviewResult(
                 status=("inconclusive" if decision == "uncertain" else "completed"),
                 decision=decision,
-                report=report,
+                report=raw_report[:_MAX_REPORT_CHARS],
                 reason_code=("reviewer_uncertain" if decision == "uncertain" else None),
             )
         except Exception as exc:
@@ -625,7 +626,7 @@ class LazyVerifierFactory:
                 expected_output_schema={
                     "type": "string",
                     "minLength": 1,
-                    "maxLength": _MAX_REPORT_CHARS,
+                    "maxLength": _MAX_RAW_REPORT_CHARS,
                 },
                 inference_profile=None,
                 stop_conditions=(),
