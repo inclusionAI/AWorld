@@ -1529,6 +1529,34 @@ class LocalAgentExecutor(BaseAgentExecutor):
         self.last_execution_protocol = current_telemetry
         if response is not None:
             response.execution_protocol = current_telemetry
+        protocol_phase = getattr(protocol_state.phase, "value", None)
+        protocol_terminal_incomplete = bool(
+            protocol_state.terminal_incomplete or protocol_phase == "review"
+        )
+        if (
+            response is not None
+            and protocol_terminal_incomplete
+            and (
+                response.success is True
+                or str(response.semantic_status or "").strip().lower()
+                == "succeeded"
+            )
+        ):
+            # A response cannot be semantically successful while the protocol
+            # still says review/incomplete. Terminal fail-open must first use
+            # the explicit fallback-submit transition, which moves the phase
+            # to COMPLETE without claiming reviewer acceptance.
+            response.success = False
+            response.failure_origin = "task"
+            response.semantic_status = "incomplete"
+            response.completion_reason = "execution_protocol_terminal_incomplete"
+            response.recoverable = True
+            event = {
+                **event,
+                "semantic_status": "incomplete",
+                "completion_reason": "execution_protocol_terminal_incomplete",
+                "recoverable": True,
+            }
         protocol_finalized = bool(
             protocol_state.finalization_entered
             or getattr(protocol_state.phase, "value", None) == "finalize"
@@ -1664,18 +1692,61 @@ class LocalAgentExecutor(BaseAgentExecutor):
         if response is not None:
             response.execution_protocol = telemetry
 
-        if not should_continue:
+        def salvage_authenticated_candidate(*, completion_reason: str) -> bool:
+            from aworld.runners.execution_protocol import (
+                authenticated_declared_candidate_status,
+                record_terminal_fallback_submission,
+            )
+
+            status = authenticated_declared_candidate_status(
+                task.context, root_id
+            )
+            if status.get("authenticated") is not True:
+                telemetry["acceptance_candidate_authentication"] = status.get(
+                    "reason"
+                )
+                return False
+            transition = record_terminal_fallback_submission(
+                task.context, root_id
+            )
             if (
-                response is not None
-                and isinstance(receipt, dict)
-                and receipt.get("acceptance_satisfied") is False
+                transition is None
+                or transition.decision.action.value != "submit_current_result"
             ):
-                response.success = False
-                response.failure_origin = "task"
-                response.semantic_status = "budget_exhausted"
-                response.completion_reason = "implicit_acceptance_limit_reached"
+                telemetry["acceptance_candidate_authentication"] = (
+                    "terminal_transition_rejected"
+                )
+                return False
+            terminal_telemetry = build_execution_protocol_telemetry(
+                task.context, root_id
+            )
+            terminal_telemetry.update(
+                {
+                    key: value
+                    for key, value in telemetry.items()
+                    if key.startswith("acceptance_")
+                    or key == "implicit_acceptance_created"
+                }
+            )
+            terminal_telemetry.update(
+                {
+                    "acceptance_candidate_authentication": status.get("reason"),
+                    "acceptance_disposition": "authenticated_candidate_salvaged",
+                    "acceptance_satisfied": True,
+                    "decision_checkpoint_pending": False,
+                }
+            )
+            updated["protocol_telemetry"] = terminal_telemetry
+            self.last_execution_protocol = terminal_telemetry
+            if response is not None:
+                response.success = True
+                response.failure_origin = None
+                response.semantic_status = "succeeded"
+                response.completion_reason = completion_reason
                 response.recoverable = False
-            return None
+                response.execution_protocol = terminal_telemetry
+            return response is not None
+
         remaining = task.remaining_seconds()
         reserve = max(
             float(task.completion_reserve_seconds or 0.0),
@@ -1683,31 +1754,11 @@ class LocalAgentExecutor(BaseAgentExecutor):
         )
         if remaining is not None and remaining <= reserve:
             telemetry["acceptance_continuation_suppressed"] = "deadline_reserve"
-            candidate_ready = bool(
-                telemetry.get("decision_checkpoint_candidate_present")
-                and telemetry.get("candidate_checkpoint_recorded")
-                and telemetry.get("public_deliverable_declared")
-            )
-            if response is not None and candidate_ready:
-                telemetry.update(
-                    {
-                        "acceptance_disposition": "deadline_reserve_fail_open",
-                        "acceptance_satisfied": True,
-                        "decision_checkpoint_pending": False,
-                        "finalization_entered": True,
-                        "phase": "complete",
-                    }
-                )
-                response.success = True
-                response.failure_origin = None
-                response.semantic_status = "succeeded"
-                response.completion_reason = (
+            if salvage_authenticated_candidate(
+                completion_reason=(
                     "implicit_acceptance_deadline_reserve_fail_open"
                 )
-                response.recoverable = False
-                response.execution_protocol = telemetry
-                updated["protocol_telemetry"] = telemetry
-                self.last_execution_protocol = telemetry
+            ):
                 return None
             if response is not None:
                 response.success = False
@@ -1715,6 +1766,46 @@ class LocalAgentExecutor(BaseAgentExecutor):
                 response.semantic_status = "budget_exhausted"
                 response.completion_reason = "implicit_acceptance_deadline_reserve"
                 response.recoverable = False
+            return None
+
+        if not should_continue:
+            if (
+                response is not None
+                and isinstance(receipt, dict)
+                and receipt.get("acceptance_satisfied") is False
+            ):
+                if salvage_authenticated_candidate(
+                    completion_reason="implicit_acceptance_candidate_salvaged"
+                ):
+                    return None
+                response.success = False
+                response.failure_origin = "task"
+                response.semantic_status = "budget_exhausted"
+                response.completion_reason = "implicit_acceptance_limit_reached"
+                response.recoverable = False
+            return None
+        if (
+            int(telemetry.get("acceptance_continuation_count", 0) or 0) >= 1
+            and protocol_state.candidate_present is True
+        ):
+            if salvage_authenticated_candidate(
+                completion_reason="implicit_acceptance_candidate_salvaged"
+            ):
+                return None
+            telemetry["acceptance_continuation_suppressed"] = (
+                "candidate_continuation_limit"
+            )
+            updated["protocol_telemetry"] = telemetry
+            self.last_execution_protocol = telemetry
+            if response is not None:
+                response.success = False
+                response.failure_origin = "task"
+                response.semantic_status = "budget_exhausted"
+                response.completion_reason = (
+                    "implicit_acceptance_candidate_unverified"
+                )
+                response.recoverable = False
+                response.execution_protocol = telemetry
             return None
         return _GoalContinuation(
             build_goal_context_prompt(updated),

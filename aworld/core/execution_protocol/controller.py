@@ -1108,6 +1108,58 @@ def transition_execution_protocol(
             ),
         )
 
+    if event.kind is EventKind.TERMINAL_FALLBACK_SUBMIT:
+        # This framework-only boundary records a liveness fallback after the
+        # caller has already authenticated the current candidate.  It never
+        # claims that review accepted the candidate: acceptance_confirmed
+        # remains false and the reason is explicit in telemetry/history.
+        candidate_available = bool(
+            next_state.candidate_present is True
+            and next_state.candidate_checkpoint_recorded
+        )
+        fallback_enabled = bool(
+            not policy.independent_acceptance_enabled
+            and (
+                policy.mode is ProtocolMode.GUIDE
+                or policy.terminal_review_gate_enabled
+            )
+        )
+        if not fallback_enabled or not candidate_available:
+            next_state = replace(
+                next_state,
+                phase=ProtocolPhase.REVIEW,
+                review_pending=False,
+                terminal_incomplete=True,
+                finalization_entered=True,
+            )
+            return ProtocolTransition(
+                next_state,
+                _decision(
+                    ControllerAction.STOP_INCOMPLETE,
+                    DecisionReason.ACCEPTANCE_EVIDENCE_MISSING,
+                ),
+            )
+        next_state = replace(
+            next_state,
+            phase=ProtocolPhase.COMPLETE,
+            review_pending=False,
+            terminal_incomplete=False,
+            finalization_entered=True,
+            decision_checkpoint_pending=False,
+            decision_checkpoint_reason=None,
+            decision_checkpoint_candidate_present=None,
+            next_action_alignment_pending=False,
+            pending_next_action_plan_sequence=None,
+            pending_next_action_call_id=None,
+        )
+        return ProtocolTransition(
+            next_state,
+            _decision(
+                ControllerAction.SUBMIT_CURRENT_RESULT,
+                DecisionReason.TERMINAL_FALLBACK_SUBMIT,
+            ),
+        )
+
     if event.kind is EventKind.REVIEW_RESULT:
         if not next_state.review_pending:
             next_state = replace(
@@ -1195,6 +1247,7 @@ def safe_transition_execution_protocol(
         final_boundary = isinstance(event, ExecutionProtocolEvent) and event.kind in {
             EventKind.CANDIDATE_FINAL,
             EventKind.REVIEW_RESULT,
+            EventKind.TERMINAL_FALLBACK_SUBMIT,
         }
         action = ControllerAction.CONTINUE
         fallback_state = state

@@ -34,6 +34,7 @@ from aworld.core.execution_protocol import (
 )
 from aworld.core.task import Task
 from aworld.runners.execution_protocol import (
+    authenticated_declared_candidate_status,
     bind_pending_next_action_call,
     build_execution_protocol_telemetry,
     configure_execution_protocol,
@@ -214,6 +215,106 @@ def test_telemetry_distinguishes_active_review_from_terminal_unverified() -> Non
         "schema_version": "aworld.execution-protocol-telemetry/v1",
     }
     assert project_execution_protocol_telemetry(legacy_v1) is None
+
+
+def test_authenticated_declared_candidate_requires_current_complete_projection(
+    monkeypatch, tmp_path,
+) -> None:
+    from aworld.core.context.compiler import semantic_fingerprint
+    from aworld.runners import post_tool_progress
+
+    without_contract = authenticated_declared_candidate_status(
+        _context("candidate-without-completion-contract"), "agent"
+    )
+    assert without_contract == {
+        "schema_version": "aworld.authenticated-declared-candidate/v1",
+        "authenticated": False,
+        "reason": "declared_projection_unavailable",
+    }
+
+    context = _context("authenticated-declared-candidate")
+    document = tmp_path / "document.md"
+    layout = tmp_path / "layout.json"
+    document.write_text("# Current candidate\n", encoding="utf-8")
+    layout.write_text('{"layout_pages":[]}', encoding="utf-8")
+    context.context_info["public_deliverable_contract"] = {
+        "schema_version": "aworld.public-deliverables/v1",
+        "authority": "public_task_advisory",
+        "source": "public_task_text",
+        "artifacts": [
+            {
+                "deliverable_id": "document",
+                "kind": "file",
+                "authority": "public_task_advisory",
+                "path": str(document),
+                "display_path": "document.md",
+            },
+            {
+                "deliverable_id": "layout",
+                "kind": "file",
+                "authority": "public_task_advisory",
+                "path": str(layout),
+                "display_path": "layout.json",
+            },
+        ],
+    }
+    projection = post_tool_progress._public_deliverable_projection(context)
+    fingerprint = semantic_fingerprint(projection)
+    context.context_info["context_semantic_progress"] = {
+        "agent": {"public_delivery_fingerprint": fingerprint}
+    }
+    configure_execution_protocol(
+        context,
+        "agent",
+        ExecutionProtocolPolicy(
+            mode="observe",
+            terminal_review_gate_enabled=True,
+            independent_acceptance_enabled=False,
+        ),
+    )
+    store = ExecutionProtocolStore(
+        context,
+        "agent",
+        execution_protocol_policy(context, "agent"),
+    )
+    store.save(
+        replace(
+            store.load(),
+            candidate_present=True,
+            candidate_checkpoint_recorded=True,
+            public_deliverable_declared=True,
+        )
+    )
+
+    current = authenticated_declared_candidate_status(context, "agent")
+    assert current["authenticated"] is True
+    assert current["reason"] == "current_complete_projection"
+
+    layout.write_text('{"layout_pages":[{"page_number":1}]}', encoding="utf-8")
+    stale = authenticated_declared_candidate_status(context, "agent")
+    assert stale["authenticated"] is False
+    assert stale["reason"] == "projection_changed"
+
+    layout.unlink()
+    incomplete = authenticated_declared_candidate_status(context, "agent")
+    assert incomplete["authenticated"] is False
+    assert incomplete["reason"] == "declared_deliverables_incomplete"
+
+    size_only = {
+        **projection,
+        "artifacts": [
+            {**item, "version": "size-only:1"}
+            for item in projection["artifacts"]
+        ],
+    }
+    monkeypatch.setattr(
+        post_tool_progress,
+        "_public_deliverable_projection",
+        lambda _context: size_only,
+    )
+    unbound = authenticated_declared_candidate_status(context, "agent")
+    assert unbound["authenticated"] is False
+    assert unbound["reason"] == "projection_not_hash_bound"
 
 
 def _declare_long_horizon(context: Context, agent_id: str = "agent") -> None:

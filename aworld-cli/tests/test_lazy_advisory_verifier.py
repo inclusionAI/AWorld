@@ -1041,6 +1041,106 @@ async def test_review_receives_authoritative_public_delivery_paths() -> None:
 
 
 @pytest.mark.asyncio
+async def test_review_receives_bounded_declared_artifact_snapshot(
+    monkeypatch, tmp_path
+) -> None:
+    captured = {}
+    factory = _factory(captured=captured)
+    monkeypatch.setattr(
+        lazy_verifier_module,
+        "_declared_snapshot_authentication_status",
+        lambda *_args, **_kwargs: {
+            "authenticated": True,
+            "reason": "current_complete_projection",
+        },
+    )
+    declared = tmp_path / "artifacts" / "result.json"
+    undeclared = tmp_path / "private.txt"
+    declared.parent.mkdir()
+    declared.write_text('{"status":"ready","rows":[1,2,3]}', encoding="utf-8")
+    undeclared.write_text("must not be projected", encoding="utf-8")
+    context = _context("Write the declared result artifact.")
+    context.context_info = {
+        "public_deliverable_contract": {
+            "schema_version": "aworld.public-deliverables/v1",
+            "authority": "public_task_advisory",
+            "source": "public_task_text",
+            "artifacts": [
+                {
+                    "kind": "file",
+                    "authority": "public_task_advisory",
+                    "path": str(declared),
+                    "display_path": "result.json",
+                }
+            ],
+        }
+    }
+
+    await factory.review(
+        AdvisoryReviewRequest(candidate_claim="Result is complete."),
+        context=context,
+    )
+
+    directive = captured["runner"]["directive"]
+    assert "aworld.declared-artifact-snapshot/v1" in directive
+    assert '"status":"captured"' in directive
+    assert '\\"rows\\":[1,2,3]' in directive
+    assert "must not be projected" not in directive
+
+
+def test_review_snapshot_is_bounded_and_does_not_follow_symlinks(tmp_path) -> None:
+    secret = tmp_path / "secret.txt"
+    secret.write_text("sensitive-marker", encoding="utf-8")
+    link = tmp_path / "declared.txt"
+    link.symlink_to(secret)
+    snapshot = lazy_verifier_module._authoritative_delivery_snapshot(
+        None,
+        authoritative_deliverables=(str(link),),
+        authentication_status={
+            "authenticated": True,
+            "reason": "current_complete_projection",
+        },
+    )
+
+    assert snapshot["items"][0]["status"] == "unavailable"
+    assert "sensitive-marker" not in json.dumps(snapshot)
+
+
+def test_review_snapshot_truncates_declared_text_with_fixed_budget(tmp_path) -> None:
+    declared = tmp_path / "large.md"
+    declared.write_text("A" * 20_000 + "tail-marker", encoding="utf-8")
+    snapshot = lazy_verifier_module._authoritative_delivery_snapshot(
+        None,
+        authoritative_deliverables=(str(declared),),
+        authentication_status={
+            "authenticated": True,
+            "reason": "current_complete_projection",
+        },
+    )
+
+    item = snapshot["items"][0]
+    assert item["captured_bytes"] == 8192
+    assert item["truncated"] is True
+    assert "tail-marker" not in item["content_utf8"]
+
+
+def test_review_snapshot_refuses_uncheckpointed_declared_bytes(tmp_path) -> None:
+    declared = tmp_path / "result.json"
+    declared.write_text('{"secret":"not-checkpointed"}', encoding="utf-8")
+    snapshot = lazy_verifier_module._authoritative_delivery_snapshot(
+        None,
+        authoritative_deliverables=(str(declared),),
+        authentication_status={
+            "authenticated": False,
+            "reason": "candidate_checkpoint_unavailable",
+        },
+    )
+
+    assert snapshot["items"][0]["status"] == "unauthenticated"
+    assert "not-checkpointed" not in json.dumps(snapshot)
+
+
+@pytest.mark.asyncio
 async def test_review_omits_stale_unbound_and_wrong_agent_receipts() -> None:
     captured = {}
     factory = _factory(captured=captured)

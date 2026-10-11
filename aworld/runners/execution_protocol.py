@@ -2185,6 +2185,105 @@ def execution_protocol_control_eligible(context, agent_id: str) -> bool:
     )
 
 
+def authenticated_declared_candidate_status(
+    context, agent_id: str
+) -> dict[str, Any]:
+    """Rebind a recorded candidate checkpoint to current declared file bytes.
+
+    This is a mechanical liveness predicate, not semantic acceptance.  It
+    requires every declared file to remain minimally eligible and the fresh
+    bounded projection fingerprint to equal the framework-recorded fingerprint
+    from the last authenticated Tool observation.
+    """
+
+    from aworld.core.context.compiler import semantic_fingerprint
+    from aworld.runners.post_tool_progress import (
+        _public_deliverable_projection,
+        semantic_progress_for_agent,
+    )
+
+    owner = state_context(context)
+    try:
+        projection = (
+            _public_deliverable_projection(owner) if owner is not None else None
+        )
+    except Exception:
+        projection = None
+    if not isinstance(projection, Mapping):
+        return {
+            "schema_version": "aworld.authenticated-declared-candidate/v1",
+            "authenticated": False,
+            "reason": "declared_projection_unavailable",
+        }
+    declared_count = _bounded_counter(projection.get("declared_count"))
+    candidate_count = _bounded_counter(projection.get("candidate_count"))
+    if declared_count == 0 or candidate_count != declared_count:
+        return {
+            "schema_version": "aworld.authenticated-declared-candidate/v1",
+            "authenticated": False,
+            "reason": "declared_deliverables_incomplete",
+            "declared_count": declared_count,
+            "candidate_count": candidate_count,
+        }
+    artifacts = projection.get("artifacts")
+    if (
+        not isinstance(artifacts, list)
+        or len(artifacts) != declared_count
+        or any(
+            not isinstance(item, Mapping)
+            or not _is_canonical_semantic_fingerprint(item.get("version"))
+            for item in artifacts
+        )
+    ):
+        return {
+            "schema_version": "aworld.authenticated-declared-candidate/v1",
+            "authenticated": False,
+            "reason": "projection_not_hash_bound",
+            "declared_count": declared_count,
+            "candidate_count": candidate_count,
+        }
+    current_fingerprint = semantic_fingerprint(projection)
+    semantic_state = semantic_progress_for_agent(context, agent_id=agent_id)
+    recorded_fingerprint = semantic_state.get("public_delivery_fingerprint")
+    if not _is_canonical_semantic_fingerprint(recorded_fingerprint):
+        return {
+            "schema_version": "aworld.authenticated-declared-candidate/v1",
+            "authenticated": False,
+            "reason": "recorded_projection_unavailable",
+            "declared_count": declared_count,
+            "candidate_count": candidate_count,
+        }
+    if current_fingerprint != recorded_fingerprint:
+        return {
+            "schema_version": "aworld.authenticated-declared-candidate/v1",
+            "authenticated": False,
+            "reason": "projection_changed",
+            "declared_count": declared_count,
+            "candidate_count": candidate_count,
+        }
+    protocol_state = load_execution_protocol_state(context, agent_id)
+    if not (
+        protocol_state.candidate_present is True
+        and protocol_state.candidate_checkpoint_recorded
+        and protocol_state.public_deliverable_declared
+    ):
+        return {
+            "schema_version": "aworld.authenticated-declared-candidate/v1",
+            "authenticated": False,
+            "reason": "candidate_checkpoint_unavailable",
+            "declared_count": declared_count,
+            "candidate_count": candidate_count,
+        }
+    return {
+        "schema_version": "aworld.authenticated-declared-candidate/v1",
+        "authenticated": True,
+        "reason": "current_complete_projection",
+        "declared_count": declared_count,
+        "candidate_count": candidate_count,
+        "candidate_fingerprint": current_fingerprint,
+    }
+
+
 def project_execution_protocol_telemetry(value: Any) -> dict[str, Any] | None:
     """Validate and bound the only public execution-protocol projection."""
     if not isinstance(value, Mapping) or value.get("schema_version") not in {
@@ -2245,7 +2344,12 @@ def project_execution_protocol_telemetry(value: Any) -> dict[str, Any] | None:
         "convergence_stage": {
             stage.value for stage in ConvergenceStage
         },
-        "acceptance_disposition": {"complete", "continue", "limit_reached"},
+        "acceptance_disposition": {
+            "complete",
+            "continue",
+            "limit_reached",
+            "authenticated_candidate_salvaged",
+        },
         "acceptance_reason": {
             "acceptance_satisfied",
             "acceptance_unsatisfied",
@@ -2259,6 +2363,17 @@ def project_execution_protocol_telemetry(value: Any) -> dict[str, Any] | None:
             "deadline_reserve",
             "protocol_convergence",
             "protocol_finalization",
+            "candidate_continuation_limit",
+        },
+        "acceptance_candidate_authentication": {
+            "current_complete_projection",
+            "declared_projection_unavailable",
+            "declared_deliverables_incomplete",
+            "recorded_projection_unavailable",
+            "projection_not_hash_bound",
+            "projection_changed",
+            "candidate_checkpoint_unavailable",
+            "terminal_transition_rejected",
         },
     }
     booleans = {
@@ -2343,6 +2458,7 @@ def project_execution_protocol_telemetry(value: Any) -> dict[str, Any] | None:
         "model_expected_tool_actions",
         "model_expected_tool_actions_overrun_count",
         "terminal_incomplete",
+        "acceptance_candidate_authentication",
         "analysis_runway_open",
         "analysis_progress_count",
         "analysis_stagnation_count",
@@ -5768,6 +5884,26 @@ def record_review_error(context, agent_id: str) -> ProtocolTransition | None:
     return transition
 
 
+def record_terminal_fallback_submission(
+    context, agent_id: str
+) -> ProtocolTransition | None:
+    """Record a framework-owned terminal liveness submission.
+
+    The transition preserves the distinction from review acceptance.  Callers
+    that use this outside an active review must first authenticate current
+    declared deliverables with :func:`authenticated_declared_candidate_status`.
+    """
+
+    policy = execution_protocol_policy(context, agent_id)
+    if policy.mode is ProtocolMode.OFF:
+        return None
+    transition = ExecutionProtocolStore(context, agent_id, policy).apply(
+        ExecutionProtocolEvent(kind=EventKind.TERMINAL_FALLBACK_SUBMIT)
+    )
+    _record_transition_metrics(context, transition)
+    return transition
+
+
 def store_candidate_fallback(context, agent_id: str, actions) -> None:
     """Persist a bounded textual candidate outside the user's workspace."""
     rows = []
@@ -5984,6 +6120,7 @@ def final_review_guidance(
 
 
 __all__ = [
+    "authenticated_declared_candidate_status",
     "bind_pending_next_action_call",
     "EXECUTION_PROTOCOL_METRICS_KEY",
     "EXECUTION_PROTOCOL_FALLBACK_KEY",
@@ -6012,6 +6149,7 @@ __all__ = [
     "final_review_guidance",
     "model_owned_review_active",
     "record_candidate_final",
+    "record_terminal_fallback_submission",
     "record_model_execution_profile",
     "record_model_decision_boundary",
     "record_model_decision_attempt_failure",

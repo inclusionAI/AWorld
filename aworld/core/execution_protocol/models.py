@@ -279,6 +279,7 @@ class EventKind(str, Enum):
     CONVERGENCE_EXHAUSTED = "convergence_exhausted"
     CANDIDATE_FINAL = "candidate_final"
     REVIEW_RESULT = "review_result"
+    TERMINAL_FALLBACK_SUBMIT = "terminal_fallback_submit"
 
 
 class ReviewOutcome(str, Enum):
@@ -342,6 +343,7 @@ class DecisionReason(str, Enum):
     REVIEW_BASIS_UNCHANGED = "review_basis_unchanged"
     REVIEW_BOUNDARY_UNAVAILABLE = "review_boundary_unavailable"
     ACCEPTANCE_EVIDENCE_MISSING = "acceptance_evidence_missing"
+    TERMINAL_FALLBACK_SUBMIT = "terminal_fallback_submit"
     CONTROLLER_ERROR = "controller_error"
     PERSISTENCE_ERROR = "protocol_persistence_error"
     INVALID_EVENT = "invalid_event"

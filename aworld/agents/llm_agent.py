@@ -5689,6 +5689,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                         clear_acceptance_critic_state,
                         clear_candidate_fallback,
                         record_review_error,
+                        record_terminal_fallback_submission,
                     )
                     from aworld.core.context.execution_state import (
                         record_execution_state,
@@ -5707,11 +5708,19 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                     # the controller enters REPAIR.  A later memory or hook
                     # failure must not be reclassified as an uncertain review
                     # (nor accept the stale candidate).
-                    transition = (
-                        None
-                        if repair_already_requested
-                        else record_review_error(message.context, self.id())
-                    )
+                    transition = None
+                    if not repair_already_requested:
+                        if (
+                            policy.terminal_review_gate_enabled
+                            and not policy.independent_acceptance_enabled
+                        ):
+                            transition = record_terminal_fallback_submission(
+                                message.context, self.id()
+                            )
+                        else:
+                            transition = record_review_error(
+                                message.context, self.id()
+                            )
                     clear_candidate_fallback(message.context, self.id())
                     clear_acceptance_critic_state(message.context, self.id())
                     self._clear_long_horizon_review_deadline(message.context)
@@ -5776,12 +5785,21 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                         self._finished = True
                         return list(review_fallback)
                     if policy.terminal_review_gate_enabled:
+                        fallback_submitted = bool(
+                            transition is not None
+                            and transition.decision.action
+                            is ControllerAction.SUBMIT_CURRENT_RESULT
+                        )
                         record_execution_state(
                             message.context,
                             self.id(),
-                            "succeeded",
-                            "terminal_review_unavailable_submit_current",
-                            recoverable=False,
+                            "succeeded" if fallback_submitted else "incomplete",
+                            (
+                                "terminal_review_unavailable_submit_current"
+                                if fallback_submitted
+                                else "terminal_review_fallback_transition_failed"
+                            ),
+                            recoverable=not fallback_submitted,
                         )
                         self._finished = True
                         return list(review_fallback)
@@ -6024,19 +6042,31 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                         clear_acceptance_critic_state,
                         clear_candidate_fallback,
                         record_review_error,
+                        record_terminal_fallback_submission,
                     )
                     from aworld.core.context.execution_state import (
                         record_execution_state,
                     )
 
                     review_fallback = long_horizon_fallback
-                    record_review_error(message.context, self.id())
+                    policy = execution_protocol_policy(message.context, self.id())
+                    transition = None
+                    if (
+                        policy.terminal_review_gate_enabled
+                        and not policy.independent_acceptance_enabled
+                    ):
+                        transition = record_terminal_fallback_submission(
+                            message.context, self.id()
+                        )
+                    else:
+                        transition = record_review_error(
+                            message.context, self.id()
+                        )
                     clear_candidate_fallback(message.context, self.id())
                     clear_acceptance_critic_state(message.context, self.id())
                     self._clear_long_horizon_review_deadline(message.context)
                     long_horizon_fallback = None
                     long_horizon_review_deadline = None
-                    policy = execution_protocol_policy(message.context, self.id())
                     if policy.independent_acceptance_enabled:
                         record_execution_state(
                             message.context,
@@ -6048,12 +6078,21 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                         self._finished = True
                         return list(review_fallback)
                     if policy.terminal_review_gate_enabled:
+                        fallback_submitted = bool(
+                            transition is not None
+                            and transition.decision.action
+                            is ControllerAction.SUBMIT_CURRENT_RESULT
+                        )
                         record_execution_state(
                             message.context,
                             self.id(),
-                            "succeeded",
-                            "terminal_review_budget_stop_submit_current",
-                            recoverable=False,
+                            "succeeded" if fallback_submitted else "incomplete",
+                            (
+                                "terminal_review_budget_stop_submit_current"
+                                if fallback_submitted
+                                else "terminal_review_fallback_transition_failed"
+                            ),
+                            recoverable=not fallback_submitted,
                         )
                         self._finished = True
                         return list(review_fallback)

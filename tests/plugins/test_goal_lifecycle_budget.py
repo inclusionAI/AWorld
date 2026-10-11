@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 import asyncio
+from dataclasses import replace
 
 import pytest
 
@@ -986,9 +987,14 @@ def test_direct_acceptance_respects_deadline_reserve():
     assert response.failure_origin == "task"
 
 
-def test_direct_acceptance_finalizes_existing_candidate_at_deadline_reserve():
+def test_direct_acceptance_finalizes_existing_candidate_at_deadline_reserve(
+    monkeypatch,
+):
     from aworld.core.context.base import Context
-    from aworld.core.execution_protocol import ExecutionProtocolPolicy
+    from aworld.core.execution_protocol import (
+        ExecutionProtocolPolicy,
+        ExecutionProtocolStore,
+    )
     from aworld.core.task import Task, TaskResponse
     from aworld.runners.execution_protocol import configure_execution_protocol
 
@@ -1005,6 +1011,23 @@ def test_direct_acceptance_finalizes_existing_candidate_at_deadline_reserve():
         context,
         "root-agent",
         ExecutionProtocolPolicy(mode="guide"),
+    )
+    policy = ExecutionProtocolPolicy(mode="guide")
+    store = ExecutionProtocolStore(context, "root-agent", policy)
+    store.save(
+        replace(
+            store.load(),
+            candidate_present=True,
+            candidate_checkpoint_recorded=True,
+            public_deliverable_declared=True,
+        )
+    )
+    monkeypatch.setattr(
+        "aworld.runners.execution_protocol.authenticated_declared_candidate_status",
+        lambda *_args, **_kwargs: {
+            "authenticated": True,
+            "reason": "current_complete_projection",
+        },
     )
     executor = object.__new__(LocalAgentExecutor)
     executor._session_mode = "direct"
@@ -1053,6 +1076,60 @@ def test_direct_acceptance_finalizes_existing_candidate_at_deadline_reserve():
     assert response.execution_protocol["acceptance_satisfied"] is True
     assert response.execution_protocol["decision_checkpoint_pending"] is False
     assert response.execution_protocol["finalization_entered"] is True
+
+
+def test_direct_acceptance_does_not_report_success_for_terminal_incomplete_review():
+    from aworld.core.context.base import Context
+    from aworld.core.execution_protocol import (
+        ExecutionProtocolPolicy,
+        ExecutionProtocolStore,
+        ProtocolPhase,
+    )
+    from aworld.core.task import Task, TaskResponse
+    from aworld.runners.execution_protocol import configure_execution_protocol
+
+    context = Context(task_id="terminal-incomplete")
+    task = Task(id="terminal-incomplete", input="finish", context=context)
+    context.set_task(task)
+    policy = ExecutionProtocolPolicy(mode="guide")
+    configure_execution_protocol(context, "root-agent", policy)
+    store = ExecutionProtocolStore(context, "root-agent", policy)
+    store.save(
+        replace(
+            store.load(),
+            phase=ProtocolPhase.REVIEW,
+            finalization_entered=True,
+            terminal_incomplete=True,
+        )
+    )
+    executor = object.__new__(LocalAgentExecutor)
+    executor._session_mode = "direct"
+    executor._base_runtime = None
+    executor.swarm = SimpleNamespace(
+        communicate_agent=SimpleNamespace(id=lambda: "root-agent")
+    )
+    response = TaskResponse(
+        success=True,
+        answer="candidate",
+        semantic_status="succeeded",
+    )
+
+    continuation = executor._direct_acceptance_continuation(
+        task=task,
+        response=response,
+        answer=response.answer,
+        event={"semantic_status": "succeeded", "final_answer": response.answer},
+        origin_user_input="finish",
+        logical_task_state=new_goal_contract_state("finish"),
+        acceptance_state=None,
+    )
+
+    assert continuation is None
+    assert response.success is False
+    assert response.semantic_status == "incomplete"
+    assert response.completion_reason == "execution_protocol_terminal_incomplete"
+    assert response.execution_protocol["phase"] == "review"
+    assert response.execution_protocol["terminal_incomplete"] is True
 
 
 def test_explicit_goal_owned_segment_cannot_start_implicit_acceptance():
@@ -1154,6 +1231,161 @@ def test_direct_acceptance_limit_is_exported_as_unsatisfied():
     assert response.success is False
     assert response.semantic_status == "budget_exhausted"
     assert response.execution_protocol["acceptance_disposition"] == "limit_reached"
+
+
+def test_direct_acceptance_limit_salvages_current_authenticated_candidate(
+    monkeypatch,
+):
+    from aworld.core.context.base import Context
+    from aworld.core.execution_protocol import (
+        ExecutionProtocolPolicy,
+        ExecutionProtocolStore,
+    )
+    from aworld.core.task import Task, TaskResponse
+    from aworld.runners.execution_protocol import configure_execution_protocol
+
+    context = Context(task_id="repair-limit-candidate")
+    task = Task(id="repair-limit-candidate", input="continue", context=context)
+    context.set_task(task)
+    policy = ExecutionProtocolPolicy(
+        mode="observe",
+        terminal_review_gate_enabled=True,
+        independent_acceptance_enabled=False,
+    )
+    configure_execution_protocol(context, "root-agent", policy)
+    store = ExecutionProtocolStore(context, "root-agent", policy)
+    store.save(
+        replace(
+            store.load(),
+            candidate_present=True,
+            candidate_checkpoint_recorded=True,
+            public_deliverable_declared=True,
+        )
+    )
+    monkeypatch.setattr(
+        "aworld.runners.execution_protocol.authenticated_declared_candidate_status",
+        lambda *_args, **_kwargs: {
+            "authenticated": True,
+            "reason": "current_complete_projection",
+        },
+    )
+    executor = object.__new__(LocalAgentExecutor)
+    executor._session_mode = "direct"
+    executor._base_runtime = None
+    executor.swarm = SimpleNamespace(
+        communicate_agent=SimpleNamespace(id=lambda: "root-agent")
+    )
+    state = new_goal_contract_state("work", max_turns=2)
+    state["turn_count"] = 2
+    response = TaskResponse(
+        success=False,
+        answer="current candidate",
+        semantic_status="incomplete",
+        recoverable=True,
+    )
+
+    continuation = executor._direct_acceptance_continuation(
+        task=task,
+        response=response,
+        answer=response.answer,
+        event={"semantic_status": "incomplete", "recoverable": True},
+        origin_user_input="work",
+        logical_task_state=state,
+        acceptance_state=state,
+    )
+
+    assert continuation is None
+    assert response.success is True
+    assert response.semantic_status == "succeeded"
+    assert response.completion_reason == "implicit_acceptance_candidate_salvaged"
+    assert response.execution_protocol["phase"] == "complete"
+    assert response.execution_protocol["terminal_incomplete"] is False
+    from aworld.runners.execution_protocol import project_execution_protocol_telemetry
+
+    assert (
+        project_execution_protocol_telemetry(response.execution_protocol)
+        == response.execution_protocol
+    )
+
+
+def test_direct_acceptance_stops_after_one_continuation_for_unverified_candidate(
+    monkeypatch,
+):
+    from aworld.core.context.base import Context
+    from aworld.core.execution_protocol import (
+        ExecutionProtocolPolicy,
+        ExecutionProtocolStore,
+    )
+    from aworld.core.task import Task, TaskResponse
+    from aworld.runners.execution_protocol import configure_execution_protocol
+
+    context = Context(task_id="unverified-candidate-limit")
+    task = Task(id="unverified-candidate-limit", input="continue", context=context)
+    context.set_task(task)
+    policy = ExecutionProtocolPolicy(
+        mode="observe",
+        terminal_review_gate_enabled=True,
+        independent_acceptance_enabled=False,
+        max_repairs=None,
+    )
+    configure_execution_protocol(context, "root-agent", policy)
+    store = ExecutionProtocolStore(context, "root-agent", policy)
+    store.save(
+        replace(
+            store.load(),
+            candidate_present=True,
+            candidate_checkpoint_recorded=True,
+            public_deliverable_declared=True,
+        )
+    )
+    monkeypatch.setattr(
+        "aworld.runners.execution_protocol.authenticated_declared_candidate_status",
+        lambda *_args, **_kwargs: {
+            "authenticated": False,
+            "reason": "projection_changed",
+        },
+    )
+    executor = object.__new__(LocalAgentExecutor)
+    executor._session_mode = "direct"
+    executor._base_runtime = None
+    executor.swarm = SimpleNamespace(
+        communicate_agent=SimpleNamespace(id=lambda: "root-agent")
+    )
+    state = new_goal_contract_state("work")
+    state["turn_count"] = 2
+    response = TaskResponse(
+        success=False,
+        answer="stale candidate",
+        semantic_status="incomplete",
+        recoverable=True,
+    )
+
+    continuation = executor._direct_acceptance_continuation(
+        task=task,
+        response=response,
+        answer=response.answer,
+        event={"semantic_status": "incomplete", "recoverable": True},
+        origin_user_input="work",
+        logical_task_state=state,
+        acceptance_state=state,
+    )
+
+    assert continuation is None
+    assert response.success is False
+    assert response.semantic_status == "budget_exhausted"
+    assert response.completion_reason == "implicit_acceptance_candidate_unverified"
+    assert response.execution_protocol["acceptance_continuation_suppressed"] == (
+        "candidate_continuation_limit"
+    )
+    assert response.execution_protocol["acceptance_candidate_authentication"] == (
+        "projection_changed"
+    )
+    from aworld.runners.execution_protocol import project_execution_protocol_telemetry
+
+    assert (
+        project_execution_protocol_telemetry(response.execution_protocol)
+        == response.execution_protocol
+    )
 
 
 @pytest.mark.asyncio

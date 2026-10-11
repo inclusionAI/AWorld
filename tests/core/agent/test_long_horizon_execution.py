@@ -312,6 +312,56 @@ async def test_success_first_terminal_review_error_submits_current_candidate() -
     assert get_execution_state(context)["reason"] == (
         "terminal_review_unavailable_submit_current"
     )
+    protocol = load_execution_protocol_state(context, agent.id())
+    assert protocol.phase is ProtocolPhase.COMPLETE
+    assert protocol.terminal_incomplete is False
+    assert protocol.acceptance_confirmed is False
+    assert protocol.repair_count == 0
+
+
+@pytest.mark.asyncio
+async def test_success_first_terminal_review_budget_stop_records_complete_state() -> None:
+    context = Context(task_id="terminal-review-budget")
+    context.set_task(
+        Task(id="terminal-review-budget", input="finish the task", timeout=600)
+    )
+    policy = ExecutionProtocolPolicy(
+        mode=ProtocolMode.OBSERVE,
+        terminal_review_gate_enabled=True,
+        independent_acceptance_enabled=False,
+    )
+    agent = _agent(context, policy)
+    configure_execution_protocol(context, agent.id(), policy)
+    _declare_long_horizon(context, agent.id())
+    record_candidate_final(context, agent.id())
+    fallback = ActionModel(agent_name=agent.id(), policy_info="best current result")
+
+    async def continue_review(_observation, **_kwargs):
+        return _LongHorizonReviewContinuation(
+            observation=Observation(content="review current evidence"),
+            kwargs={},
+            fallback_actions=(fallback,),
+        )
+
+    async def terminate(_message):
+        return True
+
+    agent._async_policy_once = continue_review
+    agent.should_terminate_loop = terminate
+    message = Message(category=Constants.AGENT, headers={"context": context})
+
+    result = await agent.async_policy(Observation(content="candidate"), message=message)
+
+    assert result == [fallback]
+    assert get_execution_state(context)["status"] == "succeeded"
+    assert get_execution_state(context)["reason"] == (
+        "terminal_review_budget_stop_submit_current"
+    )
+    protocol = load_execution_protocol_state(context, agent.id())
+    assert protocol.phase is ProtocolPhase.COMPLETE
+    assert protocol.terminal_incomplete is False
+    assert protocol.acceptance_confirmed is False
+    assert protocol.repair_count == 0
 
 
 def _independent_review_failure_fixture(

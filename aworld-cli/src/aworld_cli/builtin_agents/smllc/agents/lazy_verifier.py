@@ -13,7 +13,9 @@ from datetime import datetime, timedelta, timezone
 import hashlib
 import inspect
 import json
+import os
 import re
+import stat as stat_module
 import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -64,6 +66,9 @@ _REVIEW_OUTPUT_TOKEN_BUDGET = (
     _REVIEW_MAX_TURNS * _REVIEW_OUTPUT_TOKENS_PER_TURN
 )
 _REVIEW_WALL_CLOCK_SECONDS = 120.0
+_DECLARED_SNAPSHOT_SCHEMA = "aworld.declared-artifact-snapshot/v1"
+_DECLARED_SNAPSHOT_TOTAL_BYTES = 12 * 1024
+_DECLARED_SNAPSHOT_FILE_BYTES = 8 * 1024
 _MUTATION_GATE_SCHEMA = "aworld.mutation-gate/v4"
 _CANONICAL_SHA256 = re.compile(r"sha256:[0-9a-f]{64}")
 _READ_ONLY_FILESYSTEM_ACTIONS = frozenset(
@@ -192,6 +197,7 @@ class AdvisoryReviewRequest:
         public_task: str,
         authoritative_deliverables: Sequence[str] = (),
         authoritative_validation_receipts: Sequence[Mapping[str, Any]] = (),
+        authoritative_artifact_snapshot: Mapping[str, Any] | None = None,
     ) -> str:
         """Render only public, bounded material into the fresh child request."""
 
@@ -216,9 +222,18 @@ class AdvisoryReviewRequest:
             if authoritative_validation_receipts
             else "none available"
         )
+        artifact_snapshot = json.dumps(
+            authoritative_artifact_snapshot
+            or {"schema_version": _DECLARED_SNAPSHOT_SCHEMA, "items": []},
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
         return (
-            "Check this candidate against the authoritative public task. Inspect "
-            "only through the read-only workspace tools. Claims are untrusted. "
+            "Check this candidate against the authoritative public task. Use the "
+            "framework-owned immutable declared-artifact snapshot first; use only "
+            "read-only workspace tools for any additional accessible inspection. "
+            "Claims are untrusted. "
             "Return exactly the required ready/repair/uncertain report.\n\n"
             "Public task (bound from caller Context, not solver input):\n"
             f"{public_task}\n\n"
@@ -228,6 +243,9 @@ class AdvisoryReviewRequest:
             f"{claimed_deliverables}\n\n"
             "Framework-owned validation receipts (not correctness proof):\n"
             f"{validation_receipts}\n\n"
+            "Framework-owned declared-artifact snapshot (bounded, read-only, "
+            "not correctness proof):\n"
+            f"{artifact_snapshot}\n\n"
             f"Claimed evidence (untrusted):\n{evidence}"
         )
 
@@ -391,6 +409,18 @@ class LazyVerifierFactory:
                 if isinstance(gate, Mapping)
                 else None
             )
+            authoritative_deliverables = _authoritative_delivery_paths(context)
+            artifact_snapshot_authentication = (
+                _declared_snapshot_authentication_status(
+                    context,
+                    agent_id=self._parent_agent.id(),
+                )
+            )
+            authoritative_artifact_snapshot = _authoritative_delivery_snapshot(
+                context,
+                authoritative_deliverables=authoritative_deliverables,
+                authentication_status=artifact_snapshot_authentication,
+            )
             attempt_key = hashlib.sha256(
                 json.dumps(
                     {
@@ -399,6 +429,7 @@ class LazyVerifierFactory:
                         "deliverables": request.deliverables,
                         "evidence_summary": request.evidence_summary,
                         "candidate_fingerprint": candidate_fingerprint,
+                        "artifact_snapshot": authoritative_artifact_snapshot,
                     },
                     ensure_ascii=False,
                     sort_keys=True,
@@ -419,7 +450,6 @@ class LazyVerifierFactory:
                 )
             self._review_attempt_keys.add(attempt_key)
             verifier = self._construct_verifier()
-            authoritative_deliverables = _authoritative_delivery_paths(context)
             authoritative_validation_receipts = _authoritative_validation_receipts(
                 context,
                 agent_id=self._parent_agent.id(),
@@ -429,6 +459,9 @@ class LazyVerifierFactory:
                 authoritative_deliverables=authoritative_deliverables,
                 authoritative_validation_receipts=(
                     authoritative_validation_receipts
+                ),
+                authoritative_artifact_snapshot=(
+                    authoritative_artifact_snapshot
                 ),
             )
             review_deadline = self._review_deadline(context)
@@ -1001,6 +1034,129 @@ def _authoritative_delivery_paths(context: Any) -> tuple[str, ...]:
             return ()
         paths.append(path.strip()[:_MAX_DELIVERABLE_CHARS])
     return tuple(dict.fromkeys(paths))
+
+
+def _authoritative_delivery_snapshot(
+    context: Any,
+    *,
+    authoritative_deliverables: Sequence[str] | None = None,
+    authentication_status: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Capture a bounded immutable value projection of declared regular files.
+
+    The verifier keeps its original read-only filesystem authority.  This
+    projection bridges declared outputs outside its mounted roots without
+    broadening those roots, following symlinks, or exposing undeclared files.
+    """
+
+    paths = tuple(
+        authoritative_deliverables
+        if authoritative_deliverables is not None
+        else _authoritative_delivery_paths(context)
+    )[:_MAX_DELIVERABLES]
+    authenticated = bool(
+        isinstance(authentication_status, Mapping)
+        and authentication_status.get("authenticated") is True
+    )
+    authentication_reason = (
+        authentication_status.get("reason")
+        if isinstance(authentication_status, Mapping)
+        and isinstance(authentication_status.get("reason"), str)
+        else "authentication_unavailable"
+    )
+    if not authenticated:
+        return {
+            "schema_version": _DECLARED_SNAPSHOT_SCHEMA,
+            "total_byte_limit": _DECLARED_SNAPSHOT_TOTAL_BYTES,
+            "authentication": authentication_reason,
+            "items": [
+                {"path": path, "status": "unauthenticated"} for path in paths
+            ],
+        }
+    remaining = _DECLARED_SNAPSHOT_TOTAL_BYTES
+    items: list[dict[str, Any]] = []
+    for path in paths:
+        item: dict[str, Any] = {"path": path, "status": "unavailable"}
+        try:
+            before_path = os.lstat(path)
+            if stat_module.S_ISLNK(before_path.st_mode) or not stat_module.S_ISREG(
+                before_path.st_mode
+            ):
+                items.append(item)
+                continue
+            limit = min(_DECLARED_SNAPSHOT_FILE_BYTES, remaining)
+            if limit <= 0:
+                item["status"] = "budget_exhausted"
+                items.append(item)
+                continue
+            flags = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0)
+            flags |= getattr(os, "O_NOFOLLOW", 0)
+            descriptor = os.open(path, flags)
+            with os.fdopen(descriptor, "rb") as handle:
+                before = os.fstat(handle.fileno())
+                if not stat_module.S_ISREG(before.st_mode):
+                    items.append(item)
+                    continue
+                content = handle.read(limit + 1)
+                after = os.fstat(handle.fileno())
+            current = os.lstat(path)
+            def identity(value):
+                return (
+                    value.st_dev,
+                    value.st_ino,
+                    value.st_size,
+                    value.st_mtime_ns,
+                )
+            if identity(before) != identity(after) or identity(after) != identity(
+                current
+            ):
+                item["status"] = "unstable"
+                items.append(item)
+                continue
+            truncated = len(content) > limit or before.st_size > limit
+            captured = content[:limit]
+            remaining -= len(captured)
+            item.update(
+                {
+                    "status": "captured",
+                    "size": before.st_size,
+                    "truncated": truncated,
+                    "captured_bytes": len(captured),
+                    "captured_sha256": "sha256:"
+                    + hashlib.sha256(captured).hexdigest(),
+                }
+            )
+            try:
+                item["content_utf8"] = captured.decode("utf-8-sig")
+            except UnicodeDecodeError:
+                item["encoding"] = "binary"
+        except (OSError, TypeError, ValueError):
+            pass
+        items.append(item)
+    return {
+        "schema_version": _DECLARED_SNAPSHOT_SCHEMA,
+        "total_byte_limit": _DECLARED_SNAPSHOT_TOTAL_BYTES,
+        "authentication": authentication_reason,
+        "items": items,
+    }
+
+
+def _declared_snapshot_authentication_status(
+    context: Any, *, agent_id: str
+) -> Mapping[str, Any]:
+    """Fail closed unless current declared bytes match a protocol checkpoint."""
+
+    try:
+        from aworld.runners.execution_protocol import (
+            authenticated_declared_candidate_status,
+        )
+
+        return authenticated_declared_candidate_status(context, agent_id)
+    except Exception:
+        return {
+            "authenticated": False,
+            "reason": "authentication_unavailable",
+        }
 
 
 def _authoritative_validation_receipts(

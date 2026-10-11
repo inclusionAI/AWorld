@@ -2367,6 +2367,72 @@ def test_candidate_final_in_finalization_reserve_is_unverified():
     assert forged_accept.state.terminal_incomplete is True
 
 
+def test_terminal_fallback_submission_completes_without_claiming_review_acceptance():
+    policy = ExecutionProtocolPolicy(
+        mode="observe",
+        terminal_review_gate_enabled=True,
+        independent_acceptance_enabled=False,
+    )
+    reviewing = transition_execution_protocol(
+        _armed_state(),
+        ExecutionProtocolEvent(kind=EventKind.CANDIDATE_FINAL),
+        policy,
+    )
+    assert reviewing.state.review_pending is True
+
+    submitted = transition_execution_protocol(
+        reviewing.state,
+        ExecutionProtocolEvent(kind=EventKind.TERMINAL_FALLBACK_SUBMIT),
+        policy,
+    )
+
+    assert submitted.decision.action is ControllerAction.SUBMIT_CURRENT_RESULT
+    assert submitted.decision.reason is DecisionReason.TERMINAL_FALLBACK_SUBMIT
+    assert submitted.state.phase is ProtocolPhase.COMPLETE
+    assert submitted.state.review_pending is False
+    assert submitted.state.terminal_incomplete is False
+    assert submitted.state.acceptance_confirmed is False
+
+
+def test_terminal_fallback_submission_without_candidate_fails_closed():
+    submitted = transition_execution_protocol(
+        _armed_state(),
+        ExecutionProtocolEvent(kind=EventKind.TERMINAL_FALLBACK_SUBMIT),
+        ExecutionProtocolPolicy(
+            mode="observe",
+            terminal_review_gate_enabled=True,
+            independent_acceptance_enabled=False,
+        ),
+    )
+
+    assert submitted.decision.action is ControllerAction.STOP_INCOMPLETE
+    assert submitted.state.phase is ProtocolPhase.REVIEW
+    assert submitted.state.terminal_incomplete is True
+
+
+def test_terminal_fallback_cannot_bypass_independent_acceptance():
+    candidate = replace(
+        _armed_state(),
+        candidate_present=True,
+        candidate_checkpoint_recorded=True,
+    )
+
+    submitted = transition_execution_protocol(
+        candidate,
+        ExecutionProtocolEvent(kind=EventKind.TERMINAL_FALLBACK_SUBMIT),
+        ExecutionProtocolPolicy(
+            mode="guide",
+            terminal_review_gate_enabled=True,
+            independent_acceptance_enabled=True,
+        ),
+    )
+
+    assert submitted.decision.action is ControllerAction.STOP_INCOMPLETE
+    assert submitted.state.phase is ProtocolPhase.REVIEW
+    assert submitted.state.terminal_incomplete is True
+    assert submitted.state.acceptance_confirmed is False
+
+
 def test_tool_event_threshold_never_overrides_model_horizon_ownership():
     policy = ExecutionProtocolPolicy(
         mode="guide",
