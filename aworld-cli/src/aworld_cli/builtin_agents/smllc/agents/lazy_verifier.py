@@ -34,7 +34,9 @@ from aworld.core.context.compiler import (
     ChildStatus,
     DelegationSpec,
     MergePolicy,
+    semantic_fingerprint,
 )
+from aworld.core.context.execution_state import state_context
 from aworld.core.tool.action import ToolAction
 from aworld.core.tool.base import AsyncTool, ToolFactory
 from aworld.logs.util import logger
@@ -61,6 +63,7 @@ _REVIEW_OUTPUT_TOKEN_BUDGET = (
     _REVIEW_MAX_TURNS * _REVIEW_OUTPUT_TOKENS_PER_TURN
 )
 _REVIEW_WALL_CLOCK_SECONDS = 120.0
+_MUTATION_GATE_SCHEMA = "aworld.mutation-gate/v4"
 _READ_ONLY_FILESYSTEM_ACTIONS = frozenset(
     {
         "list_allowed_directories",
@@ -378,21 +381,9 @@ class LazyVerifierFactory:
                     ),
                     reason_code=request_error,
                 )
-            context_info = getattr(context, "context_info", None)
-            gate = None
-            if isinstance(context_info, Mapping):
-                gate = context_info.get("execution_protocol_mutation_gate")
-                if not isinstance(gate, Mapping):
-                    gate = next(
-                        (
-                            value
-                            for key, value in context_info.items()
-                            if isinstance(key, str)
-                            and key.startswith("execution_protocol_mutation_gate:")
-                            and isinstance(value, Mapping)
-                        ),
-                        None,
-                    )
+            gate = _current_candidate_gate(
+                context, agent_id=self._parent_agent.id()
+            )
             candidate_fingerprint = (
                 gate.get("candidate_fingerprint")
                 if isinstance(gate, Mapping)
@@ -937,6 +928,15 @@ def _authoritative_validation_receipts(
 ) -> tuple[dict[str, Any], ...]:
     """Project only framework-recorded completion checks from scoped work state."""
 
+    gate = _current_candidate_gate(context, agent_id=agent_id)
+    candidate_fingerprint = (
+        gate.get("candidate_fingerprint")
+        if isinstance(gate, Mapping)
+        else None
+    )
+    if not isinstance(candidate_fingerprint, str):
+        return ()
+
     state = None
     reader = getattr(context, "read_task_runtime_state", None)
     if callable(reader):
@@ -966,6 +966,7 @@ def _authoritative_validation_receipts(
             not isinstance(raw, Mapping)
             or raw.get("source") != "runtime_self_check"
             or raw.get("historical") is True
+            or raw.get("candidate_fingerprint") != candidate_fingerprint
         ):
             continue
         command_id = raw.get("command_id")
@@ -985,10 +986,59 @@ def _authoritative_validation_receipts(
                 "command_id": command_id[:128],
                 "exit_code": exit_code,
                 "output_hash": output_hash[:128],
+                "observed_at": str(raw.get("observed_at") or "")[:64],
+                "candidate_fingerprint": candidate_fingerprint,
                 "source": "runtime_self_check",
             }
         )
     return tuple(receipts)
+
+
+def _current_candidate_gate(
+    context: Any,
+    *,
+    agent_id: str,
+) -> Mapping[str, Any] | None:
+    """Return only this parent agent's exact, current v4 mutation gate."""
+
+    owner = state_context(context)
+    gate = None
+    reader = getattr(owner, "read_task_runtime_state", None)
+    if callable(reader):
+        try:
+            gate = reader(agent_id, "execution_protocol_mutation_gate")
+        except Exception:
+            gate = None
+    if not isinstance(gate, Mapping):
+        context_info = getattr(owner, "context_info", None)
+        gate = (
+            context_info.get(f"execution_protocol_mutation_gate:{agent_id}")
+            if isinstance(context_info, Mapping)
+            else None
+        )
+    expected_scope_hash = semantic_fingerprint(
+        {
+            "task_id": getattr(owner, "task_id", None),
+            "task_epoch": getattr(owner, "task_epoch", None),
+            "agent_id": agent_id,
+        }
+    )
+    candidate_fingerprint = (
+        gate.get("candidate_fingerprint")
+        if isinstance(gate, Mapping)
+        else None
+    )
+    if (
+        not isinstance(gate, Mapping)
+        or gate.get("schema_version") != _MUTATION_GATE_SCHEMA
+        or gate.get("agent_id") != agent_id
+        or gate.get("scope_hash") != expected_scope_hash
+        or not isinstance(candidate_fingerprint, str)
+        or not candidate_fingerprint.startswith("sha256:")
+        or len(candidate_fingerprint) != 71
+    ):
+        return None
+    return gate
 
 
 __all__ = [

@@ -19,6 +19,49 @@ _MAX_OBJECTIVE_CHARS = 8_192
 _MAX_OBLIGATIONS = 32
 _PUBLIC_DELIVERABLE_SCHEMA = "aworld.public-deliverables/v1"
 _PUBLIC_DELIVERABLE_AUTHORITY = "public_task_advisory"
+_MUTATION_GATE_SCHEMA = "aworld.mutation-gate/v4"
+
+
+def _current_candidate_fingerprint(context, agent_id: str) -> str | None:
+    """Read only the exact current agent's scoped canonical candidate gate."""
+
+    owner = state_context(context)
+    gate = None
+    reader = getattr(owner, "read_task_runtime_state", None)
+    if callable(reader):
+        try:
+            gate = reader(agent_id, "execution_protocol_mutation_gate")
+        except Exception:
+            gate = None
+    if not isinstance(gate, Mapping):
+        context_info = getattr(owner, "context_info", None)
+        gate = (
+            context_info.get(f"execution_protocol_mutation_gate:{agent_id}")
+            if isinstance(context_info, Mapping)
+            else None
+        )
+    expected_scope_hash = semantic_fingerprint(
+        {
+            "task_id": getattr(owner, "task_id", None),
+            "task_epoch": getattr(owner, "task_epoch", None),
+            "agent_id": agent_id,
+        }
+    )
+    if (
+        not isinstance(gate, Mapping)
+        or gate.get("schema_version") != _MUTATION_GATE_SCHEMA
+        or gate.get("agent_id") != agent_id
+        or gate.get("scope_hash") != expected_scope_hash
+    ):
+        return None
+    candidate_fingerprint = gate.get("candidate_fingerprint")
+    if (
+        not isinstance(candidate_fingerprint, str)
+        or not candidate_fingerprint.startswith("sha256:")
+        or len(candidate_fingerprint) != 71
+    ):
+        return None
+    return candidate_fingerprint
 
 
 def public_deliverable_contract_identity(
@@ -194,11 +237,47 @@ def retain_work_progress(context, agent_id: str, *, plan: str | None = None):
             item["path"] for item in state["candidate_submission"]
             if item["required"] and item["exists"] is not True
         ]
-        state["validation_evidence"] = [
-            {"command_id": e.command_id, "exit_code": e.exit_code,
-             "output_hash": e.output_hash, "source": "runtime_self_check"}
-            for e in getattr(context, "_completion_self_checks", ())
-        ][-8:]
+        previous_receipts = {
+            (
+                item.get("command_id"),
+                item.get("exit_code"),
+                item.get("output_hash"),
+                item.get("observed_at"),
+            ): item
+            for item in state.get("validation_evidence", ())
+            if isinstance(item, Mapping)
+        }
+        candidate_fingerprint = _current_candidate_fingerprint(
+            owner, agent_id
+        )
+        receipts = []
+        for evidence_item in getattr(context, "_completion_self_checks", ()):
+            observed_at = evidence_item.observed_at.isoformat()
+            identity = (
+                evidence_item.command_id,
+                evidence_item.exit_code,
+                evidence_item.output_hash,
+                observed_at,
+            )
+            receipt = {
+                "command_id": evidence_item.command_id,
+                "exit_code": evidence_item.exit_code,
+                "output_hash": evidence_item.output_hash,
+                "observed_at": observed_at,
+                "source": "runtime_self_check",
+            }
+            previous = previous_receipts.get(identity)
+            if previous is not None:
+                if "candidate_fingerprint" in previous:
+                    receipt["candidate_fingerprint"] = previous.get(
+                        "candidate_fingerprint"
+                    )
+                if previous.get("historical") is True:
+                    receipt["historical"] = True
+            elif candidate_fingerprint is not None:
+                receipt["candidate_fingerprint"] = candidate_fingerprint
+            receipts.append(receipt)
+        state["validation_evidence"] = receipts[-8:]
     key = f"{ADAPTIVE_WORK_STATE_KEY}:{agent_id}"
     updater = getattr(owner, "update_task_runtime_state", None)
     if callable(updater):
@@ -304,7 +383,10 @@ def retain_model_work_checkpoint(context, agent_id: str, update):
     validations = [
         {
             key: deepcopy(item.get(key))
-            for key in ("command_id", "exit_code", "output_hash", "source")
+            for key in (
+                "command_id", "exit_code", "output_hash", "observed_at",
+                "candidate_fingerprint", "source",
+            )
             if item.get(key) is not None
         }
         for item in (state.get("validation_evidence") or ())[-8:]

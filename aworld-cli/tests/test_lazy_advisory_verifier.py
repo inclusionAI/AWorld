@@ -109,6 +109,21 @@ def _context(public_task="Check the complete public task.", *, task_input=None):
     )
 
 
+def _candidate_gate(context, agent_id, candidate_fingerprint):
+    return {
+        "schema_version": "aworld.mutation-gate/v4",
+        "scope_hash": lazy_verifier_module.semantic_fingerprint(
+            {
+                "task_id": getattr(context, "task_id", None),
+                "task_epoch": getattr(context, "task_epoch", None),
+                "agent_id": agent_id,
+            }
+        ),
+        "agent_id": agent_id,
+        "candidate_fingerprint": candidate_fingerprint,
+    }
+
+
 def _production_context(root, public_task, *, current_agent_id=None, agents=None):
     agent_id = root.id()
     return SimpleNamespace(
@@ -682,16 +697,18 @@ async def test_changed_candidate_fingerprint_allows_one_fresh_review() -> None:
     factory = _factory(captured=captured)
     request = AdvisoryReviewRequest(candidate_claim="The candidate is ready.")
     context = _context()
+    first_fingerprint = "sha256:" + "a" * 64
+    second_fingerprint = "sha256:" + "b" * 64
     context.context_info = {
-        "execution_protocol_mutation_gate:root-id": {
-            "candidate_fingerprint": "sha256:first",
-        }
+        "execution_protocol_mutation_gate:root-id": _candidate_gate(
+            context, "root-id", first_fingerprint
+        )
     }
 
     first = await factory.review(request, context=context)
-    context.context_info["execution_protocol_mutation_gate:root-id"] = {
-        "candidate_fingerprint": "sha256:second",
-    }
+    context.context_info["execution_protocol_mutation_gate:root-id"] = (
+        _candidate_gate(context, "root-id", second_fingerprint)
+    )
     second = await factory.review(request, context=context)
 
     assert first.status == "completed"
@@ -826,7 +843,11 @@ async def test_review_receives_authoritative_public_delivery_paths() -> None:
     context = _context("Write result.json in the workspace.")
     context.task_id = "task-1"
     context.task_epoch = 3
+    candidate_fingerprint = "sha256:" + "d" * 64
     context.context_info = {
+        "execution_protocol_mutation_gate:root-id": _candidate_gate(
+            context, "root-id", candidate_fingerprint
+        ),
         "public_deliverable_contract": {
             "schema_version": "aworld.public-deliverables/v1",
             "authority": "public_task_advisory",
@@ -847,18 +868,22 @@ async def test_review_receives_authoritative_public_delivery_paths() -> None:
                     "command_id": "public-smoke-test",
                     "exit_code": 0,
                     "output_hash": "sha256:" + "a" * 64,
+                    "observed_at": "2026-10-11T00:00:00+00:00",
+                    "candidate_fingerprint": candidate_fingerprint,
                     "source": "runtime_self_check",
                 },
                 {
                     "command_id": "solver-claim",
                     "exit_code": 0,
                     "output_hash": "sha256:" + "b" * 64,
+                    "candidate_fingerprint": candidate_fingerprint,
                     "source": "agent_claim",
                 },
                 {
                     "command_id": "old-task-check",
                     "exit_code": 0,
                     "output_hash": "sha256:" + "c" * 64,
+                    "candidate_fingerprint": candidate_fingerprint,
                     "source": "runtime_self_check",
                     "historical": True,
                 },
@@ -878,6 +903,61 @@ async def test_review_receives_authoritative_public_delivery_paths() -> None:
     assert "public-smoke-test" in directive
     assert "solver-claim" not in directive
     assert "old-task-check" not in directive
+
+
+@pytest.mark.asyncio
+async def test_review_omits_stale_unbound_and_wrong_agent_receipts() -> None:
+    captured = {}
+    factory = _factory(captured=captured)
+    context = _context("Write result.json in the workspace.")
+    context.task_id = "receipt-filter"
+    context.task_epoch = 4
+    current = "sha256:" + "1" * 64
+    stale = "sha256:" + "2" * 64
+    context.context_info = {
+        "execution_protocol_mutation_gate:other": _candidate_gate(
+            context, "other", stale
+        ),
+        "execution_protocol_mutation_gate:root-id": _candidate_gate(
+            context, "root-id", current
+        ),
+        "adaptive_work_state:root-id": {
+            "scope": {"task_id": "receipt-filter", "task_epoch": 4},
+            "validation_evidence": [
+                {
+                    "command_id": "matching",
+                    "exit_code": 0,
+                    "output_hash": "sha256:" + "3" * 64,
+                    "observed_at": "2026-10-11T00:00:00+00:00",
+                    "candidate_fingerprint": current,
+                    "source": "runtime_self_check",
+                },
+                {
+                    "command_id": "stale",
+                    "exit_code": 0,
+                    "output_hash": "sha256:" + "4" * 64,
+                    "candidate_fingerprint": stale,
+                    "source": "runtime_self_check",
+                },
+                {
+                    "command_id": "unbound",
+                    "exit_code": 0,
+                    "output_hash": "sha256:" + "5" * 64,
+                    "source": "runtime_self_check",
+                },
+            ],
+        },
+    }
+
+    await factory.review(
+        AdvisoryReviewRequest(candidate_claim="Result is complete."),
+        context=context,
+    )
+
+    directive = captured["runner"]["directive"]
+    assert "matching" in directive
+    assert '"command_id":"stale"' not in directive
+    assert "unbound" not in directive
 
 
 @pytest.mark.parametrize(

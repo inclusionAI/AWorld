@@ -1,4 +1,5 @@
 from copy import deepcopy
+from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -8,6 +9,11 @@ from aworld.core.task import Task
 from aworld.core.context.compiler.work_state import (advance_adaptive_work_state,
     build_adaptive_work_state_entry, adaptive_work_state_message)
 from aworld.core.context.execution_state import record_execution_state, get_execution_state
+from aworld.core.context.compiler import (
+    CompletionContract,
+    SelfCheckEvidence,
+    semantic_fingerprint,
+)
 from aworld.core.context.work_progress import (
     carry_goal_work_state,
     checkpoint_work_progress,
@@ -78,6 +84,100 @@ def test_goal_handoff_is_explicit_scoped_and_does_not_copy_completion():
     other.context_info["adaptive_work_state:agent"] = ledger
     other.write_task_runtime_state("agent", "adaptive_work_state", ledger)
     assert "current_plan" not in retain_work_progress(other, "agent")
+
+
+def _candidate_gate(context, agent_id, candidate_fingerprint):
+    return {
+        "schema_version": "aworld.mutation-gate/v4",
+        "scope_hash": semantic_fingerprint(
+            {
+                "task_id": context.task_id,
+                "task_epoch": context.task_epoch,
+                "agent_id": agent_id,
+            }
+        ),
+        "agent_id": agent_id,
+        "candidate_fingerprint": candidate_fingerprint,
+    }
+
+
+def _enable_completion_evidence(context):
+    context.configure_completion_contract(
+        CompletionContract(
+            required_artifacts=(),
+            immutable_inputs=(),
+            validation_commands=(),
+            max_evidence_age_seconds=None,
+            required_final_evidence=(),
+        )
+    )
+
+
+def test_validation_receipt_stays_bound_to_first_observed_candidate():
+    context = Context(task_id="receipt-binding", task_epoch=2)
+    context.set_task(Task(id="receipt-binding", input="Create result.json"))
+    _enable_completion_evidence(context)
+    candidate_a = semantic_fingerprint("candidate-a")
+    candidate_b = semantic_fingerprint("candidate-b")
+    gate = _candidate_gate(context, "agent", candidate_a)
+    context.write_task_runtime_state(
+        "agent", "execution_protocol_mutation_gate", gate
+    )
+    context.context_info["execution_protocol_mutation_gate:agent"] = gate
+    first = SelfCheckEvidence(
+        command_id="public-smoke",
+        exit_code=0,
+        output_hash=semantic_fingerprint("ok-a"),
+        observed_at=datetime(2026, 10, 11, tzinfo=timezone.utc),
+    )
+    context.record_completion_self_check(first)
+
+    state = retain_work_progress(context, "agent")
+    assert state["validation_evidence"][0]["candidate_fingerprint"] == candidate_a
+    assert state["validation_evidence"][0]["observed_at"].endswith("+00:00")
+
+    gate = _candidate_gate(context, "agent", candidate_b)
+    context.write_task_runtime_state(
+        "agent", "execution_protocol_mutation_gate", gate
+    )
+    context.context_info["execution_protocol_mutation_gate:agent"] = gate
+    second = SelfCheckEvidence(
+        command_id="public-smoke-b",
+        exit_code=0,
+        output_hash=semantic_fingerprint("ok-b"),
+        observed_at=datetime(2026, 10, 11, 0, 1, tzinfo=timezone.utc),
+    )
+    context.record_completion_self_check(second)
+
+    state = retain_work_progress(context, "agent")
+    assert state["validation_evidence"][0]["candidate_fingerprint"] == candidate_a
+    assert state["validation_evidence"][1]["candidate_fingerprint"] == candidate_b
+
+
+def test_unbound_validation_receipt_is_never_rebound_later():
+    context = Context(task_id="receipt-unbound", task_epoch=1)
+    context.set_task(Task(id="receipt-unbound", input="Create result.json"))
+    _enable_completion_evidence(context)
+    context.record_completion_self_check(
+        SelfCheckEvidence(
+            command_id="early-check",
+            exit_code=0,
+            output_hash=semantic_fingerprint("early"),
+            observed_at=datetime(2026, 10, 11, tzinfo=timezone.utc),
+        )
+    )
+    state = retain_work_progress(context, "agent")
+    assert "candidate_fingerprint" not in state["validation_evidence"][0]
+
+    gate = _candidate_gate(
+        context, "agent", semantic_fingerprint("later-candidate")
+    )
+    context.write_task_runtime_state(
+        "agent", "execution_protocol_mutation_gate", gate
+    )
+    context.context_info["execution_protocol_mutation_gate:agent"] = gate
+    state = retain_work_progress(context, "agent")
+    assert "candidate_fingerprint" not in state["validation_evidence"][0]
 
 
 @pytest.mark.asyncio
