@@ -272,18 +272,19 @@ def test_armed_long_running_skill_adds_no_framework_idle_ceiling() -> None:
     assert policy.action_repair_enabled is False
 
 
-def test_armed_long_running_skill_uses_remaining_task_budget_without_fixed_cap(
+def test_armed_terminal_gate_reserves_candidate_checkpoint_before_long_call(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     agent = _long_running_generation_agent(armed=True)
     context = agent.context
+    context.get_task().timeout = 1800
     protocol = agent._resolve_execution_protocol_policy(context)
     monkeypatch.setattr(context.get_task(), "remaining_seconds", lambda: 1200.0)
 
     policy = agent._resolve_generation_budget_policy(context)
 
     assert policy.total_timeout_seconds == pytest.approx(
-        1200.0 - protocol.finalization_reserve_seconds
+        1200.0 - protocol.candidate_decision_reserve_seconds
     )
     assert policy.total_timeout_seconds > 360.0
     assert policy.stream_idle_timeout_seconds is None
@@ -321,6 +322,45 @@ def test_pre_generation_check_keeps_solve_window_open_before_reserve(
 
     assert agent._pre_generation_caller_reserve_reached(context) is False
     assert "pre_generation_reserve_metrics" not in context.context_info
+
+
+@pytest.mark.parametrize(
+    ("remaining_seconds", "expected_timeout"),
+    [(300.0, 45.0), (100.0, 10.0)],
+)
+def test_terminal_decision_generation_budget_is_absolute_and_reserve_bounded(
+    monkeypatch: pytest.MonkeyPatch,
+    remaining_seconds: float,
+    expected_timeout: float,
+) -> None:
+    agent = _long_running_generation_agent(armed=True)
+    context = agent.context
+    context.get_task().timeout = 600
+    protocol = agent._resolve_execution_protocol_policy(context)
+    configure_execution_protocol(context, agent.id(), protocol)
+    store = ExecutionProtocolStore(context, agent.id(), protocol)
+    store.save(
+        replace(
+            store.load(),
+            candidate_decision_count=1,
+            replan_count=1,
+            replan_requested_count=1,
+            decision_checkpoint_pending=True,
+            decision_checkpoint_reason="candidate_decision_reserve",
+        )
+    )
+    monkeypatch.setattr(
+        context.get_task(), "remaining_seconds", lambda: remaining_seconds
+    )
+
+    budget = agent._resolve_generation_budget_policy(
+        context,
+        decision_turn=True,
+    )
+
+    assert budget.total_timeout_seconds == pytest.approx(expected_timeout)
+    assert budget.stream_idle_timeout_seconds == pytest.approx(expected_timeout)
+    assert budget.action_repair_enabled is False
 
 
 @pytest.mark.parametrize("armed", [False, True])
@@ -761,6 +801,123 @@ async def test_unarmed_replan_transport_failure_resumes_with_normal_tools(
     assert protocol["replan_decision_attempt_count"] == 0
     assert protocol["replan_decision_unavailable_count"] == 1
     assert protocol["replan_decision_fail_open_reason"] == "provider_unavailable"
+
+
+@pytest.mark.asyncio
+async def test_terminal_checkpoint_watchdog_fail_opens_without_ordinary_tools(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider_calls: list[dict] = []
+    policy = llm_agent_module.ExecutionProtocolPolicy(
+        mode=llm_agent_module.ProtocolMode.OBSERVE,
+        terminal_review_gate_enabled=True,
+        finalization_reserve_seconds=60,
+        candidate_decision_reserve_seconds=180,
+    )
+    agent = _ToolAgent(
+        name="Aworld",
+        conf=AgentConfig(
+            llm_provider="openai",
+            llm_model_name="fake-model",
+            llm_api_key="fake-key",
+        ),
+        execution_protocol_policy=policy,
+        llm_max_attempts=1,
+        max_loop_steps=0,
+    )
+    agent._llm = object()
+    context = Context(
+        task_id="terminal-checkpoint-watchdog",
+        session=Session(session_id="terminal-checkpoint-watchdog-s"),
+    )
+    context.set_task(
+        Task(
+            id="terminal-checkpoint-watchdog",
+            name="terminal-checkpoint-watchdog",
+            input="finish the candidate",
+            timeout=600,
+        )
+    )
+    configure_execution_protocol(context, agent.id(), policy)
+    assert record_model_execution_profile(
+        context,
+        agent.id(),
+        {
+            "horizon": "long",
+            "confidence": 0.9,
+            "milestone_count": 3,
+            "expected_tool_actions": 8,
+            "verification_required": True,
+        },
+    ) is not None
+    monkeypatch.setattr(context.get_task(), "remaining_seconds", lambda: 150.0)
+
+    async def provider(*args, **kwargs):
+        provider_calls.append(kwargs)
+        if len(provider_calls) == 1:
+            await asyncio.sleep(1)
+        return ModelResponse(
+            id="checkpoint-timeout-finalization",
+            model="fake-model",
+            content="Preserved the current candidate after checkpoint timeout.",
+            message={
+                "role": "assistant",
+                "content": "Preserved the current candidate after checkpoint timeout.",
+            },
+            finish_reason="stop",
+            usage={"prompt_tokens": 1, "completion_tokens": 1},
+        )
+
+    async def simple_input(observation, info=None, message=None, **kwargs):
+        return [{"role": "user", "content": str(observation.content or "")}]
+
+    async def no_op(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(llm_agent_module, "acall_llm_model", provider)
+    monkeypatch.setattr(agent, "build_llm_input", simple_input)
+    monkeypatch.setattr(agent, "_add_message_to_memory", no_op)
+    monkeypatch.setattr(agent, "send_agent_response_output", no_op)
+    monkeypatch.setattr(
+        agent,
+        "_decision_generation_budget_policy",
+        lambda _context: GenerationBudgetPolicy(
+            total_timeout_seconds=0.01,
+            stream_idle_timeout_seconds=0.01,
+            active_tool_free_timeout_seconds=None,
+            action_repair_timeout_seconds=None,
+            action_repair_enabled=False,
+        ),
+    )
+    message = Message(
+        category=Constants.AGENT,
+        payload=Observation(content="finish the candidate"),
+        receiver=agent.id(),
+        headers={"context": context},
+    )
+
+    actions = await agent.async_policy(
+        message.payload,
+        message=message,
+        stream=False,
+    )
+
+    assert len(provider_calls) == 2
+    assert [
+        tool["function"]["name"] for tool in provider_calls[0]["tools"]
+    ] == ["aworld__execution_decision"]
+    assert provider_calls[1]["tools"] is None
+    assert actions[0].policy_info.startswith("Preserved the current candidate")
+    state = ExecutionProtocolStore(context, agent.id(), policy).load()
+    assert state.decision_checkpoint_pending is False
+    assert state.phase.value == "finalize"
+    assert state.finalization_entered is True
+    metrics = context.context_info["terminal_checkpoint_metrics"]
+    assert metrics["offered_count"] == 1
+    assert metrics["request_started_count"] == 1
+    assert metrics.get("request_finished_count", 0) == 0
+    assert metrics["fail_open_count"] == 1
+    assert metrics["last_fail_open_reason"] == "provider_unavailable"
 
 
 @pytest.mark.asyncio

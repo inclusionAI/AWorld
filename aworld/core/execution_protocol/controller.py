@@ -685,6 +685,28 @@ def transition_execution_protocol(
                 _decision(action, DecisionReason.FINALIZATION_RESERVE),
             )
 
+        # The terminal delivery checkpoint is a deadline boundary, not an
+        # advisory replan.  It must preempt an already-active convergence
+        # constraint; otherwise that constraint keeps ordinary Tools available
+        # until the later finalization reserve and the checkpoint is created too
+        # late to be presented to the model.
+        candidate_decision_due = bool(
+            protocol_eligible
+            and next_state.candidate_decision_count == 0
+            and not next_state.decision_checkpoint_pending
+            and not next_state.next_action_alignment_pending
+            and event.remaining_seconds is not None
+            and event.remaining_seconds <= policy.candidate_decision_reserve_seconds
+            and event.remaining_seconds > policy.finalization_reserve_seconds
+        )
+        if candidate_decision_due:
+            return _checkpoint_transition(
+                next_state,
+                policy,
+                reason=DecisionReason.CANDIDATE_DECISION_RESERVE,
+                candidate_present=event.candidate_present,
+            )
+
         post_candidate_constraint_due = bool(
             protocol_eligible
             and event.kind is EventKind.TOOL_OBSERVATION
@@ -736,22 +758,6 @@ def transition_execution_protocol(
         # tasks with concrete contracts while preventing contract extraction by
         # itself from activating replans or admission gates.
         delivery_protocol_active = protocol_eligible
-        candidate_decision_due = bool(
-            delivery_protocol_active
-            and next_state.candidate_decision_count == 0
-            and not next_state.decision_checkpoint_pending
-            and not next_state.next_action_alignment_pending
-            and event.remaining_seconds is not None
-            and event.remaining_seconds <= policy.candidate_decision_reserve_seconds
-            and event.remaining_seconds > policy.finalization_reserve_seconds
-        )
-        if candidate_decision_due:
-            return _checkpoint_transition(
-                next_state,
-                policy,
-                reason=DecisionReason.CANDIDATE_DECISION_RESERVE,
-                candidate_present=event.candidate_present,
-            )
 
         if event.kind is EventKind.DELIVERY_STATUS:
             return ProtocolTransition(

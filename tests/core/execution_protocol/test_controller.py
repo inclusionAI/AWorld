@@ -808,6 +808,37 @@ def test_candidate_decision_reserve_precedes_tool_free_finalization():
     assert explicit_deferral.state.next_action_alignment_pending is True
 
 
+def test_terminal_candidate_reserve_precedes_active_convergence_constraint():
+    policy = ExecutionProtocolPolicy(
+        mode="observe",
+        terminal_review_gate_enabled=True,
+        finalization_reserve_seconds=60,
+        candidate_decision_reserve_seconds=180,
+    )
+    constrained = replace(
+        _armed_state(),
+        convergence_constraint_active=True,
+        convergence_stage=ConvergenceStage.VALIDATE_REPAIR_OR_SUBMIT,
+    )
+
+    checkpoint = transition_execution_protocol(
+        constrained,
+        ExecutionProtocolEvent(
+            kind=EventKind.DELIVERY_STATUS,
+            remaining_seconds=150,
+            public_deliverable_declared=True,
+            candidate_present=True,
+        ),
+        policy,
+    )
+
+    assert checkpoint.decision.action is ControllerAction.REQUEST_REPLAN
+    assert checkpoint.decision.reason is DecisionReason.CANDIDATE_DECISION_RESERVE
+    assert checkpoint.state.decision_checkpoint_pending is True
+    assert checkpoint.state.candidate_decision_count == 1
+    assert checkpoint.state.convergence_constraint_active is True
+
+
 def test_observe_candidate_reserve_is_requested_but_never_recorded_as_acknowledged():
     transition = transition_execution_protocol(
         _armed_state(),

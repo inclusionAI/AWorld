@@ -62,6 +62,7 @@ from aworld.core.context.compiler import CandidateRequestNotEnforceable
 from aworld.core.context.compiler.turn_economics import TurnCauseCode
 from aworld.core.execution_protocol import (
     ControllerAction,
+    DecisionReason,
     ExecutionProtocolPolicy,
     ExecutionProtocolStore,
     ProtocolPhase,
@@ -286,6 +287,7 @@ _MODEL_RESPONSE_RECOVERY_CONTEXT_KEY = "model_response_recovery_context"
 _MODEL_RESPONSE_RECOVERY_MAX_CONTINUATIONS = 3
 _LONG_HORIZON_REVIEW_DEADLINE_KEY = "long_horizon_review_deadline"
 _LONG_HORIZON_REVIEW_DEADLINE_SCHEMA = "aworld.review-deadline/v1"
+_LONG_HORIZON_DECISION_TIMEOUT_SECONDS = 45.0
 _PUBLIC_DELIVERABLE_SCHEMA = "aworld.public-deliverables/v1"
 _PUBLIC_CAPABILITY_SCHEMA = "aworld.public-capabilities/v1"
 _PUBLIC_DELIVERABLE_AUTHORITY = "public_task_advisory"
@@ -1528,8 +1530,6 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
     ) -> tuple[List[Dict[str, Any]] | None, _LongHorizonControlOffer]:
         """Expose an explicit planning boundary or optional per-Tool probes."""
         empty_offer = _LongHorizonControlOffer()
-        if not tools:
-            return tools, empty_offer
         from aworld.runners.execution_protocol import (
             acceptance_critic_active,
             execution_protocol_model_decision_boundary,
@@ -1542,6 +1542,20 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             return tools, empty_offer
         policy = execution_protocol_policy(context, self.id())
         boundary = execution_protocol_model_decision_boundary(context, self.id())
+        try:
+            protocol_state = ExecutionProtocolStore(
+                context,
+                self.id(),
+                policy,
+            ).load()
+        except Exception:
+            protocol_state = None
+        terminal_checkpoint = bool(
+            protocol_state is not None
+            and protocol_state.decision_checkpoint_pending
+            and protocol_state.decision_checkpoint_reason
+            is DecisionReason.CANDIDATE_DECISION_RESERVE
+        )
         # OBSERVE is telemetry-only until the explicitly enabled terminal gate
         # reaches its one bounded candidate-decision checkpoint.  That
         # checkpoint is control-plane owned and must be exposed even though the
@@ -1549,14 +1563,6 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         if policy.mode is not ProtocolMode.GUIDE and boundary is None:
             return tools, empty_offer
         if boundary == "initial" and not self._long_horizon_skill_active():
-            try:
-                state = ExecutionProtocolStore(
-                    context,
-                    self.id(),
-                    execution_protocol_policy(context, self.id()),
-                ).load()
-            except Exception:
-                state = None
             contract = getattr(context, "context_info", {}).get(
                 "public_deliverable_contract"
             )
@@ -1571,23 +1577,31 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             # declares a delivery contract, the framework-owned checkpoint is
             # reachable even without the optional long-running Skill.
             if not (
-                state is not None
-                and (state.long_horizon_armed or contract_declared)
+                protocol_state is not None
+                and (protocol_state.long_horizon_armed or contract_declared)
             ):
                 return tools, empty_offer
+        if not tools and boundary is not None and not terminal_checkpoint:
+            return tools, empty_offer
         if boundary is not None:
             # This internal control action consumes no user Tool authority and
             # selects no task strategy. The model must own both classification
             # and next-step choice before ordinary Tool execution resumes.
-            if any(
-                schema.get("function", {}).get("name") == _LONG_HORIZON_DECISION_TOOL
-                for schema in tools
-                if isinstance(schema, dict)
-            ):
-                return tools, empty_offer
+            # The framework namespace is reserved. Ignore a colliding task Tool
+            # rather than letting it suppress or impersonate the pending
+            # control-plane checkpoint.
+            ordinary_tools = [
+                schema
+                for schema in (tools or ())
+                if not (
+                    isinstance(schema, dict)
+                    and schema.get("function", {}).get("name")
+                    == _LONG_HORIZON_DECISION_TOOL
+                )
+            ]
             decision_tool_names = frozenset(
                 name.strip()
-                for schema in tools
+                for schema in ordinary_tools
                 if isinstance(schema, dict)
                 for function in (schema.get("function", {}),)
                 if isinstance(function, dict)
@@ -1609,7 +1623,9 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 )
             )[:256]
             try:
-                plan_update_schema = self._long_horizon_plan_update_schema(tools)
+                plan_update_schema = self._long_horizon_plan_update_schema(
+                    ordinary_tools
+                )
             except _LongHorizonDecisionSchemaOverflow:
                 from aworld.runners.execution_protocol import (
                     record_model_decision_unavailable,
@@ -1621,7 +1637,10 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                     boundary=boundary,
                     reason="decision_schema_overflow",
                 )
-                return tools, empty_offer
+                # The typed fail-open transition owns the next finalization
+                # turn. Never leak ordinary task Tools from the failed
+                # checkpoint request.
+                return ([] if terminal_checkpoint else tools), empty_offer
             properties = {_LONG_HORIZON_PLAN_UPDATE_PARAM: plan_update_schema}
             required = [_LONG_HORIZON_PLAN_UPDATE_PARAM]
             injected = {_LONG_HORIZON_PLAN_UPDATE_PARAM}
@@ -1658,6 +1677,9 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 decision_tool_names=decision_tool_names,
                 decision_tool_aliases=decision_tool_aliases,
             )
+
+        if not tools:
+            return tools, empty_offer
 
         augmented = copy.deepcopy(tools)
         carrier = self._long_horizon_control_carrier(augmented)
@@ -6275,6 +6297,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         )
         from aworld.runners.execution_protocol import (
             acceptance_critic_active,
+            execution_protocol_model_decision_boundary,
             execution_protocol_requires_tool_free_finalization,
             model_owned_review_active,
             record_pre_generation_delivery_decision,
@@ -6288,17 +6311,24 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             self.id(),
             policy=resolved_execution_policy,
         )
+        pending_decision_boundary = execution_protocol_model_decision_boundary(
+            message.context, self.id()
+        )
 
         independent_acceptance_review = acceptance_critic_active(
             message.context, self.id()
         )
         model_owned_review = model_owned_review_active(message.context, self.id())
 
-        protocol_tool_free_finalization = not loop_budget_finalization and (
-            execution_protocol_requires_tool_free_finalization(
-                message.context, self.id()
+        protocol_tool_free_finalization = (
+            not loop_budget_finalization
+            and pending_decision_boundary is None
+            and (
+                execution_protocol_requires_tool_free_finalization(
+                    message.context, self.id()
+                )
+                or self._pre_generation_caller_reserve_reached(message.context)
             )
-            or self._pre_generation_caller_reserve_reached(message.context)
         )
         tool_free_finalization = (
             loop_budget_finalization or protocol_tool_free_finalization
@@ -6455,6 +6485,12 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             if execution_control_offer.decision_boundary is not None:
                 kwargs = dict(kwargs)
                 kwargs["tool_choice"] = "required"
+                kwargs["_long_horizon_decision_turn"] = True
+                self._record_terminal_checkpoint_metric(
+                    message.context,
+                    "offered",
+                    boundary=execution_control_offer.decision_boundary,
+                )
             tools = self._with_model_review_control(tools, message.context)
             tools = self._with_acceptance_probe_control(tools, message.context)
             if independent_acceptance_review:
@@ -6940,9 +6976,21 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 )
             with _bind_context_entrypoint_claim(entrypoint_claim):
                 with bind_llm_context_call_id(llm_call_id):
+                    if execution_control_offer.decision_boundary is not None:
+                        self._record_terminal_checkpoint_metric(
+                            message.context,
+                            "request_started",
+                            boundary=execution_control_offer.decision_boundary,
+                        )
                     llm_response = await self.invoke_model(
                         messages, message=message, **kwargs
                     )
+                    if execution_control_offer.decision_boundary is not None:
+                        self._record_terminal_checkpoint_metric(
+                            message.context,
+                            "request_finished",
+                            boundary=execution_control_offer.decision_boundary,
+                        )
             invoke_completed = True
         except asyncio.CancelledError:
             logger.info(f"{self.id()} LLM flow interrupted during invoke_model")
@@ -8556,6 +8604,75 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         context.context_info["pre_generation_reserve_metrics"] = metrics
         return True
 
+    @staticmethod
+    def _record_terminal_checkpoint_metric(
+        context: Context | None,
+        event: str,
+        *,
+        boundary: str | None = None,
+        reason: str | None = None,
+    ) -> None:
+        """Record content-free liveness telemetry for the terminal checkpoint."""
+
+        if context is None or event not in {"offered", "request_started", "request_finished"}:
+            return
+        key = "terminal_checkpoint_metrics"
+        metrics = context.context_info.get(key)
+        if not isinstance(metrics, dict):
+            metrics = {}
+        counter = f"{event}_count"
+        metrics[counter] = int(metrics.get(counter, 0) or 0) + 1
+        metrics["last_event"] = event
+        if boundary in {"initial", "replan"}:
+            metrics["last_boundary"] = boundary
+        if isinstance(reason, str) and reason:
+            metrics["last_reason"] = reason
+        context.context_info[key] = metrics
+
+    def _decision_generation_budget_policy(
+        self,
+        context: Context | None,
+    ) -> GenerationBudgetPolicy | None:
+        """Bound one exclusive execution-decision request before finalization."""
+
+        if context is None:
+            return None
+        try:
+            from aworld.runners.execution_protocol import (
+                execution_protocol_model_decision_boundary,
+                execution_protocol_policy,
+            )
+
+            if execution_protocol_model_decision_boundary(context, self.id()) is None:
+                return None
+            protocol_policy = execution_protocol_policy(context, self.id())
+            task = context.get_task()
+            remaining = task.remaining_seconds() if task is not None else None
+        except Exception:
+            return None
+        if (
+            isinstance(remaining, bool)
+            or not isinstance(remaining, (int, float))
+            or not math.isfinite(float(remaining))
+        ):
+            timeout = _LONG_HORIZON_DECISION_TIMEOUT_SECONDS
+        else:
+            timeout = min(
+                _LONG_HORIZON_DECISION_TIMEOUT_SECONDS,
+                max(
+                    0.1,
+                    float(remaining)
+                    - float(protocol_policy.finalization_reserve_seconds),
+                ),
+            )
+        return GenerationBudgetPolicy(
+            total_timeout_seconds=timeout,
+            stream_idle_timeout_seconds=timeout,
+            active_tool_free_timeout_seconds=None,
+            action_repair_timeout_seconds=None,
+            action_repair_enabled=False,
+        )
+
     def _automatic_generation_budget_policy(
         self,
         context: Context | None = None,
@@ -8574,6 +8691,11 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             )
 
             protocol_policy = self._resolve_execution_protocol_policy(context)
+            protocol_state = ExecutionProtocolStore(
+                context,
+                self.id(),
+                protocol_policy,
+            ).load()
         except Exception:
             return None
         if not execution_protocol_control_eligible(context, self.id()):
@@ -8591,15 +8713,36 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         try:
             task = get_task() if callable(get_task) else None
             remaining_seconds = task.remaining_seconds() if task is not None else None
+            total_seconds = getattr(task, "timeout", None) if task is not None else None
         except Exception:
             remaining_seconds = None
+            total_seconds = None
         if isinstance(remaining_seconds, (int, float)) and not isinstance(
             remaining_seconds, bool
         ):
+            generation_reserve = float(protocol_policy.finalization_reserve_seconds)
+            if (
+                protocol_policy.terminal_review_gate_enabled
+                and protocol_state.phase
+                in {ProtocolPhase.EXECUTE, ProtocolPhase.REPAIR}
+                and protocol_state.candidate_decision_count == 0
+                and isinstance(total_seconds, (int, float))
+                and not isinstance(total_seconds, bool)
+                and math.isfinite(float(total_seconds))
+                and float(total_seconds)
+                > float(protocol_policy.candidate_decision_reserve_seconds)
+                + _LONG_HORIZON_DECISION_TIMEOUT_SECONDS
+            ):
+                # Stop an ordinary solve turn at the earlier checkpoint
+                # boundary. The outer recovery loop then begins the exclusive
+                # 45-second decision request while finalization time remains.
+                generation_reserve = max(
+                    generation_reserve,
+                    float(protocol_policy.candidate_decision_reserve_seconds),
+                )
             available_seconds = max(
                 0.1,
-                float(remaining_seconds)
-                - float(protocol_policy.finalization_reserve_seconds),
+                float(remaining_seconds) - generation_reserve,
             )
             total_timeout = available_seconds
 
@@ -8648,6 +8791,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         context: Context | None = None,
         *,
         finalization_turn: bool = False,
+        decision_turn: bool = False,
     ) -> GenerationBudgetPolicy:
         """Resolve one immutable policy for the complete Agent model turn."""
         metric_context = context or getattr(self, "context", None)
@@ -8673,6 +8817,11 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                     "action_repair_enabled": policy.action_repair_enabled,
                 }
             return policy
+
+        if decision_turn:
+            decision = self._decision_generation_budget_policy(context)
+            if decision is not None:
+                return publish(decision, "terminal_checkpoint")
 
         if self._explicit_generation_budget_policy is not None:
             return publish(self._explicit_generation_budget_policy, "explicit_policy")
@@ -9576,10 +9725,12 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
     ) -> ModelResponse:
         """Run one LLM turn under typed, composable generation deadlines."""
         finalization_turn = bool(kwargs.pop("_long_horizon_finalization_turn", False))
+        decision_turn = bool(kwargs.pop("_long_horizon_decision_turn", False))
         controller = GenerationBudgetController(
             self._resolve_generation_budget_policy(
                 message.context if message is not None else None,
                 finalization_turn=finalization_turn,
+                decision_turn=decision_turn,
             )
         )
         try:

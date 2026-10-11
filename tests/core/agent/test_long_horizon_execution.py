@@ -9,7 +9,11 @@ import pytest
 
 import aworld.agents.llm_agent as llm_agent_module
 import aworld.runners.execution_protocol as execution_protocol_module
-from aworld.agents.llm_agent import Agent, _LongHorizonReviewContinuation
+from aworld.agents.llm_agent import (
+    Agent,
+    _ExecutionDecisionContinuation,
+    _LongHorizonReviewContinuation,
+)
 from aworld.config.conf import AgentConfig
 from aworld.core.agent.base import AgentResult
 from aworld.core.common import ActionModel, ActionResult, Observation
@@ -1414,6 +1418,173 @@ def test_success_first_terminal_checkpoint_exposes_decision_tool() -> None:
         "__aworld_execution_profile",
         "__aworld_plan_update",
     }
+
+
+def test_terminal_checkpoint_exposes_decision_tool_without_ordinary_tools() -> None:
+    context = Context(task_id="terminal-checkpoint-empty-catalog")
+    context.set_task(Task(id="terminal-checkpoint-empty-catalog", timeout=600))
+    policy = ExecutionProtocolPolicy(
+        mode=ProtocolMode.OBSERVE,
+        terminal_review_gate_enabled=True,
+    )
+    agent = _agent(context, policy)
+    configure_execution_protocol(context, agent.id(), policy)
+    store = ExecutionProtocolStore(context, agent.id(), policy)
+    store.save(
+        replace(
+            store.load(),
+            long_horizon_armed=True,
+            candidate_decision_count=1,
+            replan_count=1,
+            replan_requested_count=1,
+            decision_checkpoint_pending=True,
+            decision_checkpoint_reason=DecisionReason.CANDIDATE_DECISION_RESERVE,
+            decision_checkpoint_candidate_present=False,
+        )
+    )
+
+    augmented, offer = agent._with_long_horizon_execution_profile([], context)
+
+    assert offer.decision_boundary == "initial"
+    assert [tool["function"]["name"] for tool in augmented] == [
+        "aworld__execution_decision"
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("remaining_seconds", "convergence_active"),
+    [(150.0, True), (59.0, False)],
+)
+async def test_terminal_checkpoint_precedes_convergence_and_generic_finalization(
+    monkeypatch: pytest.MonkeyPatch,
+    remaining_seconds: float,
+    convergence_active: bool,
+) -> None:
+    captured_tools = []
+
+    class TerminalCheckpointAgent(Agent):
+        async def _add_message_to_memory(self, *args, **kwargs):
+            return None
+
+        async def send_agent_response_output(self, *args, **kwargs):
+            return None
+
+        async def build_llm_input(self, observation, info=None, message=None, **kwargs):
+            return [{"role": "user", "content": str(observation.content or "")}]
+
+        async def _filter_tools(self, context=None):
+            return [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "terminal__execute",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {"command": {"type": "string"}},
+                            "required": ["command"],
+                        },
+                    },
+                }
+            ]
+
+        async def invoke_model(self, messages=None, message=None, **kwargs):
+            captured_tools.append(kwargs["prepared_tools"])
+            arguments = {
+                "__aworld_plan_update": {
+                    "decision": "continue",
+                    "horizon": "long",
+                    "milestone": "submit the current candidate",
+                    "next_action": "submit the current candidate",
+                    "next_action_tool": None,
+                    "next_action_arguments": None,
+                    "verification_plan": "preserve current public evidence",
+                    "completion_assessment": "candidate_ready",
+                    "delivery_intent": "submit_current",
+                    "delivery_rationale": "the terminal reserve was reached",
+                    "assumptions": [],
+                    "retired_approaches": [],
+                    "evidence_refs": [],
+                    "selected_candidate_id": "candidate-1",
+                }
+            }
+            return ModelResponse(
+                id="terminal-checkpoint-decision",
+                model="offline",
+                content="",
+                tool_calls=[
+                    ToolCall(
+                        id="terminal-checkpoint-call",
+                        function=Function(
+                            name="aworld__execution_decision",
+                            arguments=json.dumps(arguments),
+                        ),
+                    )
+                ],
+                finish_reason="tool_calls",
+                usage={"prompt_tokens": 1, "completion_tokens": 1},
+            )
+
+    context = Context(task_id=f"terminal-checkpoint-{remaining_seconds}")
+    context.set_task(Task(id=context.task_id, timeout=600))
+    policy = ExecutionProtocolPolicy(
+        mode=ProtocolMode.OBSERVE,
+        terminal_review_gate_enabled=True,
+        finalization_reserve_seconds=60,
+        candidate_decision_reserve_seconds=180,
+    )
+    agent = TerminalCheckpointAgent(
+        name="Aworld",
+        conf=AgentConfig(
+            llm_provider="openai",
+            llm_model_name="offline",
+            llm_api_key="offline",
+        ),
+        execution_protocol_policy=policy,
+        max_loop_steps=0,
+    )
+    agent._llm = SimpleNamespace(
+        context_compiler_mode="enforce",
+        _context_progressive_skills=False,
+        _context_progressive_tools=True,
+        _context_progressive_tool_base_tools=("terminal__execute",),
+        _context_progressive_tool_unmanaged_policy="preserve",
+        _context_task_catalog_policy="sticky",
+        _context_artifact_offload=True,
+        enforced_tool_output_policy=None,
+        provider=None,
+    )
+    configure_execution_protocol(context, agent.id(), policy)
+    _declare_long_horizon(context, agent.id())
+    if convergence_active:
+        store = ExecutionProtocolStore(context, agent.id(), policy)
+        store.save(
+            replace(
+                store.load(),
+                convergence_constraint_active=True,
+                convergence_stage=ConvergenceStage.VALIDATE_REPAIR_OR_SUBMIT,
+            )
+        )
+    monkeypatch.setattr(
+        context.get_task(), "remaining_seconds", lambda: remaining_seconds
+    )
+    message = Message(category=Constants.AGENT, headers={"context": context})
+
+    result = await agent._async_policy_once(
+        Observation(content="finish the current candidate"),
+        message=message,
+        stream=False,
+    )
+
+    assert isinstance(result, _ExecutionDecisionContinuation)
+    assert len(captured_tools) == 1
+    assert [tool["function"]["name"] for tool in captured_tools[0]] == [
+        "aworld__execution_decision"
+    ]
+    state = load_execution_protocol_state(context, agent.id())
+    assert state.decision_checkpoint_pending is False
+    assert state.candidate_decision_recorded is True
+    assert state.phase is ProtocolPhase.FINALIZE
 
 
 @pytest.mark.parametrize(

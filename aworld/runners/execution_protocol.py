@@ -4686,6 +4686,30 @@ def _finalize_unavailable_terminal_checkpoint(context, agent_id: str) -> bool:
     )
 
 
+def _record_terminal_checkpoint_fail_open(
+    context,
+    agent_id: str,
+    *,
+    reason: str,
+) -> None:
+    """Publish content-free terminal-checkpoint failure telemetry."""
+
+    owner = state_context(context)
+    if owner is None:
+        return
+    key = "terminal_checkpoint_metrics"
+    metrics = getattr(owner, "context_info", {}).get(key)
+    if not isinstance(metrics, dict):
+        metrics = {}
+    metrics["fail_open_count"] = int(metrics.get("fail_open_count", 0) or 0) + 1
+    metrics["last_event"] = "fail_open"
+    metrics["last_fail_open_reason"] = reason
+    metrics["last_agent_id"] = agent_id
+    owner.context_info[key] = metrics
+    if owner is not context:
+        context.context_info[key] = dict(metrics)
+
+
 def record_model_decision_unavailable(
     context,
     agent_id: str,
@@ -4756,6 +4780,11 @@ def record_model_decision_unavailable(
         context, agent_id, EXECUTION_PROTOCOL_MODEL_DECISIONS_KEY, update
     )
     if _finalize_unavailable_terminal_checkpoint(context, agent_id):
+        _record_terminal_checkpoint_fail_open(
+            context,
+            agent_id,
+            reason=reason,
+        )
         return True
     if boundary == "replan":
         _apply_event(
