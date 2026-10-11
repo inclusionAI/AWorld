@@ -1169,17 +1169,21 @@ def test_review_snapshot_rejects_mutation_between_authentication_and_read(
     declared.write_text('{"version":1}', encoding="utf-8")
     expected = "sha256:" + hashlib.sha256(declared.read_bytes()).hexdigest()
     monkeypatch.setenv("ARTIFACT_DIRECTORY", str(tmp_path))
-    real_open = lazy_verifier_module.os.open
+    real_open = lazy_verifier_module._open_confined_snapshot_file
     mutated = False
 
-    def mutate_before_open(path, flags):
+    def mutate_before_open(*, trusted_root, path):
         nonlocal mutated
         if path == str(declared) and not mutated:
             mutated = True
             declared.write_text('{"version":2}', encoding="utf-8")
-        return real_open(path, flags)
+        return real_open(trusted_root=trusted_root, path=path)
 
-    monkeypatch.setattr(lazy_verifier_module.os, "open", mutate_before_open)
+    monkeypatch.setattr(
+        lazy_verifier_module,
+        "_open_confined_snapshot_file",
+        mutate_before_open,
+    )
 
     snapshot = lazy_verifier_module._authoritative_delivery_snapshot(
         None,
@@ -1193,6 +1197,34 @@ def test_review_snapshot_rejects_mutation_between_authentication_and_read(
 
     assert snapshot["items"][0]["status"] == "authentication_changed"
     assert "content_utf8" not in snapshot["items"][0]
+
+
+def test_review_snapshot_rejects_nested_symlink_escape(monkeypatch, tmp_path) -> None:
+    trusted = tmp_path / "workspace"
+    trusted.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    secret = outside / "secret.txt"
+    secret.write_text("outside-secret", encoding="utf-8")
+    (trusted / "linked").symlink_to(outside, target_is_directory=True)
+    escaped = trusted / "linked" / "secret.txt"
+    monkeypatch.setenv("ARTIFACT_DIRECTORY", str(trusted))
+
+    snapshot = lazy_verifier_module._authoritative_delivery_snapshot(
+        None,
+        authoritative_deliverables=(str(escaped),),
+        authentication_status={
+            "authenticated": True,
+            "reason": "current_complete_projection",
+            "artifact_hashes": {
+                str(escaped): "sha256:"
+                + hashlib.sha256(secret.read_bytes()).hexdigest()
+            },
+        },
+    )
+
+    assert snapshot["items"][0]["status"] == "unavailable"
+    assert "outside-secret" not in json.dumps(snapshot)
 
 
 def test_review_snapshot_rejects_arbitrary_absolute_path(monkeypatch, tmp_path) -> None:

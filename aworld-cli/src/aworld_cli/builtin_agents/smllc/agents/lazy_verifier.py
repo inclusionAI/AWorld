@@ -1110,7 +1110,8 @@ def _authoritative_delivery_snapshot(
     items: list[dict[str, Any]] = []
     for path in paths:
         item: dict[str, Any] = {"path": path, "status": "unavailable"}
-        if not _trusted_declared_snapshot_path(context, path):
+        trusted_root = _trusted_declared_snapshot_root(context, path)
+        if trusted_root is None:
             item["status"] = "untrusted_path"
             items.append(item)
             continue
@@ -1122,20 +1123,15 @@ def _authoritative_delivery_snapshot(
             items.append(item)
             continue
         try:
-            before_path = os.lstat(path)
-            if stat_module.S_ISLNK(before_path.st_mode) or not stat_module.S_ISREG(
-                before_path.st_mode
-            ):
-                items.append(item)
-                continue
             limit = min(_DECLARED_SNAPSHOT_FILE_BYTES, remaining)
             if limit <= 0:
                 item["status"] = "budget_exhausted"
                 items.append(item)
                 continue
-            flags = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0)
-            flags |= getattr(os, "O_NOFOLLOW", 0)
-            descriptor = os.open(path, flags)
+            descriptor = _open_confined_snapshot_file(
+                trusted_root=trusted_root,
+                path=path,
+            )
             with os.fdopen(descriptor, "rb") as handle:
                 before = os.fstat(handle.fileno())
                 if not stat_module.S_ISREG(before.st_mode):
@@ -1148,7 +1144,6 @@ def _authoritative_delivery_snapshot(
                     if len(captured) < limit:
                         captured.extend(chunk[: limit - len(captured)])
                 after = os.fstat(handle.fileno())
-            current = os.lstat(path)
             def identity(value):
                 return (
                     value.st_dev,
@@ -1156,9 +1151,7 @@ def _authoritative_delivery_snapshot(
                     value.st_size,
                     value.st_mtime_ns,
                 )
-            if identity(before) != identity(after) or identity(after) != identity(
-                current
-            ):
+            if identity(before) != identity(after):
                 item["status"] = "unstable"
                 items.append(item)
                 continue
@@ -1194,8 +1187,8 @@ def _authoritative_delivery_snapshot(
     }
 
 
-def _trusted_declared_snapshot_path(context: Any, path: str) -> bool:
-    """Allow workspace roots or an exact caller-owned completion artifact."""
+def _trusted_declared_snapshot_root(context: Any, path: str) -> str | None:
+    """Return a non-symlink root for a workspace or exact completion artifact."""
 
     normalized = os.path.abspath(os.path.expanduser(path))
     completion_contract = getattr(context, "completion_contract", None)
@@ -1205,7 +1198,8 @@ def _trusted_declared_snapshot_path(context: Any, path: str) -> bool:
         if isinstance(getattr(requirement, "path", None), str)
     }
     if normalized in exact_completion_paths:
-        return True
+        root = os.path.dirname(normalized)
+        return root if os.path.realpath(root) == root else None
     roots = [os.getcwd()]
     artifact_root = os.environ.get("ARTIFACT_DIRECTORY")
     if isinstance(artifact_root, str) and artifact_root.strip():
@@ -1214,12 +1208,38 @@ def _trusted_declared_snapshot_path(context: Any, path: str) -> bool:
         trusted_root = os.path.abspath(os.path.expanduser(root))
         if trusted_root == os.path.sep:
             continue
+        if os.path.realpath(trusted_root) != trusted_root:
+            continue
         try:
             if os.path.commonpath((normalized, trusted_root)) == trusted_root:
-                return True
+                return trusted_root
         except ValueError:
             continue
-    return False
+    return None
+
+
+def _open_confined_snapshot_file(*, trusted_root: str, path: str) -> int:
+    """Open every descendant component with openat/O_NOFOLLOW confinement."""
+
+    normalized = os.path.abspath(os.path.expanduser(path))
+    relative = os.path.relpath(normalized, trusted_root)
+    parts = tuple(part for part in relative.split(os.sep) if part not in {"", "."})
+    if not parts or any(part == ".." for part in parts):
+        raise OSError("snapshot path escapes trusted root")
+    directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    directory_flags |= getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(trusted_root, directory_flags)
+    try:
+        for part in parts[:-1]:
+            child = os.open(part, directory_flags, dir_fd=descriptor)
+            os.close(descriptor)
+            descriptor = child
+        file_flags = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0)
+        file_flags |= getattr(os, "O_NOFOLLOW", 0)
+        result = os.open(parts[-1], file_flags, dir_fd=descriptor)
+    finally:
+        os.close(descriptor)
+    return result
 
 
 def _declared_snapshot_authentication_status(

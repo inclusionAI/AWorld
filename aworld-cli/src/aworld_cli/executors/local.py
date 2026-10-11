@@ -1463,7 +1463,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
         )
         return merged
 
-    def _direct_acceptance_continuation(
+    async def _direct_acceptance_continuation(
         self,
         *,
         task: Task,
@@ -1692,10 +1692,10 @@ class LocalAgentExecutor(BaseAgentExecutor):
         if response is not None:
             response.execution_protocol = telemetry
 
-        def salvage_authenticated_candidate(*, completion_reason: str) -> bool:
+        async def salvage_authenticated_candidate(*, completion_reason: str) -> bool:
             from aworld.runners.execution_protocol import (
                 authenticated_declared_candidate_status,
-                record_terminal_fallback_submission,
+                record_validated_terminal_fallback_submission,
             )
 
             status = authenticated_declared_candidate_status(
@@ -1706,7 +1706,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
                     "reason"
                 )
                 return False
-            transition = record_terminal_fallback_submission(
+            transition = await record_validated_terminal_fallback_submission(
                 task.context, root_id
             )
             if (
@@ -1754,7 +1754,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
         )
         if remaining is not None and remaining <= reserve:
             telemetry["acceptance_continuation_suppressed"] = "deadline_reserve"
-            if salvage_authenticated_candidate(
+            if await salvage_authenticated_candidate(
                 completion_reason=(
                     "implicit_acceptance_deadline_reserve_fail_open"
                 )
@@ -1774,7 +1774,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
                 and isinstance(receipt, dict)
                 and receipt.get("acceptance_satisfied") is False
             ):
-                if salvage_authenticated_candidate(
+                if await salvage_authenticated_candidate(
                     completion_reason="implicit_acceptance_candidate_salvaged"
                 ):
                     return None
@@ -1788,7 +1788,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
             int(telemetry.get("acceptance_continuation_count", 0) or 0) >= 1
             and protocol_state.candidate_present is True
         ):
-            if salvage_authenticated_candidate(
+            if await salvage_authenticated_candidate(
                 completion_reason="implicit_acceptance_candidate_salvaged"
             ):
                 return None
@@ -2974,7 +2974,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
                     else None
                 )
                 try:
-                    direct_continuation = self._direct_acceptance_continuation(
+                    direct_continuation = await self._direct_acceptance_continuation(
                         task=task,
                         response=direct_response,
                         answer=answer,

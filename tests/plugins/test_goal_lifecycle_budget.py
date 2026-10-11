@@ -2,6 +2,9 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 import asyncio
 from dataclasses import replace
+from datetime import datetime, timedelta, timezone
+import hashlib
+import json
 
 import pytest
 
@@ -258,7 +261,8 @@ async def test_internal_continuation_keeps_original_request_and_logical_scope():
     assert calls[1][1]["_direct_acceptance_state"] == {"attempt": 1}
 
 
-def test_direct_long_horizon_acceptance_continues_without_replaying_prompt():
+@pytest.mark.asyncio
+async def test_direct_long_horizon_acceptance_continues_without_replaying_prompt():
     from aworld.core.context.base import Context
     from aworld.core.execution_protocol import ExecutionProtocolPolicy
     from aworld.core.task import Task, TaskResponse
@@ -337,7 +341,7 @@ def test_direct_long_horizon_acceptance_continues_without_replaying_prompt():
         "completion_assessment": None,
     }
 
-    continuation = executor._direct_acceptance_continuation(
+    continuation = await executor._direct_acceptance_continuation(
         task=task,
         response=response,
         answer="",
@@ -359,7 +363,8 @@ def test_direct_long_horizon_acceptance_continues_without_replaying_prompt():
     assert response.execution_protocol["acceptance_continuation_count"] == 1
 
 
-def test_direct_acceptance_never_reopens_protocol_finalization() -> None:
+@pytest.mark.asyncio
+async def test_direct_acceptance_never_reopens_protocol_finalization() -> None:
     from dataclasses import replace
 
     from aworld.core.context.base import Context
@@ -406,7 +411,7 @@ def test_direct_acceptance_never_reopens_protocol_finalization() -> None:
         recoverable=True,
     )
 
-    continuation = executor._direct_acceptance_continuation(
+    continuation = await executor._direct_acceptance_continuation(
         task=task,
         response=response,
         answer=response.answer,
@@ -435,7 +440,8 @@ def test_direct_acceptance_never_reopens_protocol_finalization() -> None:
     assert response.recoverable is True
 
 
-def test_media_empty_recovery_does_not_consume_implicit_acceptance_budget() -> None:
+@pytest.mark.asyncio
+async def test_media_empty_recovery_does_not_consume_implicit_acceptance_budget() -> None:
     from dataclasses import replace
 
     from aworld.core.context.base import Context
@@ -474,7 +480,7 @@ def test_media_empty_recovery_does_not_consume_implicit_acceptance_budget() -> N
         recoverable=True,
     )
 
-    continuation = executor._direct_acceptance_continuation(
+    continuation = await executor._direct_acceptance_continuation(
         task=task,
         response=response,
         answer=response.answer,
@@ -499,7 +505,8 @@ def test_media_empty_recovery_does_not_consume_implicit_acceptance_budget() -> N
     assert "implicit_acceptance_created" not in response.execution_protocol
 
 
-def test_observe_mode_finalization_does_not_suppress_direct_acceptance() -> None:
+@pytest.mark.asyncio
+async def test_observe_mode_finalization_does_not_suppress_direct_acceptance() -> None:
     from dataclasses import replace
 
     from aworld.core.context.base import Context
@@ -543,7 +550,7 @@ def test_observe_mode_finalization_does_not_suppress_direct_acceptance() -> None
         recoverable=True,
     )
 
-    continuation = executor._direct_acceptance_continuation(
+    continuation = await executor._direct_acceptance_continuation(
         task=task,
         response=response,
         answer=response.answer,
@@ -563,7 +570,8 @@ def test_observe_mode_finalization_does_not_suppress_direct_acceptance() -> None
     assert "acceptance_continuation_suppressed" not in response.execution_protocol
 
 
-def test_direct_acceptance_never_reopens_active_protocol_convergence() -> None:
+@pytest.mark.asyncio
+async def test_direct_acceptance_never_reopens_active_protocol_convergence() -> None:
     from dataclasses import replace
 
     from aworld.core.context.base import Context
@@ -633,7 +641,7 @@ def test_direct_acceptance_never_reopens_active_protocol_convergence() -> None:
         "acceptance_continuation_count": 1,
     }
 
-    continuation = executor._direct_acceptance_continuation(
+    continuation = await executor._direct_acceptance_continuation(
         task=task,
         response=response,
         answer=response.answer,
@@ -671,7 +679,8 @@ def test_direct_acceptance_never_reopens_active_protocol_convergence() -> None:
     assert response.recoverable is True
 
 
-def test_direct_acceptance_first_segment_convergence_is_terminal() -> None:
+@pytest.mark.asyncio
+async def test_direct_acceptance_first_segment_convergence_is_terminal() -> None:
     from dataclasses import replace
 
     from aworld.core.context.base import Context
@@ -715,7 +724,7 @@ def test_direct_acceptance_first_segment_convergence_is_terminal() -> None:
         recoverable=True,
     )
 
-    continuation = executor._direct_acceptance_continuation(
+    continuation = await executor._direct_acceptance_continuation(
         task=task,
         response=response,
         answer=response.answer,
@@ -737,7 +746,8 @@ def test_direct_acceptance_first_segment_convergence_is_terminal() -> None:
     assert "implicit_acceptance_created" not in response.execution_protocol
 
 
-def test_observe_mode_convergence_does_not_suppress_direct_acceptance() -> None:
+@pytest.mark.asyncio
+async def test_observe_mode_convergence_does_not_suppress_direct_acceptance() -> None:
     from dataclasses import replace
 
     from aworld.core.context.base import Context
@@ -781,7 +791,7 @@ def test_observe_mode_convergence_does_not_suppress_direct_acceptance() -> None:
         recoverable=True,
     )
 
-    continuation = executor._direct_acceptance_continuation(
+    continuation = await executor._direct_acceptance_continuation(
         task=task,
         response=response,
         answer=response.answer,
@@ -801,7 +811,8 @@ def test_observe_mode_convergence_does_not_suppress_direct_acceptance() -> None:
     assert "acceptance_continuation_suppressed" not in response.execution_protocol
 
 
-def test_direct_acceptance_records_repair_success_without_another_segment():
+@pytest.mark.asyncio
+async def test_direct_acceptance_records_repair_success_without_another_segment():
     from aworld.core.context.base import Context
     from aworld.core.execution_protocol import ExecutionProtocolPolicy
     from aworld.core.task import Task, TaskResponse
@@ -837,7 +848,7 @@ def test_direct_acceptance_records_repair_success_without_another_segment():
         semantic_status="succeeded",
     )
 
-    continuation = executor._direct_acceptance_continuation(
+    continuation = await executor._direct_acceptance_continuation(
         task=task,
         response=response,
         answer="verified result",
@@ -856,7 +867,8 @@ def test_direct_acceptance_records_repair_success_without_another_segment():
     assert response.execution_protocol["acceptance_satisfied"] is True
 
 
-def test_direct_acceptance_bypasses_unarmed_short_task():
+@pytest.mark.asyncio
+async def test_direct_acceptance_bypasses_unarmed_short_task():
     from aworld.core.context.base import Context
     from aworld.core.execution_protocol import ExecutionProtocolPolicy
     from aworld.core.task import Task, TaskResponse
@@ -883,7 +895,7 @@ def test_direct_acceptance_bypasses_unarmed_short_task():
     )
 
     assert (
-        executor._direct_acceptance_continuation(
+        await executor._direct_acceptance_continuation(
             task=task,
             response=response,
             answer="",
@@ -898,7 +910,8 @@ def test_direct_acceptance_bypasses_unarmed_short_task():
     assert "implicit_acceptance_created" not in response.execution_protocol
 
 
-def test_direct_acceptance_respects_deadline_reserve():
+@pytest.mark.asyncio
+async def test_direct_acceptance_respects_deadline_reserve():
     from aworld.core.context.base import Context
     from aworld.core.execution_protocol import ExecutionProtocolPolicy
     from aworld.core.task import Task, TaskResponse
@@ -963,7 +976,7 @@ def test_direct_acceptance_respects_deadline_reserve():
         recoverable=True,
     )
 
-    continuation = executor._direct_acceptance_continuation(
+    continuation = await executor._direct_acceptance_continuation(
         task=task,
         response=response,
         answer="partial",
@@ -987,7 +1000,8 @@ def test_direct_acceptance_respects_deadline_reserve():
     assert response.failure_origin == "task"
 
 
-def test_direct_acceptance_finalizes_existing_candidate_at_deadline_reserve(
+@pytest.mark.asyncio
+async def test_direct_acceptance_finalizes_existing_candidate_at_deadline_reserve(
     monkeypatch,
 ):
     from aworld.core.context.base import Context
@@ -1051,7 +1065,7 @@ def test_direct_acceptance_finalizes_existing_candidate_at_deadline_reserve(
         recoverable=True,
     )
 
-    continuation = executor._direct_acceptance_continuation(
+    continuation = await executor._direct_acceptance_continuation(
         task=task,
         response=response,
         answer=response.answer,
@@ -1078,7 +1092,8 @@ def test_direct_acceptance_finalizes_existing_candidate_at_deadline_reserve(
     assert response.execution_protocol["finalization_entered"] is True
 
 
-def test_direct_acceptance_does_not_report_success_for_terminal_incomplete_review():
+@pytest.mark.asyncio
+async def test_direct_acceptance_does_not_report_success_for_terminal_incomplete_review():
     from aworld.core.context.base import Context
     from aworld.core.execution_protocol import (
         ExecutionProtocolPolicy,
@@ -1114,7 +1129,7 @@ def test_direct_acceptance_does_not_report_success_for_terminal_incomplete_revie
         semantic_status="succeeded",
     )
 
-    continuation = executor._direct_acceptance_continuation(
+    continuation = await executor._direct_acceptance_continuation(
         task=task,
         response=response,
         answer=response.answer,
@@ -1132,7 +1147,8 @@ def test_direct_acceptance_does_not_report_success_for_terminal_incomplete_revie
     assert response.execution_protocol["terminal_incomplete"] is True
 
 
-def test_explicit_goal_owned_segment_cannot_start_implicit_acceptance():
+@pytest.mark.asyncio
+async def test_explicit_goal_owned_segment_cannot_start_implicit_acceptance():
     from aworld.core.context.base import Context
     from aworld.core.execution_protocol import ExecutionProtocolPolicy
     from aworld.core.task import Task, TaskResponse
@@ -1162,7 +1178,7 @@ def test_explicit_goal_owned_segment_cannot_start_implicit_acceptance():
     )
 
     assert (
-        executor._direct_acceptance_continuation(
+        await executor._direct_acceptance_continuation(
             task=task,
             response=TaskResponse(
                 success=False,
@@ -1181,7 +1197,8 @@ def test_explicit_goal_owned_segment_cannot_start_implicit_acceptance():
     )
 
 
-def test_direct_acceptance_limit_is_exported_as_unsatisfied():
+@pytest.mark.asyncio
+async def test_direct_acceptance_limit_is_exported_as_unsatisfied():
     from aworld.core.context.base import Context
     from aworld.core.execution_protocol import ExecutionProtocolPolicy
     from aworld.core.task import Task, TaskResponse
@@ -1217,7 +1234,7 @@ def test_direct_acceptance_limit_is_exported_as_unsatisfied():
     )
 
     assert (
-        executor._direct_acceptance_continuation(
+        await executor._direct_acceptance_continuation(
             task=task,
             response=response,
             answer="still partial",
@@ -1233,7 +1250,8 @@ def test_direct_acceptance_limit_is_exported_as_unsatisfied():
     assert response.execution_protocol["acceptance_disposition"] == "limit_reached"
 
 
-def test_direct_acceptance_limit_salvages_current_authenticated_candidate(
+@pytest.mark.asyncio
+async def test_direct_acceptance_limit_salvages_current_authenticated_candidate(
     monkeypatch,
 ):
     from aworld.core.context.base import Context
@@ -1284,7 +1302,7 @@ def test_direct_acceptance_limit_salvages_current_authenticated_candidate(
         recoverable=True,
     )
 
-    continuation = executor._direct_acceptance_continuation(
+    continuation = await executor._direct_acceptance_continuation(
         task=task,
         response=response,
         answer=response.answer,
@@ -1308,7 +1326,8 @@ def test_direct_acceptance_limit_salvages_current_authenticated_candidate(
     )
 
 
-def test_direct_acceptance_stops_after_one_continuation_for_unverified_candidate(
+@pytest.mark.asyncio
+async def test_direct_acceptance_stops_after_one_continuation_for_unverified_candidate(
     monkeypatch,
 ):
     from aworld.core.context.base import Context
@@ -1360,7 +1379,7 @@ def test_direct_acceptance_stops_after_one_continuation_for_unverified_candidate
         recoverable=True,
     )
 
-    continuation = executor._direct_acceptance_continuation(
+    continuation = await executor._direct_acceptance_continuation(
         task=task,
         response=response,
         answer=response.answer,
@@ -1386,6 +1405,148 @@ def test_direct_acceptance_stops_after_one_continuation_for_unverified_candidate
         project_execution_protocol_telemetry(response.execution_protocol)
         == response.execution_protocol
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("branch", ["deadline", "limit", "continuation"])
+@pytest.mark.parametrize("validation", ["pass", "fail", "stale"])
+async def test_enforced_implicit_acceptance_revalidates_each_salvage_branch(
+    monkeypatch,
+    tmp_path,
+    branch,
+    validation,
+):
+    from aworld.core.context.base import Context
+    from aworld.core.context.compiler import (
+        ArtifactEvidence,
+        ArtifactRequirement,
+        CompletionContract,
+        CompletionMode,
+        SelfCheckEvidence,
+        ValidationCommand,
+    )
+    from aworld.core.execution_protocol import (
+        ExecutionProtocolPolicy,
+        ExecutionProtocolStore,
+    )
+    from aworld.core.task import Task, TaskResponse
+    from aworld.runners.execution_protocol import configure_execution_protocol
+
+    artifact = tmp_path / f"{branch}-{validation}.json"
+    artifact.write_text('{"status":"ready"}', encoding="utf-8")
+    artifact_hash = "sha256:" + hashlib.sha256(artifact.read_bytes()).hexdigest()
+    contract = CompletionContract(
+        (ArtifactRequirement("result", str(artifact), expected_hash=artifact_hash),),
+        (),
+        (ValidationCommand("validate", ("true",)),),
+        None,
+        (),
+    )
+    context = Context(task_id=f"{branch}-{validation}")
+    reserve = 120 if branch == "deadline" else 0
+    task = Task(
+        id=f"{branch}-{validation}",
+        input="finish",
+        context=context,
+        timeout=120,
+        completion_reserve_seconds=reserve,
+    )
+    context.set_task(task)
+    candidate_hash = "sha256:" + hashlib.sha256(
+        json.dumps([("result", artifact_hash)], separators=(",", ":")).encode()
+    ).hexdigest()
+
+    async def resolve(target, _contract):
+        if validation == "stale":
+            return
+        observed_at = datetime.now(timezone.utc)
+        target.record_completion_artifact(
+            ArtifactEvidence("result", True, artifact_hash, observed_at)
+        )
+        target.record_completion_self_check(
+            SelfCheckEvidence(
+                "validate",
+                0 if validation == "pass" else 1,
+                None,
+                observed_at,
+                candidate_hash=candidate_hash,
+            )
+        )
+
+    context.configure_completion_contract(
+        contract,
+        mode=CompletionMode.ENFORCE,
+        evidence_resolver=resolve,
+    )
+    context.context_info["completion_enforcement_explicit"] = True
+    if validation == "stale":
+        stale = datetime.now(timezone.utc) - timedelta(minutes=5)
+        context.record_completion_artifact(
+            ArtifactEvidence("result", True, artifact_hash, stale)
+        )
+        context.record_completion_self_check(
+            SelfCheckEvidence(
+                "validate", 0, None, stale, candidate_hash=candidate_hash
+            )
+        )
+    policy = ExecutionProtocolPolicy(
+        mode="observe",
+        terminal_review_gate_enabled=True,
+        independent_acceptance_enabled=False,
+        max_repairs=None if branch == "continuation" else 1,
+    )
+    configure_execution_protocol(context, "root-agent", policy)
+    store = ExecutionProtocolStore(context, "root-agent", policy)
+    store.save(
+        replace(
+            store.load(),
+            candidate_present=True,
+            candidate_checkpoint_recorded=True,
+            public_deliverable_declared=True,
+        )
+    )
+    monkeypatch.setattr(
+        "aworld.runners.execution_protocol.authenticated_declared_candidate_status",
+        lambda *_args, **_kwargs: {
+            "authenticated": True,
+            "reason": "current_complete_projection",
+        },
+    )
+    executor = object.__new__(LocalAgentExecutor)
+    executor._session_mode = "direct"
+    executor._base_runtime = None
+    executor.swarm = SimpleNamespace(
+        communicate_agent=SimpleNamespace(id=lambda: "root-agent")
+    )
+    state = new_goal_contract_state(
+        "finish", max_turns=2 if branch == "limit" else None
+    )
+    if branch in {"limit", "continuation"}:
+        state["turn_count"] = 2
+    response = TaskResponse(
+        success=False,
+        answer="candidate",
+        semantic_status="incomplete",
+        recoverable=True,
+    )
+
+    continuation = await executor._direct_acceptance_continuation(
+        task=task,
+        response=response,
+        answer=response.answer,
+        event={"semantic_status": "incomplete", "recoverable": True},
+        origin_user_input="finish",
+        logical_task_state=state,
+        acceptance_state=state,
+    )
+
+    assert continuation is None
+    assert response.success is (validation == "pass")
+    assert response.semantic_status == (
+        "succeeded" if validation == "pass" else "budget_exhausted"
+    )
+    protocol = store.load()
+    assert protocol.phase.value == ("complete" if validation == "pass" else "execute")
 
 
 @pytest.mark.asyncio
