@@ -1109,6 +1109,7 @@ def _record_semantic_tool_progress_locked(
         {
             "status": completion_assessment.status.value,
             "reason_codes": list(completion_assessment.reason_codes),
+            "diagnostic_codes": list(completion_assessment.diagnostic_codes),
             # Completion evidence is an identity-keyed latest-state view, just
             # like ``assess_completion``.  Append-only retries of an unchanged
             # check must not manufacture a new durable milestone merely by

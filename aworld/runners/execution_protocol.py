@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import replace
+from datetime import datetime, timezone
 from enum import Enum
 import hashlib
 import json
@@ -17,7 +18,9 @@ import os
 import re
 import secrets
 import shlex
+import stat as stat_module
 import time
+from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from aworld.core.context.execution_state import state_context
@@ -2274,6 +2277,32 @@ def authenticated_declared_candidate_status(
             "declared_count": declared_count,
             "candidate_count": candidate_count,
         }
+    contract = getattr(owner, "context_info", {}).get(
+        "public_deliverable_contract"
+    )
+    contract_artifacts = (
+        contract.get("artifacts") if isinstance(contract, Mapping) else None
+    )
+    paths_by_id = {
+        item.get("deliverable_id"): item.get("path")
+        for item in (contract_artifacts or ())
+        if isinstance(item, Mapping)
+        and isinstance(item.get("deliverable_id"), str)
+        and isinstance(item.get("path"), str)
+    }
+    artifact_hashes = {
+        paths_by_id[item["deliverable_id"]]: item["version"]
+        for item in artifacts
+        if item.get("deliverable_id") in paths_by_id
+    }
+    if len(artifact_hashes) != declared_count:
+        return {
+            "schema_version": "aworld.authenticated-declared-candidate/v1",
+            "authenticated": False,
+            "reason": "declared_projection_unavailable",
+            "declared_count": declared_count,
+            "candidate_count": candidate_count,
+        }
     return {
         "schema_version": "aworld.authenticated-declared-candidate/v1",
         "authenticated": True,
@@ -2281,6 +2310,7 @@ def authenticated_declared_candidate_status(
         "declared_count": declared_count,
         "candidate_count": candidate_count,
         "candidate_fingerprint": current_fingerprint,
+        "artifact_hashes": artifact_hashes,
     }
 
 
@@ -5897,10 +5927,220 @@ def record_terminal_fallback_submission(
     policy = execution_protocol_policy(context, agent_id)
     if policy.mode is ProtocolMode.OFF:
         return None
+    owner = state_context(context)
+    if _explicit_completion_enforcement_active(owner):
+        _record_terminal_completion_gate(
+            owner,
+            agent_id,
+            reason="enforced_completion_revalidation_required",
+        )
+        return None
+    return _apply_terminal_fallback_submission(context, agent_id, policy)
+
+
+def _apply_terminal_fallback_submission(
+    context,
+    agent_id: str,
+    policy: ExecutionProtocolPolicy,
+) -> ProtocolTransition:
     transition = ExecutionProtocolStore(context, agent_id, policy).apply(
         ExecutionProtocolEvent(kind=EventKind.TERMINAL_FALLBACK_SUBMIT)
     )
     _record_transition_metrics(context, transition)
+    return transition
+
+
+def _explicit_completion_enforcement_active(context: Any) -> bool:
+    from aworld.core.context.compiler import CompletionMode
+
+    return bool(
+        context is not None
+        and getattr(context, "completion_contract", None) is not None
+        and getattr(context, "completion_mode", None) is CompletionMode.ENFORCE
+        and getattr(context, "context_info", {}).get(
+            "completion_enforcement_explicit", True
+        )
+        is not False
+    )
+
+
+def _record_terminal_completion_gate(
+    context: Any,
+    agent_id: str,
+    *,
+    reason: str,
+    artifact_hashes: Mapping[str, str] | None = None,
+) -> None:
+    if context is None:
+        return
+    payload = {
+        "schema_version": "aworld.terminal-completion-gate/v1",
+        "reason": reason,
+        "artifact_hashes": dict(artifact_hashes or {}),
+    }
+    context.context_info[f"terminal_completion_gate:{agent_id}"] = payload
+
+
+def _required_artifact_full_hashes(contract: Any) -> dict[str, str] | None:
+    """Return stable full hashes for every required regular artifact."""
+
+    hashes: dict[str, str] = {}
+    for requirement in getattr(contract, "required_artifacts", ()) or ():
+        if getattr(requirement, "required", True) is not True:
+            continue
+        requirement_id = getattr(requirement, "requirement_id", None)
+        path_value = getattr(requirement, "path", None)
+        if (
+            not isinstance(requirement_id, str)
+            or not requirement_id
+            or requirement_id in hashes
+            or not isinstance(path_value, str)
+            or not path_value
+        ):
+            return None
+        path = Path(path_value).expanduser()
+        try:
+            path_before = os.lstat(path)
+            if stat_module.S_ISLNK(path_before.st_mode):
+                return None
+            flags = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0)
+            flags |= getattr(os, "O_NOFOLLOW", 0)
+            descriptor = os.open(path, flags)
+            with os.fdopen(descriptor, "rb") as stream:
+                before = os.fstat(stream.fileno())
+                if not stat_module.S_ISREG(before.st_mode):
+                    return None
+                digest = "sha256:" + hashlib.file_digest(
+                    stream, "sha256"
+                ).hexdigest()
+                after = os.fstat(stream.fileno())
+            current = os.lstat(path)
+        except (OSError, TypeError, ValueError):
+            return None
+        before_identity = (
+            before.st_dev,
+            before.st_ino,
+            before.st_size,
+            before.st_mtime_ns,
+        )
+        if before_identity != (
+            after.st_dev,
+            after.st_ino,
+            after.st_size,
+            after.st_mtime_ns,
+        ) or before_identity != (
+            current.st_dev,
+            current.st_ino,
+            current.st_size,
+            current.st_mtime_ns,
+        ):
+            return None
+        expected_hash = getattr(requirement, "expected_hash", None)
+        if expected_hash is not None and digest != expected_hash:
+            return None
+        hashes[requirement_id] = digest
+    return hashes
+
+
+def _completion_candidate_hash(contract: Any, hashes: Mapping[str, str]) -> str:
+    projection = [
+        (requirement.requirement_id, hashes.get(requirement.requirement_id))
+        for requirement in getattr(contract, "required_artifacts", ()) or ()
+        if getattr(requirement, "required", True) is True
+    ]
+    encoded = json.dumps(projection, separators=(",", ":")).encode("utf-8")
+    return "sha256:" + hashlib.sha256(encoded).hexdigest()
+
+
+async def record_validated_terminal_fallback_submission(
+    context, agent_id: str
+) -> ProtocolTransition | None:
+    """Revalidate an enforced completion contract before terminal fail-open."""
+
+    owner = state_context(context)
+    if not _explicit_completion_enforcement_active(owner):
+        return record_terminal_fallback_submission(context, agent_id)
+    policy = execution_protocol_policy(context, agent_id)
+    if policy.mode is ProtocolMode.OFF:
+        return None
+    contract = owner.completion_contract
+    before_hashes = _required_artifact_full_hashes(contract)
+    if before_hashes is None:
+        _record_terminal_completion_gate(
+            owner, agent_id, reason="required_artifact_hash_unavailable"
+        )
+        return None
+    candidate_hash = _completion_candidate_hash(contract, before_hashes)
+    started_at = datetime.now(timezone.utc)
+    try:
+        await owner.resolve_completion_evidence()
+    except Exception:
+        _record_terminal_completion_gate(
+            owner, agent_id, reason="completion_evidence_resolver_failed"
+        )
+        return None
+    after_hashes = _required_artifact_full_hashes(contract)
+    if after_hashes is None or after_hashes != before_hashes:
+        _record_terminal_completion_gate(
+            owner, agent_id, reason="candidate_changed_during_validation"
+        )
+        return None
+    assessment = owner.assess_completion_contract(agent_claimed_finished=True)
+    from aworld.core.context.compiler import CompletionStatus
+
+    if assessment is None or assessment.status is not CompletionStatus.SATISFIED:
+        _record_terminal_completion_gate(
+            owner, agent_id, reason="completion_contract_unsatisfied"
+        )
+        return None
+    artifact_evidence = {
+        item.requirement_id: item
+        for item in getattr(owner, "_completion_artifact_evidence", ())
+        if item.observed_at >= started_at
+    }
+    for requirement_id, content_hash in after_hashes.items():
+        evidence = artifact_evidence.get(requirement_id)
+        if (
+            evidence is None
+            or evidence.exists is not True
+            or evidence.content_hash != content_hash
+        ):
+            _record_terminal_completion_gate(
+                owner,
+                agent_id,
+                reason="fresh_artifact_evidence_missing",
+            )
+            return None
+    self_checks = {
+        item.command_id: item
+        for item in getattr(owner, "_completion_self_checks", ())
+        if item.observed_at >= started_at
+    }
+    for command in contract.validation_commands:
+        evidence = self_checks.get(command.command_id)
+        if (
+            evidence is None
+            or evidence.exit_code != 0
+            or evidence.candidate_hash != candidate_hash
+        ):
+            _record_terminal_completion_gate(
+                owner,
+                agent_id,
+                reason="fresh_validation_evidence_missing",
+            )
+            return None
+    transition = _apply_terminal_fallback_submission(context, agent_id, policy)
+    if transition.decision.action is not ControllerAction.SUBMIT_CURRENT_RESULT:
+        _record_terminal_completion_gate(
+            owner, agent_id, reason="terminal_transition_rejected"
+        )
+        return transition
+    _record_terminal_completion_gate(
+        owner,
+        agent_id,
+        reason="fresh_completion_satisfied",
+        artifact_hashes=after_hashes,
+    )
     return transition
 
 
@@ -6150,6 +6390,7 @@ __all__ = [
     "model_owned_review_active",
     "record_candidate_final",
     "record_terminal_fallback_submission",
+    "record_validated_terminal_fallback_submission",
     "record_model_execution_profile",
     "record_model_decision_boundary",
     "record_model_decision_attempt_failure",

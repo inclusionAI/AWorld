@@ -117,12 +117,22 @@ class SelfCheckEvidence:
     exit_code: int
     output_hash: str | None
     observed_at: datetime
+    diagnostic_code: str | None = None
+    candidate_hash: str | None = None
 
     def __post_init__(self) -> None:
         if self.observed_at.tzinfo is None or self.observed_at.utcoffset() is None:
             raise ValueError("observed_at must be timezone-aware")
         if isinstance(self.exit_code, bool) or not isinstance(self.exit_code, int):
             raise TypeError("exit_code must be an integer")
+        if self.diagnostic_code is not None and re.fullmatch(
+            r"[a-z][a-z0-9_.:-]{0,127}", self.diagnostic_code
+        ) is None:
+            raise ValueError("diagnostic_code must be a stable content-free code")
+        if self.candidate_hash is not None and re.fullmatch(
+            r"sha256:[0-9a-f]{64}", self.candidate_hash
+        ) is None:
+            raise ValueError("candidate_hash must be canonical or None")
 
 
 @dataclass(frozen=True, slots=True)
@@ -166,6 +176,7 @@ class CompletionAssessment:
     repair_attempt: int
     agent_claimed_finished: bool
     external_verifier: ExternalVerifierEvidence | None
+    diagnostic_codes: tuple[str, ...] = ()
 
 
 def assess_completion(
@@ -190,6 +201,7 @@ def assess_completion(
     }
     checks = {item.command_id: item for item in self_checks}
     reasons: set[str] = set()
+    diagnostic_codes: set[str] = set()
     for requirement in contract.required_artifacts:
         evidence = artifacts.get(requirement.requirement_id)
         if evidence is None or not evidence.exists:
@@ -214,6 +226,8 @@ def assess_completion(
             reasons.add("self_check_missing")
         elif evidence.exit_code != 0:
             reasons.add("self_check_failed")
+            if evidence.diagnostic_code is not None:
+                diagnostic_codes.add(evidence.diagnostic_code)
     if not set(contract.required_final_evidence).issubset(set(final_evidence_codes)):
         reasons.add("final_evidence_missing")
     if contract.max_evidence_age_seconds is not None:
@@ -246,6 +260,7 @@ def assess_completion(
         repair_attempt=repair_attempt,
         agent_claimed_finished=agent_claimed_finished,
         external_verifier=external_verifier,
+        diagnostic_codes=tuple(sorted(diagnostic_codes)),
     )
 
 

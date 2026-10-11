@@ -2079,11 +2079,18 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         ):
             return None
         reasons = ", ".join(assessment.reason_codes)
+        diagnostics = ", ".join(assessment.diagnostic_codes)
         if assessment.status is CompletionStatus.REPAIR_REQUIRED:
             context.increment_completion_repair_attempt()
         return (
             "The runtime completion contract rejected the completion claim "
-            f"({reasons}). Continue working, gather new evidence, and rerun focused checks."
+            f"({reasons})."
+            + (
+                f" Stable validation diagnostics: {diagnostics}."
+                if diagnostics
+                else ""
+            )
+            + " Continue working, gather new evidence, and rerun focused checks."
         )
 
     @staticmethod
@@ -5689,7 +5696,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                         clear_acceptance_critic_state,
                         clear_candidate_fallback,
                         record_review_error,
-                        record_terminal_fallback_submission,
+                        record_validated_terminal_fallback_submission,
                     )
                     from aworld.core.context.execution_state import (
                         record_execution_state,
@@ -5714,7 +5721,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                             policy.terminal_review_gate_enabled
                             and not policy.independent_acceptance_enabled
                         ):
-                            transition = record_terminal_fallback_submission(
+                            transition = await record_validated_terminal_fallback_submission(
                                 message.context, self.id()
                             )
                         else:
@@ -6042,7 +6049,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                         clear_acceptance_critic_state,
                         clear_candidate_fallback,
                         record_review_error,
-                        record_terminal_fallback_submission,
+                        record_validated_terminal_fallback_submission,
                     )
                     from aworld.core.context.execution_state import (
                         record_execution_state,
@@ -6055,7 +6062,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                         policy.terminal_review_gate_enabled
                         and not policy.independent_acceptance_enabled
                     ):
-                        transition = record_terminal_fallback_submission(
+                        transition = await record_validated_terminal_fallback_submission(
                             message.context, self.id()
                         )
                     else:

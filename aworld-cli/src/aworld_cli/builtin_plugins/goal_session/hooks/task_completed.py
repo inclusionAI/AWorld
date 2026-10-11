@@ -191,6 +191,15 @@ def build_goal_context_prompt(state: dict) -> str:
         ][:MAX_REASON_CODES]
         if reason_codes:
             lines.append(f"- Unsatisfied evidence: {', '.join(reason_codes)}")
+        diagnostic_codes = [
+            item
+            for item in (receipt.get("acceptance_diagnostic_codes") or ())
+            if isinstance(item, str) and item
+        ][:MAX_REASON_CODES]
+        if diagnostic_codes:
+            lines.append(
+                "- Validation diagnostics: " + ", ".join(diagnostic_codes)
+            )
 
     lines.append("</goal_contract>")
     return "\n".join(lines)
@@ -215,6 +224,11 @@ def apply_turn_outcome(state: dict, event: dict) -> tuple[dict, bool]:
     reason_codes = [
         str(item).strip()
         for item in (completion_assessment.get("reason_codes") or ())
+        if isinstance(item, str) and item.strip()
+    ][:MAX_REASON_CODES]
+    diagnostic_codes = [
+        str(item).strip()
+        for item in (completion_assessment.get("diagnostic_codes") or ())
         if isinstance(item, str) and item.strip()
     ][:MAX_REASON_CODES]
     verification_required = bool(updated.get("verification_commands")) or assessment_mode == "enforce"
@@ -251,6 +265,8 @@ def apply_turn_outcome(state: dict, event: dict) -> tuple[dict, bool]:
         "disposition": decision.disposition.value,
         "decision_reason": decision.reason,
     }
+    if diagnostic_codes:
+        receipt["acceptance_diagnostic_codes"] = diagnostic_codes
 
     updated.update(
         {

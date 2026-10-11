@@ -1,6 +1,7 @@
 import asyncio
 from dataclasses import replace
 from datetime import datetime, timezone
+import hashlib
 import json
 import os
 import subprocess
@@ -18,7 +19,9 @@ from aworld.core.agent.swarm import Swarm
 from aworld.core.common import ActionModel
 from aworld.core.context.base import Context
 from aworld.core.context.compiler import (
+    ArtifactRequirement,
     ChildStatus,
+    CompletionContract,
     DelegationSpec,
 )
 from aworld.core.execution_protocol import (
@@ -1052,6 +1055,10 @@ async def test_review_receives_bounded_declared_artifact_snapshot(
         lambda *_args, **_kwargs: {
             "authenticated": True,
             "reason": "current_complete_projection",
+            "artifact_hashes": {
+                str(declared): "sha256:"
+                + hashlib.sha256(declared.read_bytes()).hexdigest()
+            },
         },
     )
     declared = tmp_path / "artifacts" / "result.json"
@@ -1059,6 +1066,7 @@ async def test_review_receives_bounded_declared_artifact_snapshot(
     declared.parent.mkdir()
     declared.write_text('{"status":"ready","rows":[1,2,3]}', encoding="utf-8")
     undeclared.write_text("must not be projected", encoding="utf-8")
+    monkeypatch.setenv("ARTIFACT_DIRECTORY", str(declared.parent))
     context = _context("Write the declared result artifact.")
     context.context_info = {
         "public_deliverable_contract": {
@@ -1088,17 +1096,24 @@ async def test_review_receives_bounded_declared_artifact_snapshot(
     assert "must not be projected" not in directive
 
 
-def test_review_snapshot_is_bounded_and_does_not_follow_symlinks(tmp_path) -> None:
+def test_review_snapshot_is_bounded_and_does_not_follow_symlinks(
+    monkeypatch, tmp_path
+) -> None:
     secret = tmp_path / "secret.txt"
     secret.write_text("sensitive-marker", encoding="utf-8")
     link = tmp_path / "declared.txt"
     link.symlink_to(secret)
+    monkeypatch.setenv("ARTIFACT_DIRECTORY", str(tmp_path))
     snapshot = lazy_verifier_module._authoritative_delivery_snapshot(
         None,
         authoritative_deliverables=(str(link),),
         authentication_status={
             "authenticated": True,
             "reason": "current_complete_projection",
+            "artifact_hashes": {
+                str(link): "sha256:"
+                + hashlib.sha256(secret.read_bytes()).hexdigest()
+            },
         },
     )
 
@@ -1106,15 +1121,22 @@ def test_review_snapshot_is_bounded_and_does_not_follow_symlinks(tmp_path) -> No
     assert "sensitive-marker" not in json.dumps(snapshot)
 
 
-def test_review_snapshot_truncates_declared_text_with_fixed_budget(tmp_path) -> None:
+def test_review_snapshot_truncates_declared_text_with_fixed_budget(
+    monkeypatch, tmp_path
+) -> None:
     declared = tmp_path / "large.md"
     declared.write_text("A" * 20_000 + "tail-marker", encoding="utf-8")
+    monkeypatch.setenv("ARTIFACT_DIRECTORY", str(tmp_path))
     snapshot = lazy_verifier_module._authoritative_delivery_snapshot(
         None,
         authoritative_deliverables=(str(declared),),
         authentication_status={
             "authenticated": True,
             "reason": "current_complete_projection",
+            "artifact_hashes": {
+                str(declared): "sha256:"
+                + hashlib.sha256(declared.read_bytes()).hexdigest()
+            },
         },
     )
 
@@ -1138,6 +1160,98 @@ def test_review_snapshot_refuses_uncheckpointed_declared_bytes(tmp_path) -> None
 
     assert snapshot["items"][0]["status"] == "unauthenticated"
     assert "not-checkpointed" not in json.dumps(snapshot)
+
+
+def test_review_snapshot_rejects_mutation_between_authentication_and_read(
+    monkeypatch, tmp_path
+) -> None:
+    declared = tmp_path / "result.json"
+    declared.write_text('{"version":1}', encoding="utf-8")
+    expected = "sha256:" + hashlib.sha256(declared.read_bytes()).hexdigest()
+    monkeypatch.setenv("ARTIFACT_DIRECTORY", str(tmp_path))
+    real_open = lazy_verifier_module.os.open
+    mutated = False
+
+    def mutate_before_open(path, flags):
+        nonlocal mutated
+        if path == str(declared) and not mutated:
+            mutated = True
+            declared.write_text('{"version":2}', encoding="utf-8")
+        return real_open(path, flags)
+
+    monkeypatch.setattr(lazy_verifier_module.os, "open", mutate_before_open)
+
+    snapshot = lazy_verifier_module._authoritative_delivery_snapshot(
+        None,
+        authoritative_deliverables=(str(declared),),
+        authentication_status={
+            "authenticated": True,
+            "reason": "current_complete_projection",
+            "artifact_hashes": {str(declared): expected},
+        },
+    )
+
+    assert snapshot["items"][0]["status"] == "authentication_changed"
+    assert "content_utf8" not in snapshot["items"][0]
+
+
+def test_review_snapshot_rejects_arbitrary_absolute_path(monkeypatch, tmp_path) -> None:
+    trusted = tmp_path / "workspace"
+    trusted.mkdir()
+    secret = tmp_path / "outside" / "secret.txt"
+    secret.parent.mkdir()
+    secret.write_text("must-not-inline", encoding="utf-8")
+    monkeypatch.setenv("ARTIFACT_DIRECTORY", str(trusted))
+    monkeypatch.chdir(trusted)
+
+    snapshot = lazy_verifier_module._authoritative_delivery_snapshot(
+        SimpleNamespace(completion_contract=None),
+        authoritative_deliverables=(str(secret),),
+        authentication_status={
+            "authenticated": True,
+            "reason": "current_complete_projection",
+            "artifact_hashes": {
+                str(secret): "sha256:"
+                + hashlib.sha256(secret.read_bytes()).hexdigest()
+            },
+        },
+    )
+
+    assert snapshot["items"][0]["status"] == "untrusted_path"
+    assert "must-not-inline" not in json.dumps(snapshot)
+
+
+def test_review_snapshot_allows_exact_trusted_completion_artifact(
+    monkeypatch, tmp_path
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    artifact = tmp_path / "external-artifacts" / "result.json"
+    artifact.parent.mkdir()
+    artifact.write_text('{"status":"ready"}', encoding="utf-8")
+    digest = "sha256:" + hashlib.sha256(artifact.read_bytes()).hexdigest()
+    monkeypatch.setenv("ARTIFACT_DIRECTORY", str(workspace))
+    monkeypatch.chdir(workspace)
+    contract = CompletionContract(
+        required_artifacts=(ArtifactRequirement("result", str(artifact)),),
+        immutable_inputs=(),
+        validation_commands=(),
+        max_evidence_age_seconds=None,
+        required_final_evidence=(),
+    )
+
+    snapshot = lazy_verifier_module._authoritative_delivery_snapshot(
+        SimpleNamespace(completion_contract=contract),
+        authoritative_deliverables=(str(artifact),),
+        authentication_status={
+            "authenticated": True,
+            "reason": "current_complete_projection",
+            "artifact_hashes": {str(artifact): digest},
+        },
+    )
+
+    assert snapshot["items"][0]["status"] == "captured"
+    assert snapshot["items"][0]["content_utf8"] == '{"status":"ready"}'
 
 
 @pytest.mark.asyncio

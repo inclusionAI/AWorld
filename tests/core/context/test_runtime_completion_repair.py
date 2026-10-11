@@ -1,6 +1,7 @@
 """Generic explicit completion and long-running repair regressions."""
 
 from pathlib import Path
+import re
 import sys
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
@@ -14,7 +15,6 @@ from aworld.core.context.base import Context
 from aworld.core.context.compiler import (
     CompletionContract,
     CompletionMode,
-    CompletionStatus,
     SelfCheckEvidence,
     ValidationCommand,
 )
@@ -46,6 +46,90 @@ def _agent(context, **kwargs):
     agent._llm = object()
     agent.context = context
     return agent
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "diagnostic_code",
+    ["filex_export_receipt_missing", "filex_export_artifact_mismatch"],
+)
+async def test_typed_validation_diagnostic_is_retained_in_repair_feedback(
+    tmp_path: Path,
+    diagnostic_code: str,
+) -> None:
+    command = ValidationCommand(
+        "public-preflight",
+        (
+            sys.executable,
+            "-c",
+            (
+                "import json; "
+                f"print(json.dumps({{'reason': {diagnostic_code!r}, "
+                "'diagnostic': {'kind': 'public-preflight'}})); "
+                "raise SystemExit(2)"
+            ),
+        ),
+        cwd=str(tmp_path),
+    )
+    contract = CompletionContract((), (), (command,), None, ())
+    context = Context(task_id=f"diagnostic-{diagnostic_code}")
+    context.configure_completion_contract(
+        contract,
+        mode=CompletionMode.ENFORCE,
+        evidence_resolver=resolve_runtime_completion_evidence,
+    )
+    agent = _agent(context)
+
+    feedback = await agent._completion_feedback_if_unsatisfied(
+        context=context,
+        final_response_text="Candidate ready.",
+    )
+
+    evidence = context._completion_self_checks[-1]
+    assessment = context.assess_completion_contract(agent_claimed_finished=True)
+    assert evidence.diagnostic_code == diagnostic_code
+    assert re.fullmatch(r"sha256:[0-9a-f]{64}", evidence.candidate_hash)
+    assert assessment.diagnostic_codes == (diagnostic_code,)
+    assert diagnostic_code in feedback
+    assert "public-preflight" not in feedback
+
+
+@pytest.mark.asyncio
+async def test_untyped_validation_output_is_never_copied_into_repair_feedback(
+    tmp_path: Path,
+) -> None:
+    secret = "raw-secret-detail"
+    contract = CompletionContract(
+        (),
+        (),
+        (
+            ValidationCommand(
+                "check",
+                (
+                    sys.executable,
+                    "-c",
+                    f"print({secret!r}); raise SystemExit(2)",
+                ),
+                cwd=str(tmp_path),
+            ),
+        ),
+        None,
+        (),
+    )
+    context = Context(task_id="untyped-diagnostic")
+    context.configure_completion_contract(
+        contract,
+        mode=CompletionMode.ENFORCE,
+        evidence_resolver=resolve_runtime_completion_evidence,
+    )
+
+    feedback = await _agent(context)._completion_feedback_if_unsatisfied(
+        context=context,
+        final_response_text="Candidate ready.",
+    )
+
+    assert context._completion_self_checks[-1].diagnostic_code is None
+    assert secret not in feedback
 
 
 @pytest.mark.asyncio

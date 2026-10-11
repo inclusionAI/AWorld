@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
+from datetime import datetime, timezone
+import hashlib
 import json
 from threading import Barrier, BrokenBarrierError, Event, get_ident
 import pytest
@@ -12,10 +14,12 @@ from aworld.core.context.base import Context
 from aworld.core.common import ActionModel, ActionResult, Observation
 from aworld.core.event.base import Message
 from aworld.core.context.compiler import (
+    ArtifactEvidence,
     ArtifactRequirement,
     CompletionContract,
     CompletionMode,
     LifecycleAction,
+    SelfCheckEvidence,
     ValidationCommand,
 )
 from aworld.core.execution_protocol import (
@@ -65,6 +69,8 @@ from aworld.runners.execution_protocol import (
     record_public_probe_plan,
     record_review_repair_decision,
     record_review_tool_action,
+    record_terminal_fallback_submission,
+    record_validated_terminal_fallback_submission,
     record_tool_protocol_event,
     store_candidate_fallback,
 )
@@ -315,6 +321,151 @@ def test_authenticated_declared_candidate_requires_current_complete_projection(
     unbound = authenticated_declared_candidate_status(context, "agent")
     assert unbound["authenticated"] is False
     assert unbound["reason"] == "projection_not_hash_bound"
+
+
+def _terminal_fallback_context(tmp_path, *, mode=CompletionMode.ENFORCE):
+    context = _context(f"terminal-completion-{mode.value}")
+    artifact = tmp_path / "result.json"
+    artifact.write_text('{"status":"ready"}', encoding="utf-8")
+    expected_hash = "sha256:" + hashlib.sha256(artifact.read_bytes()).hexdigest()
+    contract = CompletionContract(
+        required_artifacts=(
+            ArtifactRequirement(
+                "result",
+                str(artifact),
+                expected_hash=expected_hash,
+            ),
+        ),
+        immutable_inputs=(),
+        validation_commands=(ValidationCommand("validate", ("true",)),),
+        max_evidence_age_seconds=None,
+        required_final_evidence=(),
+    )
+    context.configure_completion_contract(contract, mode=mode)
+    context.context_info["completion_enforcement_explicit"] = True
+    policy = ExecutionProtocolPolicy(
+        mode=ProtocolMode.OBSERVE,
+        terminal_review_gate_enabled=True,
+        independent_acceptance_enabled=False,
+    )
+    configure_execution_protocol(context, "agent", policy)
+    store = ExecutionProtocolStore(context, "agent", policy)
+    store.save(
+        replace(
+            store.load(),
+            phase=ProtocolPhase.REVIEW,
+            review_pending=True,
+            candidate_present=True,
+            candidate_checkpoint_recorded=True,
+            finalization_entered=True,
+        )
+    )
+    return context, artifact, contract
+
+
+@pytest.mark.asyncio
+async def test_enforced_terminal_fallback_accepts_fresh_current_candidate(
+    tmp_path,
+) -> None:
+    context, artifact, contract = _terminal_fallback_context(tmp_path)
+
+    async def resolve(target, _contract):
+        observed_at = datetime.now(timezone.utc)
+        candidate_hash = "sha256:" + hashlib.sha256(
+            json.dumps(
+                [("result", contract.required_artifacts[0].expected_hash)],
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        target.record_completion_artifact(
+            ArtifactEvidence(
+                "result",
+                True,
+                contract.required_artifacts[0].expected_hash,
+                observed_at,
+            )
+        )
+        target.record_completion_self_check(
+            SelfCheckEvidence(
+                "validate",
+                0,
+                None,
+                observed_at,
+                candidate_hash=candidate_hash,
+            )
+        )
+
+    context._completion_evidence_resolver = resolve
+
+    transition = await record_validated_terminal_fallback_submission(
+        context, "agent"
+    )
+
+    assert transition is not None
+    assert transition.decision.action is ControllerAction.SUBMIT_CURRENT_RESULT
+    assert transition.state.phase is ProtocolPhase.COMPLETE
+    assert transition.state.terminal_incomplete is False
+    receipt = context.context_info["terminal_completion_gate:agent"]
+    assert receipt["reason"] == "fresh_completion_satisfied"
+    assert receipt["artifact_hashes"]["result"] == (
+        contract.required_artifacts[0].expected_hash
+    )
+
+
+@pytest.mark.asyncio
+async def test_enforced_terminal_fallback_cannot_bypass_failed_validation(
+    tmp_path,
+) -> None:
+    context, artifact, contract = _terminal_fallback_context(tmp_path)
+
+    async def resolve(target, _contract):
+        observed_at = datetime.now(timezone.utc)
+        candidate_hash = "sha256:" + hashlib.sha256(
+            json.dumps(
+                [("result", contract.required_artifacts[0].expected_hash)],
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        target.record_completion_artifact(
+            ArtifactEvidence(
+                "result",
+                True,
+                contract.required_artifacts[0].expected_hash,
+                observed_at,
+            )
+        )
+        target.record_completion_self_check(
+            SelfCheckEvidence(
+                "validate",
+                1,
+                None,
+                observed_at,
+                candidate_hash=candidate_hash,
+            )
+        )
+
+    context._completion_evidence_resolver = resolve
+
+    transition = await record_validated_terminal_fallback_submission(
+        context, "agent"
+    )
+
+    assert transition is None
+    assert load_execution_protocol_state(context, "agent").phase is ProtocolPhase.REVIEW
+    assert context.context_info["terminal_completion_gate:agent"]["reason"] == (
+        "completion_contract_unsatisfied"
+    )
+
+
+def test_non_enforce_terminal_fallback_remains_compatible(tmp_path) -> None:
+    context, artifact, contract = _terminal_fallback_context(
+        tmp_path, mode=CompletionMode.OBSERVE
+    )
+
+    transition = record_terminal_fallback_submission(context, "agent")
+
+    assert transition is not None
+    assert transition.decision.action is ControllerAction.SUBMIT_CURRENT_RESULT
 
 
 def _declare_long_horizon(context: Context, agent_id: str = "agent") -> None:

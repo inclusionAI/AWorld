@@ -2907,6 +2907,13 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                 "reason_codes": list(
                                     getattr(completion_assessment, "reason_codes", ())
                                 )[:8],
+                                "diagnostic_codes": list(
+                                    getattr(
+                                        completion_assessment,
+                                        "diagnostic_codes",
+                                        (),
+                                    )
+                                )[:8],
                             }
 
                 task_completed_event = {

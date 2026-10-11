@@ -37,6 +37,8 @@ PUBLIC_DELIVERABLE_SCHEMA = "aworld.public-deliverables/v1"
 PUBLIC_CAPABILITY_SCHEMA = "aworld.public-capabilities/v1"
 PUBLIC_DELIVERABLE_AUTHORITY = "public_task_advisory"
 _MAX_PUBLIC_DELIVERABLES = 16
+_MAX_VALIDATION_DIAGNOSTIC_BYTES = 16 * 1024
+_VALIDATION_DIAGNOSTIC_CODE = re.compile(r"[a-z][a-z0-9_.:-]{0,127}\Z")
 _DELIVERABLE_TOKEN = r"(?:`([^`\r\n]+)`|'([^'\r\n]+)'|\"([^\"\r\n]+)\"|([^\s,;:!?]+))"
 _PUBLIC_DELIVERABLE_PATTERNS = (
     re.compile(
@@ -477,24 +479,92 @@ def _configured_validation_commands() -> tuple[ValidationCommand, ...]:
         raise ValueError(f"{VALIDATION_COMMANDS_ENV} must be an array of explicit ValidationCommand objects") from exc
 
 
-async def _run_validation(command: ValidationCommand) -> tuple[int, str]:
+def _typed_validation_diagnostic_code(value: bytes) -> str | None:
+    """Return one strict content-free code from bounded JSON stdout."""
+
+    if not value or len(value) > _MAX_VALIDATION_DIAGNOSTIC_BYTES:
+        return None
+
+    def reject_duplicates(pairs):
+        result = {}
+        for key, item in pairs:
+            if key in result:
+                raise ValueError("duplicate key")
+            result[key] = item
+        return result
+
+    try:
+        payload = json.loads(value.decode("utf-8"), object_pairs_hook=reject_duplicates)
+    except (UnicodeDecodeError, ValueError, TypeError):
+        return None
+    if (
+        not isinstance(payload, dict)
+        or set(payload) - {"reason", "diagnostic"}
+        or not isinstance(payload.get("reason"), str)
+        or _VALIDATION_DIAGNOSTIC_CODE.fullmatch(payload["reason"]) is None
+    ):
+        return None
+    return payload["reason"]
+
+
+def _completion_candidate_hash(contract: CompletionContract) -> str:
+    """Bind validation evidence to current required-artifact full hashes."""
+
+    projection = []
+    for requirement in contract.required_artifacts:
+        if not requirement.required:
+            continue
+        path = Path(requirement.path).expanduser()
+        try:
+            with path.open("rb") as stream:
+                content_hash = "sha256:" + hashlib.file_digest(
+                    stream, "sha256"
+                ).hexdigest()
+        except OSError:
+            content_hash = None
+        projection.append((requirement.requirement_id, content_hash))
+    encoded = json.dumps(projection, separators=(",", ":")).encode("utf-8")
+    return "sha256:" + hashlib.sha256(encoded).hexdigest()
+
+
+async def _run_validation(command: ValidationCommand) -> tuple[int, str, str | None]:
     """Execute only caller-supplied argv; drain bounded memory, preserve real exit."""
     digest = hashlib.sha256()
+    diagnostic_bytes = bytearray()
+    diagnostic_overflow = False
     process = await asyncio.create_subprocess_exec(
         *command.argv, cwd=command.cwd,
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
         start_new_session=True,
     )
     async def drain():
+        nonlocal diagnostic_overflow
         while chunk := await process.stdout.read(65536):
             digest.update(chunk)
+            if not diagnostic_overflow:
+                remaining = _MAX_VALIDATION_DIAGNOSTIC_BYTES - len(
+                    diagnostic_bytes
+                )
+                if len(chunk) <= remaining:
+                    diagnostic_bytes.extend(chunk)
+                else:
+                    diagnostic_overflow = True
+                    diagnostic_bytes.clear()
     reader = asyncio.create_task(drain())
     try:
         # Descendants keeping stdout open are also part of a bounded check.
         async with asyncio.timeout(command.timeout_seconds):
             await process.wait()
             await reader
-        return process.returncode, "sha256:" + digest.hexdigest()
+        return (
+            process.returncode,
+            "sha256:" + digest.hexdigest(),
+            (
+                None
+                if diagnostic_overflow
+                else _typed_validation_diagnostic_code(bytes(diagnostic_bytes))
+            ),
+        )
     except (TimeoutError, asyncio.CancelledError):
         try:
             os.killpg(process.pid, signal.SIGKILL)
@@ -505,7 +575,7 @@ async def _run_validation(command: ValidationCommand) -> tuple[int, str]:
         await asyncio.gather(reader, return_exceptions=True)
         if asyncio.current_task().cancelling():
             raise
-        return 124, "sha256:" + digest.hexdigest()
+        return 124, "sha256:" + digest.hexdigest(), None
 
 
 def _resolve_artifact_paths(
@@ -563,14 +633,17 @@ async def resolve_runtime_completion_evidence(
 ) -> None:
     """Collect fresh files and opt-in caller validation, never inferred commands."""
 
+    candidate_hash = _completion_candidate_hash(contract)
     for command in contract.validation_commands:
         try:
-            exit_code, output_hash = await _run_validation(command)
+            exit_code, output_hash, diagnostic_code = await _run_validation(command)
         except (OSError, ValueError):
-            exit_code, output_hash = 127, None
+            exit_code, output_hash, diagnostic_code = 127, None, None
         context.record_completion_self_check(SelfCheckEvidence(
             command_id=command.command_id, exit_code=exit_code,
             output_hash=output_hash, observed_at=datetime.now(timezone.utc),
+            diagnostic_code=diagnostic_code,
+            candidate_hash=candidate_hash,
         ))
     _record_runtime_artifacts(context, contract)
 
@@ -584,7 +657,7 @@ def _record_runtime_artifacts(context, contract):
         except OSError:
             exists = False
         content_hash = None
-        if exists and requirement.expected_hash:
+        if exists:
             try:
                 with path.open("rb") as stream:
                     content_hash = "sha256:" + hashlib.file_digest(stream, "sha256").hexdigest()

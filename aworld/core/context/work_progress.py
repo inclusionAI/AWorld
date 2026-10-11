@@ -243,6 +243,8 @@ def retain_work_progress(context, agent_id: str, *, plan: str | None = None):
                 item.get("command_id"),
                 item.get("exit_code"),
                 item.get("output_hash"),
+                item.get("diagnostic_code"),
+                item.get("candidate_hash"),
                 item.get("observed_at"),
             ): item
             for item in state.get("validation_evidence", ())
@@ -258,12 +260,16 @@ def retain_work_progress(context, agent_id: str, *, plan: str | None = None):
                 evidence_item.command_id,
                 evidence_item.exit_code,
                 evidence_item.output_hash,
+                evidence_item.diagnostic_code,
+                evidence_item.candidate_hash,
                 observed_at,
             )
             receipt = {
                 "command_id": evidence_item.command_id,
                 "exit_code": evidence_item.exit_code,
                 "output_hash": evidence_item.output_hash,
+                "diagnostic_code": evidence_item.diagnostic_code,
+                "candidate_hash": evidence_item.candidate_hash,
                 "observed_at": observed_at,
                 "source": "runtime_self_check",
             }
@@ -386,7 +392,7 @@ def retain_model_work_checkpoint(context, agent_id: str, update):
             key: deepcopy(item.get(key))
             for key in (
                 "command_id", "exit_code", "output_hash", "observed_at",
-                "candidate_fingerprint", "source",
+                "candidate_fingerprint", "candidate_hash", "diagnostic_code", "source",
             )
             if item.get(key) is not None
         }
@@ -526,7 +532,7 @@ def record_budget_handoff(context, agent_id: str) -> bool:
         "results": sorted({str(item.get("result_hash")) for item in recent}),
         "submission": [{key:item.get(key) for key in ("path", "exists", "observed_hash")}
                        for item in state.get("candidate_submission", [])],
-        "validation": [{key:item.get(key) for key in ("command_id", "exit_code", "output_hash")}
+        "validation": [{key:item.get(key) for key in ("command_id", "exit_code", "output_hash", "diagnostic_code", "candidate_hash")}
                        for item in state.get("validation_evidence", [])],
     })
     previous = state.get("budget_handoff", {})

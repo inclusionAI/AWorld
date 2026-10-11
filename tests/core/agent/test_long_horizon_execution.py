@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 from dataclasses import replace
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -21,6 +22,7 @@ from aworld.core.context.base import Context
 from aworld.core.context.compiler import (
     CompletionContract,
     CompletionMode,
+    SelfCheckEvidence,
     ValidationCommand,
 )
 from aworld.core.context.execution_state import (
@@ -317,6 +319,81 @@ async def test_success_first_terminal_review_error_submits_current_candidate() -
     assert protocol.terminal_incomplete is False
     assert protocol.acceptance_confirmed is False
     assert protocol.repair_count == 0
+
+
+@pytest.mark.asyncio
+async def test_terminal_review_error_cannot_use_stale_enforced_validation() -> None:
+    context = Context(task_id="terminal-review-stale-validation")
+    context.set_task(
+        Task(
+            id="terminal-review-stale-validation",
+            input="finish the task",
+            timeout=600,
+        )
+    )
+    contract = CompletionContract(
+        (),
+        (),
+        (ValidationCommand("validate", ("true",)),),
+        None,
+        (),
+    )
+
+    async def no_fresh_evidence(_context, _contract):
+        return None
+
+    context.configure_completion_contract(
+        contract,
+        mode=CompletionMode.ENFORCE,
+        evidence_resolver=no_fresh_evidence,
+    )
+    context.context_info["completion_enforcement_explicit"] = True
+    context.record_completion_self_check(
+        SelfCheckEvidence(
+            "validate",
+            0,
+            None,
+            datetime.now(timezone.utc) - timedelta(minutes=5),
+            candidate_hash="sha256:" + "a" * 64,
+        )
+    )
+    policy = ExecutionProtocolPolicy(
+        mode=ProtocolMode.OBSERVE,
+        terminal_review_gate_enabled=True,
+        independent_acceptance_enabled=False,
+    )
+    agent = _agent(context, policy)
+    configure_execution_protocol(context, agent.id(), policy)
+    _declare_long_horizon(context, agent.id())
+    record_candidate_final(context, agent.id())
+    fallback = ActionModel(agent_name=agent.id(), policy_info="candidate")
+    calls = 0
+
+    async def attempt(_observation, **_kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return _LongHorizonReviewContinuation(
+                observation=Observation(content="review"),
+                kwargs={},
+                fallback_actions=(fallback,),
+            )
+        raise RuntimeError("review unavailable")
+
+    agent._async_policy_once = attempt
+    result = await agent.async_policy(
+        Observation(content="candidate"),
+        message=Message(category=Constants.AGENT, headers={"context": context}),
+    )
+
+    assert result == [fallback]
+    assert get_execution_state(context)["status"] == "incomplete"
+    assert get_execution_state(context)["reason"] == (
+        "terminal_review_fallback_transition_failed"
+    )
+    protocol = load_execution_protocol_state(context, agent.id())
+    assert protocol.phase is ProtocolPhase.REVIEW
+    assert protocol.review_pending is True
 
 
 @pytest.mark.asyncio

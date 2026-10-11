@@ -421,6 +421,32 @@ class LazyVerifierFactory:
                 authoritative_deliverables=authoritative_deliverables,
                 authentication_status=artifact_snapshot_authentication,
             )
+            post_snapshot_authentication = (
+                _declared_snapshot_authentication_status(
+                    context,
+                    agent_id=self._parent_agent.id(),
+                )
+            )
+            before_fingerprint = artifact_snapshot_authentication.get(
+                "candidate_fingerprint"
+            )
+            if (
+                isinstance(before_fingerprint, str)
+                and (
+                    post_snapshot_authentication.get("authenticated") is not True
+                    or post_snapshot_authentication.get("candidate_fingerprint")
+                    != before_fingerprint
+                )
+            ):
+                authoritative_artifact_snapshot = {
+                    "schema_version": _DECLARED_SNAPSHOT_SCHEMA,
+                    "total_byte_limit": _DECLARED_SNAPSHOT_TOTAL_BYTES,
+                    "authentication": "authentication_changed",
+                    "items": [
+                        {"path": path, "status": "authentication_changed"}
+                        for path in authoritative_deliverables
+                    ],
+                }
             attempt_key = hashlib.sha256(
                 json.dumps(
                     {
@@ -1074,9 +1100,27 @@ def _authoritative_delivery_snapshot(
             ],
         }
     remaining = _DECLARED_SNAPSHOT_TOTAL_BYTES
+    expected_hashes = (
+        authentication_status.get("artifact_hashes")
+        if isinstance(authentication_status, Mapping)
+        else None
+    )
+    if not isinstance(expected_hashes, Mapping):
+        expected_hashes = {}
     items: list[dict[str, Any]] = []
     for path in paths:
         item: dict[str, Any] = {"path": path, "status": "unavailable"}
+        if not _trusted_declared_snapshot_path(context, path):
+            item["status"] = "untrusted_path"
+            items.append(item)
+            continue
+        expected_hash = expected_hashes.get(path)
+        if not isinstance(expected_hash, str) or _CANONICAL_SHA256.fullmatch(
+            expected_hash
+        ) is None:
+            item["status"] = "unauthenticated"
+            items.append(item)
+            continue
         try:
             before_path = os.lstat(path)
             if stat_module.S_ISLNK(before_path.st_mode) or not stat_module.S_ISREG(
@@ -1097,7 +1141,12 @@ def _authoritative_delivery_snapshot(
                 if not stat_module.S_ISREG(before.st_mode):
                     items.append(item)
                     continue
-                content = handle.read(limit + 1)
+                digest = hashlib.sha256()
+                captured = bytearray()
+                while chunk := handle.read(64 * 1024):
+                    digest.update(chunk)
+                    if len(captured) < limit:
+                        captured.extend(chunk[: limit - len(captured)])
                 after = os.fstat(handle.fileno())
             current = os.lstat(path)
             def identity(value):
@@ -1113,21 +1162,25 @@ def _authoritative_delivery_snapshot(
                 item["status"] = "unstable"
                 items.append(item)
                 continue
-            truncated = len(content) > limit or before.st_size > limit
-            captured = content[:limit]
-            remaining -= len(captured)
+            if "sha256:" + digest.hexdigest() != expected_hash:
+                item["status"] = "authentication_changed"
+                items.append(item)
+                continue
+            truncated = before.st_size > limit
+            captured_bytes = bytes(captured)
+            remaining -= len(captured_bytes)
             item.update(
                 {
                     "status": "captured",
                     "size": before.st_size,
                     "truncated": truncated,
-                    "captured_bytes": len(captured),
+                    "captured_bytes": len(captured_bytes),
                     "captured_sha256": "sha256:"
-                    + hashlib.sha256(captured).hexdigest(),
+                    + hashlib.sha256(captured_bytes).hexdigest(),
                 }
             )
             try:
-                item["content_utf8"] = captured.decode("utf-8-sig")
+                item["content_utf8"] = captured_bytes.decode("utf-8-sig")
             except UnicodeDecodeError:
                 item["encoding"] = "binary"
         except (OSError, TypeError, ValueError):
@@ -1139,6 +1192,34 @@ def _authoritative_delivery_snapshot(
         "authentication": authentication_reason,
         "items": items,
     }
+
+
+def _trusted_declared_snapshot_path(context: Any, path: str) -> bool:
+    """Allow workspace roots or an exact caller-owned completion artifact."""
+
+    normalized = os.path.abspath(os.path.expanduser(path))
+    completion_contract = getattr(context, "completion_contract", None)
+    exact_completion_paths = {
+        os.path.abspath(os.path.expanduser(requirement.path))
+        for requirement in getattr(completion_contract, "required_artifacts", ()) or ()
+        if isinstance(getattr(requirement, "path", None), str)
+    }
+    if normalized in exact_completion_paths:
+        return True
+    roots = [os.getcwd()]
+    artifact_root = os.environ.get("ARTIFACT_DIRECTORY")
+    if isinstance(artifact_root, str) and artifact_root.strip():
+        roots.append(artifact_root.strip())
+    for root in roots:
+        trusted_root = os.path.abspath(os.path.expanduser(root))
+        if trusted_root == os.path.sep:
+            continue
+        try:
+            if os.path.commonpath((normalized, trusted_root)) == trusted_root:
+                return True
+        except ValueError:
+            continue
+    return False
 
 
 def _declared_snapshot_authentication_status(
