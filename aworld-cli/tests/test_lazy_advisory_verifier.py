@@ -541,7 +541,7 @@ async def test_default_runner_uses_private_manager_and_exact_caller_context(
     assert isinstance(delegation_spec, DelegationSpec)
     assert delegation_spec.objective == "public directive"
     assert delegation_spec.expected_output_schema["type"] == "string"
-    assert delegation_spec.token_budget == 12_288
+    assert delegation_spec.token_budget == 16_384
     assert delegation_spec.max_output_tokens == 2_048
     assert delegation_spec.max_turns == 2
     assert delegation_spec.may_use_parent_finalization_reserve is False
