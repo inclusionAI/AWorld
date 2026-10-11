@@ -10,10 +10,14 @@ from aworld.agents.llm_agent import (
     ToolCallParseIssueCode,
 )
 from aworld.config import AgentConfig, ModelConfig
+from aworld.core.common import ActionModel
 from aworld.core.context.generation_budget import GenerationBudgetPolicy
 from aworld.models.model_response import Function, ModelResponse, ToolCall
 from aworld.models.reasoning_policy import ReasoningPhasePolicy
 from aworld_cli.builtin_agents.smllc.optional_agents import _common
+from aworld_cli.builtin_agents.smllc.optional_agents._common import (
+    FreshAnswerOnlyCollaborator,
+)
 from aworld_cli.builtin_agents.smllc.optional_agents.developer.developer import (
     build_developer_swarm,
 )
@@ -109,6 +113,52 @@ def test_verifier_inherits_model_generation_budget_and_shared_sandbox() -> None:
     assert "hidden grader" in verifier.system_prompt
     assert "Decision: `ready`, `repair`, or `uncertain`" in verifier.system_prompt
     assert not any("CAST" in name for name in verifier.tool_names)
+
+
+@pytest.mark.asyncio
+async def test_verifier_forces_second_turn_report_only_and_never_calls_third_model(
+    monkeypatch,
+) -> None:
+    verifier = next(iter(build_verifier_swarm().agents.values()))
+    report_only_values = []
+
+    async def fake_policy(self, observation, info=None, message=None, **kwargs):
+        report_only_values.append(self._bounded_review_report_only)
+        return [ActionModel(agent_name=self.id(), policy_info="model result")]
+
+    monkeypatch.setattr(Agent, "async_policy", fake_policy)
+
+    first = await verifier.async_policy(SimpleNamespace())
+    second = await verifier.async_policy(SimpleNamespace())
+    third = await verifier.async_policy(SimpleNamespace())
+
+    assert first[0].policy_info == "model result"
+    assert second[0].policy_info == "model result"
+    assert report_only_values == [False, True]
+    assert "Decision: `uncertain`" in third[0].policy_info
+
+
+@pytest.mark.asyncio
+async def test_verifier_report_only_turn_hides_all_tools(monkeypatch) -> None:
+    verifier = next(iter(build_verifier_swarm().agents.values()))
+
+    async def fake_desc(self, context):
+        self.tools = [{"function": {"name": "filesystem__read_file"}}]
+        self.tool_mapping = {
+            "filesystem__read_file": "mcp__filesystem__read_file"
+        }
+
+    monkeypatch.setattr(
+        FreshAnswerOnlyCollaborator,
+        "async_desc_transform",
+        fake_desc,
+    )
+    verifier._bounded_review_report_only = True
+
+    await verifier.async_desc_transform(SimpleNamespace())
+
+    assert verifier.tools == []
+    assert verifier.tool_mapping == {}
 
 
 def test_verifier_preserves_max_tokens_only_provider_contract() -> None:

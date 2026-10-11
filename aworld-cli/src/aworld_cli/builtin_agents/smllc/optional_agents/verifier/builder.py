@@ -6,6 +6,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 from aworld.config import AgentConfig
+from aworld.core.common import ActionModel
 from aworld.core.agent.swarm import Swarm
 from aworld.core.context.generation_budget import GenerationBudgetPolicy
 from aworld.models.reasoning_policy import ReasoningPhasePolicy, ReasoningProfile
@@ -29,6 +30,52 @@ class TaskVerifierAgent(FreshAnswerOnlyCollaborator):
     mcp_tool_action_allowlist = READ_ONLY_FILESYSTEM_ALLOWLIST
     reasoning_phase_override = "review"
     failed_request_diagnostics_enabled = False
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._bounded_review_model_turns = 0
+        self._bounded_review_report_only = False
+
+    async def async_desc_transform(self, context) -> None:
+        """Expose read tools only to the first bounded review model turn."""
+
+        await super().async_desc_transform(context)
+        if self._bounded_review_report_only:
+            self.tools = []
+            self.tool_mapping = {}
+
+    async def async_policy(
+        self,
+        observation,
+        info=None,
+        message=None,
+        **kwargs,
+    ):
+        """Use one inspection turn and one forced report turn, never a third."""
+
+        if self._bounded_review_model_turns >= 2:
+            return [
+                ActionModel(
+                    agent_name=self.id(),
+                    policy_info=(
+                        "- Decision: `uncertain`\n"
+                        "- Evidence: the bounded verifier turn limit was reached\n"
+                        "- Gaps: no valid final report was produced in two turns\n"
+                        "- Recommended next action: preserve the current candidate"
+                    ),
+                )
+            ]
+        self._bounded_review_report_only = self._bounded_review_model_turns == 1
+        try:
+            return await super().async_policy(
+                observation,
+                info=info or {},
+                message=message,
+                **kwargs,
+            )
+        finally:
+            self._bounded_review_model_turns += 1
+            self._bounded_review_report_only = False
 
 
 def _bounded_review_config(parent: AgentConfig | None) -> AgentConfig:
