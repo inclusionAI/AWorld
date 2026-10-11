@@ -986,6 +986,75 @@ def test_direct_acceptance_respects_deadline_reserve():
     assert response.failure_origin == "task"
 
 
+def test_direct_acceptance_finalizes_existing_candidate_at_deadline_reserve():
+    from aworld.core.context.base import Context
+    from aworld.core.execution_protocol import ExecutionProtocolPolicy
+    from aworld.core.task import Task, TaskResponse
+    from aworld.runners.execution_protocol import configure_execution_protocol
+
+    context = Context(task_id="deadline-candidate")
+    task = Task(
+        id="deadline-candidate",
+        input="produce artifacts",
+        context=context,
+        timeout=120,
+        completion_reserve_seconds=120,
+    )
+    context.set_task(task)
+    configure_execution_protocol(
+        context,
+        "root-agent",
+        ExecutionProtocolPolicy(mode="guide"),
+    )
+    executor = object.__new__(LocalAgentExecutor)
+    executor._session_mode = "direct"
+    executor._base_runtime = None
+    executor.swarm = SimpleNamespace(
+        communicate_agent=SimpleNamespace(id=lambda: "root-agent")
+    )
+    state = new_goal_contract_state("produce artifacts")
+    state["protocol_telemetry"] = {
+        "schema_version": "aworld.execution-protocol-telemetry/v2",
+        "armed": True,
+        "decision_checkpoint_candidate_present": True,
+        "candidate_checkpoint_recorded": True,
+        "public_deliverable_declared": True,
+        "decision_checkpoint_pending": True,
+    }
+    response = TaskResponse(
+        success=False,
+        answer="Artifacts are available.",
+        semantic_status="incomplete",
+        recoverable=True,
+    )
+
+    continuation = executor._direct_acceptance_continuation(
+        task=task,
+        response=response,
+        answer=response.answer,
+        event={
+            "task_id": task.id,
+            "semantic_status": "incomplete",
+            "recoverable": True,
+            "final_answer": response.answer,
+        },
+        origin_user_input="produce artifacts",
+        logical_task_state=state,
+        acceptance_state=state,
+    )
+
+    assert continuation is None
+    assert response.success is True
+    assert response.semantic_status == "succeeded"
+    assert response.failure_origin is None
+    assert response.completion_reason == (
+        "implicit_acceptance_deadline_reserve_fail_open"
+    )
+    assert response.execution_protocol["acceptance_satisfied"] is True
+    assert response.execution_protocol["decision_checkpoint_pending"] is False
+    assert response.execution_protocol["finalization_entered"] is True
+
+
 def test_explicit_goal_owned_segment_cannot_start_implicit_acceptance():
     from aworld.core.context.base import Context
     from aworld.core.execution_protocol import ExecutionProtocolPolicy

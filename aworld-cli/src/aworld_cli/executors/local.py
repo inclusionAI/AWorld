@@ -1683,6 +1683,32 @@ class LocalAgentExecutor(BaseAgentExecutor):
         )
         if remaining is not None and remaining <= reserve:
             telemetry["acceptance_continuation_suppressed"] = "deadline_reserve"
+            candidate_ready = bool(
+                telemetry.get("decision_checkpoint_candidate_present")
+                and telemetry.get("candidate_checkpoint_recorded")
+                and telemetry.get("public_deliverable_declared")
+            )
+            if response is not None and candidate_ready:
+                telemetry.update(
+                    {
+                        "acceptance_disposition": "deadline_reserve_fail_open",
+                        "acceptance_satisfied": True,
+                        "decision_checkpoint_pending": False,
+                        "finalization_entered": True,
+                        "phase": "complete",
+                    }
+                )
+                response.success = True
+                response.failure_origin = None
+                response.semantic_status = "succeeded"
+                response.completion_reason = (
+                    "implicit_acceptance_deadline_reserve_fail_open"
+                )
+                response.recoverable = False
+                response.execution_protocol = telemetry
+                updated["protocol_telemetry"] = telemetry
+                self.last_execution_protocol = telemetry
+                return None
             if response is not None:
                 response.success = False
                 response.failure_origin = "task"
