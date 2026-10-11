@@ -1073,6 +1073,44 @@ async def test_review_omits_stale_unbound_and_wrong_agent_receipts() -> None:
     assert "unbound" not in directive
 
 
+@pytest.mark.asyncio
+async def test_review_rejects_non_hex_candidate_fingerprint() -> None:
+    captured = {}
+    factory = _factory(captured=captured)
+    context = _context("Write result.json in the workspace.")
+    context.task_id = "invalid-candidate-fingerprint"
+    context.task_epoch = 1
+    malformed = "sha256:" + "z" * 64
+    context.context_info = {
+        "execution_protocol_mutation_gate:root-id": _candidate_gate(
+            context, "root-id", malformed
+        ),
+        "adaptive_work_state:root-id": {
+            "scope": {
+                "task_id": "invalid-candidate-fingerprint",
+                "task_epoch": 1,
+            },
+            "validation_evidence": [
+                {
+                    "command_id": "must-not-project",
+                    "exit_code": 0,
+                    "output_hash": "sha256:" + "a" * 64,
+                    "candidate_fingerprint": malformed,
+                    "source": "runtime_self_check",
+                }
+            ],
+        },
+    }
+
+    await factory.review(
+        AdvisoryReviewRequest(candidate_claim="Result is complete."),
+        context=context,
+    )
+
+    directive = captured["runner"]["directive"]
+    assert "must-not-project" not in directive
+
+
 @pytest.mark.parametrize(
     "params, message",
     [

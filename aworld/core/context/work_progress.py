@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 import os
+import re
 from typing import Mapping
 
 from aworld.core.context.compiler.adaptive import semantic_fingerprint
@@ -20,6 +21,7 @@ _MAX_OBLIGATIONS = 32
 _PUBLIC_DELIVERABLE_SCHEMA = "aworld.public-deliverables/v1"
 _PUBLIC_DELIVERABLE_AUTHORITY = "public_task_advisory"
 _MUTATION_GATE_SCHEMA = "aworld.mutation-gate/v4"
+_CANONICAL_SHA256 = re.compile(r"sha256:[0-9a-f]{64}")
 
 
 def _current_candidate_fingerprint(context, agent_id: str) -> str | None:
@@ -57,8 +59,7 @@ def _current_candidate_fingerprint(context, agent_id: str) -> str | None:
     candidate_fingerprint = gate.get("candidate_fingerprint")
     if (
         not isinstance(candidate_fingerprint, str)
-        or not candidate_fingerprint.startswith("sha256:")
-        or len(candidate_fingerprint) != 71
+        or _CANONICAL_SHA256.fullmatch(candidate_fingerprint) is None
     ):
         return None
     return candidate_fingerprint

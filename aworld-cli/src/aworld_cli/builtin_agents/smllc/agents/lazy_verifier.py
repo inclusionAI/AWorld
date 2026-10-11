@@ -64,6 +64,7 @@ _REVIEW_OUTPUT_TOKEN_BUDGET = (
 )
 _REVIEW_WALL_CLOCK_SECONDS = 120.0
 _MUTATION_GATE_SCHEMA = "aworld.mutation-gate/v4"
+_CANONICAL_SHA256 = re.compile(r"sha256:[0-9a-f]{64}")
 _READ_ONLY_FILESYSTEM_ACTIONS = frozenset(
     {
         "list_allowed_directories",
@@ -1113,8 +1114,7 @@ def _current_candidate_gate(
         or gate.get("agent_id") != agent_id
         or gate.get("scope_hash") != expected_scope_hash
         or not isinstance(candidate_fingerprint, str)
-        or not candidate_fingerprint.startswith("sha256:")
-        or len(candidate_fingerprint) != 71
+        or _CANONICAL_SHA256.fullmatch(candidate_fingerprint) is None
     ):
         return None
     return gate
