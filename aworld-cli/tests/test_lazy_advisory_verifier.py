@@ -924,6 +924,28 @@ async def test_conflicting_decision_lines_are_inconclusive() -> None:
 
 
 @pytest.mark.asyncio
+async def test_repeated_identical_decision_lines_are_not_ambiguous() -> None:
+    factory = _factory(
+        report=(
+            "Decision: ready.\n"
+            "- Evidence: inspected the current deliverable\n"
+            "- Gaps: none\n"
+            "- Recommended next action: submit current result\n"
+            "Decision: ready\n"
+        )
+    )
+
+    result = await factory.review(
+        AdvisoryReviewRequest(candidate_claim="Candidate is ready."),
+        context=_context(),
+    )
+
+    assert result.status == "completed"
+    assert result.decision == "ready"
+    assert result.reason_code is None
+
+
+@pytest.mark.asyncio
 async def test_explicit_uncertain_review_is_not_counted_as_success() -> None:
     factory = _factory(
         report=(

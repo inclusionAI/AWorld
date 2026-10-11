@@ -465,18 +465,19 @@ class LazyVerifierFactory:
                     reason_code="reviewer_execution_failed",
                 )
             matches = list(_DECISION_PATTERN.finditer(raw_report))
-            if len(matches) != 1:
+            decisions = {match.group(1).lower() for match in matches}
+            if len(decisions) != 1:
                 return AdvisoryReviewResult(
                     status="inconclusive",
                     decision="uncertain",
                     report=raw_report[:_MAX_REPORT_CHARS],
                     reason_code=(
                         "decision_unparseable"
-                        if not matches
+                        if not decisions
                         else "decision_ambiguous"
                     ),
                 )
-            decision = matches[0].group(1).lower()
+            decision = decisions.pop()
             return AdvisoryReviewResult(
                 status=("inconclusive" if decision == "uncertain" else "completed"),
                 decision=decision,
