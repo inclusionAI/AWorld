@@ -75,6 +75,7 @@ class DelegationSpec:
     stop_conditions: tuple[StopCondition, ...]
     merge_policy: MergePolicy
     allowed_context_delta_kinds: tuple[str, ...] = ()
+    may_use_parent_finalization_reserve: bool = False
 
     def __post_init__(self) -> None:
         if not isinstance(self.objective, str) or not self.objective.strip():
@@ -107,6 +108,8 @@ class DelegationSpec:
             self.inference_profile, InferenceProfile
         ):
             raise TypeError("inference_profile must be an InferenceProfile or None")
+        if not isinstance(self.may_use_parent_finalization_reserve, bool):
+            raise TypeError("may_use_parent_finalization_reserve must be a boolean")
         object.__setattr__(self, "merge_policy", MergePolicy(self.merge_policy))
 
 

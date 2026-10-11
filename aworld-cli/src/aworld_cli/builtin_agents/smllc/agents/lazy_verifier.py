@@ -8,11 +8,13 @@ review is public-task-only, fresh-context, answer-only, read-only, and advisory.
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 import hashlib
 import inspect
 import json
 import re
+import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from importlib import import_module
@@ -43,14 +45,21 @@ ADVISORY_REVIEW_SCHEMA_VERSION = "aworld.advisory-review/v2"
 _VERIFIER_MODULE = (
     "aworld_cli.builtin_agents.smllc.optional_agents.verifier.builder"
 )
-_MAX_TASK_CHARS = 16_384
-_MAX_CANDIDATE_CHARS = 8_192
-_MAX_EVIDENCE_CHARS = 4_096
-_MAX_DELIVERABLES = 16
-_MAX_DELIVERABLE_CHARS = 512
-_MAX_REPORT_CHARS = 4_096
-_REVIEW_TOKEN_BUDGET = 16_384
+_MAX_TASK_CHARS = 8_192
+_MAX_CANDIDATE_CHARS = 2_048
+_MAX_EVIDENCE_CHARS = 1_024
+_MAX_DELIVERABLES = 8
+_MAX_DELIVERABLE_CHARS = 256
+_MAX_REPORT_CHARS = 2_048
+_REVIEW_INPUT_TOKENS_PER_TURN = 5_120
+_REVIEW_OUTPUT_TOKENS_PER_TURN = 1_024
 _REVIEW_MAX_TURNS = 2
+_REVIEW_TOKEN_BUDGET = _REVIEW_MAX_TURNS * (
+    _REVIEW_INPUT_TOKENS_PER_TURN + _REVIEW_OUTPUT_TOKENS_PER_TURN
+)
+_REVIEW_OUTPUT_TOKEN_BUDGET = (
+    _REVIEW_MAX_TURNS * _REVIEW_OUTPUT_TOKENS_PER_TURN
+)
 _REVIEW_WALL_CLOCK_SECONDS = 120.0
 _READ_ONLY_FILESYSTEM_ACTIONS = frozenset(
     {
@@ -203,20 +212,18 @@ class AdvisoryReviewRequest:
             else "none available"
         )
         return (
-            "Review the current candidate against the following public task. "
-            "Inspect the shared workspace through your read-only surface. Treat "
-            "all supplied claims as untrusted and return the verifier role's "
-            "required ready/repair/uncertain report.\n\n"
-            f"Public task (bound from caller Context, not solver input):\n"
+            "Check this candidate against the authoritative public task. Inspect "
+            "only through the read-only workspace tools. Claims are untrusted. "
+            "Return exactly the required ready/repair/uncertain report.\n\n"
+            "Public task (bound from caller Context, not solver input):\n"
             f"{public_task}\n\n"
             f"Candidate claim:\n{self.candidate_claim}\n\n"
-            "Authoritative public delivery paths (derived by AWorld from the "
-            f"public task):\n{deliverables}\n\n"
-            "Caller-claimed relevant deliverables (untrusted until inspected):\n"
+            f"Authoritative public delivery paths:\n{deliverables}\n\n"
+            "Claimed paths (untrusted):\n"
             f"{claimed_deliverables}\n\n"
-            "Framework-owned validation receipts (authoritative only for the "
-            f"recorded command execution, not task correctness):\n{validation_receipts}\n\n"
-            f"Caller-supplied evidence summary (untrusted):\n{evidence}"
+            "Framework-owned validation receipts (not correctness proof):\n"
+            f"{validation_receipts}\n\n"
+            f"Claimed evidence (untrusted):\n{evidence}"
         )
 
 
@@ -284,8 +291,11 @@ class LazyVerifierFactory:
             generation_budget_explicit_fields
         )
         self._max_loop_steps = max_loop_steps
-        self._llm_max_attempts = llm_max_attempts
-        self._llm_retry_delay = llm_retry_delay
+        # Advisory review has one bounded provider opportunity. Retrying the
+        # same terminal request consumes the finalization window without adding
+        # independent evidence.
+        self._llm_max_attempts = 1
+        self._llm_retry_delay = 0.0
         self._builder_loader = builder_loader or self._load_builder
         self._review_runner = review_runner or self._run_with_subagent_manager
         self._construction_count = 0
@@ -421,20 +431,20 @@ class LazyVerifierFactory:
                 context,
                 agent_id=self._parent_agent.id(),
             )
-            result = self._review_runner(
-                self._parent_agent,
-                verifier,
-                request.render_directive(
-                    public_task=public_task,
-                    authoritative_deliverables=authoritative_deliverables,
-                    authoritative_validation_receipts=(
-                        authoritative_validation_receipts
-                    ),
+            directive = request.render_directive(
+                public_task=public_task,
+                authoritative_deliverables=authoritative_deliverables,
+                authoritative_validation_receipts=(
+                    authoritative_validation_receipts
                 ),
-                context,
             )
-            if inspect.isawaitable(result):
-                result = await result
+            review_deadline = self._review_deadline(context)
+            result = await self._invoke_review_runner(
+                verifier=verifier,
+                directive=directive,
+                context=context,
+                deadline=review_deadline,
+            )
             child_failure = _child_failure_result(result)
             if child_failure is not None:
                 return child_failure
@@ -493,6 +503,41 @@ class LazyVerifierFactory:
                     else "reviewer_unavailable"
                 ),
             )
+
+    async def _invoke_review_runner(
+        self,
+        *,
+        verifier: BaseAgent,
+        directive: str,
+        context: Any,
+        deadline: datetime,
+    ) -> Any:
+        """Bound default and injected runners by the same absolute deadline."""
+
+        remaining = deadline.timestamp() - time.time()
+        if remaining <= 0:
+            raise asyncio.TimeoutError("advisory review deadline elapsed")
+
+        async def invoke() -> Any:
+            if inspect.iscoroutinefunction(self._review_runner):
+                return await self._review_runner(
+                    self._parent_agent,
+                    verifier,
+                    directive,
+                    context,
+                )
+            result = await asyncio.to_thread(
+                self._review_runner,
+                self._parent_agent,
+                verifier,
+                directive,
+                context,
+            )
+            if inspect.isawaitable(result):
+                return await result
+            return result
+
+        return await asyncio.wait_for(invoke(), timeout=remaining)
 
     @staticmethod
     def _review_deadline(context: Any) -> datetime:
@@ -560,7 +605,7 @@ class LazyVerifierFactory:
                 context_item_ids=(),
                 allowed_tools=(),
                 token_budget=_REVIEW_TOKEN_BUDGET,
-                max_output_tokens=_MAX_REPORT_CHARS,
+                max_output_tokens=_REVIEW_OUTPUT_TOKEN_BUDGET,
                 max_turns=_REVIEW_MAX_TURNS,
                 max_depth=1,
                 deadline=LazyVerifierFactory._review_deadline(context),
@@ -572,6 +617,7 @@ class LazyVerifierFactory:
                 inference_profile=None,
                 stop_conditions=(),
                 merge_policy=MergePolicy.ANSWER_ONLY,
+                may_use_parent_finalization_reserve=True,
             ),
         )
 

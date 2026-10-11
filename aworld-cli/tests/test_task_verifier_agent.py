@@ -80,8 +80,9 @@ def test_verifier_inherits_model_generation_budget_and_shared_sandbox() -> None:
     assert verifier.conf.llm_config.llm_model_name == "test-model"
     assert verifier.conf.llm_config.llm_provider == "openai"
     assert verifier.conf.llm_config.max_model_len == 131072
-    assert verifier.conf.llm_config.params == {"max_completion_tokens": 4096}
+    assert verifier.conf.llm_config.params == {"max_completion_tokens": 1024}
     assert verifier.conf.llm_config.max_tokens is None
+    assert verifier.conf.max_input_tokens == 5120
     assert verifier.conf.llm_config.params is not parent_config.llm_config.params
     assert (
         ReasoningPhasePolicy.from_value(
@@ -98,8 +99,9 @@ def test_verifier_inherits_model_generation_budget_and_shared_sandbox() -> None:
     assert verifier._explicit_generation_budget_policy is generation_budget
     assert verifier._generation_budget_explicit_fields == {"generation_budget_mode"}
     assert verifier.max_loop_steps == 27
-    assert verifier.llm_max_attempts == 4
-    assert verifier.llm_retry_delay == 1.5
+    assert verifier.llm_max_attempts == 1
+    assert verifier.llm_retry_delay == 0.0
+    assert verifier.failed_request_diagnostics_enabled is False
     assert verifier.enable_subagent is False
     assert verifier.subagent_context_mode == "fresh"
     assert verifier.subagent_merge_mode == "answer_only"
@@ -123,7 +125,7 @@ def test_verifier_preserves_max_tokens_only_provider_contract() -> None:
         iter(build_verifier_swarm(agent_config=parent_config).agents.values())
     )
 
-    assert verifier.conf.llm_config.max_tokens == 3072
+    assert verifier.conf.llm_config.max_tokens == 1024
     assert "max_completion_tokens" not in verifier.conf.llm_config.params
 
 
@@ -150,7 +152,7 @@ def test_verifier_removes_extra_body_output_limit_overrides() -> None:
     )
 
     assert verifier.conf.llm_config.max_tokens is None
-    assert verifier.conf.llm_config.params["max_completion_tokens"] == 4096
+    assert verifier.conf.llm_config.params["max_completion_tokens"] == 1024
     assert "max_tokens" not in verifier.conf.llm_config.params
     assert verifier.conf.llm_config.params["extra_body"] == {
         "route_hint": "preserve-me"
@@ -209,8 +211,9 @@ def test_default_collaborators_inherit_root_execution_profile() -> None:
         assert collaborator.conf.llm_config.max_model_len == 131072
         if expected_name == "verifier":
             assert collaborator.conf.llm_config.params == {
-                "max_completion_tokens": 4096
+                "max_completion_tokens": 1024
             }
+            assert collaborator.conf.max_input_tokens == 5120
         else:
             assert collaborator.conf.llm_config.params == parent_config.llm_config.params
         assert (
@@ -222,8 +225,12 @@ def test_default_collaborators_inherit_root_execution_profile() -> None:
             "generation_budget_mode"
         }
         assert collaborator.max_loop_steps == 41
-        assert collaborator.llm_max_attempts == 5
-        assert collaborator.llm_retry_delay == 1.25
+        assert collaborator.llm_max_attempts == (
+            1 if expected_name == "verifier" else 5
+        )
+        assert collaborator.llm_retry_delay == (
+            0.0 if expected_name == "verifier" else 1.25
+        )
         assert collaborator.enable_subagent is False
         assert collaborator.subagent_context_mode == "fresh"
         assert collaborator.subagent_merge_mode == "answer_only"
@@ -241,6 +248,40 @@ def test_default_collaborators_inherit_root_execution_profile() -> None:
             assert "CAST_SEARCH" not in collaborator.tool_names
         if expected_name == "verifier":
             assert collaborator.reasoning_phase_override == "review"
+
+
+@pytest.mark.asyncio
+async def test_verifier_failed_request_diagnostics_do_not_touch_workspace(
+    monkeypatch, tmp_path
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    verifier = next(
+        iter(
+            build_verifier_swarm(
+                sandbox=SimpleNamespace(
+                    mcp_servers=["filesystem"],
+                    mcp_config={},
+                ),
+                agent_config=AgentConfig(
+                    llm_config=ModelConfig(llm_model_name="offline"),
+                    skill_configs={},
+                ),
+            ).agents.values()
+        )
+    )
+
+    await verifier._save_failed_request_context(
+        messages=[{"role": "user", "content": "private review request"}],
+        tools=[],
+        error="provider failed",
+        attempt=1,
+        context=SimpleNamespace(
+            session_id="review-session",
+            task_id="review-task",
+        ),
+    )
+
+    assert not (tmp_path / "failed_requests").exists()
 
 
 def test_developer_and_evaluator_remain_available_without_cast(monkeypatch) -> None:

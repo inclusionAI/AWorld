@@ -420,6 +420,40 @@ def test_delegation_pack_isolates_epoch_tools_and_parent_revalidates_schema():
     assert merged.answer is None and merged.evidence == ()
 
 
+def test_delegation_finalization_reserve_access_is_typed_and_default_safe():
+    common = {
+        "objective": "inspect evidence",
+        "context_item_ids": (),
+        "allowed_tools": (),
+        "token_budget": 1000,
+        "max_output_tokens": 200,
+        "max_turns": 2,
+        "max_depth": 1,
+        "deadline": None,
+        "expected_output_schema": {"type": "string"},
+        "inference_profile": None,
+        "stop_conditions": (),
+        "merge_policy": MergePolicy.ANSWER_ONLY,
+    }
+
+    assert DelegationSpec(**common).may_use_parent_finalization_reserve is False
+    assert (
+        DelegationSpec(
+            **common,
+            may_use_parent_finalization_reserve=True,
+        ).may_use_parent_finalization_reserve
+        is True
+    )
+    with pytest.raises(
+        TypeError,
+        match="may_use_parent_finalization_reserve must be a boolean",
+    ):
+        DelegationSpec(
+            **common,
+            may_use_parent_finalization_reserve=1,
+        )
+
+
 def test_completion_contract_keeps_agent_claim_separate_from_evidence():
     context = Context(task_id="completion")
     context.configure_completion_contract(

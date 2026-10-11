@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -23,6 +24,7 @@ from aworld.core.tool.base import ToolFactory
 from aworld.core.task import Task
 from aworld.core.event.base import Message
 from aworld_cli.builtin_agents.smllc.agents import aworld_agent
+from aworld_cli.builtin_agents.smllc.agents import lazy_verifier as lazy_verifier_module
 from aworld_cli.builtin_agents.smllc.agents.lazy_verifier import (
     ADVISORY_REVIEW_SCHEMA_VERSION,
     ADVISORY_VERIFIER_TOOL,
@@ -453,6 +455,8 @@ async def test_explicit_review_lazily_constructs_fresh_read_only_verifier() -> N
         ]["reasoning_effort"]
         == "max"
     )
+    assert captured["builder_kwargs"]["llm_max_attempts"] == 1
+    assert captured["builder_kwargs"]["llm_retry_delay"] == 0.0
     assert captured["runner"]["context"] is context
     assert captured["runner"]["verifier"].subagent_context_mode == "fresh"
     assert captured["runner"]["verifier"].subagent_merge_mode == "answer_only"
@@ -511,6 +515,10 @@ async def test_default_runner_uses_private_manager_and_exact_caller_context(
     assert isinstance(delegation_spec, DelegationSpec)
     assert delegation_spec.objective == "public directive"
     assert delegation_spec.expected_output_schema["type"] == "string"
+    assert delegation_spec.token_budget == 12_288
+    assert delegation_spec.max_output_tokens == 2_048
+    assert delegation_spec.max_turns == 2
+    assert delegation_spec.may_use_parent_finalization_reserve is True
     assert delegation_spec.deadline is not None
     assert delegation_spec.deadline.tzinfo is not None
     assert delegation_spec.deadline > datetime.now(timezone.utc)
@@ -619,6 +627,33 @@ async def test_deadline_failure_is_uncertain_and_fails_open() -> None:
     assert result.reason_code == "deadline_exceeded"
     assert result.repair_recommended is False
     assert "retains completion authority" in result.report
+
+
+@pytest.mark.asyncio
+async def test_injected_sync_review_runner_has_absolute_deadline(monkeypatch) -> None:
+    factory = _factory()
+
+    def blocks_past_deadline(*_args):
+        time.sleep(0.2)
+        return "- Decision: `ready`"
+
+    factory._review_runner = blocks_past_deadline
+    monkeypatch.setattr(
+        lazy_verifier_module,
+        "_REVIEW_WALL_CLOCK_SECONDS",
+        0.02,
+    )
+    started = asyncio.get_running_loop().time()
+
+    result = await factory.review(
+        AdvisoryReviewRequest(candidate_claim="Candidate may be ready."),
+        context=_context(),
+    )
+
+    elapsed = asyncio.get_running_loop().time() - started
+    assert elapsed < 0.15
+    assert result.status == "unavailable"
+    assert result.reason_code == "deadline_exceeded"
 
 
 @pytest.mark.asyncio
@@ -865,7 +900,7 @@ async def test_review_receives_authoritative_public_delivery_paths() -> None:
                 "candidate_claim": "ready",
                 "deliverables": ["x"] * 33,
             },
-            "at most 16",
+            "at most 8",
         ),
     ],
 )

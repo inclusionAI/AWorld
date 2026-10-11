@@ -13,6 +13,7 @@ Tests the core subagent delegation mechanism including:
 
 import pytest
 import asyncio
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from typing import List
@@ -24,6 +25,12 @@ from aworld.core.agent.swarm import Swarm
 from aworld.core.agent.base import BaseAgent
 from aworld.config.conf import AgentConfig, ModelConfig
 from aworld.core.context.base import Context
+from aworld.core.context.compiler import (
+    ChildResult,
+    ChildStatus,
+    DelegationSpec,
+    MergePolicy,
+)
 from aworld.core.context.amni import ApplicationContext
 from aworld.core.context.amni.state import (
     ApplicationTaskContextState,
@@ -1086,6 +1093,94 @@ class TestSpawnOrchestration:
         assert context.context_info["delegation_records"][-1]["status"] == (
             "deadline_exceeded"
         )
+
+    @pytest.mark.asyncio
+    async def test_terminal_review_delegation_uses_finalization_reserve_and_turn_cap(
+        self,
+    ):
+        parent_agent = Agent(
+            name="root",
+            conf=AgentConfig(
+                llm_provider="openai",
+                llm_model_name="offline",
+                llm_api_key="offline",
+            ),
+            tool_names=[],
+        )
+        parent_agent._resolve_execution_protocol_policy = lambda _context: (
+            ExecutionProtocolPolicy(
+                mode="guide",
+                finalization_reserve_seconds=1.5,
+            )
+        )
+        manager = SubagentManager(agent=parent_agent)
+        manager._scanned_agent_md_files = True
+        verifier = Agent(
+            name="verifier",
+            conf=AgentConfig(
+                llm_provider="openai",
+                llm_model_name="offline",
+                llm_api_key="offline",
+            ),
+            tool_names=[],
+        )
+        manager._available_subagents["verifier"] = SubagentInfo(
+            name="verifier",
+            description="Fresh verifier",
+            source="team_member",
+            tools=[],
+            agent_instance=verifier,
+            context_mode="fresh",
+            merge_mode="answer_only",
+        )
+        context = Context(task_id="terminal-review-reserve")
+        parent_task = Task(
+            input="public task",
+            timeout=3.0,
+            completion_reserve_seconds=0.4,
+            context=context,
+        )
+        context.set_task(parent_task)
+        child_context = context.deep_copy()
+        child_context.task_id = "terminal-review-child"
+        child_context.parent = context
+        context.build_sub_context = AsyncMock(return_value=child_context)
+        captured = {}
+
+        async def run_child(task):
+            captured["task"] = task
+            return {task.id: Mock(success=True, answer="Decision: ready")}
+
+        spec = DelegationSpec(
+            objective="Check the candidate",
+            context_item_ids=(),
+            allowed_tools=(),
+            token_budget=12_288,
+            max_output_tokens=2_048,
+            max_turns=2,
+            max_depth=1,
+            deadline=datetime.now(timezone.utc) + timedelta(seconds=10),
+            expected_output_schema={"type": "string"},
+            inference_profile=None,
+            stop_conditions=(),
+            merge_policy=MergePolicy.ANSWER_ONLY,
+            may_use_parent_finalization_reserve=True,
+        )
+
+        with patch("aworld.runner.Runners.run_task", side_effect=run_child):
+            result = await manager.spawn(
+                name="verifier",
+                directive=spec.objective,
+                context=context,
+                delegation_spec=spec,
+            )
+
+        child_task = captured["task"]
+        assert isinstance(result, ChildResult)
+        assert result.status is ChildStatus.SUCCEEDED
+        assert child_task.swarm.max_steps == 2
+        assert 2.3 < child_task.timeout <= 2.6
+        assert child_task.completion_reserve_applied_seconds == pytest.approx(0.4)
 
 
 if __name__ == '__main__':

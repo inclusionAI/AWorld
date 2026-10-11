@@ -10355,6 +10355,12 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             attempt: Number of attempts made
             context: Agent context
         """
+        if getattr(self, "failed_request_diagnostics_enabled", True) is False:
+            logger.warning(
+                "Failed request diagnostics suppressed for agent "
+                f"{self.id()}; attempt={attempt}"
+            )
+            return
         try:
             # Create failed_requests directory if not exists
             failed_dir = os.path.join(os.getcwd(), "failed_requests")

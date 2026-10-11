@@ -786,7 +786,11 @@ class SubagentManager:
                         protocol_policy, "finalization_reserve_seconds", None
                     )
                     if (
-                        protocol_mode != "off"
+                        not (
+                            delegation_spec is not None
+                            and delegation_spec.may_use_parent_finalization_reserve
+                        )
+                        and protocol_mode != "off"
                         and isinstance(protocol_reserve, (int, float))
                         and not isinstance(protocol_reserve, bool)
                     ):
@@ -813,7 +817,14 @@ class SubagentManager:
                 raise asyncio.TimeoutError("delegation deadline elapsed")
             task = Task(
                 input=directive,
-                swarm=Swarm(cloned_agent),
+                swarm=Swarm(
+                    cloned_agent,
+                    max_steps=(
+                        delegation_spec.max_turns
+                        if delegation_spec is not None
+                        else 0
+                    ),
+                ),
                 session_id=sub_context.session_id if hasattr(sub_context, 'session_id') else None,
                 context=sub_context,
                 parent_task=parent_task,
@@ -1039,8 +1050,29 @@ class SubagentManager:
 
         except asyncio.CancelledError:
             if delegation_spec is not None:
+                cancellation_status = ChildStatus.CANCELLED
+                cancellation_reason = "parent_cancelled"
+                explicit_deadline_elapsed = bool(
+                    delegation_spec.deadline is not None
+                    and delegation_spec.deadline.timestamp() <= time.time() + 0.01
+                )
+                parent_reserve_boundary_reached = False
+                if parent_task is not None:
+                    try:
+                        current_parent_remaining = parent_task.remaining_seconds()
+                    except Exception:
+                        current_parent_remaining = None
+                    parent_reserve_boundary_reached = bool(
+                        isinstance(current_parent_remaining, (int, float))
+                        and not isinstance(current_parent_remaining, bool)
+                        and current_parent_remaining
+                        <= parent_reserve_applied + 0.01
+                    )
+                if explicit_deadline_elapsed or parent_reserve_boundary_reached:
+                    cancellation_status = ChildStatus.DEADLINE_EXCEEDED
+                    cancellation_reason = "deadline_exceeded"
                 child_result = ChildResult(
-                    status=ChildStatus.CANCELLED,
+                    status=cancellation_status,
                     answer=None,
                     evidence=(),
                     artifacts=(),
@@ -1050,7 +1082,7 @@ class SubagentManager:
                         output_tokens=int(sub_context.token_usage.get("completion_tokens", 0)),
                         turns=len(sub_context.get_llm_calls()),
                     ),
-                    reason_code="parent_cancelled",
+                    reason_code=cancellation_reason,
                 )
                 current_context.merge_delegation_context(
                     sub_context,

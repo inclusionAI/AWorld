@@ -19,12 +19,16 @@ from .._common import (
     public_collaborator_prompt,
 )
 
+_REVIEW_MAX_INPUT_TOKENS_PER_TURN = 5_120
+_REVIEW_MAX_OUTPUT_TOKENS_PER_TURN = 1_024
+
 
 class TaskVerifierAgent(FreshAnswerOnlyCollaborator):
     """Fresh, answer-only collaborator with a read-only filesystem surface."""
 
     mcp_tool_action_allowlist = READ_ONLY_FILESYSTEM_ALLOWLIST
     reasoning_phase_override = "review"
+    failed_request_diagnostics_enabled = False
 
 
 def _bounded_review_config(parent: AgentConfig | None) -> AgentConfig:
@@ -45,7 +49,10 @@ def _bounded_review_config(parent: AgentConfig | None) -> AgentConfig:
         # Reasoning/OpenAI-compatible routes use max_completion_tokens. Do not
         # also send the legacy max_tokens field: some providers reject the
         # mutually exclusive pair.
-        params["max_completion_tokens"] = min(configured_output, 4_096)
+        params["max_completion_tokens"] = min(
+            configured_output,
+            _REVIEW_MAX_OUTPUT_TOKENS_PER_TURN,
+        )
         params.pop("max_tokens", None)
         model.max_tokens = None
     elif model.max_tokens is not None:
@@ -53,9 +60,12 @@ def _bounded_review_config(parent: AgentConfig | None) -> AgentConfig:
         # second provider parameter.
         params.pop("max_completion_tokens", None)
         params.pop("max_tokens", None)
-        model.max_tokens = min(model.max_tokens, 4_096)
+        model.max_tokens = min(
+            model.max_tokens,
+            _REVIEW_MAX_OUTPUT_TOKENS_PER_TURN,
+        )
     else:
-        params["max_completion_tokens"] = 4_096
+        params["max_completion_tokens"] = _REVIEW_MAX_OUTPUT_TOKENS_PER_TURN
         params.pop("max_tokens", None)
         model.max_tokens = None
 
@@ -93,6 +103,11 @@ def _bounded_review_config(parent: AgentConfig | None) -> AgentConfig:
             params.pop("extra_body", None)
 
     model.params = params
+    configured_input = config.max_input_tokens
+    config.max_input_tokens = min(
+        configured_input or _REVIEW_MAX_INPUT_TOKENS_PER_TURN,
+        _REVIEW_MAX_INPUT_TOKENS_PER_TURN,
+    )
     model.reasoning_phase_policy = ReasoningPhasePolicy(
         policy_id="bounded-review/v1",
         review=ReasoningProfile(reasoning_effort="low"),
@@ -129,8 +144,8 @@ def build_verifier_swarm(
         sandbox=sandbox,
         tool_names=[],
         enable_subagent=False,
-        llm_max_attempts=llm_max_attempts,
-        llm_retry_delay=llm_retry_delay,
+        llm_max_attempts=1,
+        llm_retry_delay=0.0,
         generation_budget_policy=generation_budget_policy,
         _generation_budget_explicit_fields=tuple(generation_budget_explicit_fields),
         max_loop_steps=max_loop_steps,
