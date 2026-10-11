@@ -1,4 +1,5 @@
 import asyncio
+from dataclasses import replace
 from datetime import datetime, timezone
 import json
 import os
@@ -20,9 +21,19 @@ from aworld.core.context.compiler import (
     ChildStatus,
     DelegationSpec,
 )
+from aworld.core.execution_protocol import (
+    ExecutionProtocolPolicy,
+    ExecutionProtocolStore,
+    ProtocolPhase,
+)
 from aworld.core.tool.base import ToolFactory
 from aworld.core.task import Task
 from aworld.core.event.base import Message
+from aworld.runners.execution_protocol import (
+    configure_execution_protocol,
+    execution_protocol_policy,
+    store_candidate_fallback,
+)
 from aworld_cli.builtin_agents.smllc.agents import aworld_agent
 from aworld_cli.builtin_agents.smllc.agents import lazy_verifier as lazy_verifier_module
 from aworld_cli.builtin_agents.smllc.agents.lazy_verifier import (
@@ -533,11 +544,113 @@ async def test_default_runner_uses_private_manager_and_exact_caller_context(
     assert delegation_spec.token_budget == 12_288
     assert delegation_spec.max_output_tokens == 2_048
     assert delegation_spec.max_turns == 2
-    assert delegation_spec.may_use_parent_finalization_reserve is True
+    assert delegation_spec.may_use_parent_finalization_reserve is False
     assert delegation_spec.deadline is not None
     assert delegation_spec.deadline.tzinfo is not None
     assert delegation_spec.deadline > datetime.now(timezone.utc)
     assert not hasattr(parent, "subagent_manager")
+
+
+async def _capture_reserve_authorization(monkeypatch, phase: ProtocolPhase) -> bool:
+    from aworld.core.agent.subagent_manager import SubagentManager
+
+    captured = {}
+
+    async def register(_manager, _swarm):
+        return None
+
+    async def spawn(_manager, **kwargs):
+        captured["spec"] = kwargs["delegation_spec"]
+        return "- Decision: `ready`"
+
+    monkeypatch.setattr(SubagentManager, "register_team_members", register)
+    monkeypatch.setattr(SubagentManager, "spawn", spawn)
+    root = Agent(
+        name=f"root-{phase.value}",
+        conf=AgentConfig(
+            llm_config=ModelConfig(llm_model_name="offline"),
+            skill_configs={},
+        ),
+        tool_names=[],
+    )
+    swarm = Swarm(root)
+    context = Context(task_id=f"reserve-{phase.value}")
+    context.origin_user_input = "Review the public candidate."
+    context.task_input = context.origin_user_input
+    context.agent_info.current_agent_id = root.id()
+    context.set_task(
+        Task(
+            input=context.origin_user_input,
+            swarm=swarm,
+            timeout=10,
+            completion_reserve_seconds=1,
+            context=context,
+        )
+    )
+    policy = ExecutionProtocolPolicy(
+        mode="observe",
+        terminal_review_gate_enabled=True,
+        finalization_reserve_seconds=4,
+    )
+    configure_execution_protocol(context, root.id(), policy)
+    store_candidate_fallback(
+        context,
+        root.id(),
+        [ActionModel(agent_name=root.id(), policy_info="canonical candidate")],
+    )
+    configured_policy = execution_protocol_policy(context, root.id())
+    store = ExecutionProtocolStore(context, root.id(), configured_policy)
+    state = store.load()
+    if phase is not ProtocolPhase.EXECUTE:
+        store.save(
+            replace(
+                state,
+                phase=phase,
+                review_pending=phase is ProtocolPhase.REVIEW,
+                finalization_entered=True,
+            )
+        )
+    factory = LazyVerifierFactory(
+        parent_agent=root,
+        sandbox=SimpleNamespace(name="shared"),
+        agent_config=root.conf,
+        generation_budget_policy=None,
+        builder_loader=lambda: (
+            lambda **_kwargs: SimpleNamespace(
+                agents={"verifier-id": _FakeVerifier()}
+            )
+        ),
+    )
+
+    result = await factory.review(
+        AdvisoryReviewRequest(candidate_claim="Candidate is ready."),
+        context=context,
+    )
+
+    assert result.decision == "ready"
+    return captured["spec"].may_use_parent_finalization_reserve
+
+
+@pytest.mark.asyncio
+async def test_execute_phase_advisory_review_cannot_use_finalization_reserve(
+    monkeypatch,
+) -> None:
+    assert (
+        await _capture_reserve_authorization(
+            monkeypatch,
+            ProtocolPhase.EXECUTE,
+        )
+        is False
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("phase", [ProtocolPhase.REVIEW, ProtocolPhase.FINALIZE])
+async def test_terminal_candidate_review_can_use_finalization_reserve(
+    monkeypatch,
+    phase,
+) -> None:
+    assert await _capture_reserve_authorization(monkeypatch, phase) is True
 
 
 @pytest.mark.asyncio

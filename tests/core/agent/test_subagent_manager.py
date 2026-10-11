@@ -1095,8 +1095,18 @@ class TestSpawnOrchestration:
         )
 
     @pytest.mark.asyncio
-    async def test_terminal_review_delegation_uses_finalization_reserve_and_turn_cap(
+    @pytest.mark.parametrize(
+        "may_use_finalization_reserve,timeout_bounds,applied_reserve",
+        [
+            (False, (1.3, 1.6), 1.5),
+            (True, (2.3, 2.6), 0.4),
+        ],
+    )
+    async def test_delegation_reserve_authority_and_turn_cap(
         self,
+        may_use_finalization_reserve,
+        timeout_bounds,
+        applied_reserve,
     ):
         parent_agent = Agent(
             name="root",
@@ -1164,7 +1174,7 @@ class TestSpawnOrchestration:
             inference_profile=None,
             stop_conditions=(),
             merge_policy=MergePolicy.ANSWER_ONLY,
-            may_use_parent_finalization_reserve=True,
+            may_use_parent_finalization_reserve=may_use_finalization_reserve,
         )
 
         with patch("aworld.runner.Runners.run_task", side_effect=run_child):
@@ -1179,8 +1189,10 @@ class TestSpawnOrchestration:
         assert isinstance(result, ChildResult)
         assert result.status is ChildStatus.SUCCEEDED
         assert child_task.swarm.max_steps == 2
-        assert 2.3 < child_task.timeout <= 2.6
-        assert child_task.completion_reserve_applied_seconds == pytest.approx(0.4)
+        assert timeout_bounds[0] < child_task.timeout <= timeout_bounds[1]
+        assert child_task.completion_reserve_applied_seconds == pytest.approx(
+            applied_reserve
+        )
 
 
 if __name__ == '__main__':

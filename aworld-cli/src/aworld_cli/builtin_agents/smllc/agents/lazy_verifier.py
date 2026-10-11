@@ -435,6 +435,12 @@ class LazyVerifierFactory:
                 directive=directive,
                 context=context,
                 deadline=review_deadline,
+                may_use_parent_finalization_reserve=(
+                    _terminal_review_reserve_authorized(
+                        context,
+                        self._parent_agent,
+                    )
+                ),
             )
             child_failure = _child_failure_result(result)
             if child_failure is not None:
@@ -502,6 +508,7 @@ class LazyVerifierFactory:
         directive: str,
         context: Any,
         deadline: datetime,
+        may_use_parent_finalization_reserve: bool,
     ) -> Any:
         """Bound default and injected runners by the same absolute deadline."""
 
@@ -510,12 +517,24 @@ class LazyVerifierFactory:
             raise asyncio.TimeoutError("advisory review deadline elapsed")
 
         async def invoke() -> Any:
+            runner_identity = getattr(
+                self._review_runner,
+                "__func__",
+                self._review_runner,
+            )
             if inspect.iscoroutinefunction(self._review_runner):
+                if runner_identity is LazyVerifierFactory._run_with_subagent_manager:
+                    return await self._review_runner(
+                        self._parent_agent,
+                        verifier,
+                        directive,
+                        context,
+                        may_use_parent_finalization_reserve=(
+                            may_use_parent_finalization_reserve
+                        ),
+                    )
                 return await self._review_runner(
-                    self._parent_agent,
-                    verifier,
-                    directive,
-                    context,
+                    self._parent_agent, verifier, directive, context
                 )
             result = await asyncio.to_thread(
                 self._review_runner,
@@ -564,6 +583,8 @@ class LazyVerifierFactory:
         verifier: BaseAgent,
         directive: str,
         context: Any,
+        *,
+        may_use_parent_finalization_reserve: bool = False,
     ) -> ChildResult:
         """Use the existing fresh-child lifecycle and caller deadline plumbing."""
 
@@ -608,7 +629,9 @@ class LazyVerifierFactory:
                 inference_profile=None,
                 stop_conditions=(),
                 merge_policy=MergePolicy.ANSWER_ONLY,
-                may_use_parent_finalization_reserve=True,
+                may_use_parent_finalization_reserve=(
+                    may_use_parent_finalization_reserve
+                ),
             ),
         )
 
@@ -806,6 +829,62 @@ def _bounded_optional_text(value: Any, name: str, limit: int) -> str:
     if len(normalized) > limit:
         raise ValueError(f"{name} must not exceed {limit} characters")
     return normalized
+
+
+def _terminal_review_reserve_authorized(
+    context: Any,
+    parent_agent: BaseAgent,
+) -> bool:
+    """Grant reserve use only to a canonical terminal review in this scope."""
+
+    parent_id_getter = getattr(parent_agent, "id", None)
+    try:
+        parent_id = parent_id_getter() if callable(parent_id_getter) else None
+    except Exception:
+        return False
+    if not isinstance(parent_id, str) or not parent_id:
+        return False
+
+    swarm = getattr(context, "swarm", None)
+    agents = getattr(swarm, "agents", None)
+    if not isinstance(agents, Mapping) or agents.get(parent_id) is not parent_agent:
+        return False
+    agent_info = getattr(context, "agent_info", None)
+    current_agent_id = (
+        agent_info.get("current_agent_id")
+        if isinstance(agent_info, Mapping)
+        else getattr(agent_info, "current_agent_id", None)
+    )
+    if current_agent_id != parent_id:
+        return False
+
+    try:
+        from aworld.core.execution_protocol import (
+            ExecutionProtocolStore,
+            ProtocolPhase,
+        )
+        from aworld.runners.execution_protocol import (
+            execution_protocol_policy,
+            load_candidate_fallback,
+        )
+
+        policy = execution_protocol_policy(context, parent_id)
+        if not policy.terminal_review_gate_enabled:
+            return False
+        state = ExecutionProtocolStore(context, parent_id, policy).load()
+        if state.phase not in {ProtocolPhase.REVIEW, ProtocolPhase.FINALIZE}:
+            return False
+        fallback = load_candidate_fallback(context, parent_id)
+    except Exception:
+        return False
+    return bool(
+        fallback
+        and all(
+            getattr(action, "agent_name", None) == parent_id
+            and bool(str(getattr(action, "policy_info", "") or "").strip())
+            for action in fallback
+        )
+    )
 
 
 def _child_failure_result(value: Any) -> AdvisoryReviewResult | None:
