@@ -129,7 +129,7 @@ Minimal example:
 }
 ```
 
-See [declared_evaluator_suite.example.json](/Users/wuman/Documents/workspace/aworld-mas/aworld/examples/aworld_quick_start/cli/declared_evaluator_suite.example.json) for a complete example. The current manifest schema is exported by `aworld_cli.evaluator_runtime.get_declared_evaluator_suite_schema()`.
+See [declared_evaluator_suite.example.json](https://github.com/inclusionAI/AWorld/blob/main/examples/aworld_quick_start/cli/declared_evaluator_suite.example.json) for a complete example. The current manifest schema is exported by `aworld_cli.evaluator_runtime.get_declared_evaluator_suite_schema()`.
 
 Resolution rules:
 
@@ -189,7 +189,7 @@ Key report sections:
 - `source_selection`: source input diagnostics for source-backed `aworld-cli evaluator --input ...`
 - `approval`: approval decision metadata when the gate requires human confirmation
 
-See [evaluator_report.example.json](/Users/wuman/Documents/workspace/aworld-mas/aworld/examples/aworld_quick_start/cli/evaluator_report.example.json) for a minimal example.
+See [evaluator_report.example.json](https://github.com/inclusionAI/AWorld/blob/main/examples/aworld_quick_start/cli/evaluator_report.example.json) for a minimal example.
 
 ## Typical Workflow
 

@@ -9,6 +9,20 @@ import yaml
 docs = "docs"
 black_keys = ["Index", "docs_zh", "DESIGN_SYSTEM"]
 black_values = ["index.md"]
+process_directories = {
+    "design",
+    "designs",
+    "internal",
+    "notes",
+    "plans",
+    "specs",
+    "superpowers",
+}
+process_file_markers = (
+    "implementation-summary",
+    "research-notes",
+    "retrospective",
+)
 file_priority = {"Get Start": ["Overview", "Quick Start", "Core Capabilities", "Parallel Tasks", "Streaming Response", "Hitl"],
                  "Agents": ["Build Agent", "Build Multi-Agent System(Mas)", "Build Workflow", "Custom Agent", "Context", "Self Evolve", "Runtime", "Memory", "Trace", "Parallel Subagents"],
                  "Runtime": ["Overview", "Custom Runner", "Hooks", "Ralph Runner"],
@@ -96,6 +110,14 @@ def scan(path: str) -> dict:
     for name in sorted(os.listdir(path)):
         p = os.path.join(path, name)
         if name.startswith("."):
+            continue
+
+        if os.path.isdir(p) and name.lower() in process_directories:
+            continue
+
+        if os.path.isfile(p) and any(
+            marker in name.lower() for marker in process_file_markers
+        ):
             continue
 
         # Skip blacklisted items

@@ -2,6 +2,11 @@
 
 上下文治理分层执行，各层的阈值有不同含义：
 
+配置类 `ContextCompilerRuntimeConfig` 的通用默认策略是
+`checkpoint_policy: budget_pressure`；CLI 内置 Aworld Agent 会显式覆盖为
+`adaptive`。因此库调用方与 CLI 的默认行为不同，文档或部署配置不应把两者
+混为一谈。
+
 1. Tool 执行边界在结果进入历史之前处理大输出。默认 inline 预算为 4096 tokens，超出时持久化完整 artifact，向模型提供有界视图、引用和 checksum。可通过 Context 的 artifact 读取接口回读完整内容。
 2. AMNI 的 `ToolResultOffloadOp` 继续按开关、白名单和长度阈值处理尚未 offload 的结果。已有可校验、可恢复 Tool boundary 的结果不重复 offload；memory compaction 也保留这个契约。
 3. Adaptive checkpoint 的历史压缩清理较早的轮次，保留系统指令、原始任务、近期消息和最新完整 assistant/tool 组。它不是任意长消息的通用摘要器，也不会改写工具调用参数。

@@ -176,6 +176,33 @@ The `Callback` mechanism handles results from asynchronous operations—especial
 #### **StateManager – State Tracking**  
 The `StateManager` tracks and manages all runtime state—including execution status, results, and errors—using structured data models like `RunNode` and `NodeGroup`. It enables hierarchical state organization, dependency coordination via waiting mechanisms, and correct execution of complex workflows.
 
+### Long-running execution and completion
+
+The current built-in Agent separates four concerns that older integrations often
+collapsed into one status:
+
+1. provider response termination;
+2. task execution state (`succeeded`, `incomplete`, or `budget_exhausted`);
+3. optional caller-supplied completion evidence;
+4. independent evaluation or reward.
+
+By default, success-first execution leaves ordinary planning and tool strategy to
+the model. When a candidate reaches the terminal boundary, AWorld retains a
+bounded model-owned checkpoint, review, and repair path. That path shares the
+original task budget and fails open to the best current candidate when review is
+unavailable; it never turns an internal review into an external verifier pass.
+
+The generic completion contract is opt-in. Callers select `observe` or `enforce`
+and provide explicit artifact paths or validation commands. Task wording may
+produce advisory deliverable hints, but it cannot silently create requirements
+or executable validation commands.
+
+For the detailed contracts, see [Execution completion and recoverable
+progress](../../execution_completion_and_progress.md), [Model-owned task
+completion](../../model-owned-task-completion.md), [Task lifetime and goal
+continuation](../../task-lifetime-and-goal-continuation.md), and [Context budget
+and offload](../../context-budget-and-offload.md).
+
 ### Event-Driven Agent Runtime
 AWorld implements a complete **event-driven runtime** specifically for agents. 
 

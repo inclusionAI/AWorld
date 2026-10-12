@@ -28,13 +28,23 @@ state is `budget_exhausted` under `agent_execution_state`, with task/epoch
 identity, reason, and recoverability. The task handler projects that incomplete
 state into TaskResponse without fabricating success.
 
+The bundled Agent also enables success-first terminal control. Normal tool use
+runs in protocol `observe` mode. Once a candidate reaches the terminal boundary,
+the runtime reserves a bounded decision/finalization window and may request a
+model-owned review plus at most one repair. The review shares the original task
+budget, cannot mint verifier authority, and preserves the best current candidate
+when the review fails, times out, or cannot establish a concrete repair.
+
 ## Explicit verification
 
-`AWORLD_REQUIRED_ARTIFACTS_JSON` is a caller-supplied JSON array of output paths.
-It records structured completion evidence but remains advisory unless
-`AWORLD_COMPLETION_MODE=enforce` is explicitly set. Optional natural-language
-output inference remains advisory and must not add guessed requirements to an
-explicit contract.
+The generic completion contract is disabled by default. A caller must set
+`AWORLD_COMPLETION_MODE=observe` or `enforce` and provide at least one structured
+field: `AWORLD_REQUIRED_ARTIFACTS_JSON` or
+`AWORLD_VALIDATION_COMMANDS_JSON`. Required artifacts are a JSON array of output
+paths. They record structured completion evidence in `observe` mode and block a
+completion claim only in `enforce` mode. Natural-language output detection is
+always advisory; the legacy `AWORLD_INFER_REQUIRED_ARTIFACTS` environment value
+is ignored and cannot create a completion contract.
 
 `AWORLD_COMPLETION_MAX_REPAIRS` optionally limits model-driven completion repair
 turns with a non-negative integer. Unset or blank retains the historical
