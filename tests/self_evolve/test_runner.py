@@ -7172,6 +7172,10 @@ def test_framework_retry_is_superseded_by_later_negative_measurement(
     old_run.mkdir()
     old_report = old_run / "report.json"
     old_report.write_text("{}", encoding="utf-8")
+    # Filesystems used by CI may assign the same timestamp to files created in
+    # one fast test. Give the historical report an explicit earlier boundary.
+    old_mtime = old_report.stat().st_mtime - 2
+    os.utime(old_report, (old_mtime, old_mtime))
     cutoff = old_report.stat().st_mtime
     experiment = tmp_path / "new-run" / "experiments" / "experiment-1"
     experiment.mkdir(parents=True)

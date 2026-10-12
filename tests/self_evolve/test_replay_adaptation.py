@@ -2175,6 +2175,7 @@ async def test_runner_blocks_unresolved_adaptation_before_rollout(
         assert gate.details["requirement_kinds"] == ["local_endpoint"]
 
 
+@pytest.mark.replay_sandbox
 @pytest.mark.asyncio
 async def test_runner_loads_replay_capability_from_candidate_overlay(
     tmp_path: Path,

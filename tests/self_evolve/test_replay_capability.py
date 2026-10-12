@@ -3072,3 +3072,8 @@ def test_replay_service_sandbox_does_not_allow_loopback_outbound(
     resolved_write = str(writable_root.resolve())
     assert f'(allow file-read* (subpath "{resolved_write}"))' in command[2]
     assert f'(allow file-write* (subpath "{resolved_write}"))' in command[2]
+    runtime_bin = str(Path(sys.executable).resolve().parent)
+    assert (
+        f'(allow file-read-metadata (literal "{runtime_bin}"))'
+        in command[2]
+    )

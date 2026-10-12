@@ -255,6 +255,45 @@ def _validate_discovered_python_entrypoint(
         ) from exc
 
 
+def _validate_discovered_python_runtime(
+    capability: DiscoveredReplayCapability,
+) -> None:
+    """Reject invalid declared Python runtime sources before sandbox launch."""
+
+    for path in capability.runtime_files:
+        if path.suffix.casefold() != ".py":
+            continue
+        relative = path.relative_to(capability.skill_root).as_posix()
+        try:
+            compile(path.read_bytes(), relative, "exec")
+        except SyntaxError as exc:
+            counterexample = python_source_syntax_counterexample(
+                source_path=relative,
+                error=exc,
+            )
+            raise ReplayCapabilityError(
+                (
+                    "candidate replay Python runtime does not compile: "
+                    f"{relative}:{counterexample['line']}: "
+                    f"{counterexample['message']}"
+                ),
+                code="runtime_python_syntax_invalid",
+                details={
+                    "source_path": relative,
+                    "syntax_kind": counterexample["syntax_kind"],
+                    "source_line": counterexample["line"],
+                    "source_offset": counterexample["offset"],
+                    "counterexample_contracts": [counterexample],
+                },
+            ) from exc
+        except (OSError, UnicodeError) as exc:
+            raise ReplayCapabilityError(
+                f"candidate replay Python runtime is unreadable: {relative}",
+                code="runtime_python_source_unreadable",
+                details={"source_path": relative},
+            ) from exc
+
+
 def _validate_frozen_python_runtime(
     runtime_root: Path,
     runtime_files: Sequence[FrozenReplayFile],
@@ -1270,6 +1309,7 @@ def compile_and_freeze_capability(
     try:
         _verify_discovered_capability_unchanged(capability)
         _validate_discovered_python_entrypoint(capability)
+        _validate_discovered_python_runtime(capability)
         first = compiler.execute(capability, request, compile_a)
         _verify_discovered_capability_unchanged(capability)
         second = compiler.execute(capability, request, compile_b)
@@ -5858,6 +5898,21 @@ def build_replay_sandboxed_command(
     profile.extend(
         f'(allow file-read* (subpath "{_sbpl_path(path)}"))'
         for path in sorted(runtime_read_roots)
+    )
+    # CPython resolves its executable directory during startup. GitHub's macOS
+    # runner installs Python under /Library/Frameworks, whose ancestors are not
+    # covered by the user-home allowances imported from system.sb. Grant only
+    # metadata traversal for runtime roots and executable parents; file content
+    # remains limited to the explicit read roots above.
+    metadata_paths = {
+        parent
+        for path in (*runtime_read_roots, *allowed_executables)
+        for parent in (path, *path.parents)
+        if parent != Path("/")
+    }
+    profile.extend(
+        f'(allow file-read-metadata (literal "{_sbpl_path(path)}"))'
+        for path in sorted(metadata_paths)
     )
     profile.extend(
         f'(allow file-write* (subpath "{_sbpl_path(Path(path).resolve())}"))'
