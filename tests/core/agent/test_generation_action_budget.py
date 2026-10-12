@@ -317,14 +317,41 @@ def test_pre_generation_check_keeps_solve_window_open_before_reserve(
     agent = _long_running_generation_agent(armed=True)
     context = agent.context
     policy = agent._resolve_execution_protocol_policy(context)
+    predicted = agent._terminal_model_call_p95_seconds(context)
     monkeypatch.setattr(
         context.get_task(),
         "remaining_seconds",
-        lambda: policy.finalization_reserve_seconds + 1,
+        lambda: policy.finalization_reserve_seconds + predicted + 1,
     )
 
     assert agent._pre_generation_caller_reserve_reached(context) is False
     assert "pre_generation_reserve_metrics" not in context.context_info
+
+
+def test_pre_generation_check_blocks_call_predicted_to_cross_reserve(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent = _long_running_generation_agent(armed=True)
+    context = agent.context
+    policy = agent._resolve_execution_protocol_policy(context)
+    for elapsed in (25.0, 80.0, 200.0):
+        agent._record_terminal_model_call_duration(context, elapsed)
+    predicted = agent._terminal_model_call_p95_seconds(context)
+    monkeypatch.setattr(
+        context.get_task(),
+        "remaining_seconds",
+        lambda: policy.finalization_reserve_seconds + predicted - 0.01,
+    )
+
+    assert agent._pre_generation_caller_reserve_reached(context) is True
+    metrics = context.context_info["pre_generation_reserve_metrics"]
+    assert metrics["admission_reason"] == "predicted_call_crosses_reserve"
+    assert metrics["predicted_model_call_p95_seconds"] == pytest.approx(predicted)
+    assert len(
+        context.context_info[f"terminal_model_latency:{agent.id()}"][
+            "samples_seconds"
+        ]
+    ) == 3
 
 
 @pytest.mark.parametrize(

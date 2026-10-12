@@ -140,11 +140,16 @@ class MutationGatePreToolHook(PreToolCallHook):
     """Keep pre- and post-candidate convergence above the provider boundary."""
 
     async def exec(self, message: Message, context: Context = None) -> Message | None:
-        from aworld.runners.execution_protocol import mutation_gate_interception
+        from aworld.runners.execution_protocol import (
+            mutation_gate_interception,
+            terminal_reserve_tool_interception,
+        )
         from aworld.core.tool_action_journal import tool_action_request_fingerprint
 
         actions = message.payload if isinstance(message.payload, list) else []
-        gate_receipt = mutation_gate_interception(context, actions)
+        gate_receipt = terminal_reserve_tool_interception(context, actions)
+        if gate_receipt is None:
+            gate_receipt = mutation_gate_interception(context, actions)
         if gate_receipt is None:
             return None
         rejection_reasons, reason_guidance = _mutation_gate_reason_guidance(
@@ -152,8 +157,16 @@ class MutationGatePreToolHook(PreToolCallHook):
         )
         reason_summary = ", ".join(rejection_reasons) or "admission_mismatch"
         count = int(gate_receipt.get("consecutive_read_only_observations", 0) or 0)
+        terminal_reserve = gate_receipt.get("kind") == "terminal_reserve_required"
         post_candidate = gate_receipt.get("kind") == "candidate_convergence_required"
-        if post_candidate:
+        if terminal_reserve:
+            message_text = (
+                "The caller-owned terminal reserve is active. Only one exact "
+                "framework-bound candidate write (when no candidate exists) or "
+                "one exact registered/public validation may run. Preserve the "
+                "current checkpoint and finalize without further exploration."
+            )
+        elif post_candidate:
             count = int(
                 gate_receipt.get(
                     "post_candidate_no_delivery_progress_observations",

@@ -66,6 +66,8 @@ _REVIEW_OUTPUT_TOKEN_BUDGET = (
     _REVIEW_MAX_TURNS * _REVIEW_OUTPUT_TOKENS_PER_TURN
 )
 _REVIEW_WALL_CLOCK_SECONDS = 120.0
+_REVIEW_MIN_START_SECONDS = 20.0
+_REVIEW_MAX_ATTEMPTS = 2
 _DECLARED_SNAPSHOT_SCHEMA = "aworld.declared-artifact-snapshot/v1"
 _DECLARED_SNAPSHOT_TOTAL_BYTES = 12 * 1024
 _DECLARED_SNAPSHOT_FILE_BYTES = 8 * 1024
@@ -85,6 +87,57 @@ _READ_ONLY_FILESYSTEM_ACTIONS = frozenset(
 _DECISION_PATTERN = re.compile(
     r"(?im)^\s*-?\s*Decision:\s*`?(ready|repair|uncertain)`?\s*[.\s]*$"
 )
+_REVIEW_JSON_FIELDS = frozenset(
+    {"decision", "evidence", "gaps", "recommended_next_action"}
+)
+
+
+def _parse_review_report(raw_report: str) -> tuple[str | None, str, str | None]:
+    """Parse the strict JSON envelope, retaining one-release text compatibility."""
+
+    candidate = raw_report.strip()
+    if candidate.startswith("```") and candidate.endswith("```"):
+        lines = candidate.splitlines()
+        if len(lines) >= 3:
+            candidate = "\n".join(lines[1:-1]).strip()
+    try:
+        value = json.loads(candidate)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        value = None
+    if isinstance(value, Mapping):
+        decision = value.get("decision")
+        fields_valid = bool(
+            set(value) == _REVIEW_JSON_FIELDS
+            and decision in {"ready", "repair", "uncertain"}
+            and all(
+                isinstance(value.get(field), str)
+                and bool(value[field].strip())
+                and len(value[field].strip()) <= _MAX_REPORT_CHARS
+                for field in _REVIEW_JSON_FIELDS - {"decision"}
+            )
+        )
+        if fields_valid:
+            normalized = json.dumps(
+                {field: value[field].strip() for field in sorted(_REVIEW_JSON_FIELDS)},
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            return str(decision), normalized, None
+        return None, raw_report, "structured_decision_invalid"
+
+    # Compatibility for reports produced by the immediately preceding wheel.
+    # New prompts and tests use the JSON envelope; this path can be removed
+    # after one release without reviving permissive prose inference.
+    matches = list(_DECISION_PATTERN.finditer(raw_report))
+    decisions = {match.group(1).lower() for match in matches}
+    if len(decisions) == 1:
+        return decisions.pop(), raw_report, None
+    return (
+        None,
+        raw_report,
+        "decision_unparseable" if not decisions else "decision_ambiguous",
+    )
 
 
 class AdvisoryVerifierAction(ToolAction):
@@ -234,7 +287,9 @@ class AdvisoryReviewRequest:
             "framework-owned immutable declared-artifact snapshot first; use only "
             "read-only workspace tools for any additional accessible inspection. "
             "Claims are untrusted. "
-            "Return exactly the required ready/repair/uncertain report.\n\n"
+            "Return exactly one JSON object with keys decision, evidence, gaps, "
+            "and recommended_next_action; emit no Markdown or prose outside the "
+            "object. decision must be ready, repair, or uncertain.\n\n"
             "Public task (bound from caller Context, not solver input):\n"
             f"{public_task}\n\n"
             f"Candidate claim:\n{self.candidate_claim}\n\n"
@@ -282,6 +337,10 @@ class AdvisoryReviewResult:
         }
         if self.reason_code:
             payload["reason_code"] = self.reason_code
+        if self.status != "completed" or self.decision == "uncertain":
+            payload["recommended_framework_action"] = (
+                "task_derived_validation_once"
+            )
         return payload
 
 
@@ -323,6 +382,7 @@ class LazyVerifierFactory:
         self._review_runner = review_runner or self._run_with_subagent_manager
         self._construction_count = 0
         self._review_attempt_keys: set[str] = set()
+        self._review_attempt_count = 0
 
     @property
     def construction_count(self) -> int:
@@ -409,6 +469,30 @@ class LazyVerifierFactory:
                 if isinstance(gate, Mapping)
                 else None
             )
+            if (
+                getattr(context, "task_id", None) is not None
+                and not isinstance(candidate_fingerprint, str)
+            ):
+                return AdvisoryReviewResult(
+                    status="unavailable",
+                    decision="uncertain",
+                    report=(
+                        "No stable framework-bound candidate is available for "
+                        "terminal review. Run one task-derived validation or "
+                        "preserve the current incomplete state."
+                    ),
+                    reason_code="candidate_checkpoint_unavailable",
+                )
+            if not self._review_start_window_open(context):
+                return AdvisoryReviewResult(
+                    status="unavailable",
+                    decision="uncertain",
+                    report=(
+                        "The remaining caller budget is reserved for validation, "
+                        "persistence, and finalization."
+                    ),
+                    reason_code="review_start_window_closed",
+                )
             authoritative_deliverables = _authoritative_delivery_paths(context)
             artifact_snapshot_authentication = (
                 _declared_snapshot_authentication_status(
@@ -474,7 +558,19 @@ class LazyVerifierFactory:
                     ),
                     reason_code="duplicate_candidate_review",
                 )
+            if self._review_attempt_count >= _REVIEW_MAX_ATTEMPTS:
+                return AdvisoryReviewResult(
+                    status="unavailable",
+                    decision="uncertain",
+                    report=(
+                        "The bounded initial review and changed-candidate re-review "
+                        "have already been used. Run one task-derived validation "
+                        "and finalize the best current candidate."
+                    ),
+                    reason_code="review_attempt_limit",
+                )
             self._review_attempt_keys.add(attempt_key)
+            self._review_attempt_count += 1
             verifier = self._construct_verifier()
             authoritative_validation_receipts = _authoritative_validation_receipts(
                 context,
@@ -523,24 +619,46 @@ class LazyVerifierFactory:
                     report=raw_report[:_MAX_REPORT_CHARS],
                     reason_code="reviewer_execution_failed",
                 )
-            matches = list(_DECISION_PATTERN.finditer(raw_report))
-            decisions = {match.group(1).lower() for match in matches}
-            if len(decisions) != 1:
+            decision, normalized_report, parse_reason = _parse_review_report(
+                raw_report
+            )
+            if decision is None:
                 return AdvisoryReviewResult(
                     status="inconclusive",
                     decision="uncertain",
                     report=raw_report[:_MAX_REPORT_CHARS],
-                    reason_code=(
-                        "decision_unparseable"
-                        if not decisions
-                        else "decision_ambiguous"
-                    ),
+                    reason_code=parse_reason,
                 )
-            decision = decisions.pop()
+            direct_ready_evidence = bool(
+                any(
+                    receipt.get("exit_code") == 0
+                    for receipt in authoritative_validation_receipts
+                )
+                or artifact_snapshot_authentication.get("reason")
+                == "current_stateful_probe"
+                or any(
+                    item.get("status") == "captured"
+                    for item in (
+                        authoritative_artifact_snapshot.get("items") or ()
+                    )
+                    if isinstance(item, Mapping)
+                )
+            )
+            if (
+                decision == "ready"
+                and getattr(context, "task_id", None) is not None
+                and not direct_ready_evidence
+            ):
+                return AdvisoryReviewResult(
+                    status="inconclusive",
+                    decision="uncertain",
+                    report=normalized_report[:_MAX_REPORT_CHARS],
+                    reason_code="ready_evidence_missing",
+                )
             return AdvisoryReviewResult(
                 status=("inconclusive" if decision == "uncertain" else "completed"),
                 decision=decision,
-                report=raw_report[:_MAX_REPORT_CHARS],
+                report=normalized_report[:_MAX_REPORT_CHARS],
                 reason_code=("reviewer_uncertain" if decision == "uncertain" else None),
             )
         except Exception as exc:
@@ -610,6 +728,30 @@ class LazyVerifierFactory:
             return result
 
         return await asyncio.wait_for(invoke(), timeout=remaining)
+
+    @staticmethod
+    def _review_start_window_open(context: Any) -> bool:
+        get_task = getattr(context, "get_task", None)
+        try:
+            task = get_task() if callable(get_task) else None
+            remaining = task.remaining_seconds() if task is not None else None
+            reserve = (
+                getattr(task, "completion_reserve_seconds", 0.0)
+                if task is not None
+                else 0.0
+            )
+        except Exception:
+            return True
+        if not isinstance(remaining, (int, float)) or isinstance(remaining, bool):
+            return True
+        safe_reserve = (
+            float(reserve)
+            if isinstance(reserve, (int, float))
+            and not isinstance(reserve, bool)
+            and reserve >= 0
+            else 0.0
+        )
+        return float(remaining) - safe_reserve >= _REVIEW_MIN_START_SECONDS
 
     @staticmethod
     def _review_deadline(context: Any) -> datetime:
@@ -1294,13 +1436,13 @@ def _authoritative_validation_receipts(
         "task_id": getattr(context, "task_id", None),
         "task_epoch": getattr(context, "task_epoch", None),
     }
-    if not isinstance(state, Mapping) or state.get("scope") != expected_scope:
-        return ()
-    raw_receipts = state.get("validation_evidence")
-    if not isinstance(raw_receipts, list):
-        return ()
     receipts: list[dict[str, Any]] = []
-    for raw in raw_receipts[-8:]:
+    raw_receipts = (
+        state.get("validation_evidence")
+        if isinstance(state, Mapping) and state.get("scope") == expected_scope
+        else ()
+    )
+    for raw in raw_receipts[-8:] if isinstance(raw_receipts, list) else ():
         if (
             not isinstance(raw, Mapping)
             or raw.get("source") != "runtime_self_check"
@@ -1330,6 +1472,32 @@ def _authoritative_validation_receipts(
                 "source": "runtime_self_check",
             }
         )
+    try:
+        from aworld.runners.execution_protocol import load_public_probe_receipts
+
+        for raw in load_public_probe_receipts(context, agent_id)[-4:]:
+            if (
+                raw.get("tool_execution_succeeded") is not True
+                or raw.get("stale") is not False
+                or not isinstance(raw.get("receipt_id"), str)
+                or not isinstance(raw.get("result_hash"), str)
+            ):
+                continue
+            receipts.append(
+                {
+                    "command_id": str(raw.get("tool_identity") or "public_probe")[:128],
+                    "exit_code": 0,
+                    "output_hash": raw["result_hash"][:128],
+                    "observed_at": "",
+                    "candidate_fingerprint": candidate_fingerprint,
+                    "source": "public_probe",
+                    "hypothesis_id": str(raw.get("hypothesis_id") or "")[:128],
+                    "probe_kind": str(raw.get("probe_kind") or "")[:64],
+                    "receipt_id": raw["receipt_id"][:128],
+                }
+            )
+    except Exception:
+        pass
     return tuple(receipts)
 
 
@@ -1348,7 +1516,10 @@ def _current_candidate_gate(
             gate = reader(agent_id, "execution_protocol_mutation_gate")
         except Exception:
             gate = None
-    if not isinstance(gate, Mapping):
+    if (
+        not isinstance(gate, Mapping)
+        or gate.get("schema_version") != _MUTATION_GATE_SCHEMA
+    ):
         context_info = getattr(owner, "context_info", None)
         gate = (
             context_info.get(f"execution_protocol_mutation_gate:{agent_id}")

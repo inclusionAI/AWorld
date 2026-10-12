@@ -288,6 +288,11 @@ _MODEL_RESPONSE_RECOVERY_MAX_CONTINUATIONS = 3
 _LONG_HORIZON_REVIEW_DEADLINE_KEY = "long_horizon_review_deadline"
 _LONG_HORIZON_REVIEW_DEADLINE_SCHEMA = "aworld.review-deadline/v1"
 _LONG_HORIZON_DECISION_TIMEOUT_SECONDS = 45.0
+_TERMINAL_MODEL_LATENCY_KEY = "terminal_model_latency"
+_TERMINAL_MODEL_LATENCY_SCHEMA = "aworld.terminal-model-latency/v1"
+_TERMINAL_MODEL_LATENCY_SAMPLE_LIMIT = 16
+_TERMINAL_MODEL_LATENCY_FLOOR_SECONDS = 20.0
+_TERMINAL_MODEL_LATENCY_CAP_SECONDS = 180.0
 _PUBLIC_DELIVERABLE_SCHEMA = "aworld.public-deliverables/v1"
 _PUBLIC_CAPABILITY_SCHEMA = "aworld.public-capabilities/v1"
 _PUBLIC_DELIVERABLE_AUTHORITY = "public_task_advisory"
@@ -6933,6 +6938,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 f"{self.id()} failed to run PRE_LLM_CALL hooks: {e}, traceback is {traceback.format_exc()}"
             )
 
+        model_call_started_monotonic = time.monotonic()
         try:
             response_parse_args = {
                 "use_tools_in_prompt": self.use_tools_in_prompt,
@@ -7084,6 +7090,10 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 )
             raise runtime_error from e
         finally:
+            self._record_terminal_model_call_duration(
+                message.context,
+                time.monotonic() - model_call_started_monotonic,
+            )
             self._safe_record_llm_call_response(message, llm_call_id, llm_response)
             if tool_free_finalization and llm_response:
                 llm_response = self._coerce_loop_budget_final_response(llm_response)
@@ -7485,10 +7495,21 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                             clear_candidate_fallback,
                             execution_protocol_policy,
                             final_review_guidance,
+                            load_execution_protocol_state,
                             record_candidate_final,
                             store_candidate_fallback,
                         )
 
+                        # Persist the solver candidate before the controller
+                        # opens REVIEW.  A slow/unavailable reviewer must never
+                        # leave the task with only live model context.  Do not
+                        # overwrite it with the subsequent reviewer response.
+                        if not load_execution_protocol_state(
+                            message.context, self.id()
+                        ).review_pending:
+                            store_candidate_fallback(
+                                message.context, self.id(), agent_result.actions
+                            )
                         protocol_transition = record_candidate_final(
                             message.context,
                             self.id(),
@@ -7595,9 +7616,6 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                             ),
                         )
                         if long_horizon_review_feedback:
-                            store_candidate_fallback(
-                                message.context, self.id(), agent_result.actions
-                            )
                             from aworld.runners.execution_protocol import (
                                 load_public_probe_receipts,
                             )
@@ -8633,7 +8651,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         return [guidance, *messages]
 
     def _pre_generation_caller_reserve_reached(self, context: Context) -> bool:
-        """Avoid starting ordinary long generation inside caller reserve."""
+        """Avoid starting an ordinary generation that is likely to cross reserve."""
 
         try:
             from aworld.runners.execution_protocol import (
@@ -8652,8 +8670,13 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             or isinstance(remaining, bool)
             or not isinstance(remaining, (int, float))
             or not math.isfinite(float(remaining))
-            or float(remaining) > float(policy.finalization_reserve_seconds)
         ):
+            return False
+        predicted_call_seconds = self._terminal_model_call_p95_seconds(context)
+        admission_boundary = float(policy.finalization_reserve_seconds)
+        if policy.terminal_review_gate_enabled:
+            admission_boundary += predicted_call_seconds
+        if float(remaining) > admission_boundary:
             return False
         metrics = context.context_info.get("pre_generation_reserve_metrics")
         if not isinstance(metrics, dict):
@@ -8663,8 +8686,125 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         metrics["finalization_reserve_seconds"] = float(
             policy.finalization_reserve_seconds
         )
+        metrics["predicted_model_call_p95_seconds"] = predicted_call_seconds
+        metrics["call_admission_boundary_seconds"] = admission_boundary
+        metrics["admission_reason"] = (
+            "predicted_call_crosses_reserve"
+            if float(remaining) > float(policy.finalization_reserve_seconds)
+            else "finalization_reserve_reached"
+        )
         context.context_info["pre_generation_reserve_metrics"] = metrics
         return True
+
+    def _terminal_model_call_p95_seconds(self, context: Context) -> float:
+        """Return a bounded task-local p95 with a conservative cold-start floor."""
+
+        from aworld.core.context.execution_state import state_context
+
+        owner = state_context(context) or context
+        value = None
+        reader = getattr(owner, "read_task_runtime_state", None)
+        if callable(reader):
+            try:
+                value = reader(self.id(), _TERMINAL_MODEL_LATENCY_KEY)
+            except Exception:
+                value = None
+        if not isinstance(value, Mapping):
+            value = getattr(owner, "context_info", {}).get(
+                f"{_TERMINAL_MODEL_LATENCY_KEY}:{self.id()}"
+            )
+        samples = []
+        expected_scope = {
+            "task_id": getattr(owner, "task_id", None),
+            "task_epoch": getattr(owner, "task_epoch", None),
+        }
+        if (
+            isinstance(value, Mapping)
+            and value.get("schema_version") == _TERMINAL_MODEL_LATENCY_SCHEMA
+            and value.get("scope") == expected_scope
+        ):
+            samples = [
+                float(item)
+                for item in (value.get("samples_seconds") or ())
+                if isinstance(item, (int, float))
+                and not isinstance(item, bool)
+                and math.isfinite(float(item))
+                and float(item) >= 0
+            ][-_TERMINAL_MODEL_LATENCY_SAMPLE_LIMIT:]
+        floor = _TERMINAL_MODEL_LATENCY_FLOOR_SECONDS
+        try:
+            task = context.get_task()
+            total = getattr(task, "timeout", None) if task is not None else None
+        except Exception:
+            total = None
+        if (
+            isinstance(total, (int, float))
+            and not isinstance(total, bool)
+            and math.isfinite(float(total))
+            and float(total) > 0
+        ):
+            floor = min(
+                _TERMINAL_MODEL_LATENCY_CAP_SECONDS,
+                max(floor, float(total) * 0.05),
+            )
+        if not samples:
+            return floor
+        ordered = sorted(samples)
+        rank = max(0, math.ceil(0.95 * len(ordered)) - 1)
+        return min(
+            _TERMINAL_MODEL_LATENCY_CAP_SECONDS,
+            max(floor, ordered[rank]),
+        )
+
+    def _record_terminal_model_call_duration(
+        self, context: Context | None, elapsed_seconds: float
+    ) -> None:
+        """Persist bounded call timing for the next admission decision."""
+
+        if (
+            context is None
+            or isinstance(elapsed_seconds, bool)
+            or not isinstance(elapsed_seconds, (int, float))
+            or not math.isfinite(float(elapsed_seconds))
+            or elapsed_seconds < 0
+        ):
+            return
+        from aworld.core.context.execution_state import state_context
+
+        owner = state_context(context) or context
+        key = f"{_TERMINAL_MODEL_LATENCY_KEY}:{self.id()}"
+        current = getattr(owner, "context_info", {}).get(key)
+        expected_scope = {
+            "task_id": getattr(owner, "task_id", None),
+            "task_epoch": getattr(owner, "task_epoch", None),
+        }
+        samples = (
+            list(current.get("samples_seconds") or ())
+            if isinstance(current, Mapping)
+            and current.get("schema_version") == _TERMINAL_MODEL_LATENCY_SCHEMA
+            and current.get("scope") == expected_scope
+            else []
+        )
+        samples.append(
+            round(
+                min(_TERMINAL_MODEL_LATENCY_CAP_SECONDS, float(elapsed_seconds)),
+                6,
+            )
+        )
+        payload = {
+            "schema_version": _TERMINAL_MODEL_LATENCY_SCHEMA,
+            "scope": expected_scope,
+            "samples_seconds": samples[-_TERMINAL_MODEL_LATENCY_SAMPLE_LIMIT:],
+        }
+        owner.context_info[key] = payload
+        if owner is not context:
+            context.context_info[key] = copy.deepcopy(payload)
+        writer = getattr(owner, "write_task_runtime_state", None)
+        if callable(writer):
+            try:
+                writer(self.id(), _TERMINAL_MODEL_LATENCY_KEY, payload)
+            except Exception:
+                pass
 
     @staticmethod
     def _record_terminal_checkpoint_metric(

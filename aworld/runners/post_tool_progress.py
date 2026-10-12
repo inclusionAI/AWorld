@@ -1787,6 +1787,28 @@ def _record_semantic_tool_progress_locked(
     workspace_mutation_observed = bool(
         previous.get("workspace_mutation_observed") or sandbox_workspace_mutated
     )
+    stateful_mutation_fingerprint = previous.get(
+        "stateful_mutation_fingerprint"
+    )
+    previous_stateful_candidate_fingerprint = previous.get(
+        "stateful_candidate_fingerprint"
+    )
+    if known_mutation_executed:
+        stateful_mutation_fingerprint = semantic_fingerprint(
+            {
+                "operation_hash": operation_hash,
+                "result_hash": result_hash,
+                "workspace_generation": workspace_generation,
+                "receipts": [
+                    receipt
+                    for receipt in observed_action_semantics
+                    if receipt.get("effect") == "mutating"
+                    and receipt.get("executed") is True
+                    and receipt.get("succeeded") is True
+                    and receipt.get("timed_out") is False
+                ],
+            }
+        )
     previous_read_only_observations = int(
         previous.get("consecutive_read_only_observations", 0) or 0
     )
@@ -1827,6 +1849,17 @@ def _record_semantic_tool_progress_locked(
         # validation turn. It is deliberately separate from actual mutation
         # evidence and never contributes to goal/completion progress.
         "known_mutation_executed": known_mutation_executed,
+        "stateful_mutation_fingerprint": stateful_mutation_fingerprint,
+        "stateful_candidate_fingerprint": (
+            None
+            if known_mutation_executed
+            else previous_stateful_candidate_fingerprint
+        ),
+        "stateful_probe_receipt_id": (
+            None
+            if known_mutation_executed
+            else previous.get("stateful_probe_receipt_id")
+        ),
         "read_only_observed": sandbox_read_only_observed,
         "consecutive_read_only_observations": (
             consecutive_read_only_observations
@@ -2107,11 +2140,66 @@ def _record_semantic_tool_progress_locked(
                 }
                 for receipt in public_probe_receipts[-4:]
             ]
-            state_by_agent[agent_id] = state
-            runtime_context.context_info[SEMANTIC_PROGRESS_KEY] = state_by_agent
-            if callable(shared_writer):
-                shared_writer(agent_id, _SEMANTIC_RUNTIME_KEY, state)
-            _project_working_state_value(durable_owner, semantic_working_key, state)
+            # Fileless service/process/configuration tasks have no bytes from
+            # which to derive a candidate checkpoint.  Bind one trusted
+            # successful mutation receipt to a later, current public probe.
+            # The pair is mechanical liveness evidence only; it is not task
+            # correctness or external reward.
+            if (
+                not state.get("public_deliverable_declared")
+                and isinstance(stateful_mutation_fingerprint, str)
+                and observed_probe_count > 0
+            ):
+                successful_probe = next(
+                    (
+                        receipt
+                        for receipt in reversed(public_probe_receipts)
+                        if receipt.get("tool_execution_succeeded") is True
+                        and receipt.get("stale") is False
+                        and isinstance(receipt.get("receipt_id"), str)
+                    ),
+                    None,
+                )
+                if successful_probe is not None:
+                    stateful_candidate_fingerprint = semantic_fingerprint(
+                        {
+                            "mutation_fingerprint": stateful_mutation_fingerprint,
+                            "probe_receipt_id": successful_probe["receipt_id"],
+                        }
+                    )
+                    state["stateful_candidate_fingerprint"] = (
+                        stateful_candidate_fingerprint
+                    )
+                    state["stateful_probe_receipt_id"] = successful_probe[
+                        "receipt_id"
+                    ]
+                    state["candidate_present"] = True
+                    state["candidate_advanced"] = (
+                        stateful_candidate_fingerprint
+                        != previous_stateful_candidate_fingerprint
+                    )
+                    state["public_delivery_fingerprint"] = (
+                        stateful_candidate_fingerprint
+                    )
+                    if state["candidate_advanced"]:
+                        state["delivery_progress_advanced"] = True
+                        state["durable_milestone_advanced"] = True
+                        state["goal_progress"] = True
+        if (
+            known_mutation_executed
+            and previous_stateful_candidate_fingerprint is not None
+            and not state.get("public_deliverable_declared")
+            and state.get("stateful_candidate_fingerprint") is None
+        ):
+            # A later stateful mutation invalidates the earlier probe-bound
+            # candidate until a new public probe observes the new state.
+            state["candidate_present"] = False
+            state["public_delivery_fingerprint"] = None
+        state_by_agent[agent_id] = state
+        runtime_context.context_info[SEMANTIC_PROGRESS_KEY] = state_by_agent
+        if callable(shared_writer):
+            shared_writer(agent_id, _SEMANTIC_RUNTIME_KEY, state)
+        _project_working_state_value(durable_owner, semantic_working_key, state)
     except Exception:
         pass
 

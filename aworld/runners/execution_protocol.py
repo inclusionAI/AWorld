@@ -1123,6 +1123,17 @@ def _public_candidate_binding(context, agent_id: str) -> tuple[str, str | None]:
 
     fallback = load_candidate_fallback(context, agent_id) or ()
     candidate = str(getattr(fallback[0], "policy_info", "") or "") if fallback else ""
+    stateful_mutation_fingerprint = None
+    try:
+        from aworld.runners.post_tool_progress import semantic_progress_for_agent
+
+        semantic_state = semantic_progress_for_agent(context, agent_id=agent_id)
+        if semantic_state.get("public_deliverable_declared") is not True:
+            value = semantic_state.get("stateful_mutation_fingerprint")
+            if _is_canonical_semantic_fingerprint(value):
+                stateful_mutation_fingerprint = value
+    except Exception:
+        stateful_mutation_fingerprint = None
     policy = execution_protocol_policy(context, agent_id)
     protocol_state = ExecutionProtocolStore(context, agent_id, policy).load()
     selected_candidate_id = (
@@ -1133,7 +1144,15 @@ def _public_candidate_binding(context, agent_id: str) -> tuple[str, str | None]:
     return (
         semantic_fingerprint(
             {
-                "candidate_response_hash": semantic_fingerprint(candidate),
+                "candidate_response_hash": (
+                    stateful_mutation_fingerprint
+                    or semantic_fingerprint(candidate)
+                ),
+                "binding_kind": (
+                    "stateful_mutation"
+                    if stateful_mutation_fingerprint is not None
+                    else "candidate_response"
+                ),
                 "selected_candidate_id": selected_candidate_id,
             }
         ),
@@ -2213,10 +2232,69 @@ def authenticated_declared_candidate_status(
     except Exception:
         projection = None
     if not isinstance(projection, Mapping):
+        semantic_state = semantic_progress_for_agent(context, agent_id=agent_id)
+        mutation_fingerprint = semantic_state.get(
+            "stateful_mutation_fingerprint"
+        )
+        candidate_fingerprint = semantic_state.get(
+            "stateful_candidate_fingerprint"
+        )
+        probe_receipt_id = semantic_state.get("stateful_probe_receipt_id")
+        if not any(
+            value is not None
+            for value in (
+                mutation_fingerprint,
+                candidate_fingerprint,
+                probe_receipt_id,
+            )
+        ):
+            return {
+                "schema_version": "aworld.authenticated-declared-candidate/v1",
+                "authenticated": False,
+                "reason": "declared_projection_unavailable",
+            }
+        protocol_state = load_execution_protocol_state(context, agent_id)
+        current_probe = next(
+            (
+                receipt
+                for receipt in reversed(load_public_probe_receipts(context, agent_id))
+                if receipt.get("receipt_id") == probe_receipt_id
+            ),
+            None,
+        )
+        if not (
+            _is_canonical_semantic_fingerprint(mutation_fingerprint)
+            and _is_canonical_semantic_fingerprint(candidate_fingerprint)
+            and isinstance(current_probe, Mapping)
+            and current_probe.get("tool_execution_succeeded") is True
+            and current_probe.get("stale") is False
+            and protocol_state.candidate_present is True
+            and protocol_state.candidate_checkpoint_recorded
+        ):
+            return {
+                "schema_version": "aworld.authenticated-declared-candidate/v1",
+                "authenticated": False,
+                "reason": "stateful_candidate_unavailable",
+            }
+        expected_fingerprint = semantic_fingerprint(
+            {
+                "mutation_fingerprint": mutation_fingerprint,
+                "probe_receipt_id": probe_receipt_id,
+            }
+        )
+        if candidate_fingerprint != expected_fingerprint:
+            return {
+                "schema_version": "aworld.authenticated-declared-candidate/v1",
+                "authenticated": False,
+                "reason": "stateful_candidate_binding_mismatch",
+            }
         return {
             "schema_version": "aworld.authenticated-declared-candidate/v1",
-            "authenticated": False,
-            "reason": "declared_projection_unavailable",
+            "authenticated": True,
+            "reason": "current_stateful_probe",
+            "candidate_fingerprint": candidate_fingerprint,
+            "probe_receipt_id": probe_receipt_id,
+            "artifact_hashes": {},
         }
     declared_count = _bounded_counter(projection.get("declared_count"))
     candidate_count = _bounded_counter(projection.get("candidate_count"))
@@ -2397,12 +2475,15 @@ def project_execution_protocol_telemetry(value: Any) -> dict[str, Any] | None:
         },
         "acceptance_candidate_authentication": {
             "current_complete_projection",
+            "current_stateful_probe",
             "declared_projection_unavailable",
             "declared_deliverables_incomplete",
             "recorded_projection_unavailable",
             "projection_not_hash_bound",
             "projection_changed",
             "candidate_checkpoint_unavailable",
+            "stateful_candidate_unavailable",
+            "stateful_candidate_binding_mismatch",
             "terminal_transition_rejected",
         },
     }
@@ -3357,6 +3438,107 @@ def mutation_gate_interception(
         with transaction():
             return _mutation_gate_interception_locked(context, actions)
     return _mutation_gate_interception_locked(context, actions)
+
+
+def terminal_reserve_tool_interception(
+    context,
+    actions: list[Any],
+) -> dict[str, Any] | None:
+    """Admit only one candidate write or one exact validation at reserve.
+
+    This protects the caller-owned persistence window when an already-running
+    model call returns Tool intent after crossing the terminal boundary.  It
+    never chooses a command and is inert before the configured reserve.
+    """
+
+    if context is None or not actions:
+        return None
+    agent_ids = {
+        str(_action_value(action, "agent_name") or "") for action in actions
+    }
+    if len(agent_ids) != 1 or not next(iter(agent_ids)):
+        return None
+    agent_id = next(iter(agent_ids))
+    policy = execution_protocol_policy(context, agent_id)
+    state = load_execution_protocol_state(context, agent_id)
+    remaining = _remaining_task_seconds(context)
+    if (
+        not policy.terminal_review_gate_enabled
+        or policy.mode is ProtocolMode.OFF
+        or state.phase not in {ProtocolPhase.EXECUTE, ProtocolPhase.REPAIR}
+        or remaining is None
+        or remaining > policy.finalization_reserve_seconds
+    ):
+        return None
+
+    owner = state_context(context)
+    declared_targets = declared_action_target_ids(owner)
+    blocked_ids: list[str] = []
+    validation_admitted = False
+    candidate_write_admitted = False
+    for action in actions:
+        call_id = str(_action_value(action, "tool_call_id") or "")
+        admitted = False
+        if not validation_admitted and framework_observable_validation_kind(
+            context, agent_id, action
+        ) is not None:
+            admitted = True
+            validation_admitted = True
+        elif not candidate_write_admitted and state.candidate_present is not True:
+            try:
+                semantics = build_preflight_action_semantic_receipt(
+                    context=owner,
+                    action=action,
+                    delivery_intent=(
+                        state.model_plan_update.delivery_intent.value
+                        if state.model_plan_update is not None
+                        else DeliveryIntent.UNKNOWN.value
+                    ),
+                )
+            except (TypeError, ValueError):
+                semantics = None
+            if semantics is not None and semantics.effect == "mutating":
+                targets = set(semantics.target_ids)
+                admitted = bool(
+                    (declared_targets and targets and targets.issubset(declared_targets))
+                    or (
+                        not declared_targets
+                        and _action_matches_typed_candidate_plan(
+                            context, agent_id, action, semantics
+                        )
+                    )
+                )
+                candidate_write_admitted = admitted
+        if not admitted:
+            blocked_ids.append(call_id)
+    if not blocked_ids:
+        return None
+    unique_blocked = list(dict.fromkeys(value for value in blocked_ids if value))
+    block_all = len(unique_blocked) != len(blocked_ids) or len(blocked_ids) == len(actions)
+    call_rejections, truncated = _serialized_call_rejections(
+        [
+            (
+                call_id or None,
+                MutationGateRejectionReason.FINALIZATION_LATCHED,
+            )
+            for call_id in blocked_ids
+        ]
+    )
+    return {
+        "schema_version": MUTATION_GATE_SCHEMA,
+        "kind": "terminal_reserve_required",
+        "agent_id": agent_id,
+        "tool_call_ids": unique_blocked,
+        "block_all": block_all,
+        "reason": "terminal_reserve_admission",
+        "convergence_stage": state.convergence_stage.value
+        if state.convergence_stage is not None
+        else None,
+        "blocked_call_count": len(blocked_ids),
+        "blocked_read_only_call_count": len(blocked_ids),
+        "call_rejections": call_rejections,
+        "call_rejections_truncated": truncated,
+    }
 
 
 def _mutation_gate_interception_locked(
@@ -6412,6 +6594,7 @@ __all__ = [
     "load_model_plan_update",
     "MutationGateRejectionReason",
     "mutation_gate_interception",
+    "terminal_reserve_tool_interception",
     "load_public_probe_receipts",
     "load_acceptance_critic_state",
     "project_execution_protocol_telemetry",

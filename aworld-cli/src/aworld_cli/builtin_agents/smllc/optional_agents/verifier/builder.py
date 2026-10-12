@@ -36,12 +36,10 @@ class TaskVerifierAgent(FreshAnswerOnlyCollaborator):
             ActionModel(
                 agent_name=self.id(),
                 policy_info=(
-                    "- Decision: `uncertain`\n"
-                    "- Evidence: the bounded verifier could not produce a "
-                    "complete report\n"
-                    "- Gaps: no valid final report was produced in two model "
-                    "calls\n"
-                    "- Recommended next action: preserve the current candidate"
+                    '{"decision":"uncertain","evidence":"the bounded verifier '
+                    'could not produce a complete report","gaps":"no valid final '
+                    'report was produced in two model calls","recommended_next_action":'
+                    '"run one task-derived validation and preserve the current candidate"}'
                 ),
             )
         ]

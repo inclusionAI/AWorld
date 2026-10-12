@@ -21,6 +21,7 @@ from aworld.core.context.compiler import (
     LifecycleAction,
     SelfCheckEvidence,
     ValidationCommand,
+    semantic_fingerprint,
 )
 from aworld.core.execution_protocol import (
     action_signature,
@@ -6704,6 +6705,230 @@ async def test_mutation_gate_public_probe_executes_through_hook_and_records_rece
     assert len(receipts) == 1
     assert receipts[0]["hypothesis_id"] == "result-readable"
     assert receipts[0]["tool_execution_succeeded"] is True
+
+
+@pytest.mark.asyncio
+async def test_terminal_reserve_blocks_exploration_but_allows_one_bound_probe(
+    monkeypatch,
+) -> None:
+    context = _context("terminal-reserve-tool-admission")
+    policy = ExecutionProtocolPolicy(
+        mode=ProtocolMode.OBSERVE,
+        terminal_review_gate_enabled=True,
+        independent_acceptance_enabled=False,
+        finalization_reserve_seconds=60,
+        candidate_decision_reserve_seconds=240,
+    )
+    configure_execution_protocol(context, "agent", policy)
+    monkeypatch.setattr(context.get_task(), "remaining_seconds", lambda: 50.0)
+    broad_read = ActionModel(
+        tool_name="terminal",
+        action_name="run_code",
+        params={"code": "find / -maxdepth 2 -type f"},
+        tool_call_id="broad-reserve-read",
+        agent_name="agent",
+    )
+    hook = MutationGatePreToolHook()
+
+    blocked = await hook.exec(
+        Message(category="tool_call", payload=[broad_read], sender="agent"),
+        context,
+    )
+
+    assert blocked is not None
+    assert blocked.headers["tool_interception"]["error_code"] == (
+        "terminal_reserve_required"
+    )
+    assert blocked.headers["tool_interception"]["block_all"] is True
+
+    probe = ActionModel(
+        tool_name="terminal",
+        action_name="run_code",
+        params={"code": "test -e /tmp/service-ready"},
+        tool_call_id="bound-reserve-probe",
+        agent_name="agent",
+    )
+    assert record_public_probe_plan(
+        context,
+        "agent",
+        tool_call_id=probe.tool_call_id,
+        tool_identity="terminal:run_code",
+        arguments_projection=probe.params,
+        value={
+            "hypothesis_id": "service-ready",
+            "highest_risk_counterexample": "service marker is absent",
+            "probe_kind": "smoke",
+        },
+    )
+
+    assert await hook.exec(
+        Message(category="tool_call", payload=[probe], sender="agent"), context
+    ) is None
+
+
+def test_stateful_mutation_plus_current_public_probe_authenticates_candidate() -> None:
+    context = _context("stateful-candidate")
+    configure_execution_protocol(
+        context,
+        "agent",
+        ExecutionProtocolPolicy(
+            mode=ProtocolMode.GUIDE,
+            terminal_review_gate_enabled=True,
+            independent_acceptance_enabled=False,
+        ),
+    )
+    mutation_code = "touch /tmp/stateful-service-ready"
+    mutation = ActionModel(
+        tool_name="terminal",
+        action_name="run_code",
+        params={"code": mutation_code},
+        tool_call_id="stateful-mutation",
+        agent_name="agent",
+    )
+    mutation_receipt = build_terminal_execution_receipt(
+        code=mutation_code,
+        plan=plan_terminal_execution(mutation_code),
+        executed=True,
+        exit_code=0,
+        timed_out=False,
+        mutation_observed=None,
+    )
+    record_semantic_tool_progress(
+        context,
+        tool_name="terminal",
+        agent_id="agent",
+        actions=[mutation],
+        observation=Observation(
+            content="mutated",
+            action_result=[
+                ActionResult(
+                    tool_call_id=mutation.tool_call_id,
+                    content="mutated",
+                    success=True,
+                    metadata={
+                        "sandbox_observation": _sandbox_receipt(
+                            mutation,
+                            1,
+                            effect="mutating",
+                            workspace_mutated=None,
+                            terminal_execution_receipt=mutation_receipt,
+                        )
+                    },
+                )
+            ],
+        ),
+    )
+    probe = ActionModel(
+        tool_name="terminal",
+        action_name="run_code",
+        params={"code": "test -e /tmp/stateful-service-ready"},
+        tool_call_id="stateful-probe",
+        agent_name="agent",
+    )
+    assert record_public_probe_plan(
+        context,
+        "agent",
+        tool_call_id=probe.tool_call_id,
+        tool_identity="terminal:run_code",
+        arguments_projection=probe.params,
+        value={
+            "hypothesis_id": "service-ready",
+            "highest_risk_counterexample": "service state was not installed",
+            "probe_kind": "smoke",
+        },
+    )
+    record_semantic_tool_progress(
+        context,
+        tool_name="terminal",
+        agent_id="agent",
+        actions=[probe],
+        observation=Observation(
+            content="ready",
+            action_result=[
+                ActionResult(
+                    tool_call_id=probe.tool_call_id,
+                    content="ready",
+                    success=True,
+                    metadata={
+                        "sandbox_observation": _sandbox_receipt(
+                            probe,
+                            1,
+                            effect="read_only",
+                            workspace_mutated=False,
+                        )
+                    },
+                )
+            ],
+        ),
+    )
+    # Terminal candidate persistence occurs after the public probe. The probe
+    # remains bound to the stateful mutation rather than becoming stale merely
+    # because the solver's bounded textual handoff is now saved.
+    store_candidate_fallback(
+        context,
+        "agent",
+        [ActionModel(agent_name="agent", policy_info="service is ready")],
+    )
+    assert record_candidate_final(context, "agent") is not None
+
+    status = authenticated_declared_candidate_status(context, "agent")
+
+    assert status["authenticated"] is True
+    assert status["reason"] == "current_stateful_probe"
+    assert status["candidate_fingerprint"] == semantic_fingerprint(
+        {
+            "mutation_fingerprint": context.read_task_runtime_state(
+                "agent", "semantic_progress"
+            )["stateful_mutation_fingerprint"],
+            "probe_receipt_id": status["probe_receipt_id"],
+        }
+    )
+
+    next_code = "touch /tmp/stateful-service-v2"
+    next_mutation = ActionModel(
+        tool_name="terminal",
+        action_name="run_code",
+        params={"code": next_code},
+        tool_call_id="stateful-mutation-v2",
+        agent_name="agent",
+    )
+    next_receipt = build_terminal_execution_receipt(
+        code=next_code,
+        plan=plan_terminal_execution(next_code),
+        executed=True,
+        exit_code=0,
+        timed_out=False,
+        mutation_observed=None,
+    )
+    record_semantic_tool_progress(
+        context,
+        tool_name="terminal",
+        agent_id="agent",
+        actions=[next_mutation],
+        observation=Observation(
+            content="mutated again",
+            action_result=[
+                ActionResult(
+                    tool_call_id=next_mutation.tool_call_id,
+                    content="mutated again",
+                    success=True,
+                    metadata={
+                        "sandbox_observation": _sandbox_receipt(
+                            next_mutation,
+                            2,
+                            effect="mutating",
+                            workspace_mutated=None,
+                            terminal_execution_receipt=next_receipt,
+                        )
+                    },
+                )
+            ],
+        ),
+    )
+
+    invalidated = authenticated_declared_candidate_status(context, "agent")
+    assert invalidated["authenticated"] is False
+    assert invalidated["reason"] == "stateful_candidate_unavailable"
 
 
 @pytest.mark.asyncio

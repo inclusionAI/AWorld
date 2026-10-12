@@ -294,6 +294,28 @@ async def test_production_message_context_resolves_exact_root_factory(
             context=context,
         )
     )
+    candidate_fingerprint = "sha256:" + "c" * 64
+    context.write_task_runtime_state(
+        root.id(),
+        "execution_protocol_mutation_gate",
+        _candidate_gate(context, root.id(), candidate_fingerprint),
+    )
+    context.write_task_runtime_state(
+        root.id(),
+        "adaptive_work_state",
+        {
+            "scope": {"task_id": context.task_id, "task_epoch": context.task_epoch},
+            "validation_evidence": [
+                {
+                    "command_id": "public-check",
+                    "exit_code": 0,
+                    "output_hash": "sha256:" + "d" * 64,
+                    "candidate_fingerprint": candidate_fingerprint,
+                    "source": "runtime_self_check",
+                }
+            ],
+        },
+    )
     context.agent_info.current_agent_id = root.id()
     message = Message(headers={"context": context})
     action = ActionModel(
@@ -564,7 +586,10 @@ async def _capture_reserve_authorization(monkeypatch, phase: ProtocolPhase) -> b
 
     async def spawn(_manager, **kwargs):
         captured["spec"] = kwargs["delegation_spec"]
-        return "- Decision: `ready`"
+        return (
+            '{"decision":"ready","evidence":"public check passed",'
+            '"gaps":"none","recommended_next_action":"submit current result"}'
+        )
 
     monkeypatch.setattr(SubagentManager, "register_team_members", register)
     monkeypatch.setattr(SubagentManager, "spawn", spawn)
@@ -585,7 +610,7 @@ async def _capture_reserve_authorization(monkeypatch, phase: ProtocolPhase) -> b
         Task(
             input=context.origin_user_input,
             swarm=swarm,
-            timeout=10,
+            timeout=60,
             completion_reserve_seconds=1,
             context=context,
         )
@@ -600,6 +625,28 @@ async def _capture_reserve_authorization(monkeypatch, phase: ProtocolPhase) -> b
         context,
         root.id(),
         [ActionModel(agent_name=root.id(), policy_info="canonical candidate")],
+    )
+    candidate_fingerprint = "sha256:" + "e" * 64
+    context.write_task_runtime_state(
+        root.id(),
+        "execution_protocol_mutation_gate",
+        _candidate_gate(context, root.id(), candidate_fingerprint),
+    )
+    context.write_task_runtime_state(
+        root.id(),
+        "adaptive_work_state",
+        {
+            "scope": {"task_id": context.task_id, "task_epoch": context.task_epoch},
+            "validation_evidence": [
+                {
+                    "command_id": "public-check",
+                    "exit_code": 0,
+                    "output_hash": "sha256:" + "f" * 64,
+                    "candidate_fingerprint": candidate_fingerprint,
+                    "source": "runtime_self_check",
+                }
+            ],
+        },
     )
     configured_policy = execution_protocol_policy(context, root.id())
     store = ExecutionProtocolStore(context, root.id(), configured_policy)
@@ -833,7 +880,9 @@ async def test_changed_candidate_fingerprint_allows_one_fresh_review() -> None:
 
 
 @pytest.mark.asyncio
-async def test_real_private_manager_projects_structured_deadline_status() -> None:
+async def test_real_private_manager_projects_structured_deadline_status(
+    monkeypatch,
+) -> None:
     from aworld_cli.builtin_agents.smllc.optional_agents.verifier.builder import (
         build_verifier_swarm,
     )
@@ -867,6 +916,13 @@ async def test_real_private_manager_projects_structured_deadline_status() -> Non
         context=context,
     )
     context.set_task(parent_task)
+    fingerprint = "sha256:" + "a" * 64
+    context.write_task_runtime_state(
+        parent.id(),
+        "execution_protocol_mutation_gate",
+        _candidate_gate(context, parent.id(), fingerprint),
+    )
+    monkeypatch.setattr(lazy_verifier_module, "_REVIEW_MIN_START_SECONDS", 0.0)
     child_context = context.deep_copy()
     child_context.task_id = "lazy-verifier-child"
     child_context.parent = context
@@ -902,6 +958,124 @@ async def test_unparseable_report_cannot_be_promoted_to_ready() -> None:
     assert result.status == "inconclusive"
     assert result.decision == "uncertain"
     assert result.reason_code == "decision_unparseable"
+
+
+@pytest.mark.asyncio
+async def test_strict_json_review_envelope_is_parsed_without_regex_inference() -> None:
+    factory = _factory(
+        report=json.dumps(
+            {
+                "decision": "repair",
+                "evidence": "the current response omits the required field",
+                "gaps": "required field is absent",
+                "recommended_next_action": "add the field and revalidate once",
+            }
+        )
+    )
+
+    result = await factory.review(
+        AdvisoryReviewRequest(candidate_claim="Candidate may be ready."),
+        context=_context(),
+    )
+
+    assert result.status == "completed"
+    assert result.decision == "repair"
+    assert result.reason_code is None
+    assert json.loads(result.report)["decision"] == "repair"
+
+
+@pytest.mark.asyncio
+async def test_ready_requires_framework_owned_direct_evidence() -> None:
+    context = Context(task_id="ready-without-evidence")
+    public_task = "Configure the service."
+    context.origin_user_input = public_task
+    context.set_task(Task(id="ready-without-evidence", input=public_task))
+    fingerprint = "sha256:" + "a" * 64
+    context.write_task_runtime_state(
+        "root-id",
+        "execution_protocol_mutation_gate",
+        _candidate_gate(context, "root-id", fingerprint),
+    )
+    factory = _factory(
+        report=json.dumps(
+            {
+                "decision": "ready",
+                "evidence": "solver says the service is ready",
+                "gaps": "none",
+                "recommended_next_action": "submit current result",
+            }
+        )
+    )
+
+    result = await factory.review(
+        AdvisoryReviewRequest(candidate_claim="Service is ready."),
+        context=context,
+    )
+
+    assert result.status == "inconclusive"
+    assert result.decision == "uncertain"
+    assert result.reason_code == "ready_evidence_missing"
+    assert result.to_payload()["recommended_framework_action"] == (
+        "task_derived_validation_once"
+    )
+
+
+@pytest.mark.asyncio
+async def test_review_does_not_start_inside_persistence_window() -> None:
+    context = Context(task_id="review-window-closed")
+    public_task = "Configure the service."
+    context.origin_user_input = public_task
+    task = Task(
+        id="review-window-closed",
+        input=public_task,
+        completion_reserve_seconds=10,
+    )
+    task.remaining_seconds = lambda: 25.0
+    context.set_task(task)
+    fingerprint = "sha256:" + "b" * 64
+    context.write_task_runtime_state(
+        "root-id",
+        "execution_protocol_mutation_gate",
+        _candidate_gate(context, "root-id", fingerprint),
+    )
+    captured = {}
+    factory = _factory(captured=captured)
+
+    result = await factory.review(
+        AdvisoryReviewRequest(candidate_claim="Service is ready."),
+        context=context,
+    )
+
+    assert result.status == "unavailable"
+    assert result.reason_code == "review_start_window_closed"
+    assert captured.get("builder_loads", 0) == 0
+
+
+@pytest.mark.asyncio
+async def test_review_budget_allows_initial_plus_one_changed_candidate() -> None:
+    captured = {}
+    factory = _factory(
+        captured=captured,
+        report=(
+            '{"decision":"repair","evidence":"direct check failed",'
+            '"gaps":"one defect","recommended_next_action":"repair once"}'
+        ),
+    )
+
+    first = await factory.review(
+        AdvisoryReviewRequest(candidate_claim="candidate one"), context=_context()
+    )
+    second = await factory.review(
+        AdvisoryReviewRequest(candidate_claim="candidate two"), context=_context()
+    )
+    third = await factory.review(
+        AdvisoryReviewRequest(candidate_claim="candidate three"), context=_context()
+    )
+
+    assert first.status == second.status == "completed"
+    assert third.status == "unavailable"
+    assert third.reason_code == "review_attempt_limit"
+    assert captured["builder_loads"] == 2
 
 
 @pytest.mark.asyncio
@@ -1391,13 +1565,14 @@ async def test_review_rejects_non_hex_candidate_fingerprint() -> None:
         },
     }
 
-    await factory.review(
+    result = await factory.review(
         AdvisoryReviewRequest(candidate_claim="Result is complete."),
         context=context,
     )
 
-    directive = captured["runner"]["directive"]
-    assert "must-not-project" not in directive
+    assert result.status == "unavailable"
+    assert result.reason_code == "candidate_checkpoint_unavailable"
+    assert "runner" not in captured
 
 
 @pytest.mark.parametrize(
