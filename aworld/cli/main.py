@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 import sys
 import stat
+import time
 from typing import Mapping
 from uuid import uuid4
 
@@ -20,7 +21,16 @@ from aworld.core.agent import Agent
 from aworld.core.agent.messages import AssistantMessage, ToolCall, ToolResultMessage
 from aworld.core.context import BudgetPolicy, Context, ContextBudget
 from aworld.core.sandbox import LocalSandbox
-from aworld.core.session import InMemorySessionStore, RunOptions, RunStatus, create_session, load_session
+from aworld.core.session import (
+    InMemorySessionStore,
+    RunError,
+    RunOptions,
+    RunResult,
+    RunStatus,
+    RunStopReason,
+    create_session,
+    load_session,
+)
 from aworld.core.tool import ToolRegistry, default_tools, session_tools
 
 
@@ -118,12 +128,94 @@ def parser():
     return value
 
 
+_EVIDENCE_CHECKPOINT_INTERVAL_SECONDS = 30.0
+
+
+async def _write_live_evidence_checkpoint(session, run, args, agent, events):
+    """Persist valid bounded evidence before a supervisor can end the process.
+
+    The terminal result and ATIF are still written by ``_execute`` after the
+    kernel finishes.  This checkpoint is an explicitly unsuccessful fallback:
+    if the outer process deadline wins a race with kernel cancellation, Harbor
+    can classify the interruption and run the canonical verifier instead of
+    reporting missing evidence as an infrastructure failure.
+    """
+
+    from aworld.cli.trajectory import build_trajectory, write_json
+
+    checkpoint = RunResult(
+        run.id,
+        run.session_id,
+        RunStatus.FAILED,
+        RunStopReason.DEADLINE_EXCEEDED,
+        None,
+        RunError(
+            "execution_interrupted",
+            "AWorld minimal run did not reach terminal evidence persistence",
+        ),
+    )
+    if args.result_output:
+        write_json(args.result_output, checkpoint, default=_serialize)
+    if args.trajectory_output:
+        history = await session.history()
+        write_json(
+            args.trajectory_output,
+            build_trajectory(
+                history,
+                events=tuple(events),
+                result=checkpoint,
+                agent=agent,
+                model_name="demo" if args.demo else args.model,
+            ),
+        )
+
+
 async def _execute(session, input, args, agent):
     run = await session.submit(input, options=RunOptions(timeout_seconds=args.timeout))
+    observed_events = []
+    checkpoint_error_reported = False
+    last_checkpoint = 0.0
+
+    async def checkpoint():
+        nonlocal checkpoint_error_reported, last_checkpoint
+        try:
+            await _write_live_evidence_checkpoint(
+                session, run, args, agent, observed_events
+            )
+            last_checkpoint = time.monotonic()
+        except Exception as exc:
+            if not checkpoint_error_reported:
+                print(
+                    "AWORLD_MINIMAL_CHECKPOINT="
+                    + _json(
+                        {
+                            "status": "failed",
+                            "error_type": type(exc).__name__,
+                        }
+                    ),
+                    file=sys.stderr,
+                    flush=True,
+                )
+                checkpoint_error_reported = True
+
+    if args.trajectory_output or args.result_output:
+        await checkpoint()
     try:
-        if args.events:
+        if args.events or args.trajectory_output or args.result_output:
             async for event in run.events():
-                print(_json(event), file=sys.stderr, flush=True)
+                observed_events.append(event)
+                if args.events:
+                    print(_json(event), file=sys.stderr, flush=True)
+                now = time.monotonic()
+                if (
+                    (args.trajectory_output or args.result_output)
+                    and (
+                        event.type in {"model.started", "tool.started"}
+                        or now - last_checkpoint
+                        >= _EVIDENCE_CHECKPOINT_INTERVAL_SECONDS
+                    )
+                ):
+                    await checkpoint()
         result = await run.result()
     except asyncio.CancelledError:
         await run.cancel()

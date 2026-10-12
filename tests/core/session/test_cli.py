@@ -1,5 +1,6 @@
 """Run the new source CLI in isolated stdlib subprocesses and real stdin pipes."""
 
+import asyncio
 import json
 import os
 from pathlib import Path
@@ -7,7 +8,9 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from types import SimpleNamespace
 from aworld._version import __version__
+from aworld.cli.main import _write_live_evidence_checkpoint
 
 ROOT = Path(__file__).resolve().parents[3]
 
@@ -24,6 +27,41 @@ def command(*args, input=None):
 
 
 class CliTests(unittest.TestCase):
+    def test_live_evidence_checkpoint_is_valid_and_explicitly_incomplete(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            trajectory_path = root / "trajectory.json"
+            result_path = root / "result.json"
+
+            class Session:
+                async def history(self):
+                    return ()
+
+            asyncio.run(
+                _write_live_evidence_checkpoint(
+                    Session(),
+                    SimpleNamespace(id="run-a", session_id="session-a"),
+                    SimpleNamespace(
+                        result_output=result_path,
+                        trajectory_output=trajectory_path,
+                        demo=True,
+                        model=None,
+                    ),
+                    SimpleNamespace(skills=(), tools=()),
+                    (),
+                )
+            )
+
+            result = json.loads(result_path.read_text())
+            trajectory = json.loads(trajectory_path.read_text())
+            self.assertEqual(result["status"], "failed")
+            self.assertEqual(result["stop_reason"], "deadline_exceeded")
+            self.assertEqual(result["error"]["code"], "execution_interrupted")
+            self.assertEqual(trajectory["schema_version"], "ATIF-v1.7")
+            self.assertEqual(trajectory["session_id"], result["session_id"])
+            self.assertEqual(trajectory["extra"]["run_id"], result["run_id"])
+            self.assertEqual(trajectory["extra"]["status"], "failed")
+
     def test_help_version_and_capabilities_without_optional_dependencies(self):
         result = command("--help")
         self.assertEqual(result.returncode, 0, result.stderr)
