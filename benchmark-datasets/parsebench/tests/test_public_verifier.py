@@ -536,6 +536,29 @@ def test_deep_legacy_filex_candidate_json_is_a_canonical_scored_zero(
     )
 
 
+def test_arbitrary_legacy_filex_snapshot_recursion_remains_infrastructure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _embedded_case(tmp_path, markdown=b"public")
+
+    def recurse(**_kwargs):
+        raise RecursionError("unexpected internal recursion")
+
+    monkeypatch.setattr(verifier, "_snapshot_filex_artifacts", recurse)
+    with pytest.raises(RecursionError, match="unexpected internal recursion"):
+        verifier.verify_parsebench_task(
+            ground_truth_path=tmp_path / "tests/ground_truth.json",
+            result_path=tmp_path / "artifacts/result.json",
+            markdown_path=tmp_path / "artifacts/document.md",
+            layout_path=tmp_path / "artifacts/layout.json",
+            artifact_format="filex",
+            workspace_root=tmp_path / "workspace",
+            verifier_output=tmp_path / "verifier",
+        )
+    assert not (tmp_path / "verifier/reward.json").exists()
+    assert not (tmp_path / "verifier/parsebench-result.json").exists()
+
+
 @pytest.mark.parametrize("trusted_input", ["scope", "ground_truth"])
 def test_deep_trusted_json_remains_infrastructure(
     tmp_path: Path, trusted_input: str

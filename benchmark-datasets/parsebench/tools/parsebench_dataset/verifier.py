@@ -683,11 +683,6 @@ def _snapshot_artifacts(
             raise ParseBenchVerificationError(
                 "artifact_validation_failed", str(exc)
             ) from exc
-        except RecursionError as exc:
-            raise ParseBenchVerificationError(
-                "artifact_validation_failed",
-                "FileX public artifact JSON nesting exceeds the verifier limit",
-            ) from exc
     if artifact_format != "parsebench":
         raise ParseBenchVerificationError(
             "invalid_artifact_format", "unknown ParseBench artifact format"
