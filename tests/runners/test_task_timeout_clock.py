@@ -1,4 +1,5 @@
 import asyncio
+import time
 from io import StringIO
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -19,13 +20,21 @@ from aworld_cli.executors.continuous import ContinuousExecutor
 @pytest.fixture
 def clock(monkeypatch):
     clock = SimpleNamespace(wall=10_000.0, elapsed=100.0)
-    source = SimpleNamespace(
+    runner_source = SimpleNamespace(
         time=lambda: clock.wall,
         monotonic=lambda: clock.elapsed,
     )
+    task_source = SimpleNamespace(
+        time=time.time,
+        monotonic=lambda: clock.elapsed,
+    )
     # Patch module references without changing asyncio's own monotonic clock.
-    monkeypatch.setattr("aworld.runners.task_runner.time", source)
-    monkeypatch.setattr("aworld.runners.event_runner.time", source)
+    # Task lifetime now owns the portable deadline. Keep its wall clock real so
+    # these tests can vary reporting time independently, while sharing the
+    # deterministic monotonic execution budget with both runner layers.
+    monkeypatch.setattr("aworld.core.task.time", task_source)
+    monkeypatch.setattr("aworld.runners.task_runner.time", runner_source)
+    monkeypatch.setattr("aworld.runners.event_runner.time", runner_source)
     return clock
 
 

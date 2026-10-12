@@ -60,8 +60,8 @@ ENV FILEX_WORKSPACE_ROOT=/root/workspace
 WORKDIR /root/workspace
 
 RUN filex --help >/dev/null \
-    && aworld-cli --help >/dev/null \
-    && aworld-cli run --demo --skill-path /skills/filex \
+    && aworld-cli --minimal --help >/dev/null \
+    && aworld-cli --minimal run --demo --skill-path /skills/filex \
         --task "FileX skill smoke test" --json >/dev/null
 
-CMD ["aworld-cli"]
+CMD ["aworld-cli", "--minimal"]
