@@ -137,6 +137,7 @@ _SCOPE_REASONS = {
 _MAX_GROUND_TRUTH_BYTES = 64 * 1024 * 1024
 _MAX_SCOPE_BYTES = 64 * 1024
 _MAX_ARTIFACT_BYTES = 512 * 1024 * 1024
+_MAX_ARTIFACT_JSON_DEPTH = 128
 _FIXED_TIMESTAMP = "1970-01-01T00:00:00+00:00"
 
 
@@ -682,6 +683,11 @@ def _snapshot_artifacts(
             raise ParseBenchVerificationError(
                 "artifact_validation_failed", str(exc)
             ) from exc
+        except RecursionError as exc:
+            raise ParseBenchVerificationError(
+                "artifact_validation_failed",
+                "FileX public artifact JSON nesting exceeds the verifier limit",
+            ) from exc
     if artifact_format != "parsebench":
         raise ParseBenchVerificationError(
             "invalid_artifact_format", "unknown ParseBench artifact format"
@@ -696,7 +702,7 @@ def _snapshot_artifacts(
         layout_bytes = _read_regular_file(
             layout_path, "layout artifact", limit=_MAX_ARTIFACT_BYTES
         )
-        layout_payload = _parse_json_object(layout_bytes, "layout artifact")
+        layout_payload = _parse_artifact_json_object(layout_bytes, "layout artifact")
     except ParseBenchVerificationError as exc:
         if exc.code != "invalid_verifier_input":
             raise
@@ -748,6 +754,41 @@ _CANONICAL_LAYOUT_LABELS = frozenset(
 
 def _artifact_error(message: str) -> ParseBenchVerificationError:
     return ParseBenchVerificationError("artifact_validation_failed", message)
+
+
+def _parse_artifact_json_object(content: bytes, description: str) -> dict[str, Any]:
+    """Parse candidate JSON with an explicit, iterative nesting bound."""
+
+    try:
+        payload = _parse_json_object(content, description)
+    except RecursionError as exc:
+        raise _artifact_error(
+            f"{description} nesting exceeds the verifier limit"
+        ) from exc
+    except ParseBenchVerificationError as exc:
+        if exc.code != "invalid_verifier_input":
+            raise
+        raise _artifact_error(str(exc)) from exc
+
+    pending: list[tuple[object, int]] = [(payload, 1)]
+    while pending:
+        value, depth = pending.pop()
+        if depth > _MAX_ARTIFACT_JSON_DEPTH:
+            raise _artifact_error(
+                f"{description} nesting exceeds the verifier limit"
+            )
+        if isinstance(value, dict):
+            children = value.values()
+        elif isinstance(value, list):
+            children = value
+        else:
+            continue
+        pending.extend(
+            (child, depth + 1)
+            for child in children
+            if isinstance(child, (dict, list))
+        )
+    return payload
 
 
 def _artifact_number(value: object, description: str, *, minimum: float = 0) -> float:
@@ -999,7 +1040,7 @@ def _snapshot_filex_artifacts(
         initial_result_bytes = _read_regular_file(
             result_path, "result", limit=_MAX_ARTIFACT_BYTES
         )
-        initial_result = _parse_json_object(initial_result_bytes, "result")
+        initial_result = _parse_artifact_json_object(initial_result_bytes, "result")
         if initial_result.get("schema_version") == "filex.skill.parse-result/v1":
             return _snapshot_filex_skill_artifacts(
                 ground_truth=ground_truth,
@@ -1025,8 +1066,8 @@ def _snapshot_filex_artifacts(
         layout_bytes = _read_regular_file(
             layout_path, "layout artifact", limit=_MAX_ARTIFACT_BYTES
         )
-        result = _parse_json_object(result_bytes, "result")
-        layout = _parse_json_object(layout_bytes, "layout artifact")
+        result = _parse_artifact_json_object(result_bytes, "result")
+        layout = _parse_artifact_json_object(layout_bytes, "layout artifact")
         if result != validated:
             raise ParseBenchVerificationError(
                 "artifact_validation_failed",
@@ -1125,7 +1166,7 @@ def _snapshot_filex_skill_artifacts(
         )
     try:
         markdown = document_bytes.decode("utf-8")
-        document_ir = _parse_json_object(layout_bytes, "FileX Document IR")
+        document_ir = _parse_artifact_json_object(layout_bytes, "FileX Document IR")
         filex = result["filex"]
         if not isinstance(filex, Mapping) or filex.get("success") is not True:
             raise TypeError("FileX response is not successful")
@@ -1205,7 +1246,27 @@ def _canonical_json_bytes(value: object, *, sort_keys: bool = True) -> bytes:
     )
 
 
-def _atomic_write(path: Path, content: bytes) -> None:
+def _regular_file_matches(path: Path, content: bytes) -> bool:
+    try:
+        return (
+            not path.is_symlink()
+            and path.is_file()
+            and path.stat().st_size == len(content)
+            and path.read_bytes() == content
+        )
+    except OSError:
+        return False
+
+
+def _fsync_directory(path: Path) -> None:
+    directory_descriptor = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(directory_descriptor)
+    finally:
+        os.close(directory_descriptor)
+
+
+def _stage_write(path: Path, content: bytes) -> Path:
     descriptor, temporary_name = tempfile.mkstemp(
         prefix=f".{path.name}.", dir=path.parent
     )
@@ -1215,17 +1276,50 @@ def _atomic_write(path: Path, content: bytes) -> None:
             destination.write(content)
             destination.flush()
             os.fsync(destination.fileno())
-        os.replace(temporary, path)
-        directory_descriptor = os.open(path.parent, os.O_RDONLY)
+        if not _regular_file_matches(temporary, content):
+            raise OSError("staged verifier output does not match")
+        return temporary
+    except BaseException:
         try:
-            os.fsync(directory_descriptor)
-        finally:
-            os.close(directory_descriptor)
+            temporary.unlink()
+        except OSError:
+            pass
+        raise
+
+
+def _publish_staged(temporary: Path, path: Path, content: bytes) -> None:
+    published = False
+    try:
+        try:
+            os.replace(temporary, path)
+        except OSError:
+            # A wrapper or unusual filesystem may report an error after the
+            # rename became visible. Exact bytes prove publication completed.
+            if not _regular_file_matches(path, content):
+                raise
+            published = True
+        else:
+            published = True
+        try:
+            _fsync_directory(path.parent)
+        except OSError:
+            # Once exact bytes are visible, rolling back would turn a durable
+            # commit into an ambiguous failure. The reward is the final marker.
+            if not _regular_file_matches(path, content):
+                raise
     finally:
         try:
             temporary.unlink()
         except FileNotFoundError:
             pass
+        except OSError:
+            if not published:
+                raise
+
+
+def _atomic_write(path: Path, content: bytes) -> None:
+    temporary = _stage_write(path, content)
+    _publish_staged(temporary, path, content)
 
 
 def _prepare_verifier_output(path: Path) -> None:
@@ -1430,29 +1524,43 @@ def _commit_verifier_result(
 ) -> ParseBenchVerificationOutcome:
     details_path = output / PARSEBENCH_VERIFIER_RESULT_FILENAME
     reward_path = output / PARSEBENCH_REWARD_FILENAME if result.publishable else None
+    staged: list[Path] = []
     try:
-        _atomic_write(details_path, _canonical_json_bytes(result.to_dict()))
+        details_content = _canonical_json_bytes(result.to_dict())
+        reward_content = (
+            _canonical_json_bytes(result.reward_payload(), sort_keys=False)
+            if reward_path is not None
+            else None
+        )
+        if reward_path is not None and (reward_path.exists() or reward_path.is_symlink()):
+            raise OSError("reward commit marker already exists")
+        details_temporary = _stage_write(details_path, details_content)
+        staged.append(details_temporary)
+        reward_temporary = None
         if reward_path is not None:
-            # Insertion order is part of the Harbor contract: ``reward`` is first.
-            _atomic_write(
-                reward_path,
-                _canonical_json_bytes(result.reward_payload(), sort_keys=False),
-            )
+            assert reward_content is not None
+            reward_temporary = _stage_write(reward_path, reward_content)
+            staged.append(reward_temporary)
+
+        _publish_staged(details_temporary, details_path, details_content)
+        if reward_path is not None:
+            # Reward is published last and is Harbor's only commit marker.
+            assert reward_content is not None and reward_temporary is not None
+            _publish_staged(reward_temporary, reward_path, reward_content)
     except (OSError, TypeError, ValueError) as exc:
-        # Harbor must never observe a completed verifier process with only one
-        # member of the result/reward pair. Writes are individually atomic; on
-        # a bounded commit error, roll back every member already published.
-        for target in (reward_path, details_path):
-            if target is None:
-                continue
-            try:
-                target.unlink()
-            except OSError:
-                pass
+        # Details are inert until reward is published last as the commit marker.
+        # _publish_staged reports post-replace/fsync uncertainty as success only
+        # when exact bytes are already visible, so a failed call has no reward.
         raise ParseBenchVerificationError(
             "verifier_output_failed",
             "ParseBench verifier output could not be committed",
         ) from exc
+    finally:
+        for temporary in staged:
+            try:
+                temporary.unlink()
+            except OSError:
+                pass
     return ParseBenchVerificationOutcome(
         result=result,
         stdout_line=result.render_stdout_sentinel(),

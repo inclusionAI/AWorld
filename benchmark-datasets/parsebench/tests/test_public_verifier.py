@@ -442,7 +442,14 @@ def test_public_scorer_infrastructure_failure_is_not_a_zero_score(
 
 @pytest.mark.parametrize(
     "damage",
-    ["nested_segment", "invalid_json", "negative_coordinate", "out_of_page"],
+    [
+        "nested_segment",
+        "invalid_json",
+        "over_depth_json",
+        "deep_json",
+        "negative_coordinate",
+        "out_of_page",
+    ],
 )
 def test_invalid_public_artifact_is_a_canonical_scored_zero(
     tmp_path: Path, damage: str
@@ -456,6 +463,14 @@ def test_invalid_public_artifact_is_a_canonical_scored_zero(
         layout_path.write_text(json.dumps(payload))
     elif damage == "invalid_json":
         layout_path.write_text('{"layout_pages":NaN}')
+    elif damage == "over_depth_json":
+        layout_path.write_text(
+            '{"nested":' + "[" * 200 + "0" + "]" * 200 + "}"
+        )
+    elif damage == "deep_json":
+        layout_path.write_text(
+            '{"nested":' + "[" * 20_000 + "0" + "]" * 20_000 + "}"
+        )
     elif damage == "negative_coordinate":
         item["bbox"]["x"] = -1
         layout_path.write_text(json.dumps(payload))
@@ -489,6 +504,62 @@ def test_invalid_public_artifact_is_a_canonical_scored_zero(
     # Diagnostic output must not disclose malformed content or host paths.
     assert "bbox" not in outcome.stdout_line
     assert str(tmp_path) not in outcome.stdout_line
+
+
+def test_deep_legacy_filex_candidate_json_is_a_canonical_scored_zero(
+    tmp_path: Path,
+) -> None:
+    _embedded_case(tmp_path, markdown=b"public")
+    result_path = tmp_path / "artifacts/result.json"
+    result_path.write_text(
+        '{"nested":' + "[" * 20_000 + "0" + "]" * 20_000 + "}"
+    )
+
+    outcome = verifier.verify_parsebench_task(
+        ground_truth_path=tmp_path / "tests/ground_truth.json",
+        result_path=result_path,
+        markdown_path=tmp_path / "artifacts/document.md",
+        layout_path=tmp_path / "artifacts/layout.json",
+        artifact_format="filex",
+        workspace_root=tmp_path / "workspace",
+        verifier_output=tmp_path / "verifier",
+        scorer_checkout=tmp_path / "missing-scorer",
+        scorer_python=Path(sys.executable),
+    )
+
+    assert outcome.result.status.value == "scored"
+    assert outcome.result.diagnostic_reward == 0.0
+    assert json.loads(outcome.reward_path.read_bytes())["reward"] == 0.0
+    assert outcome.result.diagnostics == (
+        "text_content/public-task: artifact_invalid",
+        "text_content/public-task: artifact_validation_failed",
+    )
+
+
+@pytest.mark.parametrize("trusted_input", ["scope", "ground_truth"])
+def test_deep_trusted_json_remains_infrastructure(
+    tmp_path: Path, trusted_input: str
+) -> None:
+    _embedded_case(tmp_path, markdown=b"public")
+    path = tmp_path / "tests" / (
+        "parsebench-scope.json" if trusted_input == "scope" else "ground_truth.json"
+    )
+    path.write_text('{"nested":' + "[" * 20_000 + "0" + "]" * 20_000 + "}")
+
+    with pytest.raises(
+        (RecursionError, verifier.ParseBenchVerificationError)
+    ) as error:
+        verifier.verify_parsebench_task(
+            ground_truth_path=tmp_path / "tests/ground_truth.json",
+            markdown_path=tmp_path / "artifacts/document.md",
+            layout_path=tmp_path / "artifacts/layout.json",
+            workspace_root=tmp_path / "workspace",
+            verifier_output=tmp_path / "verifier",
+        )
+    if isinstance(error.value, verifier.ParseBenchVerificationError):
+        assert error.value.code != "artifact_validation_failed"
+    assert not (tmp_path / "verifier/reward.json").exists()
+    assert not (tmp_path / "verifier/parsebench-result.json").exists()
 
 
 @pytest.mark.parametrize(
@@ -557,7 +628,7 @@ def test_arbitrary_artifact_snapshot_exception_remains_infrastructure(
     assert not (tmp_path / "verifier/parsebench-result.json").exists()
 
 
-def test_reward_and_result_commit_roll_back_together_on_write_failure(
+def test_failed_reward_commit_has_no_reward_even_when_details_cleanup_fails(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     result = verifier.ParseBenchVerifierResult.from_case_results(
@@ -572,19 +643,89 @@ def test_reward_and_result_commit_roll_back_together_on_write_failure(
     )
     output = tmp_path / "verifier"
     output.mkdir()
-    real_atomic_write = verifier._atomic_write
+    real_publish_staged = verifier._publish_staged
+    details_path = output / "parsebench-result.json"
+    real_unlink = Path.unlink
 
-    def fail_reward(path: Path, content: bytes) -> None:
+    def fail_reward(temporary: Path, path: Path, content: bytes) -> None:
         if path.name == "reward.json":
             raise OSError("simulated reward commit failure")
-        real_atomic_write(path, content)
+        real_publish_staged(temporary, path, content)
 
-    monkeypatch.setattr(verifier, "_atomic_write", fail_reward)
+    def fail_details_cleanup(path: Path, *args, **kwargs) -> None:
+        if path == details_path:
+            raise PermissionError("simulated details cleanup failure")
+        real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(verifier, "_publish_staged", fail_reward)
+    monkeypatch.setattr(Path, "unlink", fail_details_cleanup)
     with pytest.raises(verifier.ParseBenchVerificationError) as error:
         verifier._commit_verifier_result(output=output, result=result)
     assert error.value.code == "verifier_output_failed"
     assert not (output / "reward.json").exists()
-    assert not (output / "parsebench-result.json").exists()
+    # Details are inert without the final reward commit marker.
+    assert details_path.exists()
+
+
+def test_reward_post_replace_fsync_failure_is_a_successful_commit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    result = verifier.ParseBenchVerifierResult.from_case_results(
+        task_id="public-task",
+        case_results=(
+            verifier.ParseBenchCaseResult.scored(
+                case_id="public-task",
+                dimension=ParseBenchDimension.LAYOUT,
+                score=0.0,
+            ),
+        ),
+    )
+    output = tmp_path / "verifier"
+    output.mkdir()
+    fsync_calls = 0
+
+    def fail_reward_directory_fsync(path: Path) -> None:
+        nonlocal fsync_calls
+        fsync_calls += 1
+        if fsync_calls == 2:
+            raise OSError("simulated post-replace directory fsync failure")
+
+    monkeypatch.setattr(verifier, "_fsync_directory", fail_reward_directory_fsync)
+    outcome = verifier._commit_verifier_result(output=output, result=result)
+
+    assert outcome.reward_path == output / "reward.json"
+    assert json.loads(outcome.reward_path.read_bytes())["reward"] == 0.0
+    assert json.loads(outcome.result_path.read_bytes()) == result.to_dict()
+
+
+def test_reward_replace_uncertainty_with_exact_bytes_is_a_successful_commit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    result = verifier.ParseBenchVerifierResult.from_case_results(
+        task_id="public-task",
+        case_results=(
+            verifier.ParseBenchCaseResult.scored(
+                case_id="public-task",
+                dimension=ParseBenchDimension.LAYOUT,
+                score=0.0,
+            ),
+        ),
+    )
+    output = tmp_path / "verifier"
+    output.mkdir()
+    real_replace = verifier.os.replace
+
+    def replace_then_report_error(source, destination) -> None:
+        real_replace(source, destination)
+        if Path(destination).name == "reward.json":
+            raise OSError("simulated uncertain reward replace")
+
+    monkeypatch.setattr(verifier.os, "replace", replace_then_report_error)
+    outcome = verifier._commit_verifier_result(output=output, result=result)
+
+    assert outcome.reward_path == output / "reward.json"
+    assert json.loads(outcome.reward_path.read_bytes())["reward"] == 0.0
+    assert json.loads(outcome.result_path.read_bytes()) == result.to_dict()
 
 
 def test_valid_public_artifact_keeps_official_score(
