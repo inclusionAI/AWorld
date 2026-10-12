@@ -1,11 +1,11 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
-import pickle
 import traceback
 
 from aworld.config import BaseConfig
 from aworld.core.event.base import Constants, Message
 from aworld.events import InMemoryEventbus
+from aworld.events.serialization import dumps_message, loads_message
 from aworld.logs.util import logger
 
 
@@ -18,6 +18,15 @@ class RedisConfig(BaseConfig):
 
 
 class RedisEventbus(InMemoryEventbus):
+    """Redis stream backed event bus.
+
+    Messages are pickled for transport, but decoded through
+    `aworld.events.serialization.loads_message`, which refuses globals outside an
+    allowlist (see issue #929).  Keep the Redis instance trusted and
+    network-isolated: the allowlist narrows the attack surface, it does not make an
+    untrusted stream safe.
+    """
+
     def __init__(self, conf: RedisConfig = None, **kwargs):
         import aioredis
 
@@ -40,7 +49,7 @@ class RedisEventbus(InMemoryEventbus):
 
         name = message.task_id
         try:
-            data = {"data": pickle.dumps(message)}
+            data = {"data": dumps_message(message)}
             msg_id = await self.client.xadd(name=name, id="*", fields=data)
             if message.category == Constants.CHUNK:
                 logger.debug(f"redis add stream chunk id {msg_id} to {name} channel.")
@@ -65,7 +74,7 @@ class RedisEventbus(InMemoryEventbus):
             for msg in msgs:
                 message_id = msg[0]
                 message_content = msg[1]
-                data = pickle.loads(message_content.get(b"data"))
+                data = loads_message(message_content.get(b"data"))
                 if data.category == Constants.CHUNK:
                     logger.debug(
                         f"Get stream chunk message: {message_id} task={data.task_id}"
@@ -82,7 +91,7 @@ class RedisEventbus(InMemoryEventbus):
             for msg in msgs:
                 message_id = msg[0]
                 message_content = msg[1]
-                data = pickle.loads(message_content.get(b"data"))
+                data = loads_message(message_content.get(b"data"))
                 logger.debug(f"Get message: {message_id} with content {data}")
                 await self.client.xdel(message.task_id, message_id)
                 return data
