@@ -1,0 +1,73 @@
+{
+  "validation": "passed",
+  "public_base": "python:3.12-slim-bookworm@sha256:782412e85d0f0984994c290652577d4018aff08145c85b262bb63dc0c7522254",
+  "scorer_revision": "34b73455032797754f6ed62e14c27a8b5423d11e",
+  "runtime_package_count": 56,
+  "build_package_count": 2,
+  "images": [
+    {
+      "tag": "parsebench-public-agent:validation",
+      "id": "sha256:2478192743fff610f1663c2290c5cb2a7e217dbecf31d7edeb1977d1100825ec",
+      "architecture": "arm64",
+      "size": 55219359
+    },
+    {
+      "tag": "parsebench-public-scorer:final-arm64",
+      "id": "sha256:c1c696971581af1cabe537e23fef0814ba102baa7e2e5f04a03fa0da57f081f2",
+      "architecture": "arm64",
+      "size": 169142657
+    },
+    {
+      "tag": "parsebench-public-scorer:final-amd64",
+      "id": "sha256:6903cfe45d0b94039653f28f8f7ab3c9d7134a75232bbea04cb9716d83c3fea4",
+      "architecture": "amd64",
+      "size": 174617819
+    }
+  ],
+  "checks": [
+    "public_agent_docker_build",
+    "real_pdf_text_extraction_offline",
+    "public_scorer_docker_build_arm64",
+    "public_scorer_docker_build_amd64",
+    "pip_check",
+    "official_cli_import",
+    "strict_source_probe_offline_arm64",
+    "runtime_package_versions_exact",
+    "strict_source_probe_offline_amd64"
+  ],
+  "manifest": {
+    "Dockerfile.agent.template": {
+      "size": 421,
+      "sha256": "ab5e5369267099fdcbbe8b4a125446bffd2650ddecb0e95427d35b8dec094217"
+    },
+    "Dockerfile.scorer": {
+      "size": 1142,
+      "sha256": "927d1e4a51a90145875ade538f05fecba4e444805e4eed38844d58eed90e2ff0"
+    },
+    "scorer/AWORLD_SCORER_BUNDLE_MANIFEST.json": {
+      "size": 32520,
+      "sha256": "70c69695e47dfd9467f2aaadd8b93ec6c7254dd61f4941fcfcc12f7c92742065"
+    },
+    "scorer/VENDORED.md": {
+      "size": 603,
+      "sha256": "4ae6f99eb61da04f9995bab3ed4d94e2e8b9f299a7fd737607e8f6512049e21b"
+    },
+    "scorer/build-requirements.txt": {
+      "size": 440,
+      "sha256": "b850b93d127aecfb0fd9605eaacbfec879b7473a5d8d44e7087e2f044e4ad4dd"
+    },
+    "scorer/install_scorer.py": {
+      "size": 2506,
+      "sha256": "2a2963df49c8fb9a63fb92e0829180c13b80bbe5eb6e59442b23340905f0dbe7"
+    },
+    "scorer/requirements.txt": {
+      "size": 7131,
+      "sha256": "4e9c415a3e6027ce6717d7ac13035d9d7eebb721922151c7acb10fc322d4da6a"
+    }
+  },
+  "not_performed": [
+    "registry_push",
+    "model_inference",
+    "benchmark_results_submission"
+  ]
+}

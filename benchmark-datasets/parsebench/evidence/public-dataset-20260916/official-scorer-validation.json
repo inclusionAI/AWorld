@@ -1,0 +1,93 @@
+{
+  "suite": "public verifier and explicit legacy FileX compatibility",
+  "result": "33 passed",
+  "elapsed_seconds": 69.94,
+  "image": "parsebench-public-scorer:validation-layout",
+  "image_id": "sha256:89dc05b0dc9395cc5815c949bf062c31d3b88f1b41b8bb76f481eece0c142f80",
+  "scorer_revision": "34b73455032797754f6ed62e14c27a8b5423d11e",
+  "dataset_revision": "2805a1d940f95a203e0ae4b88be9934f7765b3fc",
+  "network": "none",
+  "model_calls": 0,
+  "filex_result_required": false,
+  "embedded_filex_artifacts_module_present": false,
+  "verifier_source_sha256": "sha256:0ace6019d1b072db899f1082e83d2f0d82621e9d379526079ddb52b882712d4f",
+  "fixture_kind": "synthetic contract checks, not benchmark results",
+  "cases": [
+    {
+      "test": "test_embedded_verifier_officia0",
+      "status": "scored",
+      "dimension": "layout",
+      "primary_metric": "avg_layout_element_rule_pass_rate",
+      "score": 1.0,
+      "report": "scorer-cases/test_embedded_verifier_officia0/parsebench-result.json"
+    },
+    {
+      "test": "test_embedded_verifier_officia1",
+      "status": "scored",
+      "dimension": "layout",
+      "primary_metric": "avg_layout_element_rule_pass_rate",
+      "score": 1.0,
+      "report": "scorer-cases/test_embedded_verifier_officia1/parsebench-result.json"
+    },
+    {
+      "test": "test_embedded_verifier_other_o0",
+      "status": "scored",
+      "dimension": "table",
+      "primary_metric": "avg_grits_trm_composite",
+      "score": 1.0,
+      "report": "scorer-cases/test_embedded_verifier_other_o0/parsebench-result.json"
+    },
+    {
+      "test": "test_embedded_verifier_other_o1",
+      "status": "scored",
+      "dimension": "chart",
+      "primary_metric": "avg_rule_pass_rate",
+      "score": 1.0,
+      "report": "scorer-cases/test_embedded_verifier_other_o1/parsebench-result.json"
+    },
+    {
+      "test": "test_embedded_verifier_other_o2",
+      "status": "scored",
+      "dimension": "text_formatting",
+      "primary_metric": "avg_semantic_formatting",
+      "score": 1.0,
+      "report": "scorer-cases/test_embedded_verifier_other_o2/parsebench-result.json"
+    },
+    {
+      "test": "test_embedded_verifier_rejects0",
+      "status": "rejected_invalid_input",
+      "reward_exists": false
+    },
+    {
+      "test": "test_embedded_verifier_rejects1",
+      "status": "rejected_invalid_input",
+      "reward_exists": false
+    },
+    {
+      "test": "test_embedded_verifier_with_re0",
+      "status": "scored",
+      "dimension": "text_content",
+      "primary_metric": "avg_content_faithfulness",
+      "score": 1.0,
+      "report": "scorer-cases/test_embedded_verifier_with_re0/parsebench-result.json"
+    },
+    {
+      "test": "test_embedded_verifier_with_re1",
+      "status": "scored",
+      "dimension": "text_content",
+      "primary_metric": "avg_content_faithfulness",
+      "score": 0.0,
+      "report": "scorer-cases/test_embedded_verifier_with_re1/parsebench-result.json"
+    },
+    {
+      "test": "test_embedded_verifier_with_re2",
+      "status": "scored",
+      "dimension": "text_content",
+      "primary_metric": "avg_content_faithfulness",
+      "score": 0.0,
+      "report": "scorer-cases/test_embedded_verifier_with_re2/parsebench-result.json"
+    }
+  ],
+  "pytest_output": "33 passed in 69.94s (0:01:09)",
+  "final_arm64_validation": "Root runs complete suite against parsebench-public-scorer:final-arm64; tested validation-layout has identical locked dependencies."
+}

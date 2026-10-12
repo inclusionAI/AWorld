@@ -1,0 +1,73 @@
+{
+  "dataset_revision": "2805a1d940f95a203e0ae4b88be9934f7765b3fc",
+  "dimension_execution_counts": {
+    "chart": 568,
+    "layout": 500,
+    "table": 503,
+    "text_content": 506,
+    "text_formatting": 476
+  },
+  "dimension_rule_counts": {
+    "chart": 4864,
+    "layout": 16325,
+    "table": 503,
+    "text_content": 141322,
+    "text_formatting": 5997
+  },
+  "embedded_verifier_source_files": {
+    "chart": "chart.jsonl",
+    "layout": "layout.jsonl",
+    "table": "table.jsonl",
+    "text_content": "text_content.jsonl",
+    "text_formatting": "text_formatting.jsonl"
+  },
+  "full_selection_manifest_sha256": "sha256:d60ac109ae00f99240fb27a049614f6702b4ce4c3fb3f14126bde6c4451f7f7c",
+  "material_bytes": 588503924,
+  "material_count": 2083,
+  "material_manifest_sha256": "sha256:a8485efeeb8a82161fc449a09ed846b4fe6353d62d34457bb7f249bff6ee8d3f",
+  "previous_full_selection_manifest_sha256": "sha256:0a565ea2c27ee50c45e65b5a4a10e8087de9a190cff773972d754ef84145d2c1",
+  "revision_evidence": "huggingface-content-addressed-snapshot",
+  "rule_count": 169011,
+  "sample_count": 2078,
+  "scorer_revision": "34b73455032797754f6ed62e14c27a8b5423d11e",
+  "source_document_count": 2078,
+  "source_document_extensions": {
+    ".jpg": 23,
+    ".pdf": 2036,
+    ".png": 19
+  },
+  "source_jsonl_files": [
+    {
+      "path": "chart.jsonl",
+      "row_count": 4864,
+      "sha256": "sha256:82eb2d660b286a5e1b8bd57f3f159a722b13849834561211dc1ccd5c5a39582b",
+      "size": 1591287
+    },
+    {
+      "path": "layout.jsonl",
+      "row_count": 16325,
+      "sha256": "sha256:97ddd0aa9b194a3082fcaa9172b562e32f4e6d1beeaa707a0fb3bf11731e68ef",
+      "size": 9567215
+    },
+    {
+      "path": "table.jsonl",
+      "row_count": 503,
+      "sha256": "sha256:66129fcc9e68ae0bf40e7d41f540002ceff9bedf46d6dafff2321ba2b7ab5231",
+      "size": 3087333
+    },
+    {
+      "path": "text_content.jsonl",
+      "row_count": 141322,
+      "sha256": "sha256:cb16f70704fce569ee6f9ddff471735b17e3337d56e3958deaa4ebd6f93b5b37",
+      "size": 55407895
+    },
+    {
+      "path": "text_formatting.jsonl",
+      "row_count": 5997,
+      "sha256": "sha256:4f00200322cfe0bb7199f7a0a85e04e9df3964e06882e3703faf40bb1103098d",
+      "size": 1785910
+    }
+  ],
+  "task_count": 2078,
+  "validation": "passed"
+}

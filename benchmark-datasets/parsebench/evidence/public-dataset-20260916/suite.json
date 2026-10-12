@@ -1,0 +1,8 @@
+{
+  "result": "53 passed",
+  "seconds": 114.96,
+  "image": "parsebench-public-scorer:final-arm64",
+  "full_source_validated": true,
+  "five_dimension_official_scoring": "passed",
+  "network_during_scoring": "none"
+}

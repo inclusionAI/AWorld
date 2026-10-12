@@ -1,0 +1,19 @@
+{
+  "status": "passed",
+  "source_revision": "2805a1d940f95a203e0ae4b88be9934f7765b3fc",
+  "scorer_revision": "34b73455032797754f6ed62e14c27a8b5423d11e",
+  "task_count": 2078,
+  "rule_count": 169011,
+  "material_count": 2083,
+  "material_bytes": 588503924,
+  "selection_manifest_sha256": "sha256:927318ec88e7a8efdf5b7a6540daed2de2c126c40d7f68d503cf814598f71e40",
+  "previous_selection_manifest_sha256": "sha256:d60ac109ae00f99240fb27a049614f6702b4ce4c3fb3f14126bde6c4451f7f7c",
+  "public_base_image": "python:3.12-slim-bookworm@sha256:782412e85d0f0984994c290652577d4018aff08145c85b262bb63dc0c7522254",
+  "rules_by_dimension": {
+    "chart": 4864,
+    "layout": 16325,
+    "table": 503,
+    "text_content": 141322,
+    "text_formatting": 5997
+  }
+}

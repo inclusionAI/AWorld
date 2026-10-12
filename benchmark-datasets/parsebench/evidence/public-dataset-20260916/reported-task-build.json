@@ -1,0 +1,31 @@
+{
+  "reported_build_id": "400dd259e4994d6cb23f549e72ed8ed8",
+  "reported_task_id": "pb-001c507caf8219c31d0fe15acf06e2c5",
+  "old_task_archive_sha256": "08543dfcb2c70506177999aa5bc4beb3a8ca8db6516311e40a50995619a29b51",
+  "old_agent_base": "aworld-filex-parsebench:local",
+  "fixed_base": "python:3.12-slim-bookworm@sha256:782412e85d0f0984994c290652577d4018aff08145c85b262bb63dc0c7522254",
+  "architecture": "linux/amd64",
+  "agent_image_id": "sha256:34aadd9cf52589938243fd40685e812ddd0d46240e7307c99e5041ba83ceaf8a",
+  "verifier_image_id": "sha256:383ac4678cc455e78160e6fa1bab204595f213892210d46b061bc6778d00a60e",
+  "agent_build": "passed",
+  "verifier_build": "passed",
+  "network_during_validation": "none",
+  "agent_checks": {
+    "task_input_present": true,
+    "verifier_ground_truth_absent": true,
+    "aworld_installed": false,
+    "filex_installed": false,
+    "pdf_tools_present": true,
+    "pdf_text_bytes": 2548
+  },
+  "verifier_checks": {
+    "task_id": "pb-001c507caf8219c31d0fe15acf06e2c5",
+    "scope": "official-full",
+    "publishable": true,
+    "private_ground_truth_loaded": true,
+    "source_verified": true,
+    "aworld_installed": false,
+    "filex_installed": false
+  },
+  "remote_build_retried": false
+}
