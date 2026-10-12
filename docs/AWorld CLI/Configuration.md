@@ -57,7 +57,7 @@ advisory, and the legacy `AWORLD_INFER_REQUIRED_ARTIFACTS` flag is ignored.
 
 The generic context compiler defaults to capacity-triggered checkpoints. The
 built-in CLI Agent overrides that library default with adaptive checkpoints for
-long-running work. See [Context budget and offload](../context-budget-and-offload.md),
-[execution completion and progress](../execution_completion_and_progress.md),
-and [model-owned task completion](../model-owned-task-completion.md) for the
+long-running work. See [Context budget and offload](../Agents/Context%20Budget%20and%20Offload.md),
+[execution completion and progress](../Agents/Runtime/Completion%20and%20Progress.md),
+and [model-owned task completion](../Agents/Runtime/Model-Owned%20Completion.md) for the
 behavioral contracts.

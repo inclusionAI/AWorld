@@ -198,10 +198,10 @@ produce advisory deliverable hints, but it cannot silently create requirements
 or executable validation commands.
 
 For the detailed contracts, see [Execution completion and recoverable
-progress](../../execution_completion_and_progress.md), [Model-owned task
-completion](../../model-owned-task-completion.md), [Task lifetime and goal
-continuation](../../task-lifetime-and-goal-continuation.md), and [Context budget
-and offload](../../context-budget-and-offload.md).
+progress](Completion%20and%20Progress.md), [Model-owned task
+completion](Model-Owned%20Completion.md), [Task lifetime and goal
+continuation](Task%20Lifecycle.md), and [Context budget and
+offload](../Context%20Budget%20and%20Offload.md).
 
 ### Event-Driven Agent Runtime
 AWorld implements a complete **event-driven runtime** specifically for agents. 

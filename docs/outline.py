@@ -24,8 +24,8 @@ process_file_markers = (
     "retrospective",
 )
 file_priority = {"Get Start": ["Overview", "Quick Start", "Core Capabilities", "Parallel Tasks", "Streaming Response", "Hitl"],
-                 "Agents": ["Build Agent", "Build Multi-Agent System(Mas)", "Build Workflow", "Custom Agent", "Context", "Self Evolve", "Runtime", "Memory", "Trace", "Parallel Subagents"],
-                 "Runtime": ["Overview", "Custom Runner", "Hooks", "Ralph Runner"],
+                 "Agents": ["Build Agent", "Build Multi-Agent System(Mas)", "Build Workflow", "Custom Agent", "Context", "Context Budget And Offload", "Self Evolve", "Runtime", "Memory", "Trace", "Parallel Subagents"],
+                 "Runtime": ["Overview", "Completion And Progress", "Model-Owned Completion", "Task Lifecycle", "Custom Runner", "Hooks", "Ralph Runner"],
                  "AWorld CLI": ["Overview", "Installation", "Configuration", "Commands", "Hooks", "Plugins", "Recipes"],
                  "Commands": ["Overview", "Memory", "Cron", "Plugins", "Evaluator", "Optimize", "Gateway", "Parallel Tasks"],
                  "Hooks": ["Overview", "Examples"],
@@ -37,6 +37,8 @@ file_mapping = {"Hitl": "Human in the Loop (HITL)",
                 "Build Multi-Agent System(Mas)": "Multi-Agent System(MAS)",
                 "Build Workflow": "Workflow", "Using Api": "Using API",
                 "Plugin Sdk": "Plugin SDK", "Oceanbase": "OceanBase",
+                "Context Budget And Offload": "Context Budget and Offload",
+                "Completion And Progress": "Completion and Progress",
                 "Readme": "README"}
 dir_order = ["Get Start", "Agents", "AWorld CLI", "Environment", "Training"]
 
