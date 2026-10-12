@@ -3059,6 +3059,22 @@ def test_replay_service_sandbox_does_not_allow_loopback_outbound(
 
     read_root = tmp_path / "read"
     writable_root = tmp_path / "write"
+    framework_prefix = tmp_path / "Python.framework" / "Versions" / "3.11"
+    framework_python = (
+        framework_prefix
+        / "Resources"
+        / "Python.app"
+        / "Contents"
+        / "MacOS"
+        / "Python"
+    )
+    framework_python.parent.mkdir(parents=True)
+    framework_python.touch()
+    monkeypatch.setattr(
+        replay_capability_module.sys,
+        "base_prefix",
+        str(framework_prefix),
+    )
     command = build_replay_sandboxed_command(
         ["python", "fixture_service.py"],
         read_roots=(read_root,),
@@ -3075,5 +3091,9 @@ def test_replay_service_sandbox_does_not_allow_loopback_outbound(
     runtime_bin = str(Path(sys.executable).resolve().parent)
     assert (
         f'(allow file-read-metadata (literal "{runtime_bin}"))'
+        in command[2]
+    )
+    assert (
+        f'(allow process-exec (literal "{framework_python.resolve()}"))'
         in command[2]
     )

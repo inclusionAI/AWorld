@@ -5869,6 +5869,19 @@ def build_replay_sandboxed_command(
         Path(sys.executable).resolve(),
         Path(command[0]).expanduser().resolve(),
     }
+    # Framework builds of CPython on macOS launch through ``bin/python`` and
+    # then posix_spawn the Python.app executable.  Hosted runners use that
+    # layout under /Library/Frameworks, so both executables must be admitted.
+    framework_python = (
+        Path(sys.base_prefix)
+        / "Resources"
+        / "Python.app"
+        / "Contents"
+        / "MacOS"
+        / "Python"
+    )
+    if framework_python.is_file():
+        allowed_executables.add(framework_python.resolve())
     profile: list[str] = [
         "(version 1)",
         "(deny default)",
