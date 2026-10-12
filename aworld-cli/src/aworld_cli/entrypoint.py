@@ -44,8 +44,7 @@ def _run_rich(arguments: list[str]) -> int | None:
                 return kernel_main(arguments)
             print(
                 "aworld-cli: Rich mode is unavailable in this installation "
-                f"(missing {exc.name}). Install the AWorld Runtime compatibility "
-                "package, or use --minimal.",
+                f"(missing {exc.name}). Use a source checkout, or use --minimal.",
                 file=sys.stderr,
             )
             return 2

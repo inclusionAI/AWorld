@@ -1,15 +1,15 @@
 # aworld-cli
 
 `aworld-cli` selects the full Rich interactive CLI by default when installed
-from the Runtime compatibility package or a source checkout. Use
+from a source checkout. Use
 `aworld-cli --minimal` (alias: `--session-run`) to select the minimal
 Session/Run CLI explicitly; `--rich` can be used to make the default choice
 explicit. Both modes accept `--model MODEL`, with the command-line value
 overriding `.env` model selection.
 
 The synchronized 1.x thin wheel does not bundle the historical Rich runtime.
-It falls back to the minimal CLI with a diagnostic; install the Runtime
-compatibility package when the Rich UI, HUD, plugins and steering are needed.
+It falls back to the minimal CLI with a diagnostic; use a source checkout when
+the Rich UI, HUD, plugins and steering are needed.
 
 ---
 
