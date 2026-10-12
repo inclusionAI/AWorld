@@ -181,6 +181,7 @@ openspec/
 .browser-data/
 
 # Temporary files
+/tmp/
 *.log
 *.tmp
 __pycache__/
