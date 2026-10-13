@@ -10,6 +10,7 @@ from aworld_cli.core.runtime_completion import (
     configure_runtime_completion,
     infer_public_deliverable_hints,
     infer_public_executable_hints,
+    infer_public_obligation_hints,
     resolve_completion_max_repairs,
     resolve_completion_mode,
 )
@@ -359,6 +360,90 @@ def test_default_completion_publishes_advisory_deliverable_without_authority(
             }
         ],
     }
+    ledger = context.context_info["public_task_contract"]
+    assert ledger["schema_version"] == "aworld.public-task-contract/v1"
+    assert ledger["authority"] == "public_task_advisory"
+    assert ledger["source"] == "public_task_text"
+    assert ledger["request_fingerprint"].startswith("sha256:")
+    assert ledger["obligations"][0]["kind"] == "deliverable_file"
+
+
+def test_public_contract_extracts_only_explicit_task_requirements(
+    tmp_path: Path,
+) -> None:
+    obligations = infer_public_obligation_hints(
+        """Create `/app/server.py` with this exact public interface:
+
+```proto
+message SetValRequest {
+  string key = 1;
+  int32 value = 2;
+}
+```
+
+Implement `async def run_tasks(tasks: list, max_concurrent: int) -> None`.
+Use port 5328 and leave the service running in the background.
+The model file must be less than 150MB and reach at least 0.62 accuracy.
+Do not invoke `/app/private_binary`.
+When finished I should be able to run `python /app/server.py`.
+""",
+        workspace_path=tmp_path,
+    )
+
+    by_kind: dict[str, list] = {}
+    for item in obligations:
+        by_kind.setdefault(item.kind, []).append(item)
+
+    fields = {item.subject: item.expectation for item in by_kind["structured_field"]}
+    assert fields["key"]["declared_type"] == "string"
+    assert fields["value"]["declared_type"] == "int32"
+    assert by_kind["function_signature"][0].subject == "run_tasks"
+    assert by_kind["service_port"][0].expectation == {
+        "port": 5328,
+        "required": True,
+    }
+    assert by_kind["process_liveness"]
+    assert len(by_kind["numeric_threshold"]) == 1
+    assert by_kind["negative_constraint"]
+    assert by_kind["public_command"][0].expectation["command"] == (
+        "python /app/server.py"
+    )
+    assert all(item.authority == "public_task_advisory" for item in obligations)
+    assert all(item.source == "public_task_text" for item in obligations)
+    assert all(item.source_fingerprint.startswith("sha256:") for item in obligations)
+
+
+def test_public_contract_does_not_promote_examples_or_component_side_effects(
+    tmp_path: Path,
+) -> None:
+    obligations = infer_public_obligation_hints(
+        "The tests will create `/tests/reward.json`. "
+        "Example: create file sample.json. "
+        "The supplied renderer will write `/tmp/frame.bmp`. "
+        "Please analyze the existing input only.",
+        workspace_path=tmp_path,
+    )
+
+    assert all(item.kind != "deliverable_file" for item in obligations)
+    serialized = json.dumps([item.expectation for item in obligations])
+    assert "/tests/reward.json" not in serialized
+    assert "/tmp/frame.bmp" not in serialized
+
+
+def test_public_contract_is_bounded_and_deduplicated(tmp_path: Path) -> None:
+    request = "\n".join(
+        "Use port 5328 and keep the service running in the background."
+        for _ in range(100)
+    )
+
+    obligations = infer_public_obligation_hints(
+        request,
+        workspace_path=tmp_path,
+    )
+
+    assert len(obligations) <= 32
+    assert len([item for item in obligations if item.kind == "service_port"]) == 1
+    assert len([item for item in obligations if item.kind == "process_liveness"]) == 1
 
 
 def test_explicit_public_tool_becomes_non_executable_capability_hint() -> None:

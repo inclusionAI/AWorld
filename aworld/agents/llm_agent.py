@@ -6,6 +6,7 @@ import asyncio
 import contextvars
 import copy
 import inspect
+import hashlib
 import json
 import math
 import os
@@ -295,6 +296,7 @@ _TERMINAL_MODEL_LATENCY_FLOOR_SECONDS = 20.0
 _TERMINAL_MODEL_LATENCY_CAP_SECONDS = 180.0
 _PUBLIC_DELIVERABLE_SCHEMA = "aworld.public-deliverables/v1"
 _PUBLIC_CAPABILITY_SCHEMA = "aworld.public-capabilities/v1"
+_PUBLIC_TASK_CONTRACT_SCHEMA = "aworld.public-task-contract/v1"
 _PUBLIC_DELIVERABLE_AUTHORITY = "public_task_advisory"
 _PUBLIC_DELIVERABLE_PROMPT_MARKER = "AWorld public deliverable milestones"
 
@@ -1023,13 +1025,16 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         success_first = _success_first_enabled()
         if success_first:
             # Benchmark callers already own a hard task deadline, per-call
-            # timeouts, and process-tree cleanup. Keep ordinary execution in
-            # observe mode, but retain one bounded terminal path so a finished
-            # candidate cannot spend the entire caller budget on further
-            # inspection without ever reaching review and finalization.
+            # timeouts, and process-tree cleanup.  Keep the ordinary short-task
+            # path fail-open, but let the task-generic protocol enforce its
+            # already-bounded convergence stages after long-horizon arming or
+            # a caller-deadline checkpoint.  GUIDE does not constrain a Tool
+            # call before those typed boundaries; OBSERVE here made the
+            # controller record convergence while the admission gate remained
+            # permanently inactive.
             terminal_gate = _success_first_terminal_gate_enabled()
             policy = ExecutionProtocolPolicy(
-                mode=ProtocolMode.OBSERVE,
+                mode=ProtocolMode.GUIDE,
                 review_unarmed_candidates=False,
                 terminal_review_gate_enabled=terminal_gate,
                 independent_acceptance_enabled=False,
@@ -1566,6 +1571,20 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         # checkpoint is control-plane owned and must be exposed even though the
         # earlier success-first execution phase deliberately remains OBSERVE.
         if policy.mode is not ProtocolMode.GUIDE and boundary is None:
+            return tools, empty_offer
+        if (
+            boundary == "initial"
+            and _success_first_enabled()
+            and self._explicit_execution_protocol_policy is None
+            and protocol_state is not None
+            and not protocol_state.long_horizon_armed
+        ):
+            # Success-first keeps genuinely short work on the historical fast
+            # path.  Public contracts are already visible in the stable task
+            # grounding prompt; they do not by themselves justify another
+            # planning model call.  The same initial decision becomes
+            # available after generic Tool/stagnation/deadline evidence arms
+            # the task.
             return tools, empty_offer
         if boundary == "initial" and not self._long_horizon_skill_active():
             contract = getattr(context, "context_info", {}).get(
@@ -2210,6 +2229,81 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 return ()
             result.append(executable)
         return tuple(result)
+
+    def _public_task_obligations(self, context: Context) -> tuple[dict[str, Any], ...]:
+        """Return bounded obligations derived by the CLI from public text."""
+
+        value = context.context_info.get("public_task_contract")
+        if (
+            not isinstance(value, dict)
+            or value.get("schema_version") != _PUBLIC_TASK_CONTRACT_SCHEMA
+            or value.get("authority") != _PUBLIC_DELIVERABLE_AUTHORITY
+            or value.get("source") != "public_task_text"
+        ):
+            return ()
+        public_request = self._authoritative_request_from_context(context)
+        if (
+            not public_request
+            or value.get("request_fingerprint")
+            != "sha256:"
+            + hashlib.sha256(public_request.encode("utf-8")).hexdigest()
+        ):
+            return ()
+        rows = value.get("obligations")
+        if not isinstance(rows, list) or not rows or len(rows) > 32:
+            return ()
+        validated: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for row in rows:
+            if not isinstance(row, dict) or set(row) != {
+                "obligation_id",
+                "kind",
+                "subject",
+                "expectation",
+                "source_excerpt",
+                "source_fingerprint",
+                "authority",
+                "source",
+            }:
+                return ()
+            obligation_id = row.get("obligation_id")
+            if (
+                not isinstance(obligation_id, str)
+                or not obligation_id
+                or len(obligation_id) > 128
+                or obligation_id in seen
+                or row.get("authority") != _PUBLIC_DELIVERABLE_AUTHORITY
+                or row.get("source") != "public_task_text"
+                or not isinstance(row.get("kind"), str)
+                or not 0 < len(row["kind"]) <= 64
+                or not isinstance(row.get("subject"), str)
+                or not 0 < len(row["subject"]) <= 512
+                or not isinstance(row.get("source_excerpt"), str)
+                or not 0 < len(row["source_excerpt"]) <= 512
+                or not isinstance(row.get("source_fingerprint"), str)
+                or re.fullmatch(r"sha256:[0-9a-f]{64}", row["source_fingerprint"])
+                is None
+            ):
+                return ()
+            try:
+                json.dumps(
+                    row.get("expectation"),
+                    ensure_ascii=False,
+                    sort_keys=True,
+                )
+            except (TypeError, ValueError):
+                return ()
+            seen.add(obligation_id)
+            validated.append(
+                {
+                    "obligation_id": obligation_id,
+                    "kind": row["kind"],
+                    "subject": row["subject"],
+                    "expectation": row.get("expectation"),
+                    "source_fingerprint": row["source_fingerprint"],
+                }
+            )
+        return tuple(validated)
 
     def _record_llm_call_request(
         self,
@@ -8602,7 +8696,8 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             return messages
         artifacts = self._public_deliverable_artifacts(context)
         executables = self._public_executable_hints(context)
-        if not artifacts and not executables:
+        obligations = self._public_task_obligations(context)
+        if not artifacts and not executables and not obligations:
             return messages
         if artifacts:
             from aworld.runners.post_tool_progress import (
@@ -8636,14 +8731,33 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             if executables
             else ""
         )
+        obligation_guidance = (
+            "The public-task-only contract ledger contains these explicit "
+            "obligations:\n"
+            + "\n".join(
+                "- "
+                + json.dumps(
+                    row,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                for row in obligations
+            )
+            + "\nBefore claiming completion, bind each applicable obligation "
+            "to a fresh Agent-visible observation or state the remaining "
+            "uncertainty. "
+            if obligations
+            else ""
+        )
         guidance = {
             "role": "system",
             "content": (
                 f"{_PUBLIC_DELIVERABLE_PROMPT_MARKER}: "
-                f"{deliverable_guidance}{capability_guidance}"
+                f"{deliverable_guidance}{capability_guidance}{obligation_guidance}"
                 "These hints are advisory task grounding only; they do not "
-                "validate file contents, authorize arbitrary commands, or replace "
-                "a canonical verifier."
+                "validate file contents, authorize arbitrary commands, expose "
+                "hidden verifier material, or replace a canonical verifier."
             ),
             PROMPT_SECTION_NAME_HINT_KEY: "public_deliverable_contract",
             PROMPT_STABILITY_HINT_KEY: "stable",

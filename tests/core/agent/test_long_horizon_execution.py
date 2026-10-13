@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
@@ -1226,7 +1227,7 @@ def test_explicit_off_policy_remains_a_developer_rollback() -> None:
     assert agent._resolve_execution_protocol_policy().mode is ProtocolMode.OFF
 
 
-def test_success_first_observes_execution_but_retains_terminal_control(
+def test_success_first_guides_only_after_typed_convergence_and_retains_terminal_control(
     monkeypatch,
 ) -> None:
     monkeypatch.delenv("AWORLD_SUCCESS_FIRST", raising=False)
@@ -1243,7 +1244,7 @@ def test_success_first_observes_execution_but_retains_terminal_control(
 
     policy = agent._resolve_execution_protocol_policy()
 
-    assert policy.mode is ProtocolMode.OBSERVE
+    assert policy.mode is ProtocolMode.GUIDE
     assert policy.review_unarmed_candidates is False
     assert policy.terminal_review_gate_enabled is True
     assert policy.independent_acceptance_enabled is False
@@ -1279,11 +1280,75 @@ def test_success_first_derives_bounded_terminal_reserves_from_task_budget(
 
     policy = agent._resolve_execution_protocol_policy(context)
 
-    assert policy.mode is ProtocolMode.OBSERVE
+    assert policy.mode is ProtocolMode.GUIDE
     assert policy.terminal_review_gate_enabled is True
     assert policy.finalization_reserve_seconds == pytest.approx(180.0)
     assert policy.candidate_decision_reserve_seconds == pytest.approx(480.0)
     assert policy.final_review_timeout_seconds == pytest.approx(120.0)
+
+
+def test_public_task_contract_is_injected_as_advisory_evidence_ledger() -> None:
+    context = Context(task_id="public-contract-ledger")
+    context.origin_user_input = "build the public service"
+    context.context_info["public_task_contract"] = {
+        "schema_version": "aworld.public-task-contract/v1",
+        "authority": "public_task_advisory",
+        "source": "public_task_text",
+        "request_fingerprint": "sha256:"
+        + hashlib.sha256(b"build the public service").hexdigest(),
+        "obligations": [
+            {
+                "obligation_id": "public-obligation-1",
+                "kind": "structured_field",
+                "subject": "value",
+                "expectation": {"required": True, "declared_type": "int"},
+                "source_excerpt": "SetValRequest includes value (int).",
+                "source_fingerprint": "sha256:" + "b" * 64,
+                "authority": "public_task_advisory",
+                "source": "public_task_text",
+            }
+        ],
+    }
+    agent = Agent(
+        name="Aworld",
+        conf=AgentConfig(
+            llm_provider="openai",
+            llm_model_name="offline",
+            llm_api_key="offline",
+        ),
+    )
+
+    projected = agent._process_messages(
+        [{"role": "user", "content": "build the public service"}],
+        context,
+    )
+
+    assert projected is not None
+    assert projected[0]["role"] == "system"
+    assert '"obligation_id":"public-obligation-1"' in projected[0]["content"]
+    assert '"subject":"value"' in projected[0]["content"]
+    assert "hidden verifier material" in projected[0]["content"]
+
+
+def test_non_public_contract_authority_is_not_injected() -> None:
+    context = Context(task_id="non-public-contract-ledger")
+    context.context_info["public_task_contract"] = {
+        "schema_version": "aworld.public-task-contract/v1",
+        "authority": "verifier",
+        "source": "hidden_tests",
+        "obligations": [],
+    }
+    agent = Agent(
+        name="Aworld",
+        conf=AgentConfig(
+            llm_provider="openai",
+            llm_model_name="offline",
+            llm_api_key="offline",
+        ),
+    )
+    messages = [{"role": "user", "content": "finish the task"}]
+
+    assert agent._process_messages(messages, context) is messages
 
 
 def test_success_first_terminal_gate_has_an_exact_rollback(monkeypatch) -> None:
@@ -1309,7 +1374,7 @@ def test_success_first_terminal_gate_has_an_exact_rollback(monkeypatch) -> None:
 
     policy = agent._resolve_execution_protocol_policy(context)
 
-    assert policy.mode is ProtocolMode.OBSERVE
+    assert policy.mode is ProtocolMode.GUIDE
     assert policy.terminal_review_gate_enabled is False
     assert policy.max_final_reviews is None
     assert policy.max_repairs is None
@@ -1466,7 +1531,9 @@ def test_agent_offers_required_initial_model_decision_before_real_tools() -> Non
         "verification_required",
         "workspace_mutation_required",
     }
-    plan = augmented[0]["function"]["parameters"]["properties"]["__aworld_plan_update"]
+    plan = augmented[0]["function"]["parameters"]["properties"][
+        "__aworld_plan_update"
+    ]
     assert plan["type"] == "object"
     assert "submit_current" in plan["properties"]["delivery_intent"]["enum"]
     assert set(plan["required"]) == {
@@ -1493,6 +1560,53 @@ def test_agent_offers_required_initial_model_decision_before_real_tools() -> Non
         plan["properties"]["next_action_arguments"]["description"].rsplit(": ", 1)[1]
     )
     assert contract_table["terminal__execute"] == '{"command":string!}'
+
+
+def test_success_first_short_task_defers_initial_decision_until_generic_arming(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("AWORLD_SUCCESS_FIRST", "true")
+    context = Context(task_id="success-first-short-fast-path")
+    context.set_task(Task(id="success-first-short-fast-path", timeout=600))
+    agent = Agent(
+        name="Aworld",
+        conf=AgentConfig(
+            llm_provider="openai",
+            llm_model_name="offline",
+            llm_api_key="offline",
+        ),
+    )
+    agent.skill_configs = {"long-running-agent": {"active": True}}
+    policy = agent._resolve_execution_protocol_policy(context)
+    configure_execution_protocol(context, agent.id(), policy)
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "terminal__execute",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"command": {"type": "string"}},
+                    "required": ["command"],
+                },
+            },
+        }
+    ]
+
+    augmented, offer = agent._with_long_horizon_execution_profile(tools, context)
+
+    assert augmented is tools
+    assert offer.profile_schema_offered is False
+    assert offer.decision_boundary is None
+
+    store = ExecutionProtocolStore(context, agent.id(), policy)
+    store.save(replace(store.load(), long_horizon_armed=True))
+
+    augmented, offer = agent._with_long_horizon_execution_profile(tools, context)
+
+    assert offer.profile_schema_offered is True
+    assert offer.decision_boundary == "initial"
+    assert augmented[0]["function"]["name"] == "aworld__execution_decision"
 
 
 def test_success_first_terminal_checkpoint_exposes_decision_tool() -> None:
@@ -2102,6 +2216,37 @@ def test_malformed_initial_decision_retries_once_then_fails_open_unknown():
     assert telemetry["initial_decision_attempt_count"] == 2
     assert telemetry["initial_decision_unavailable_count"] == 0
     assert telemetry.get("model_horizon") is None
+
+
+def test_initial_fail_open_does_not_mask_later_stagnation_replan():
+    context = Context(task_id="initial-unavailable-then-replan")
+    context.set_task(Task(id="initial-unavailable-then-replan", timeout=600))
+    policy = ExecutionProtocolPolicy(
+        mode=ProtocolMode.GUIDE,
+        repetition_threshold=1,
+    )
+    agent = _agent(context, policy)
+    agent.skill_configs = {"long-running-agent": {"active": True}}
+    configure_execution_protocol(context, agent.id(), policy)
+
+    assert record_model_decision_unavailable(
+        context,
+        agent.id(),
+        boundary="initial",
+        reason="model_response_incomplete",
+    )
+    assert execution_protocol_model_decision_boundary(context, agent.id()) is None
+
+    transition = record_tool_protocol_event(
+        context,
+        agent.id(),
+        {"repetition_count": 1, "current_agent_step": 2},
+    )
+
+    assert transition is not None
+    assert transition.state.decision_checkpoint_pending is True
+    assert transition.state.replan_requested_count == 1
+    assert execution_protocol_model_decision_boundary(context, agent.id()) == "replan"
 
 
 def test_unacknowledged_replan_checkpoint_fails_open_without_claiming_applied():

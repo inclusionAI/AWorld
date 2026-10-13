@@ -56,22 +56,36 @@ _MAX_DELIVERABLES = 8
 _MAX_DELIVERABLE_CHARS = 256
 _MAX_REPORT_CHARS = 2_048
 _MAX_RAW_REPORT_CHARS = 8_192
-_REVIEW_INPUT_TOKENS_PER_TURN = 7_168
-_REVIEW_OUTPUT_TOKENS_PER_TURN = 1_024
+_REVIEW_INPUT_TOKENS_PER_TURN = 12_288
+_REVIEW_OUTPUT_TOKENS_PER_TURN = 2_048
 _REVIEW_MAX_TURNS = 2
-_REVIEW_TOKEN_BUDGET = _REVIEW_MAX_TURNS * (
-    _REVIEW_INPUT_TOKENS_PER_TURN + _REVIEW_OUTPUT_TOKENS_PER_TURN
+_REVIEW_TOKEN_BUDGET = max(
+    32_768,
+    _REVIEW_MAX_TURNS
+    * (_REVIEW_INPUT_TOKENS_PER_TURN + _REVIEW_OUTPUT_TOKENS_PER_TURN),
 )
 _REVIEW_OUTPUT_TOKEN_BUDGET = (
     _REVIEW_MAX_TURNS * _REVIEW_OUTPUT_TOKENS_PER_TURN
 )
-_REVIEW_WALL_CLOCK_SECONDS = 120.0
+_REVIEW_WALL_CLOCK_SECONDS = 180.0
 _REVIEW_MIN_START_SECONDS = 20.0
 _REVIEW_MAX_ATTEMPTS = 2
 _DECLARED_SNAPSHOT_SCHEMA = "aworld.declared-artifact-snapshot/v1"
 _DECLARED_SNAPSHOT_TOTAL_BYTES = 12 * 1024
 _DECLARED_SNAPSHOT_FILE_BYTES = 8 * 1024
+_DIRECT_PUBLIC_CAPTURE_FILE_BYTES = 16 * 1024 * 1024
+_DIRECT_PUBLIC_CAPTURE_TOTAL_BYTES = 32 * 1024 * 1024
 _MUTATION_GATE_SCHEMA = "aworld.mutation-gate/v4"
+_PUBLIC_TASK_CONTRACT_SCHEMA = "aworld.public-task-contract/v1"
+_EXECUTABLE_OBLIGATION_KINDS = frozenset(
+    {
+        "function_signature",
+        "import_contract",
+        "process_liveness",
+        "public_command",
+        "service_port",
+    }
+)
 _CANONICAL_SHA256 = re.compile(r"sha256:[0-9a-f]{64}")
 _READ_ONLY_FILESYSTEM_ACTIONS = frozenset(
     {
@@ -100,11 +114,27 @@ def _parse_review_report(raw_report: str) -> tuple[str | None, str, str | None]:
         lines = candidate.splitlines()
         if len(lines) >= 3:
             candidate = "\n".join(lines[1:-1]).strip()
+    candidates: list[Mapping[str, Any]] = []
     try:
         value = json.loads(candidate)
     except (json.JSONDecodeError, TypeError, ValueError):
         value = None
     if isinstance(value, Mapping):
+        candidates.append(value)
+    else:
+        decoder = json.JSONDecoder()
+        for start, character in enumerate(raw_report):
+            if character != "{":
+                continue
+            try:
+                decoded, _end = decoder.raw_decode(raw_report[start:])
+            except (json.JSONDecodeError, TypeError, ValueError):
+                continue
+            if isinstance(decoded, Mapping) and decoded not in candidates:
+                candidates.append(decoded)
+
+    valid: list[tuple[str, str]] = []
+    for value in candidates:
         decision = value.get("decision")
         fields_valid = bool(
             set(value) == _REVIEW_JSON_FIELDS
@@ -123,7 +153,12 @@ def _parse_review_report(raw_report: str) -> tuple[str | None, str, str | None]:
                 sort_keys=True,
                 separators=(",", ":"),
             )
-            return str(decision), normalized, None
+            valid.append((str(decision), normalized))
+    if len(valid) == 1:
+        return valid[0][0], valid[0][1], None
+    if len(valid) > 1:
+        return None, raw_report, "decision_ambiguous"
+    if candidates:
         return None, raw_report, "structured_decision_invalid"
 
     # Compatibility for reports produced by the immediately preceding wheel.
@@ -251,6 +286,7 @@ class AdvisoryReviewRequest:
         authoritative_deliverables: Sequence[str] = (),
         authoritative_validation_receipts: Sequence[Mapping[str, Any]] = (),
         authoritative_artifact_snapshot: Mapping[str, Any] | None = None,
+        authoritative_obligations: Sequence[Mapping[str, Any]] = (),
     ) -> str:
         """Render only public, bounded material into the fresh child request."""
 
@@ -282,6 +318,16 @@ class AdvisoryReviewRequest:
             sort_keys=True,
             separators=(",", ":"),
         )
+        public_obligations = (
+            json.dumps(
+                list(authoritative_obligations)[:32],
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            if authoritative_obligations
+            else "none available"
+        )
         return (
             "Check this candidate against the authoritative public task. Use the "
             "framework-owned immutable declared-artifact snapshot first; use only "
@@ -292,6 +338,9 @@ class AdvisoryReviewRequest:
             "object. decision must be ready, repair, or uncertain.\n\n"
             "Public task (bound from caller Context, not solver input):\n"
             f"{public_task}\n\n"
+            "Public task contract ledger (derived only from that public task; "
+            "advisory, not grader authority):\n"
+            f"{public_obligations}\n\n"
             f"Candidate claim:\n{self.candidate_claim}\n\n"
             f"Authoritative public delivery paths:\n{deliverables}\n\n"
             "Claimed paths (untrusted):\n"
@@ -469,20 +518,6 @@ class LazyVerifierFactory:
                 if isinstance(gate, Mapping)
                 else None
             )
-            if (
-                getattr(context, "task_id", None) is not None
-                and not isinstance(candidate_fingerprint, str)
-            ):
-                return AdvisoryReviewResult(
-                    status="unavailable",
-                    decision="uncertain",
-                    report=(
-                        "No stable framework-bound candidate is available for "
-                        "terminal review. Run one task-derived validation or "
-                        "preserve the current incomplete state."
-                    ),
-                    reason_code="candidate_checkpoint_unavailable",
-                )
             if not self._review_start_window_open(context):
                 return AdvisoryReviewResult(
                     status="unavailable",
@@ -493,13 +528,27 @@ class LazyVerifierFactory:
                     ),
                     reason_code="review_start_window_closed",
                 )
-            authoritative_deliverables = _authoritative_delivery_paths(context)
+            authoritative_obligations = _authoritative_public_obligations(
+                context,
+                public_task=public_task,
+            )
+            authoritative_deliverables = _authoritative_delivery_paths(
+                context,
+                authoritative_obligations=authoritative_obligations,
+            )
             artifact_snapshot_authentication = (
                 _declared_snapshot_authentication_status(
                     context,
                     agent_id=self._parent_agent.id(),
                 )
             )
+            if artifact_snapshot_authentication.get("authenticated") is not True:
+                artifact_snapshot_authentication = (
+                    _direct_public_snapshot_authentication_status(
+                        context,
+                        authoritative_deliverables=authoritative_deliverables,
+                    )
+                )
             authoritative_artifact_snapshot = _authoritative_delivery_snapshot(
                 context,
                 authoritative_deliverables=authoritative_deliverables,
@@ -540,6 +589,7 @@ class LazyVerifierFactory:
                         "evidence_summary": request.evidence_summary,
                         "candidate_fingerprint": candidate_fingerprint,
                         "artifact_snapshot": authoritative_artifact_snapshot,
+                        "public_obligations": authoritative_obligations,
                     },
                     ensure_ascii=False,
                     sort_keys=True,
@@ -585,6 +635,7 @@ class LazyVerifierFactory:
                 authoritative_artifact_snapshot=(
                     authoritative_artifact_snapshot
                 ),
+                authoritative_obligations=authoritative_obligations,
             )
             review_deadline = self._review_deadline(context)
             result = await self._invoke_review_runner(
@@ -629,19 +680,36 @@ class LazyVerifierFactory:
                     report=raw_report[:_MAX_REPORT_CHARS],
                     reason_code=parse_reason,
                 )
-            direct_ready_evidence = bool(
-                any(
-                    receipt.get("exit_code") == 0
-                    for receipt in authoritative_validation_receipts
-                )
-                or artifact_snapshot_authentication.get("reason")
-                == "current_stateful_probe"
+            executable_obligation_present = any(
+                obligation.get("kind") in _EXECUTABLE_OBLIGATION_KINDS
+                for obligation in authoritative_obligations
+            )
+            validation_evidence_present = any(
+                receipt.get("exit_code") == 0
+                for receipt in authoritative_validation_receipts
+            ) or artifact_snapshot_authentication.get("reason") == (
+                "current_stateful_probe"
+            )
+            captured_file_evidence_present = bool(
+                artifact_snapshot_authentication.get("reason")
+                == "current_public_capture"
                 or any(
                     item.get("status") == "captured"
                     for item in (
                         authoritative_artifact_snapshot.get("items") or ()
                     )
                     if isinstance(item, Mapping)
+                )
+            )
+            # Current file bytes can prove a static artifact requirement but
+            # cannot prove executable behavior.  Behavioral contracts require
+            # a fresh framework-bound public check before ``ready`` can be
+            # promoted beyond advisory uncertainty.
+            direct_ready_evidence = bool(
+                validation_evidence_present
+                or (
+                    captured_file_evidence_present
+                    and not executable_obligation_present
                 )
             )
             if (
@@ -1164,22 +1232,53 @@ def _authoritative_text(value: Any) -> str:
     return ""
 
 
-def _authoritative_delivery_paths(context: Any) -> tuple[str, ...]:
+def _trusted_context_info_value(context: Any, key: str) -> Any:
+    """Read framework-owned task state through a transport Context copy.
+
+    Tool execution may receive a child/transport Context whose EventManager
+    points at the task owner.  Public contracts are authored on that owner;
+    solver claims never populate this lookup.
+    """
+
+    candidates = (context, state_context(context))
+    seen: set[int] = set()
+    for candidate in candidates:
+        identity = id(candidate)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        context_info = getattr(candidate, "context_info", None)
+        if isinstance(context_info, Mapping) and key in context_info:
+            return context_info.get(key)
+    return None
+
+
+def _authoritative_delivery_paths(
+    context: Any,
+    *,
+    authoritative_obligations: Sequence[Mapping[str, Any]] = (),
+) -> tuple[str, ...]:
     """Read the generic public-task delivery contract without trusting claims."""
 
-    context_info = getattr(context, "context_info", None)
-    value = (
-        context_info.get("public_deliverable_contract")
-        if isinstance(context_info, Mapping)
-        else None
-    )
+    value = _trusted_context_info_value(context, "public_deliverable_contract")
     if (
         not isinstance(value, Mapping)
         or value.get("schema_version") != "aworld.public-deliverables/v1"
         or value.get("authority") != "public_task_advisory"
         or value.get("source") != "public_task_text"
     ):
-        return ()
+        paths = []
+        for obligation in authoritative_obligations:
+            expectation = obligation.get("expectation")
+            path = (
+                expectation.get("path")
+                if obligation.get("kind") == "deliverable_file"
+                and isinstance(expectation, Mapping)
+                else None
+            )
+            if isinstance(path, str) and path.strip():
+                paths.append(path.strip()[:_MAX_DELIVERABLE_CHARS])
+        return tuple(dict.fromkeys(paths[:_MAX_DELIVERABLES]))
     artifacts = value.get("artifacts")
     if not isinstance(artifacts, list) or len(artifacts) > _MAX_DELIVERABLES:
         return ()
@@ -1202,6 +1301,155 @@ def _authoritative_delivery_paths(context: Any) -> tuple[str, ...]:
             return ()
         paths.append(path.strip()[:_MAX_DELIVERABLE_CHARS])
     return tuple(dict.fromkeys(paths))
+
+
+def _authoritative_public_obligations(
+    context: Any,
+    *,
+    public_task: str,
+) -> tuple[dict[str, Any], ...]:
+    """Project only the bounded ledger created from authoritative public text."""
+
+    value = _trusted_context_info_value(context, "public_task_contract")
+    if (
+        not isinstance(value, Mapping)
+        or value.get("schema_version") != _PUBLIC_TASK_CONTRACT_SCHEMA
+        or value.get("authority") != "public_task_advisory"
+        or value.get("source") != "public_task_text"
+        or value.get("request_fingerprint")
+        != "sha256:" + hashlib.sha256(public_task.encode("utf-8")).hexdigest()
+    ):
+        return _derive_public_obligations(public_task)
+    rows = value.get("obligations")
+    if not isinstance(rows, list) or len(rows) > 32:
+        return ()
+    result: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for row in rows:
+        if (
+            not isinstance(row, Mapping)
+            or row.get("authority") != "public_task_advisory"
+            or row.get("source") != "public_task_text"
+        ):
+            return ()
+        obligation_id = row.get("obligation_id")
+        kind = row.get("kind")
+        subject = row.get("subject")
+        source_fingerprint = row.get("source_fingerprint")
+        if (
+            not isinstance(obligation_id, str)
+            or not 0 < len(obligation_id) <= 128
+            or obligation_id in seen
+            or not isinstance(kind, str)
+            or not 0 < len(kind) <= 64
+            or not isinstance(subject, str)
+            or not 0 < len(subject) <= 512
+            or not isinstance(source_fingerprint, str)
+            or _CANONICAL_SHA256.fullmatch(source_fingerprint) is None
+        ):
+            return ()
+        expectation = row.get("expectation")
+        try:
+            json.dumps(expectation, ensure_ascii=False, sort_keys=True)
+        except (TypeError, ValueError):
+            return ()
+        seen.add(obligation_id)
+        result.append(
+            {
+                "obligation_id": obligation_id,
+                "kind": kind,
+                "subject": subject,
+                "expectation": expectation,
+                "source_fingerprint": source_fingerprint,
+            }
+        )
+    return tuple(result)
+
+
+def _derive_public_obligations(public_task: str) -> tuple[dict[str, Any], ...]:
+    """Rebuild the advisory ledger when a transport Context lost projections.
+
+    The extractor receives only the already bound public task and current
+    public workspace root.  It has no verifier, reward, or solver-claim input.
+    """
+
+    try:
+        from aworld_cli.core.runtime_completion import (
+            infer_public_obligation_hints,
+        )
+
+        hints = infer_public_obligation_hints(
+            public_task,
+            workspace_path=os.getcwd(),
+        )
+    except Exception:
+        return ()
+    return tuple(
+        {
+            "obligation_id": hint.obligation_id,
+            "kind": hint.kind,
+            "subject": hint.subject,
+            "expectation": hint.expectation,
+            "source_fingerprint": hint.source_fingerprint,
+        }
+        for hint in hints[:32]
+    )
+
+
+def _direct_public_snapshot_authentication_status(
+    context: Any,
+    *,
+    authoritative_deliverables: Sequence[str],
+) -> Mapping[str, Any]:
+    """Bind an in-progress review to current declared public files.
+
+    This is advisory evidence only.  It neither creates a protocol candidate
+    checkpoint nor authorizes external success.  Paths must already belong to
+    the public task contract and pass the same openat/O_NOFOLLOW confinement as
+    terminal snapshots.
+    """
+
+    hashes: dict[str, str] = {}
+    remaining = _DIRECT_PUBLIC_CAPTURE_TOTAL_BYTES
+    for path in tuple(authoritative_deliverables)[:_MAX_DELIVERABLES]:
+        trusted_root = _trusted_declared_snapshot_root(context, path)
+        if trusted_root is None or remaining <= 0:
+            continue
+        try:
+            descriptor = _open_confined_snapshot_file(
+                trusted_root=trusted_root,
+                path=path,
+            )
+            with os.fdopen(descriptor, "rb") as handle:
+                before = os.fstat(handle.fileno())
+                if (
+                    not stat_module.S_ISREG(before.st_mode)
+                    or before.st_size > _DIRECT_PUBLIC_CAPTURE_FILE_BYTES
+                    or before.st_size > remaining
+                ):
+                    continue
+                digest = hashlib.sha256()
+                while chunk := handle.read(64 * 1024):
+                    digest.update(chunk)
+                after = os.fstat(handle.fileno())
+            def identity(item):
+                return (
+                    item.st_dev,
+                    item.st_ino,
+                    item.st_size,
+                    item.st_mtime_ns,
+                )
+            if identity(before) != identity(after):
+                continue
+            hashes[path] = "sha256:" + digest.hexdigest()
+            remaining -= before.st_size
+        except (OSError, TypeError, ValueError):
+            continue
+    return {
+        "authenticated": bool(hashes),
+        "reason": "current_public_capture" if hashes else "public_candidate_unavailable",
+        "artifact_hashes": hashes,
+    }
 
 
 def _authoritative_delivery_snapshot(

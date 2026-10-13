@@ -35,8 +35,11 @@ REQUIRED_ARTIFACTS_ENV = "AWORLD_REQUIRED_ARTIFACTS_JSON"
 VALIDATION_COMMANDS_ENV = "AWORLD_VALIDATION_COMMANDS_JSON"
 PUBLIC_DELIVERABLE_SCHEMA = "aworld.public-deliverables/v1"
 PUBLIC_CAPABILITY_SCHEMA = "aworld.public-capabilities/v1"
+PUBLIC_TASK_CONTRACT_SCHEMA = "aworld.public-task-contract/v1"
 PUBLIC_DELIVERABLE_AUTHORITY = "public_task_advisory"
 _MAX_PUBLIC_DELIVERABLES = 16
+_MAX_PUBLIC_OBLIGATIONS = 32
+_MAX_PUBLIC_OBLIGATION_TEXT = 512
 _MAX_VALIDATION_DIAGNOSTIC_BYTES = 16 * 1024
 _VALIDATION_DIAGNOSTIC_CODE = re.compile(r"[a-z][a-z0-9_.:-]{0,127}\Z")
 _DELIVERABLE_TOKEN = r"(?:`([^`\r\n]+)`|'([^'\r\n]+)'|\"([^\"\r\n]+)\"|([^\s,;:!?]+))"
@@ -51,7 +54,7 @@ _PUBLIC_DELIVERABLE_PATTERNS = (
     # file/program noun rather than after "to/as/named", e.g. "Create a
     # python file /app/filter.py" or "Write a c program image.c".
     re.compile(
-        r"(?i)\b(?:save|write|create|generate|export|store|produce|implement|build|make)\b"
+        r"(?i)\b(?:save|write|create|generate|export|store|produce|implement|build|make|put)\b"
         r"\s+(?:me\s+)?(?:an?\s+|the\s+)?"
         r"(?:[a-z0-9_+#.-]+\s+){0,4}?"
         r"(?:file|script|program|executable|interpreter)\s+"
@@ -70,6 +73,12 @@ _PUBLIC_DELIVERABLE_PATTERNS = (
     re.compile(
         r"(?i)\b(?:call|name)\s+(?:your|the)\s+"
         r"(?:file|script|program|executable|interpreter)\s+"
+        + _DELIVERABLE_TOKEN
+    ),
+    re.compile(
+        r"(?i)\b(?:save|write|create|generate|export|store|produce|implement|put)\b"
+        r"\s+(?:it\s+)?(?:in|into|to|at|as)?\s*(?:an?\s+|the\s+)?"
+        r"(?:file\s+)?(?:(?:named|called|titled)\s+)?"
         + _DELIVERABLE_TOKEN
     ),
 )
@@ -95,6 +104,51 @@ _PUBLIC_EXECUTABLE_PATTERN = re.compile(
 _GENERIC_TOOL_WORDS = frozenset(
     {"a", "an", "available", "command", "external", "some", "the", "validation"}
 )
+_FENCED_PUBLIC_SCHEMA = re.compile(
+    r"```\s*(json|toml|yaml|yml|proto|protobuf)\s*\n(.*?)```",
+    re.IGNORECASE | re.DOTALL,
+)
+_EXPLICIT_SCHEMA_CONTEXT = re.compile(
+    r"(?i)(?:exact(?:ly)?|required\s+output|output\s+format|"
+    r"following\s+(?:format|structure)|field\s+names?|schema|must\s+contain)"
+)
+_FUNCTION_SIGNATURE = re.compile(
+    r"(?m)(?:^|[`\s])((?:async\s+)?def\s+[A-Za-z_]\w*\s*\([^\n]{0,512}?\)"
+    r"\s*(?:->\s*[^:\n`]{1,256})?\s*:?)"
+)
+_CALLABLE_SIGNATURE = re.compile(
+    r"^((?:async\s+)?([A-Za-z_]\w*)\s*\([^\r\n]{0,512}?\)"
+    r"\s*(?:->\s*[^\r\n]{1,256})?)$"
+)
+_IMPORT_CONTRACT = re.compile(
+    r"^from\s+([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\s+import\s+"
+    r"([A-Za-z_]\w*(?:\s*,\s*[A-Za-z_]\w*)*)$"
+)
+_PORT_REQUIREMENT = re.compile(
+    r"(?i)\b(?:listen(?:ing)?\s+on|bind(?:ing)?\s+to|use|using|on)\s+port\s+"
+    r"([0-9]{2,5})\b|\bport\s*[:=]?\s*([0-9]{2,5})\b"
+)
+_TYPED_IDENTIFIER = re.compile(
+    r"\b([A-Za-z_]\w*)\s*\(\s*"
+    r"(string|str|int(?:eger)?|float|number|bool(?:ean)?)\s*\)",
+    re.IGNORECASE,
+)
+_COMMAND_CODE_SPAN = re.compile(r"`([^`\r\n]{2,512})`")
+_COMMAND_CONTEXT = re.compile(
+    r"(?i)(?:\b(?:run|execute|invoke)\b|\bcalled\s+with\b|"
+    r"\bshould\s+be\s+able\s+to\s+run\b|\bcompile(?:d)?\s+using\b)"
+)
+_THRESHOLD_CONTEXT = re.compile(
+    r"(?i)(?:at\s+most|at\s+least|less\s+than|more\s+than|no\s+more\s+than|"
+    r"no\s+less\s+than|under|over|<=|>=|≤|≥)[^\r\n.!?]{0,96}\d"
+)
+_NEGATIVE_CONSTRAINT = re.compile(
+    r"(?i)\b(?:do\s+not|don't|must\s+not|should\s+not|never|without)\b"
+)
+_LIVENESS_CONSTRAINT = re.compile(
+    r"(?i)\b(?:keep|leave|left|remain|stays?|continue)\b"
+    r"[^\r\n.!?]{0,96}\b(?:running|background|alive|available)\b"
+)
 
 
 @dataclass(frozen=True)
@@ -115,6 +169,230 @@ class PublicExecutableHint:
     capability_id: str
     executable: str
     authority: str = PUBLIC_DELIVERABLE_AUTHORITY
+
+
+@dataclass(frozen=True)
+class PublicObligationHint:
+    """One bounded requirement derived only from authoritative public text."""
+
+    obligation_id: str
+    kind: str
+    subject: str
+    expectation: object
+    source_excerpt: str
+    source_fingerprint: str
+    authority: str = PUBLIC_DELIVERABLE_AUTHORITY
+    source: str = "public_task_text"
+
+
+def _public_fingerprint(value: str) -> str:
+    return "sha256:" + hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _bounded_public_excerpt(value: str) -> str:
+    return " ".join(value.strip().split())[:_MAX_PUBLIC_OBLIGATION_TEXT]
+
+
+def _public_clause(request: str, start: int, end: int) -> str:
+    left = max(
+        request.rfind("\n", 0, start),
+        request.rfind(".", 0, start),
+        request.rfind("!", 0, start),
+        request.rfind("?", 0, start),
+    )
+    stops = [
+        position
+        for marker in ("\n", ".", "!", "?")
+        for position in (request.find(marker, end),)
+        if position >= 0
+    ]
+    right = min(stops) + 1 if stops else min(len(request), end + 256)
+    return request[left + 1 : right].strip()
+
+
+def infer_public_obligation_hints(
+    request: str | None,
+    *,
+    workspace_path: str | os.PathLike[str],
+) -> tuple[PublicObligationHint, ...]:
+    """Conservatively derive a typed ledger from public task text only.
+
+    The ledger is advisory task grounding.  It is never populated from a
+    verifier, reward, historical failure, or solver-generated text, and it
+    never becomes external scoring authority.
+    """
+
+    if not isinstance(request, str) or not request.strip():
+        return ()
+    bounded_request = request[:256_000]
+    rows: list[tuple[str, str, object, str]] = []
+    seen: set[str] = set()
+
+    def add(kind: str, subject: str, expectation: object, excerpt: str) -> None:
+        normalized_excerpt = _bounded_public_excerpt(excerpt)
+        if not normalized_excerpt or not subject:
+            return
+        identity = json.dumps(
+            [kind, subject, expectation],
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        if identity in seen or len(rows) >= _MAX_PUBLIC_OBLIGATIONS:
+            return
+        seen.add(identity)
+        rows.append((kind, subject[:512], expectation, normalized_excerpt))
+
+    deliverables = infer_public_deliverable_hints(
+        bounded_request, workspace_path=workspace_path
+    )
+    for item in deliverables:
+        add(
+            "deliverable_file",
+            item.display_path,
+            {"path": item.path, "required": True},
+            next(
+                (
+                    _public_clause(bounded_request, match.start(), match.end())
+                    for match in re.finditer(re.escape(item.display_path), bounded_request)
+                ),
+                item.display_path,
+            ),
+        )
+
+    for match in _FENCED_PUBLIC_SCHEMA.finditer(bounded_request):
+        prefix = bounded_request[max(0, match.start() - 240) : match.start()]
+        if _EXPLICIT_SCHEMA_CONTEXT.search(prefix) is None:
+            continue
+        language, body = match.group(1).lower(), match.group(2)
+        fields: list[tuple[str, str | None]] = []
+        if language == "json":
+            fields.extend((name, None) for name in re.findall(r'"([^"\r\n]{1,128})"\s*:', body))
+        elif language == "toml":
+            fields.extend(
+                (name, None)
+                for name in re.findall(r"(?m)^\s*([A-Za-z_][A-Za-z0-9_.-]{0,127})\s*=", body)
+            )
+        elif language in {"proto", "protobuf"}:
+            fields.extend(
+                (name, declared_type)
+                for declared_type, name in re.findall(
+                    r"(?m)^\s*(?:repeated\s+)?([A-Za-z_]\w*)\s+([A-Za-z_]\w*)\s*=\s*\d+\s*;",
+                    body,
+                )
+            )
+        else:
+            fields.extend(
+                (name, None)
+                for name in re.findall(r"(?m)^\s*([A-Za-z_]\w*)\s*:", body)
+            )
+        excerpt = _public_clause(bounded_request, match.start(), match.end())
+        for name, declared_type in fields[:16]:
+            add(
+                "structured_field",
+                name,
+                {"required": True, **({"declared_type": declared_type} if declared_type else {})},
+                excerpt,
+            )
+
+    for match in _FUNCTION_SIGNATURE.finditer(bounded_request):
+        signature = " ".join(match.group(1).split())
+        add(
+            "function_signature",
+            signature.split("(", 1)[0].removeprefix("async ").removeprefix("def "),
+            {"signature": signature},
+            _public_clause(bounded_request, match.start(), match.end()),
+        )
+
+    code_spans = list(_COMMAND_CODE_SPAN.finditer(bounded_request))
+    classified_code_spans: set[tuple[int, int]] = set()
+    for match in code_spans:
+        content = " ".join(match.group(1).split())
+        signature = _CALLABLE_SIGNATURE.fullmatch(content)
+        if signature is not None:
+            name = signature.group(2)
+            add(
+                "function_signature",
+                name,
+                {"signature": signature.group(1)},
+                _public_clause(bounded_request, match.start(), match.end()),
+            )
+            classified_code_spans.add(match.span())
+            continue
+        import_contract = _IMPORT_CONTRACT.fullmatch(content)
+        if import_contract is not None:
+            add(
+                "import_contract",
+                import_contract.group(1),
+                {
+                    "module": import_contract.group(1),
+                    "names": [
+                        value.strip()
+                        for value in import_contract.group(2).split(",")
+                    ],
+                },
+                _public_clause(bounded_request, match.start(), match.end()),
+            )
+            classified_code_spans.add(match.span())
+
+    for match in _TYPED_IDENTIFIER.finditer(bounded_request):
+        clause = _public_clause(bounded_request, match.start(), match.end())
+        if re.search(r"(?i)\b(?:field|parameter|message|request|response|includes?|contains?|returns?)\b", clause) is None:
+            continue
+        add(
+            "structured_field",
+            match.group(1),
+            {"required": True, "declared_type": match.group(2).lower()},
+            clause,
+        )
+
+    for match in _PORT_REQUIREMENT.finditer(bounded_request):
+        port = int(match.group(1) or match.group(2))
+        if 0 < port <= 65535:
+            add(
+                "service_port",
+                str(port),
+                {"port": port, "required": True},
+                _public_clause(bounded_request, match.start(), match.end()),
+            )
+
+    for match in code_spans:
+        if match.span() in classified_code_spans:
+            continue
+        clause = _public_clause(bounded_request, match.start(), match.end())
+        command = " ".join(match.group(1).split())
+        if (
+            _COMMAND_CONTEXT.search(clause) is not None
+            and _NEGATIVE_CONSTRAINT.search(clause) is None
+            and bool(re.search(r"\s", command))
+        ):
+            add(
+                "public_command",
+                command[:256],
+                {"command": command[:512]},
+                clause,
+            )
+
+    for match in re.finditer(r"[^\r\n]+", bounded_request):
+        excerpt = match.group(0).strip()
+        if _THRESHOLD_CONTEXT.search(excerpt):
+            add("numeric_threshold", _bounded_public_excerpt(excerpt), {"statement": _bounded_public_excerpt(excerpt)}, excerpt)
+        if _NEGATIVE_CONSTRAINT.search(excerpt):
+            add("negative_constraint", _bounded_public_excerpt(excerpt), {"statement": _bounded_public_excerpt(excerpt)}, excerpt)
+        if _LIVENESS_CONSTRAINT.search(excerpt):
+            add("process_liveness", "process_liveness", {"statement": _bounded_public_excerpt(excerpt)}, excerpt)
+
+    return tuple(
+        PublicObligationHint(
+            obligation_id=f"public-obligation-{index}",
+            kind=kind,
+            subject=subject,
+            expectation=expectation,
+            source_excerpt=excerpt,
+            source_fingerprint=_public_fingerprint(excerpt),
+        )
+        for index, (kind, subject, expectation, excerpt) in enumerate(rows, start=1)
+    )
 
 
 def _matched_deliverable_token(match: re.Match[str]) -> str:
@@ -405,6 +683,20 @@ def _publish_public_deliverable_contract(
         }
     else:
         context.context_info.pop("public_capability_hints", None)
+    obligations = infer_public_obligation_hints(
+        request,
+        workspace_path=workspace_path,
+    )
+    if obligations:
+        context.context_info["public_task_contract"] = {
+            "schema_version": PUBLIC_TASK_CONTRACT_SCHEMA,
+            "authority": PUBLIC_DELIVERABLE_AUTHORITY,
+            "source": "public_task_text",
+            "request_fingerprint": _public_fingerprint(str(request or "")),
+            "obligations": [asdict(item) for item in obligations],
+        }
+    else:
+        context.context_info.pop("public_task_contract", None)
     return hints
 
 

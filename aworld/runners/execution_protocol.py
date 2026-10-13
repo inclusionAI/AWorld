@@ -5113,6 +5113,19 @@ def execution_protocol_model_decision_boundary(context, agent_id: str) -> str | 
         _read_runtime_value(context, agent_id, EXECUTION_PROTOCOL_MODEL_DECISIONS_KEY),
         expected_scope=_model_decision_scope(context, agent_id),
     )
+    # An unavailable initial profile must not permanently mask a later
+    # controller-requested replan.  The pending ordinary checkpoint is newer
+    # task evidence and owns this decision boundary.  Terminal delivery keeps
+    # the historical initial-boundary fail-open path because it may have to
+    # finalize without ever receiving a model profile.
+    if state.decision_checkpoint_pending and not terminal_checkpoint:
+        replan = attempts["replan"]
+        if (
+            replan.get("request_sequence") == state.replan_requested_count
+            and replan.get("status") == "fail_open_unacknowledged"
+        ):
+            return None
+        return "replan"
     if state.model_execution_profile is None:
         if attempts["initial"].get("status") == "fail_open_unknown":
             return None

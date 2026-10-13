@@ -566,8 +566,8 @@ async def test_default_runner_uses_private_manager_and_exact_caller_context(
     assert isinstance(delegation_spec, DelegationSpec)
     assert delegation_spec.objective == "public directive"
     assert delegation_spec.expected_output_schema["type"] == "string"
-    assert delegation_spec.token_budget == 16_384
-    assert delegation_spec.max_output_tokens == 2_048
+    assert delegation_spec.token_budget == 32_768
+    assert delegation_spec.max_output_tokens == 4_096
     assert delegation_spec.max_turns == 2
     assert delegation_spec.may_use_parent_finalization_reserve is False
     assert delegation_spec.deadline is not None
@@ -985,6 +985,60 @@ async def test_strict_json_review_envelope_is_parsed_without_regex_inference() -
 
 
 @pytest.mark.asyncio
+async def test_single_strict_json_object_is_accepted_under_bounded_wrapping() -> None:
+    report = (
+        "Review result follows:\n```json\n"
+        + json.dumps(
+            {
+                "decision": "repair",
+                "evidence": "the public field is absent",
+                "gaps": "one public obligation remains",
+                "recommended_next_action": "add the field and validate once",
+            }
+        )
+        + "\n```\nEnd of review."
+    )
+
+    result = await _factory(report=report).review(
+        AdvisoryReviewRequest(candidate_claim="Candidate may be ready."),
+        context=_context(),
+    )
+
+    assert result.status == "completed"
+    assert result.decision == "repair"
+    assert json.loads(result.report)["decision"] == "repair"
+
+
+@pytest.mark.asyncio
+async def test_multiple_strict_json_objects_remain_ambiguous() -> None:
+    ready = json.dumps(
+        {
+            "decision": "ready",
+            "evidence": "candidate exists",
+            "gaps": "none",
+            "recommended_next_action": "submit current result",
+        }
+    )
+    repair = json.dumps(
+        {
+            "decision": "repair",
+            "evidence": "field missing",
+            "gaps": "one field",
+            "recommended_next_action": "add the field",
+        }
+    )
+
+    result = await _factory(report=ready + "\n" + repair).review(
+        AdvisoryReviewRequest(candidate_claim="Candidate may be ready."),
+        context=_context(),
+    )
+
+    assert result.status == "inconclusive"
+    assert result.decision == "uncertain"
+    assert result.reason_code == "decision_ambiguous"
+
+
+@pytest.mark.asyncio
 async def test_ready_requires_framework_owned_direct_evidence() -> None:
     context = Context(task_id="ready-without-evidence")
     public_task = "Configure the service."
@@ -1218,6 +1272,330 @@ async def test_review_receives_authoritative_public_delivery_paths() -> None:
 
 
 @pytest.mark.asyncio
+async def test_in_progress_public_candidate_and_contract_can_be_reviewed_without_gate(
+    monkeypatch, tmp_path
+) -> None:
+    captured = {}
+    factory = _factory(
+        report=json.dumps(
+            {
+                "decision": "ready",
+                "evidence": "captured current declared JSON with the value field",
+                "gaps": "none",
+                "recommended_next_action": "submit current result",
+            }
+        ),
+        captured=captured,
+    )
+    declared = tmp_path / "result.json"
+    declared.write_text('{"value":42}', encoding="utf-8")
+    monkeypatch.setenv("ARTIFACT_DIRECTORY", str(tmp_path))
+    public_task = "Write result.json with the required value field."
+    context = _context(public_task)
+    context.task_id = "in-progress-public-candidate"
+    context.task_epoch = 2
+    context.context_info = {
+        "public_deliverable_contract": {
+            "schema_version": "aworld.public-deliverables/v1",
+            "authority": "public_task_advisory",
+            "source": "public_task_text",
+            "artifacts": [
+                {
+                    "kind": "file",
+                    "authority": "public_task_advisory",
+                    "path": str(declared),
+                    "display_path": "result.json",
+                }
+            ],
+        },
+        "public_task_contract": {
+            "schema_version": "aworld.public-task-contract/v1",
+            "authority": "public_task_advisory",
+            "source": "public_task_text",
+            "request_fingerprint": "sha256:"
+            + hashlib.sha256(public_task.encode()).hexdigest(),
+            "obligations": [
+                {
+                    "obligation_id": "public-obligation-1",
+                    "kind": "structured_field",
+                    "subject": "value",
+                    "expectation": {"required": True, "declared_type": "int"},
+                    "source_excerpt": "required value field",
+                    "source_fingerprint": "sha256:" + "b" * 64,
+                    "authority": "public_task_advisory",
+                    "source": "public_task_text",
+                }
+            ],
+        },
+    }
+
+    result = await factory.review(
+        AdvisoryReviewRequest(candidate_claim="Result is complete."),
+        context=context,
+    )
+
+    assert result.status == "completed"
+    assert result.decision == "ready"
+    directive = captured["runner"]["directive"]
+    assert '"authentication":"current_public_capture"' in directive
+    assert '\\"value\\":42' in directive
+    assert "Public task contract ledger" in directive
+    assert '"obligation_id":"public-obligation-1"' in directive
+    assert "hidden" not in directive.lower()
+
+
+@pytest.mark.asyncio
+async def test_review_reads_public_contracts_from_task_owner_context(
+    monkeypatch, tmp_path
+) -> None:
+    captured = {}
+    factory = _factory(
+        report=json.dumps(
+            {
+                "decision": "ready",
+                "evidence": "captured the owner-bound public artifact",
+                "gaps": "none",
+                "recommended_next_action": "submit current result",
+            }
+        ),
+        captured=captured,
+    )
+    declared = tmp_path / "run.py"
+    declared.write_text("async def run_tasks(tasks, max_concurrent):\n    return None\n")
+    monkeypatch.setenv("ARTIFACT_DIRECTORY", str(tmp_path))
+    public_task = "Write run.py with async run_tasks(tasks, max_concurrent)."
+    request_fingerprint = "sha256:" + hashlib.sha256(
+        public_task.encode()
+    ).hexdigest()
+    owner = SimpleNamespace(
+        context_info={
+            "public_deliverable_contract": {
+                "schema_version": "aworld.public-deliverables/v1",
+                "authority": "public_task_advisory",
+                "source": "public_task_text",
+                "artifacts": [
+                    {
+                        "kind": "file",
+                        "authority": "public_task_advisory",
+                        "path": str(declared),
+                        "display_path": "run.py",
+                    }
+                ],
+            },
+            "public_task_contract": {
+                "schema_version": "aworld.public-task-contract/v1",
+                "authority": "public_task_advisory",
+                "source": "public_task_text",
+                "request_fingerprint": request_fingerprint,
+                "obligations": [
+                    {
+                        "obligation_id": "public-obligation-1",
+                        "kind": "structured_field",
+                        "subject": "run_tasks",
+                        "expectation": {"required": True},
+                        "source_fingerprint": "sha256:" + "c" * 64,
+                        "authority": "public_task_advisory",
+                        "source": "public_task_text",
+                    }
+                ],
+            },
+        }
+    )
+    transport = _context(public_task)
+    transport.task_id = "transport-owner-contract"
+    transport.task_epoch = 1
+    transport.context_info = {}
+    transport.event_manager = SimpleNamespace(context=owner)
+
+    result = await factory.review(
+        AdvisoryReviewRequest(candidate_claim="run.py is ready."),
+        context=transport,
+    )
+
+    assert result.status == "completed"
+    assert result.decision == "ready"
+    directive = captured["runner"]["directive"]
+    assert '"authentication":"current_public_capture"' in directive
+    assert "async def run_tasks" in directive
+    assert '"obligation_id":"public-obligation-1"' in directive
+
+
+@pytest.mark.asyncio
+async def test_review_rederives_public_contract_when_transport_projection_is_missing(
+    monkeypatch, tmp_path
+) -> None:
+    captured = {}
+    factory = _factory(
+        report=json.dumps(
+            {
+                "decision": "ready",
+                "evidence": "captured the declared public file",
+                "gaps": "none",
+                "recommended_next_action": "submit current result",
+            }
+        ),
+        captured=captured,
+    )
+    declared = tmp_path / "result.json"
+    declared.write_text('{"status":"ready"}', encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("ARTIFACT_DIRECTORY", str(tmp_path))
+    public_task = f"Write a file called `{declared}` containing the result."
+    context = _context(public_task)
+    context.task_id = "transport-contract-rederivation"
+    context.task_epoch = 1
+    context.context_info = {}
+
+    result = await factory.review(
+        AdvisoryReviewRequest(candidate_claim="The result file is ready."),
+        context=context,
+    )
+
+    assert result.status == "completed"
+    assert result.decision == "ready"
+    directive = captured["runner"]["directive"]
+    assert '"authentication":"current_public_capture"' in directive
+    assert str(declared) in directive
+    assert '"kind":"deliverable_file"' in directive
+
+
+@pytest.mark.asyncio
+async def test_executable_obligation_requires_public_validation_receipt_for_ready(
+    monkeypatch, tmp_path
+) -> None:
+    factory = _factory(
+        report=json.dumps(
+            {
+                "decision": "ready",
+                "evidence": "the function source was captured",
+                "gaps": "none",
+                "recommended_next_action": "submit current result",
+            }
+        )
+    )
+    declared = tmp_path / "run.py"
+    declared.write_text("async def run_tasks(tasks, max_concurrent):\n    return None\n")
+    monkeypatch.setenv("ARTIFACT_DIRECTORY", str(tmp_path))
+    public_task = "Write run.py with async run_tasks(tasks, max_concurrent)."
+    context = _context(public_task)
+    context.task_id = "behavior-needs-validation"
+    context.task_epoch = 1
+    context.context_info = {
+        "public_deliverable_contract": {
+            "schema_version": "aworld.public-deliverables/v1",
+            "authority": "public_task_advisory",
+            "source": "public_task_text",
+            "artifacts": [
+                {
+                    "kind": "file",
+                    "authority": "public_task_advisory",
+                    "path": str(declared),
+                    "display_path": "run.py",
+                }
+            ],
+        },
+        "public_task_contract": {
+            "schema_version": "aworld.public-task-contract/v1",
+            "authority": "public_task_advisory",
+            "source": "public_task_text",
+            "request_fingerprint": "sha256:"
+            + hashlib.sha256(public_task.encode()).hexdigest(),
+            "obligations": [
+                {
+                    "obligation_id": "public-obligation-1",
+                    "kind": "function_signature",
+                    "subject": "run_tasks",
+                    "expectation": {
+                        "signature": "async run_tasks(tasks, max_concurrent)"
+                    },
+                    "source_fingerprint": "sha256:" + "d" * 64,
+                    "authority": "public_task_advisory",
+                    "source": "public_task_text",
+                }
+            ],
+        },
+    }
+
+    result = await factory.review(
+        AdvisoryReviewRequest(candidate_claim="run.py is ready."),
+        context=context,
+    )
+
+    assert result.status == "inconclusive"
+    assert result.decision == "uncertain"
+    assert result.reason_code == "ready_evidence_missing"
+    assert result.to_payload()["recommended_framework_action"] == (
+        "task_derived_validation_once"
+    )
+
+
+@pytest.mark.asyncio
+async def test_public_contract_with_wrong_request_fingerprint_is_not_projected(
+    monkeypatch, tmp_path
+) -> None:
+    captured = {}
+    factory = _factory(
+        report=json.dumps(
+            {
+                "decision": "repair",
+                "evidence": "public candidate inspected",
+                "gaps": "needs validation",
+                "recommended_next_action": "run one public check",
+            }
+        ),
+        captured=captured,
+    )
+    declared = tmp_path / "result.json"
+    declared.write_text("{}", encoding="utf-8")
+    monkeypatch.setenv("ARTIFACT_DIRECTORY", str(tmp_path))
+    context = _context("Write result.json.")
+    context.task_id = "wrong-ledger-fingerprint"
+    context.task_epoch = 1
+    context.context_info = {
+        "public_deliverable_contract": {
+            "schema_version": "aworld.public-deliverables/v1",
+            "authority": "public_task_advisory",
+            "source": "public_task_text",
+            "artifacts": [
+                {
+                    "kind": "file",
+                    "authority": "public_task_advisory",
+                    "path": str(declared),
+                    "display_path": "result.json",
+                }
+            ],
+        },
+        "public_task_contract": {
+            "schema_version": "aworld.public-task-contract/v1",
+            "authority": "public_task_advisory",
+            "source": "public_task_text",
+            "request_fingerprint": "sha256:" + "f" * 64,
+            "obligations": [
+                {
+                    "obligation_id": "must-not-project",
+                    "kind": "structured_field",
+                    "subject": "hidden_field",
+                    "expectation": {"required": True},
+                    "source_excerpt": "untrusted",
+                    "source_fingerprint": "sha256:" + "e" * 64,
+                    "authority": "public_task_advisory",
+                    "source": "public_task_text",
+                }
+            ],
+        },
+    }
+
+    await factory.review(
+        AdvisoryReviewRequest(candidate_claim="Result needs review."),
+        context=context,
+    )
+
+    directive = captured["runner"]["directive"]
+    assert "must-not-project" not in directive
+    assert "hidden_field" not in directive
+
+
+@pytest.mark.asyncio
 async def test_review_receives_bounded_declared_artifact_snapshot(
     monkeypatch, tmp_path
 ) -> None:
@@ -1293,6 +1671,23 @@ def test_review_snapshot_is_bounded_and_does_not_follow_symlinks(
 
     assert snapshot["items"][0]["status"] == "unavailable"
     assert "sensitive-marker" not in json.dumps(snapshot)
+
+
+def test_direct_public_capture_does_not_follow_symlinks(monkeypatch, tmp_path) -> None:
+    secret = tmp_path / "secret.txt"
+    secret.write_text("private-marker", encoding="utf-8")
+    link = tmp_path / "result.txt"
+    link.symlink_to(secret)
+    monkeypatch.setenv("ARTIFACT_DIRECTORY", str(tmp_path))
+
+    status = lazy_verifier_module._direct_public_snapshot_authentication_status(
+        None,
+        authoritative_deliverables=(str(link),),
+    )
+
+    assert status["authenticated"] is False
+    assert status["reason"] == "public_candidate_unavailable"
+    assert status["artifact_hashes"] == {}
 
 
 def test_review_snapshot_truncates_declared_text_with_fixed_budget(
@@ -1537,7 +1932,7 @@ async def test_long_bounded_report_parses_decision_before_public_truncation() ->
 
 
 @pytest.mark.asyncio
-async def test_review_rejects_non_hex_candidate_fingerprint() -> None:
+async def test_malformed_candidate_fingerprint_cannot_mint_ready() -> None:
     captured = {}
     factory = _factory(captured=captured)
     context = _context("Write result.json in the workspace.")
@@ -1570,9 +1965,11 @@ async def test_review_rejects_non_hex_candidate_fingerprint() -> None:
         context=context,
     )
 
-    assert result.status == "unavailable"
-    assert result.reason_code == "candidate_checkpoint_unavailable"
-    assert "runner" not in captured
+    assert result.status == "inconclusive"
+    assert result.decision == "uncertain"
+    assert result.reason_code == "ready_evidence_missing"
+    assert "runner" in captured
+    assert "must-not-project" not in captured["runner"]["directive"]
 
 
 @pytest.mark.parametrize(
