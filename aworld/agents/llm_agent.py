@@ -3324,7 +3324,34 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             owner.context_info.pop(sidecar_key, None)
         return cleaned
 
-    def _clean_redundant_tool_call_messages(self, histories: List[MemoryItem]) -> None:
+    @staticmethod
+    def _observation_answers_pending_tool_call(observation: Optional[Observation]) -> bool:
+        """Whether the observation is the result produced for the trailing tool call.
+
+        An observation branded with the tool or agent that produced it
+        (``observer``) or with an ``ability`` is the counterpart of the call the
+        agent was invoked for. The trailing tool-call messages are then pending
+        rather than redundant, and reclaiming them drops the call this result is
+        paired with, which the runtime later reports as ``tool_calls mismatch!``
+        (issue #761).
+        """
+        if observation is None:
+            return False
+        return bool(
+            getattr(observation, "observer", None)
+            or getattr(observation, "ability", None)
+        )
+
+    def _clean_redundant_tool_call_messages(
+        self, histories: List[MemoryItem], *, protected: bool = False
+    ) -> None:
+        """Reclaim trailing tool-call messages that no longer have a pending result.
+
+        ``protected`` marks the replay path, where the incoming observation is
+        the counterpart of the trailing call and must keep its call message.
+        """
+        if protected:
+            return
         try:
             for i in range(len(histories) - 1, -1, -1):
                 his = histories[i]
@@ -3412,7 +3439,10 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             tool_result_added = True
 
         if not tool_result_added:
-            self._clean_redundant_tool_call_messages(histories)
+            self._clean_redundant_tool_call_messages(
+                histories,
+                protected=self._observation_answers_pending_tool_call(observation),
+            )
             content = observation.content
             if image_urls:
                 urls = [{"type": "text", "text": content}]
