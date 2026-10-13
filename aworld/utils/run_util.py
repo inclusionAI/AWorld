@@ -91,6 +91,12 @@ async def exec_agent(question: Any,
         run_conf: Task runtime config.
         parent_task: Framework-owned execution parent for subtask lifetime bounds.
     """
+    if context is None:
+        raise ValueError(
+            "exec_agent requires a non-None context, got None. The caller must propagate "
+            "the runtime context (for example Message.context) instead of None, otherwise "
+            "the sub-task cannot be constructed and AgentInfo lookups cannot be resolved."
+        )
     if parent_task is None:
         get_task = getattr(context, "get_task", None)
         try:
