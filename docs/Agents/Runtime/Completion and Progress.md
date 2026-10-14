@@ -29,15 +29,16 @@ identity, reason, and recoverability. The task handler projects that incomplete
 state into TaskResponse without fabricating success.
 
 The bundled Agent also enables success-first terminal control. Short work stays
-on the historical fail-open path. Once generic Tool/stagnation/deadline evidence
-arms long-horizon execution, the existing typed convergence stages become
-enforceable: produce a declared candidate, then validate, repair from public
-evidence, or submit. Before that boundary GUIDE mode does not reject ordinary
-Tool calls. Once a candidate reaches the terminal boundary, the runtime reserves
-a bounded decision/finalization window and may request a model-owned review plus
-at most one repair. The review shares the original task budget, cannot mint
-verifier authority, and preserves the best current candidate when the review
-fails, times out, or cannot establish a concrete repair.
+on the historical fail-open path. Generic Tool/stagnation/deadline evidence may
+produce one bounded model-owned replan and an advisory convergence stage:
+produce a declared candidate, then validate, repair from public evidence, or
+submit. Built-in policies do not use static Tool-effect analysis to deny
+ordinary sandbox work; an explicit developer policy is required to enable that
+legacy hard admission mode. Once a candidate reaches the terminal boundary,
+the runtime reserves a bounded decision/finalization window and may request one
+model-owned review plus at most one repair. The review shares the original task
+budget, cannot mint verifier authority, cannot be blocked by candidate Tool
+admission, and is never retried after an unavailable or inconclusive result.
 
 An unavailable initial execution-profile response does not suppress later
 controller-requested replans. A newer ordinary stagnation or delivery-debt
@@ -51,8 +52,10 @@ from the authoritative public task text. Conservative extractors recognize
 explicit deliverable files, structured field names, function/import signatures,
 service ports, public commands, numeric thresholds, prohibitions, and process
 liveness clauses. Every row carries a public-source excerpt fingerprint. The
-ledger is advisory task grounding: it helps the Agent keep a checklist and
-request evidence, but it is not a completion contract or verifier result.
+ledger is advisory task grounding: it helps the Agent keep a final evidence
+checklist and request evidence, but it is not a completion contract, Tool-write
+allowlist, or verifier result. Mentioned inputs, examples, and prohibited
+changes do not become output files.
 
 The ledger never reads Dataset verifier files, reward, post-run verifier output,
 historical expected answers, or solver-generated requirements. Its request hash

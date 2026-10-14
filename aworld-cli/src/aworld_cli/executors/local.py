@@ -1565,7 +1565,11 @@ class LocalAgentExecutor(BaseAgentExecutor):
             protocol_state.convergence_constraint_active
         )
         if policy.mode is ProtocolMode.GUIDE and (
-            protocol_finalized or protocol_converging
+            protocol_finalized
+            or (
+                protocol_converging
+                and policy.hard_tool_admission_enabled
+            )
         ):
             # The execution protocol already owns the remaining work for this
             # task scope. Starting another implicit goal segment would create

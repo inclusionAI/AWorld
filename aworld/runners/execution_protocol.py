@@ -3586,8 +3586,9 @@ def _mutation_gate_interception_locked(
             and _gate_matches_current_scope(
                 context, candidate_agent_id, candidate_gate
             )
-            and execution_protocol_policy(context, candidate_agent_id).mode
-            is ProtocolMode.GUIDE
+            and execution_protocol_policy(
+                context, candidate_agent_id
+            ).hard_tool_admission_enabled
         ):
             candidate_gates.append((candidate_agent_id, candidate_gate))
     if ambiguous_agent_scope:
@@ -3604,8 +3605,9 @@ def _mutation_gate_interception_locked(
                 and _gate_matches_current_scope(
                     context, candidate_agent_id, candidate_gate
                 )
-                and execution_protocol_policy(context, candidate_agent_id).mode
-                is ProtocolMode.GUIDE
+                and execution_protocol_policy(
+                    context, candidate_agent_id
+                ).hard_tool_admission_enabled
             ):
                 candidate_gates.append((candidate_agent_id, candidate_gate))
                 known_gate_agents.add(candidate_agent_id)
@@ -3627,8 +3629,9 @@ def _mutation_gate_interception_locked(
             and latest_agent_id
             and latest_gate.get("active") is True
             and _gate_matches_current_scope(context, latest_agent_id, latest_gate)
-            and execution_protocol_policy(context, latest_agent_id).mode
-            is ProtocolMode.GUIDE
+            and execution_protocol_policy(
+                context, latest_agent_id
+            ).hard_tool_admission_enabled
         ):
             candidate_gates.append((latest_agent_id, latest_gate))
     if ambiguous_agent_scope:
@@ -3733,7 +3736,9 @@ def _mutation_gate_interception_locked(
             "call_rejections_truncated": truncated,
         }
     agent_id = next(iter(agent_ids))
-    if execution_protocol_policy(context, agent_id).mode is not ProtocolMode.GUIDE:
+    if not execution_protocol_policy(
+        context, agent_id
+    ).hard_tool_admission_enabled:
         return None
     gate = _read_runtime_value(context, agent_id, MUTATION_GATE_STATE_KEY)
     if (

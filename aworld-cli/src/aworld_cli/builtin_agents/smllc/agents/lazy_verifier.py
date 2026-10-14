@@ -69,7 +69,7 @@ _REVIEW_OUTPUT_TOKEN_BUDGET = (
 )
 _REVIEW_WALL_CLOCK_SECONDS = 180.0
 _REVIEW_MIN_START_SECONDS = 20.0
-_REVIEW_MAX_ATTEMPTS = 2
+_REVIEW_MAX_ATTEMPTS = 1
 _DECLARED_SNAPSHOT_SCHEMA = "aworld.declared-artifact-snapshot/v1"
 _DECLARED_SNAPSHOT_TOTAL_BYTES = 12 * 1024
 _DECLARED_SNAPSHOT_FILE_BYTES = 8 * 1024
@@ -181,9 +181,11 @@ class AdvisoryVerifierAction(ToolAction):
     REVIEW_CANDIDATE = ToolActionInfo(
         name="review_candidate",
         desc=(
-            "Explicitly request one fresh-context, read-only review of the "
-            "current candidate. The report is advisory and never decides "
-            "canonical reward or external verifier success."
+            "Explicitly request the task's only fresh-context, read-only "
+            "review of the current candidate. Never retry an unavailable or "
+            "inconclusive result; run one public task-derived validation "
+            "instead. The report is advisory and never decides canonical "
+            "reward or external verifier success."
         ),
         input_params={
             "candidate_claim": ParamInfo(
@@ -390,6 +392,7 @@ class AdvisoryReviewResult:
             payload["recommended_framework_action"] = (
                 "task_derived_validation_once"
             )
+            payload["review_retry_allowed"] = False
         return payload
 
 
@@ -613,8 +616,8 @@ class LazyVerifierFactory:
                     status="unavailable",
                     decision="uncertain",
                     report=(
-                        "The bounded initial review and changed-candidate re-review "
-                        "have already been used. Run one task-derived validation "
+                        "The bounded candidate review has already been used. Run "
+                        "one task-derived validation "
                         "and finalize the best current candidate."
                     ),
                     reason_code="review_attempt_limit",

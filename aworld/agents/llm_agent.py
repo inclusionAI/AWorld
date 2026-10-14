@@ -1025,21 +1025,21 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         success_first = _success_first_enabled()
         if success_first:
             # Benchmark callers already own a hard task deadline, per-call
-            # timeouts, and process-tree cleanup.  Keep the ordinary short-task
-            # path fail-open, but let the task-generic protocol enforce its
-            # already-bounded convergence stages after long-horizon arming or
-            # a caller-deadline checkpoint.  GUIDE does not constrain a Tool
-            # call before those typed boundaries; OBSERVE here made the
-            # controller record convergence while the admission gate remained
-            # permanently inactive.
+            # timeouts, and process-tree cleanup. Keep public-task contracts
+            # and convergence telemetry advisory during the solve window. The
+            # terminal checkpoint remains independently enabled below, so the
+            # caller-owned persistence reserve is still protected without
+            # turning incomplete static Tool-effect analysis into denials.
             terminal_gate = _success_first_terminal_gate_enabled()
             policy = ExecutionProtocolPolicy(
                 mode=ProtocolMode.GUIDE,
                 review_unarmed_candidates=False,
                 terminal_review_gate_enabled=terminal_gate,
+                hard_tool_admission_enabled=False,
                 independent_acceptance_enabled=False,
                 semantic_progress_enabled=True,
-                max_final_reviews=2 if terminal_gate else None,
+                max_replans=1,
+                max_final_reviews=1 if terminal_gate else None,
                 max_repairs=1 if terminal_gate else None,
                 finalization_reserve_seconds=60.0 if terminal_gate else 0.0,
                 candidate_decision_reserve_seconds=(
@@ -1059,6 +1059,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             )
             policy = ExecutionProtocolPolicy(
                 mode=ProtocolMode.GUIDE,
+                hard_tool_admission_enabled=False,
                 review_unarmed_candidates=(
                     review_unarmed_candidates if active else False
                 ),
@@ -1068,6 +1069,8 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 semantic_progress_enabled=_default_on_env(
                     SEMANTIC_PROGRESS_LEDGER_ENV
                 ),
+                max_replans=1,
+                max_final_reviews=1,
             )
         if context is None or (
             success_first and not policy.terminal_review_gate_enabled
@@ -8746,7 +8749,9 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             )
             + "\nBefore claiming completion, bind each applicable obligation "
             "to a fresh Agent-visible observation or state the remaining "
-            "uncertainty. "
+            "uncertainty. This ledger is a final evidence checklist, not a "
+            "Tool-admission allowlist; do not treat mentioned inputs, examples, "
+            "or prohibited changes as output files. "
             if obligations
             else ""
         )

@@ -412,3 +412,34 @@ async def test_successful_mutation_receipt_opens_one_real_hook_validation_window
     # again instead of treating a potential write as goal progress.
     observe(read, effect="read_only", index=10)
     assert await hook.exec(message, context) is None
+
+
+@pytest.mark.asyncio
+async def test_advisory_review_bypasses_candidate_tool_admission(monkeypatch):
+    from aworld.core.event.base import Message
+    from aworld.runners.hook.agent_hooks import MutationGatePreToolHook
+
+    monkeypatch.setattr(
+        "aworld.runners.execution_protocol.terminal_reserve_tool_interception",
+        lambda *_args, **_kwargs: None,
+    )
+
+    def unexpected_interception(*_args, **_kwargs):
+        raise AssertionError("read-only advisory review must bypass mutation gate")
+
+    monkeypatch.setattr(
+        "aworld.runners.execution_protocol.mutation_gate_interception",
+        unexpected_interception,
+    )
+    review = ActionModel(
+        tool_name="AWORLD_ADVISORY_VERIFIER",
+        action_name="review_candidate",
+        tool_call_id="review-once",
+        agent_name="agent",
+        params={"candidate_claim": "candidate is ready"},
+    )
+
+    assert await MutationGatePreToolHook().exec(
+        Message(category="tool_call", payload=[review], sender="agent"),
+        Context(task_id="advisory-review-bypass"),
+    ) is None

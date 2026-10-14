@@ -399,6 +399,7 @@ def test_policy_bounds_review_and_repair_attempts_by_default():
     assert policy.max_final_reviews == 2
     assert policy.max_repairs == 1
     assert policy.final_review_timeout_seconds is None
+    assert policy.hard_tool_admission_enabled is True
 
 
 def test_policy_accepts_explicit_finite_compatibility_limits():
@@ -421,6 +422,7 @@ def test_policy_has_a_stable_serialized_round_trip():
         activation_event_threshold=15,
         review_unarmed_candidates=True,
         terminal_review_gate_enabled=True,
+        hard_tool_admission_enabled=False,
         max_replans=1,
         finalization_reserve_seconds=42.5,
         final_review_timeout_seconds=30,

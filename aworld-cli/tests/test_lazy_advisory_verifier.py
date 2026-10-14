@@ -855,7 +855,7 @@ async def test_duplicate_candidate_review_is_bounded_without_second_child() -> N
 
 
 @pytest.mark.asyncio
-async def test_changed_candidate_fingerprint_allows_one_fresh_review() -> None:
+async def test_changed_candidate_does_not_reopen_review_budget() -> None:
     captured = {}
     factory = _factory(captured=captured)
     request = AdvisoryReviewRequest(candidate_claim="The candidate is ready.")
@@ -875,8 +875,9 @@ async def test_changed_candidate_fingerprint_allows_one_fresh_review() -> None:
     second = await factory.review(request, context=context)
 
     assert first.status == "completed"
-    assert second.status == "completed"
-    assert captured["builder_loads"] == 2
+    assert second.status == "unavailable"
+    assert second.reason_code == "review_attempt_limit"
+    assert captured["builder_loads"] == 1
 
 
 @pytest.mark.asyncio
@@ -1072,6 +1073,7 @@ async def test_ready_requires_framework_owned_direct_evidence() -> None:
     assert result.to_payload()["recommended_framework_action"] == (
         "task_derived_validation_once"
     )
+    assert result.to_payload()["review_retry_allowed"] is False
 
 
 @pytest.mark.asyncio
@@ -1106,7 +1108,7 @@ async def test_review_does_not_start_inside_persistence_window() -> None:
 
 
 @pytest.mark.asyncio
-async def test_review_budget_allows_initial_plus_one_changed_candidate() -> None:
+async def test_review_budget_allows_exactly_one_candidate_review() -> None:
     captured = {}
     factory = _factory(
         captured=captured,
@@ -1126,10 +1128,10 @@ async def test_review_budget_allows_initial_plus_one_changed_candidate() -> None
         AdvisoryReviewRequest(candidate_claim="candidate three"), context=_context()
     )
 
-    assert first.status == second.status == "completed"
-    assert third.status == "unavailable"
-    assert third.reason_code == "review_attempt_limit"
-    assert captured["builder_loads"] == 2
+    assert first.status == "completed"
+    assert second.status == third.status == "unavailable"
+    assert second.reason_code == third.reason_code == "review_attempt_limit"
+    assert captured["builder_loads"] == 1
 
 
 @pytest.mark.asyncio

@@ -546,6 +546,9 @@ def render_aworld_system_prompt(
             f"`{ADVISORY_VERIFIER_TOOL}`. No verifier Agent exists until you "
             "explicitly invoke `review_candidate`. Use it only when a fresh, "
             "read-only cross-check could materially change repair or submission. "
+            "It is available at most once per task; never retry an unavailable "
+            "or inconclusive result, and run one public task-derived validation "
+            "instead. "
             "Its report is public self-check evidence, never canonical reward "
             "authority; you retain completion responsibility."
         )

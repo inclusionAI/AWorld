@@ -822,6 +822,11 @@ class ExecutionProtocolPolicy:
     # existing finalization/review/repair state machine once a terminal boundary
     # has been reached.
     terminal_review_gate_enabled: bool = False
+    # Static Tool-effect analysis is useful telemetry but is not reliable
+    # enough for AWorld's built-in runtime defaults. Directly constructed GUIDE
+    # policies retain the legacy enforced behavior for explicit callers and
+    # compatibility tests; LLMAgent's built-in policies opt out explicitly.
+    hard_tool_admission_enabled: bool = True
     independent_acceptance_enabled: bool = True
     semantic_progress_enabled: bool = True
     history_limit: int = 32
@@ -864,6 +869,7 @@ class ExecutionProtocolPolicy:
         for name in (
             "review_unarmed_candidates",
             "terminal_review_gate_enabled",
+            "hard_tool_admission_enabled",
             "independent_acceptance_enabled",
             "semantic_progress_enabled",
         ):
@@ -948,6 +954,7 @@ class ExecutionProtocolPolicy:
             "mode": self.mode.value,
             "review_unarmed_candidates": self.review_unarmed_candidates,
             "terminal_review_gate_enabled": self.terminal_review_gate_enabled,
+            "hard_tool_admission_enabled": self.hard_tool_admission_enabled,
             "independent_acceptance_enabled": self.independent_acceptance_enabled,
             "semantic_progress_enabled": self.semantic_progress_enabled,
             "history_limit": self.history_limit,
@@ -991,6 +998,9 @@ class ExecutionProtocolPolicy:
             review_unarmed_candidates=value.get("review_unarmed_candidates", False),
             terminal_review_gate_enabled=value.get(
                 "terminal_review_gate_enabled", False
+            ),
+            hard_tool_admission_enabled=value.get(
+                "hard_tool_admission_enabled", True
             ),
             independent_acceptance_enabled=value.get(
                 "independent_acceptance_enabled", True

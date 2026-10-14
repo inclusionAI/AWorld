@@ -188,10 +188,13 @@ collapsed into one status:
 
 By default, success-first execution leaves short-task planning and Tool strategy
 to the model. Generic long-horizon signals activate bounded Harness-level
-convergence without task-name routing: first produce an inspectable public
-candidate, then validate, repair from public evidence, or submit. When a
+advisory convergence without task-name routing: first produce an inspectable
+public candidate, then validate, repair from public evidence, or submit.
+Built-in policies request at most one replan and keep ordinary Tools fail-open;
+hard static Tool admission requires an explicit developer policy. When a
 candidate reaches the terminal boundary, AWorld retains a bounded model-owned
-checkpoint, review, and repair path. That path shares the original task budget
+checkpoint, single-review, and repair path. That path shares the original task
+budget
 and fails open to the best current candidate when review is unavailable; it
 never turns an internal review into an external verifier pass. A failed-open
 initial planning response cannot hide a later generic replan checkpoint.

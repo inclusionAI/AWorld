@@ -1205,11 +1205,19 @@ def test_agent_can_restore_legacy_guide_with_skill_specific_review(monkeypatch) 
     )
     agent.skill_configs = {"long-running-agent": {"active": True}}
 
-    assert agent._resolve_execution_protocol_policy().mode is ProtocolMode.GUIDE
-    assert agent._resolve_execution_protocol_policy().review_unarmed_candidates is True
+    policy = agent._resolve_execution_protocol_policy()
+    assert policy.mode is ProtocolMode.GUIDE
+    assert policy.hard_tool_admission_enabled is False
+    assert policy.max_replans == 1
+    assert policy.max_final_reviews == 1
+    assert policy.review_unarmed_candidates is True
     agent.skill_configs["long-running-agent"]["active"] = False
-    assert agent._resolve_execution_protocol_policy().mode is ProtocolMode.GUIDE
-    assert agent._resolve_execution_protocol_policy().review_unarmed_candidates is False
+    policy = agent._resolve_execution_protocol_policy()
+    assert policy.mode is ProtocolMode.GUIDE
+    assert policy.hard_tool_admission_enabled is False
+    assert policy.max_replans == 1
+    assert policy.max_final_reviews == 1
+    assert policy.review_unarmed_candidates is False
 
 
 def test_explicit_off_policy_remains_a_developer_rollback() -> None:
@@ -1245,11 +1253,13 @@ def test_success_first_guides_only_after_typed_convergence_and_retains_terminal_
     policy = agent._resolve_execution_protocol_policy()
 
     assert policy.mode is ProtocolMode.GUIDE
+    assert policy.hard_tool_admission_enabled is False
+    assert policy.max_replans == 1
     assert policy.review_unarmed_candidates is False
     assert policy.terminal_review_gate_enabled is True
     assert policy.independent_acceptance_enabled is False
     assert policy.semantic_progress_enabled is True
-    assert policy.max_final_reviews == 2
+    assert policy.max_final_reviews == 1
     assert policy.max_repairs == 1
     assert policy.finalization_reserve_seconds == 60
     assert policy.candidate_decision_reserve_seconds == 240
@@ -1281,6 +1291,8 @@ def test_success_first_derives_bounded_terminal_reserves_from_task_budget(
     policy = agent._resolve_execution_protocol_policy(context)
 
     assert policy.mode is ProtocolMode.GUIDE
+    assert policy.hard_tool_admission_enabled is False
+    assert policy.max_replans == 1
     assert policy.terminal_review_gate_enabled is True
     assert policy.finalization_reserve_seconds == pytest.approx(180.0)
     assert policy.candidate_decision_reserve_seconds == pytest.approx(480.0)
@@ -1375,6 +1387,8 @@ def test_success_first_terminal_gate_has_an_exact_rollback(monkeypatch) -> None:
     policy = agent._resolve_execution_protocol_policy(context)
 
     assert policy.mode is ProtocolMode.GUIDE
+    assert policy.hard_tool_admission_enabled is False
+    assert policy.max_replans == 1
     assert policy.terminal_review_gate_enabled is False
     assert policy.max_final_reviews is None
     assert policy.max_repairs is None
