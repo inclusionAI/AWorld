@@ -310,7 +310,56 @@ class WrappedGeneratorResponse():
             record_streaming_time_to_first_token(duration, attribute)
             self._first_token_recorded = True
 
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        try:
+            exit_ = getattr(self._response, "__exit__", None)
+            if exit_ is not None:
+                exit_(exc_type, exc_val, exc_tb)
+        finally:
+            # A caller that stops early never reaches StopIteration, so the
+            # span would stay open.
+            self._close_span(False)
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        try:
+            aexit = getattr(self._response, "__aexit__", None)
+            if aexit is not None:
+                await aexit(exc_type, exc_val, exc_tb)
+        finally:
+            self._close_span(True)
+
+    def close(self):
+        """Close the wrapped stream and finalize the span.
+
+        A caller that stops consuming early never raises ``StopIteration``, so
+        without this the span would stay open even though the stream is done.
+        """
+        try:
+            close = getattr(self._response, "close", None)
+            if close is not None:
+                close()
+        finally:
+            self._close_span(False)
+
+    async def aclose(self):
+        """Async counterpart of :meth:`close`."""
+        try:
+            aclose = getattr(self._response, "aclose", None)
+            if aclose is not None:
+                await aclose()
+        finally:
+            self._close_span(True)
+
     def _close_span(self, is_async):
+        if not self._span.is_recording():
+            # Already finished: reached from exhaustion and from close().
+            return
         duration = None
         first_token_duration = None
         first_token_to_generate_duration = None
