@@ -557,6 +557,30 @@ class Context:
         kwargs.setdefault("pending_cache_break_reasons", pending_cache_break_reasons)
         self._init(**kwargs)
 
+    # The registries below coordinate in-process transport copies and own
+    # threading locks. A Context crossing the Redis event bus lives in another
+    # process, so it is pickled without them and rebuilt with fresh empty
+    # registries on the consumer side. Task and configuration state is kept.
+    def __getstate__(self) -> Dict[str, Any]:
+        state = self.__dict__.copy()
+        for attr in (
+            "_agent_step_registry",
+            "_agent_execution_registry",
+            "_llm_call_fan_in_registry",
+            "_llm_call_journal_tip_registry",
+            "_task_runtime_state_registry",
+        ):
+            state.pop(attr, None)
+        return state
+
+    def __setstate__(self, state: Dict[str, Any]) -> None:
+        self.__dict__.update(state)
+        self._agent_step_registry = _AgentStepRegistry()
+        self._agent_execution_registry = _AgentExecutionRegistry()
+        self._llm_call_fan_in_registry = _LLMCallFanInRegistry()
+        self._llm_call_journal_tip_registry = _LLMCallJournalTipRegistry()
+        self._task_runtime_state_registry = TaskRuntimeStateRegistry()
+
     def set_task(self, task: "Task"):
         self._task = task
 
