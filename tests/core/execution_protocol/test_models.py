@@ -363,6 +363,9 @@ def test_model_execution_profile_rejects_unknown_fields():
         ("final_review_timeout_seconds", 86_401),
         ("review_unarmed_candidates", "yes"),
         ("terminal_review_gate_enabled", "yes"),
+        ("model_decision_checkpoints_enabled", "yes"),
+        ("advisory_uncertain_repair_enabled", "yes"),
+        ("bounded_repair_submission_enabled", "yes"),
     ],
 )
 def test_policy_rejects_invalid_bounds(field, value):
@@ -400,6 +403,9 @@ def test_policy_bounds_review_and_repair_attempts_by_default():
     assert policy.max_repairs == 1
     assert policy.final_review_timeout_seconds is None
     assert policy.hard_tool_admission_enabled is True
+    assert policy.model_decision_checkpoints_enabled is True
+    assert policy.advisory_uncertain_repair_enabled is False
+    assert policy.bounded_repair_submission_enabled is False
 
 
 def test_policy_accepts_explicit_finite_compatibility_limits():
@@ -423,6 +429,9 @@ def test_policy_has_a_stable_serialized_round_trip():
         review_unarmed_candidates=True,
         terminal_review_gate_enabled=True,
         hard_tool_admission_enabled=False,
+        model_decision_checkpoints_enabled=False,
+        advisory_uncertain_repair_enabled=True,
+        bounded_repair_submission_enabled=True,
         max_replans=1,
         finalization_reserve_seconds=42.5,
         final_review_timeout_seconds=30,
@@ -440,12 +449,18 @@ def test_policy_restores_pre_activation_v1_with_safe_default():
     payload.pop("activation_event_threshold")
     payload.pop("final_review_timeout_seconds")
     payload.pop("review_unarmed_candidates")
+    payload.pop("model_decision_checkpoints_enabled")
+    payload.pop("advisory_uncertain_repair_enabled")
+    payload.pop("bounded_repair_submission_enabled")
 
     restored = ExecutionProtocolPolicy.from_dict(payload)
 
     assert restored.activation_event_threshold == 6
     assert restored.final_review_timeout_seconds is None
     assert restored.review_unarmed_candidates is False
+    assert restored.model_decision_checkpoints_enabled is True
+    assert restored.advisory_uncertain_repair_enabled is False
+    assert restored.bounded_repair_submission_enabled is False
 
 
 def test_event_validates_generic_measurements_and_review_shape():

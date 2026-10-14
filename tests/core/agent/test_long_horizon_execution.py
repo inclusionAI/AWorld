@@ -1208,6 +1208,9 @@ def test_agent_can_restore_legacy_guide_with_skill_specific_review(monkeypatch) 
     policy = agent._resolve_execution_protocol_policy()
     assert policy.mode is ProtocolMode.GUIDE
     assert policy.hard_tool_admission_enabled is False
+    assert policy.model_decision_checkpoints_enabled is False
+    assert policy.advisory_uncertain_repair_enabled is True
+    assert policy.bounded_repair_submission_enabled is True
     assert policy.max_replans == 1
     assert policy.max_final_reviews == 1
     assert policy.review_unarmed_candidates is True
@@ -1215,6 +1218,9 @@ def test_agent_can_restore_legacy_guide_with_skill_specific_review(monkeypatch) 
     policy = agent._resolve_execution_protocol_policy()
     assert policy.mode is ProtocolMode.GUIDE
     assert policy.hard_tool_admission_enabled is False
+    assert policy.model_decision_checkpoints_enabled is False
+    assert policy.advisory_uncertain_repair_enabled is True
+    assert policy.bounded_repair_submission_enabled is True
     assert policy.max_replans == 1
     assert policy.max_final_reviews == 1
     assert policy.review_unarmed_candidates is False
@@ -1254,6 +1260,9 @@ def test_success_first_guides_only_after_typed_convergence_and_retains_terminal_
 
     assert policy.mode is ProtocolMode.GUIDE
     assert policy.hard_tool_admission_enabled is False
+    assert policy.model_decision_checkpoints_enabled is False
+    assert policy.advisory_uncertain_repair_enabled is True
+    assert policy.bounded_repair_submission_enabled is True
     assert policy.max_replans == 1
     assert policy.review_unarmed_candidates is False
     assert policy.terminal_review_gate_enabled is True
@@ -1618,9 +1627,12 @@ def test_success_first_short_task_defers_initial_decision_until_generic_arming(
 
     augmented, offer = agent._with_long_horizon_execution_profile(tools, context)
 
-    assert offer.profile_schema_offered is True
-    assert offer.decision_boundary == "initial"
-    assert augmented[0]["function"]["name"] == "aworld__execution_decision"
+    assert offer.profile_schema_offered is False
+    assert offer.decision_boundary is None
+    assert augmented[0]["function"]["name"] == "terminal__execute"
+    assert "__aworld_plan_update" not in augmented[0]["function"]["parameters"][
+        "properties"
+    ]
 
 
 def test_success_first_terminal_checkpoint_exposes_decision_tool() -> None:

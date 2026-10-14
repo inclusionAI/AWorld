@@ -2603,6 +2603,50 @@ def test_uncertain_and_error_reviews_preserve_candidate_without_success():
         assert transition.decision.reason is reason
 
 
+def test_advisory_uncertainty_opens_one_bounded_repair_without_acceptance():
+    policy = ExecutionProtocolPolicy(
+        mode="guide",
+        independent_acceptance_enabled=False,
+        advisory_uncertain_repair_enabled=True,
+        bounded_repair_submission_enabled=True,
+        max_repairs=1,
+    )
+    pending = transition_execution_protocol(
+        _armed_state(),
+        ExecutionProtocolEvent(kind=EventKind.CANDIDATE_FINAL),
+        policy,
+    )
+
+    transition = transition_execution_protocol(
+        pending.state,
+        ExecutionProtocolEvent(
+            kind=EventKind.REVIEW_RESULT,
+            review_outcome=ReviewOutcome.UNCERTAIN,
+        ),
+        policy,
+    )
+
+    assert transition.decision.action is ControllerAction.REQUEST_REPAIR
+    assert transition.decision.reason is DecisionReason.REVIEW_UNCERTAIN
+    assert transition.state.phase is ProtocolPhase.REPAIR
+    assert transition.state.repair_count == 1
+    assert transition.state.acceptance_confirmed is False
+
+    submitted = transition_execution_protocol(
+        transition.state,
+        ExecutionProtocolEvent(
+            kind=EventKind.CANDIDATE_FINAL,
+            result_hash="sha256:repaired-candidate",
+        ),
+        policy,
+    )
+    assert submitted.decision.action is ControllerAction.SUBMIT_CURRENT_RESULT
+    assert submitted.decision.reason is DecisionReason.TERMINAL_FALLBACK_SUBMIT
+    assert submitted.state.phase is ProtocolPhase.COMPLETE
+    assert submitted.state.repair_count == 1
+    assert submitted.state.acceptance_confirmed is False
+
+
 def test_unsolicited_review_result_cannot_force_a_repair():
     transition = transition_execution_protocol(
         _state(),

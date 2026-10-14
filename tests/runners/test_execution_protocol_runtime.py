@@ -59,6 +59,7 @@ from aworld.runners.execution_protocol import (
     MutationGateRejectionReason,
     mutation_gate_interception,
     project_execution_protocol_telemetry,
+    record_advisory_review_result,
     record_candidate_final,
     record_acceptance_critic_decision,
     record_acceptance_probe_plan,
@@ -1101,6 +1102,7 @@ def test_scoped_state_and_bounded_telemetry_are_public_read_only_views() -> None
         "phase": "execute",
         "armed": False,
         "legacy_activation_fields_ignored": False,
+        "model_decision_checkpoints_enabled": True,
         "event_count": 1,
         "tool_observation_count": 1,
         "stagnant_observations": 0,
@@ -1126,6 +1128,9 @@ def test_scoped_state_and_bounded_telemetry_are_public_read_only_views() -> None
         "replan_decision_unavailable_count": 0,
         "consecutive_unapplied_replans": 0,
         "suppressed_replan_boundaries": 0,
+        "inline_guidance_emitted_count": 0,
+        "inline_guidance_applied_count": 0,
+        "inline_guidance_unapplied_count": 0,
         "candidate_final_count": 0,
         "final_review_count": 0,
         "repair_count": 0,
@@ -1401,6 +1406,120 @@ def test_repeated_unapplied_continues_activate_one_convergence_phase() -> None:
     guidance = consume_execution_protocol_guidance(context, "agent")
     assert guidance is not None
     assert "an inspectable candidate exists" in guidance
+
+
+def test_inline_guidance_keeps_model_checkpoint_off_and_applies_on_candidate() -> None:
+    context = _context("inline-guidance-candidate")
+    configure_execution_protocol(
+        context,
+        "agent",
+        ExecutionProtocolPolicy(
+            mode=ProtocolMode.GUIDE,
+            model_decision_checkpoints_enabled=False,
+            activation_event_threshold=1,
+            model_activation_min_tool_actions=1,
+            repetition_threshold=1,
+            stagnation_event_threshold=1,
+            max_replans=1,
+        ),
+    )
+    _declare_long_horizon(context)
+
+    requested = record_tool_protocol_event(
+        context,
+        "agent",
+        _semantic_state(
+            repetition_count=1,
+            current_agent_step=1,
+            operation_hash="sha256:inline-request-operation",
+            result_hash="sha256:inline-request-result",
+        ),
+    )
+
+    assert requested.decision.action is ControllerAction.REQUEST_REPLAN
+    assert execution_protocol_model_decision_boundary(context, "agent") is None
+    guidance = consume_execution_protocol_guidance(context, "agent")
+    assert guidance is not None
+    assert "checkpoint" in guidance.lower()
+    before = build_execution_protocol_telemetry(context, "agent")
+    assert before["model_decision_checkpoints_enabled"] is False
+    assert before["inline_guidance_emitted_count"] == 1
+    assert before["replan_applied_count"] == 0
+
+    applied = record_tool_protocol_event(
+        context,
+        "agent",
+        _semantic_state(
+            current_agent_step=2,
+            candidate_present=True,
+            candidate_advanced=True,
+            delivery_progress_advanced=True,
+            workspace_mutated=True,
+            operation_hash="sha256:inline-candidate-operation",
+            result_hash="sha256:inline-candidate-result",
+        ),
+    )
+
+    assert applied is not None
+    state = load_execution_protocol_state(context, "agent")
+    assert state.decision_checkpoint_pending is False
+    assert state.replan_applied_count == 1
+    telemetry = build_execution_protocol_telemetry(context, "agent")
+    assert telemetry["inline_guidance_applied_count"] == 1
+    assert telemetry["inline_guidance_unapplied_count"] == 0
+    assert telemetry["inline_guidance_last_application"] == "delivery_progress"
+    assert telemetry["replan_decision_attempt_count"] == 0
+
+
+def test_inline_guidance_marks_two_nonproductive_observations_unapplied() -> None:
+    context = _context("inline-guidance-unapplied")
+    configure_execution_protocol(
+        context,
+        "agent",
+        ExecutionProtocolPolicy(
+            mode=ProtocolMode.GUIDE,
+            model_decision_checkpoints_enabled=False,
+            activation_event_threshold=1,
+            model_activation_min_tool_actions=1,
+            repetition_threshold=1,
+            stagnation_event_threshold=1,
+            max_replans=1,
+        ),
+    )
+    _declare_long_horizon(context)
+    record_tool_protocol_event(
+        context,
+        "agent",
+        _semantic_state(
+            repetition_count=1,
+            current_agent_step=1,
+            operation_hash="sha256:inline-unapplied-request",
+            result_hash="sha256:inline-unapplied-result",
+        ),
+    )
+    assert consume_execution_protocol_guidance(context, "agent") is not None
+
+    for step in (2, 3):
+        record_tool_protocol_event(
+            context,
+            "agent",
+            _semantic_state(
+                current_agent_step=step,
+                read_only_observed=True,
+                operation_hash=f"sha256:inline-read-operation-{step}",
+                result_hash=f"sha256:inline-read-result-{step}",
+            ),
+        )
+
+    state = load_execution_protocol_state(context, "agent")
+    assert state.decision_checkpoint_pending is False
+    assert state.replan_applied_count == 0
+    telemetry = build_execution_protocol_telemetry(context, "agent")
+    assert telemetry["inline_guidance_emitted_count"] == 1
+    assert telemetry["inline_guidance_applied_count"] == 0
+    assert telemetry["inline_guidance_unapplied_count"] == 1
+    assert telemetry["replan_decision_attempt_count"] == 0
+    assert telemetry["replan_decision_status"] == "fail_open_unacknowledged"
 
 
 def test_unapplied_replans_wait_until_caller_deadline_is_40_percent_consumed() -> None:
@@ -6127,6 +6246,97 @@ def test_model_review_repair_mints_typed_source_and_diagnostic_window() -> None:
     assert admitted_gate["repair_authorization"]["source"] == (
         "model_review_repair"
     )
+
+
+def test_framework_advisory_uncertainty_opens_one_non_accepting_repair() -> None:
+    context = _context("framework-advisory-uncertain")
+    policy = ExecutionProtocolPolicy(
+        mode=ProtocolMode.GUIDE,
+        independent_acceptance_enabled=False,
+        advisory_uncertain_repair_enabled=True,
+        bounded_repair_submission_enabled=True,
+        max_final_reviews=1,
+        max_repairs=1,
+    )
+    configure_execution_protocol(context, "agent", policy)
+    store = ExecutionProtocolStore(context, "agent", policy)
+    store.save(replace(store.load(), long_horizon_armed=True))
+    review = record_candidate_final(
+        context,
+        "agent",
+        actions=[ActionModel(agent_name="agent", policy_info="candidate")],
+        review_boundary_available=True,
+    )
+    assert review is not None
+    assert review.decision.action is ControllerAction.REQUEST_FINAL_REVIEW
+
+    uncertain = record_advisory_review_result(
+        context,
+        "agent",
+        status="inconclusive",
+        decision="uncertain",
+        reason_code="ready_evidence_missing",
+    )
+
+    assert uncertain is not None
+    assert uncertain.decision.action is ControllerAction.REQUEST_REPAIR
+    assert uncertain.decision.reason is DecisionReason.REVIEW_UNCERTAIN
+    assert uncertain.state.phase is ProtocolPhase.REPAIR
+    assert uncertain.state.repair_count == 1
+    assert uncertain.state.acceptance_confirmed is False
+
+    submitted = record_candidate_final(
+        context,
+        "agent",
+        actions=[
+            ActionModel(agent_name="agent", policy_info="repaired candidate")
+        ],
+        review_boundary_available=True,
+    )
+    assert submitted is not None
+    assert submitted.decision.action is ControllerAction.SUBMIT_CURRENT_RESULT
+    assert submitted.decision.reason is DecisionReason.TERMINAL_FALLBACK_SUBMIT
+    assert submitted.state.acceptance_confirmed is False
+
+
+def test_framework_advisory_ready_waits_for_the_root_final_response() -> None:
+    context = _context("framework-advisory-ready")
+    policy = ExecutionProtocolPolicy(
+        mode=ProtocolMode.GUIDE,
+        independent_acceptance_enabled=False,
+        advisory_uncertain_repair_enabled=True,
+        max_final_reviews=1,
+    )
+    configure_execution_protocol(context, "agent", policy)
+    store = ExecutionProtocolStore(context, "agent", policy)
+    store.save(replace(store.load(), long_horizon_armed=True))
+    assert record_advisory_review_result(
+        context,
+        "agent",
+        status="completed",
+        decision="ready",
+    ) is None
+    record_candidate_final(
+        context,
+        "agent",
+        actions=[ActionModel(agent_name="agent", policy_info="candidate")],
+        review_boundary_available=True,
+    )
+
+    projected = record_advisory_review_result(
+        context,
+        "agent",
+        status="completed",
+        decision="ready",
+    )
+
+    assert projected is None
+    assert load_execution_protocol_state(context, "agent").review_pending is True
+    accepted = record_candidate_final(context, "agent")
+    assert accepted is not None
+    assert accepted.decision.action is ControllerAction.SUBMIT_CURRENT_RESULT
+    assert accepted.state.phase is ProtocolPhase.COMPLETE
+    assert accepted.state.acceptance_confirmed is True
 
 
 def test_stale_concurrent_model_review_cannot_mint_after_submission(

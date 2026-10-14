@@ -1205,6 +1205,44 @@ async def test_explicit_uncertain_review_is_not_counted_as_success() -> None:
 
 
 @pytest.mark.asyncio
+async def test_uncertain_review_projects_only_public_validation_scope() -> None:
+    factory = _factory(
+        report=json.dumps(
+            {
+                "decision": "uncertain",
+                "evidence": "the artifact exists",
+                "gaps": "the public size threshold is not independently checked",
+                "recommended_next_action": "validate every listed obligation",
+            }
+        )
+    )
+    tool = AdvisoryVerifierTool(factory=factory)
+    context = _context(
+        "Write result.json. The resulting file must be at most 2500 bytes."
+    )
+    action = ActionModel(
+        tool_name=ADVISORY_VERIFIER_TOOL,
+        action_name="review_candidate",
+        params={"candidate_claim": "result.json is ready."},
+    )
+
+    observation, reward, *_ = await tool.do_step([action], context=context)
+    payload = json.loads(observation.content)
+
+    assert reward == 0.0
+    scope = payload["task_derived_validation_scope"]
+    assert {item["kind"] for item in scope} == {
+        "deliverable_file",
+        "numeric_threshold",
+    }
+    assert all(item["obligation_id"].startswith("public-obligation-") for item in scope)
+    assert all(item["source_fingerprint"].startswith("sha256:") for item in scope)
+    serialized = json.dumps(scope, sort_keys=True)
+    assert "verifier" not in serialized.lower()
+    assert "reward" not in serialized.lower()
+
+
+@pytest.mark.asyncio
 async def test_review_receives_authoritative_public_delivery_paths() -> None:
     captured = {}
     factory = _factory(captured=captured)

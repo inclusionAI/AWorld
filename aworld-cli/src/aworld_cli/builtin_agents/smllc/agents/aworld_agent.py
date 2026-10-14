@@ -548,7 +548,9 @@ def render_aworld_system_prompt(
             "read-only cross-check could materially change repair or submission. "
             "It is available at most once per task; never retry an unavailable "
             "or inconclusive result, and run one public task-derived validation "
-            "instead. "
+            "instead. When the result includes task_derived_validation_scope, "
+            "cover those public obligation IDs in that one bounded validation; "
+            "do not replace them with a narrower self-check. "
             "Its report is public self-check evidence, never canonical reward "
             "authority; you retain completion responsibility."
         )

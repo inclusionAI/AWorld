@@ -72,6 +72,7 @@ EXECUTION_PROTOCOL_DEADLINE_GUIDANCE_KEY = "execution_protocol_deadline_guidance
 EXECUTION_PROTOCOL_CONVERGENCE_GUIDANCE_KEY = (
     "execution_protocol_convergence_guidance"
 )
+EXECUTION_PROTOCOL_INLINE_GUIDANCE_KEY = "execution_protocol_inline_guidance"
 MUTATION_GATE_SCHEMA = "aworld.mutation-gate/v4"
 _LEGACY_MUTATION_GATE_SCHEMAS = frozenset(
     {
@@ -2486,6 +2487,13 @@ def project_execution_protocol_telemetry(value: Any) -> dict[str, Any] | None:
             "stateful_candidate_binding_mismatch",
             "terminal_transition_rejected",
         },
+        "inline_guidance_last_application": {
+            "implementation",
+            "candidate_update",
+            "validation",
+            "delivery_progress",
+            "delivery",
+        },
     }
     booleans = {
         "armed",
@@ -2505,6 +2513,7 @@ def project_execution_protocol_telemetry(value: Any) -> dict[str, Any] | None:
         "public_candidate_mutated",
         "convergence_constraint_active",
         "analysis_runway_open",
+        "model_decision_checkpoints_enabled",
     }
     counters = {
         "event_count",
@@ -2544,6 +2553,9 @@ def project_execution_protocol_telemetry(value: Any) -> dict[str, Any] | None:
         "analysis_stagnation_count",
         "analysis_runway_reset_count",
         "terminal_checkpoint_created_count",
+        "inline_guidance_emitted_count",
+        "inline_guidance_applied_count",
+        "inline_guidance_unapplied_count",
     }
     numbers = {
         "terminal_checkpoint_created_at_monotonic",
@@ -2575,6 +2587,11 @@ def project_execution_protocol_telemetry(value: Any) -> dict[str, Any] | None:
         "analysis_stagnation_count",
         "analysis_runway_reset_count",
         "terminal_checkpoint_created_count",
+        "inline_guidance_emitted_count",
+        "inline_guidance_applied_count",
+        "inline_guidance_unapplied_count",
+        "inline_guidance_last_application",
+        "model_decision_checkpoints_enabled",
         *numbers,
     }
     if (
@@ -2667,6 +2684,9 @@ def build_execution_protocol_telemetry(context, agent_id: str) -> dict[str, Any]
             "last_elapsed_seconds"
         ),
         "legacy_activation_fields_ignored": False,
+        "model_decision_checkpoints_enabled": (
+            policy.model_decision_checkpoints_enabled
+        ),
         "event_count": state.event_count,
         "tool_observation_count": state.tool_observation_count,
         "stagnant_observations": state.stagnant_observations,
@@ -2725,6 +2745,18 @@ def build_execution_protocol_telemetry(context, agent_id: str) -> dict[str, Any]
         "suppressed_replan_boundaries": decisions[
             "suppressed_replan_boundaries"
         ],
+        "inline_guidance_emitted_count": int(
+            runtime_metrics.get("inline_guidance_emitted_count", 0) or 0
+        ),
+        "inline_guidance_applied_count": int(
+            runtime_metrics.get("inline_guidance_applied_count", 0) or 0
+        ),
+        "inline_guidance_unapplied_count": int(
+            runtime_metrics.get("inline_guidance_unapplied_count", 0) or 0
+        ),
+        "inline_guidance_last_application": runtime_metrics.get(
+            "inline_guidance_last_application"
+        ),
         "candidate_final_count": state.candidate_final_count,
         "final_review_count": state.final_review_count,
         "repair_count": state.repair_count,
@@ -4657,6 +4689,204 @@ def record_tool_protocol_event(
     return _record_tool_protocol_event_locked(context, agent_id, semantic_state)
 
 
+def _record_inline_guidance_metric(
+    context,
+    name: str,
+    *,
+    application: str | None = None,
+) -> None:
+    """Record bounded diagnostics for the built-in inline guidance path."""
+
+    owner = state_context(context)
+    if owner is None:
+        return
+    metrics = getattr(owner, "context_info", {}).get(EXECUTION_PROTOCOL_METRICS_KEY)
+    if not isinstance(metrics, dict):
+        metrics = {}
+    metrics[name] = min(
+        _MAX_TELEMETRY_COUNTER,
+        int(metrics.get(name, 0) or 0) + 1,
+    )
+    if application is not None:
+        metrics["inline_guidance_last_application"] = application
+    owner.context_info[EXECUTION_PROTOCOL_METRICS_KEY] = metrics
+
+
+def _record_inline_guidance_emitted(
+    context,
+    agent_id: str,
+    *,
+    reason: Any,
+) -> None:
+    """Bind one consumed advisory checkpoint to later observable behavior."""
+
+    policy = execution_protocol_policy(context, agent_id)
+    if policy.model_decision_checkpoints_enabled:
+        return
+    state = load_execution_protocol_state(context, agent_id)
+    if not state.decision_checkpoint_pending:
+        return
+    _write_runtime_value(
+        context,
+        agent_id,
+        EXECUTION_PROTOCOL_INLINE_GUIDANCE_KEY,
+        {
+            "schema_version": "aworld.inline-guidance/v1",
+            "scope": _model_decision_scope(context, agent_id),
+            "request_sequence": state.replan_requested_count,
+            "reason": str(reason or "")[:128],
+            "observation_count": 0,
+        },
+    )
+    _record_inline_guidance_metric(context, "inline_guidance_emitted_count")
+
+
+def _finish_inline_guidance(
+    context,
+    agent_id: str,
+    *,
+    application: str | None,
+) -> ProtocolTransition | None:
+    """Close an inline checkpoint as behaviorally applied or unacknowledged."""
+
+    value = _read_runtime_value(
+        context,
+        agent_id,
+        EXECUTION_PROTOCOL_INLINE_GUIDANCE_KEY,
+    )
+    state = load_execution_protocol_state(context, agent_id)
+    if not (
+        isinstance(value, Mapping)
+        and value.get("schema_version") == "aworld.inline-guidance/v1"
+        and value.get("scope") == _model_decision_scope(context, agent_id)
+        and value.get("request_sequence") == state.replan_requested_count
+        and state.decision_checkpoint_pending
+    ):
+        _write_runtime_value(
+            context,
+            agent_id,
+            EXECUTION_PROTOCOL_INLINE_GUIDANCE_KEY,
+            None,
+        )
+        return None
+    if application is not None:
+        transition = _apply_event(
+            context,
+            agent_id,
+            ExecutionProtocolEvent(kind=EventKind.REPLAN_APPLIED),
+        )
+        _record_inline_guidance_metric(
+            context,
+            "inline_guidance_applied_count",
+            application=application,
+        )
+    else:
+        transition = _apply_event(
+            context,
+            agent_id,
+            ExecutionProtocolEvent(kind=EventKind.REPLAN_UNACKNOWLEDGED),
+        )
+        _record_inline_guidance_metric(
+            context,
+            "inline_guidance_unapplied_count",
+        )
+        expected_scope = _model_decision_scope(context, agent_id)
+
+        def mark_unapplied(current):
+            attempts = _normalized_decision_attempts(
+                current,
+                expected_scope=expected_scope,
+            )
+            attempts["replan"] = {
+                "attempt_count": 0,
+                "request_sequence": state.replan_requested_count,
+                "status": "fail_open_unacknowledged",
+            }
+            attempts["consecutive_unapplied_replans"] = min(
+                _MAX_TELEMETRY_COUNTER,
+                attempts["consecutive_unapplied_replans"] + 1,
+            )
+            return attempts
+
+        _update_runtime_value(
+            context,
+            agent_id,
+            EXECUTION_PROTOCOL_MODEL_DECISIONS_KEY,
+            mark_unapplied,
+        )
+    _write_runtime_value(
+        context,
+        agent_id,
+        EXECUTION_PROTOCOL_INLINE_GUIDANCE_KEY,
+        None,
+    )
+    return transition
+
+
+def _observe_inline_guidance_behavior(
+    context,
+    agent_id: str,
+    event: ExecutionProtocolEvent,
+) -> ProtocolTransition | None:
+    """Apply inline guidance only after public, successful task behavior."""
+
+    policy = execution_protocol_policy(context, agent_id)
+    if policy.model_decision_checkpoints_enabled:
+        return None
+    value = _read_runtime_value(
+        context,
+        agent_id,
+        EXECUTION_PROTOCOL_INLINE_GUIDANCE_KEY,
+    )
+    if not isinstance(value, Mapping):
+        return None
+    successful_mutation = any(
+        receipt.effect == "mutating"
+        and receipt.executed is True
+        and receipt.succeeded is True
+        for receipt in event.observed_action_semantics
+    )
+    successful_validation = bool(
+        event.validation_observed
+        or any(
+            receipt.validation_kind is not None
+            and receipt.executed is True
+            and receipt.succeeded is True
+            for receipt in event.observed_action_semantics
+        )
+    )
+    application = (
+        "delivery_progress"
+        if event.delivery_progress_advanced
+        else "candidate_update"
+        if event.candidate_advanced
+        else "validation"
+        if successful_validation
+        else "implementation"
+        if successful_mutation
+        else None
+    )
+    if application is not None:
+        return _finish_inline_guidance(
+            context,
+            agent_id,
+            application=application,
+        )
+    observation_count = min(
+        2,
+        int(value.get("observation_count", 0) or 0) + 1,
+    )
+    if observation_count >= 2:
+        return _finish_inline_guidance(context, agent_id, application=None)
+    _write_runtime_value(
+        context,
+        agent_id,
+        EXECUTION_PROTOCOL_INLINE_GUIDANCE_KEY,
+        {**dict(value), "observation_count": observation_count},
+    )
+    return None
+
+
 def _record_tool_protocol_event_locked(
     context, agent_id: str, semantic_state: Mapping[str, Any]
 ) -> ProtocolTransition | None:
@@ -4750,6 +4980,13 @@ def _record_tool_protocol_event_locked(
     transition = _apply_event(context, agent_id, event)
     if transition.decision.reason is DecisionReason.PERSISTENCE_ERROR:
         return transition
+    inline_transition = _observe_inline_guidance_behavior(
+        context,
+        agent_id,
+        event,
+    )
+    if inline_transition is not None:
+        transition = inline_transition
     deadline_candidate_due = bool(
         deadline_progress is not None
         and _hard_convergence_deadline_reached(
@@ -4829,6 +5066,10 @@ def _record_pending_checkpoint(
         transition.decision.action is ControllerAction.REQUEST_REPLAN
         and transition.decision.reason is DecisionReason.CANDIDATE_DECISION_RESERVE
         and transition.state.decision_checkpoint_pending
+        and execution_protocol_policy(
+            context,
+            agent_id,
+        ).model_decision_checkpoints_enabled
     ):
         _ensure_terminal_checkpoint_episode(context, agent_id, transition)
 
@@ -5103,6 +5344,8 @@ def execution_protocol_accepts_model_profile(context, agent_id: str) -> bool:
 def execution_protocol_model_decision_boundary(context, agent_id: str) -> str | None:
     """Return the pending framework boundary, never a semantic decision."""
     policy = execution_protocol_policy(context, agent_id)
+    if not policy.model_decision_checkpoints_enabled:
+        return None
     state = ExecutionProtocolStore(context, agent_id, policy).load()
     terminal_checkpoint = bool(
         policy.terminal_review_gate_enabled
@@ -5897,6 +6140,11 @@ def consume_execution_protocol_guidance(context, agent_id: str) -> str | None:
     action = pending.get("action")
     if action == ControllerAction.REQUEST_REPLAN.value:
         reason = pending.get("reason")
+        _record_inline_guidance_emitted(
+            context,
+            agent_id,
+            reason=reason,
+        )
         missing_delivery_guidance = ""
         missing = _missing_public_deliverable_names(context)
         if missing:
@@ -5987,6 +6235,12 @@ def record_candidate_final(
     policy = execution_protocol_policy(context, agent_id)
     if policy.mode is ProtocolMode.OFF:
         return None
+    if not policy.model_decision_checkpoints_enabled:
+        _finish_inline_guidance(
+            context,
+            agent_id,
+            application="delivery",
+        )
     store = ExecutionProtocolStore(context, agent_id, policy)
     if store.load().review_pending:
         transition = store.apply(
@@ -6112,6 +6366,94 @@ def record_review_error(context, agent_id: str) -> ProtocolTransition | None:
     )
     _record_transition_metrics(context, transition)
     return transition
+
+
+def record_advisory_review_result(
+    context,
+    agent_id: str,
+    *,
+    status: str,
+    decision: str,
+    reason_code: str | None = None,
+) -> ProtocolTransition | None:
+    """Apply one framework-owned, verifier-blind public review result.
+
+    The caller must be the registered advisory-review Tool.  This function
+    accepts no report text, command, task identity, or external verifier data.
+    Unknown/unavailable results remain non-accepting and can only open the
+    policy's single bounded repair/validation opportunity.
+    """
+
+    owner = state_context(context)
+    transaction = getattr(owner, "task_runtime_state_transaction", None)
+    if callable(transaction):
+        with transaction():
+            return _record_advisory_review_result_locked(
+                context,
+                agent_id,
+                status=status,
+                decision=decision,
+                reason_code=reason_code,
+            )
+    return _record_advisory_review_result_locked(
+        context,
+        agent_id,
+        status=status,
+        decision=decision,
+        reason_code=reason_code,
+    )
+
+
+def _record_advisory_review_result_locked(
+    context,
+    agent_id: str,
+    *,
+    status: str,
+    decision: str,
+    reason_code: str | None,
+) -> ProtocolTransition | None:
+    """Apply an advisory result while holding the task-state transaction."""
+
+    if status not in {"completed", "inconclusive", "unavailable"}:
+        return None
+    if decision not in {"ready", "repair", "uncertain"}:
+        return None
+    if status != "completed" and decision != "uncertain":
+        return None
+    state = load_execution_protocol_state(context, agent_id)
+    if not state.review_pending:
+        return None
+    if status == "completed" and decision == "ready":
+        # Keep the active review pending until the root emits its final
+        # candidate response. ``record_candidate_final`` then consumes the
+        # review exactly once. Completing the protocol inside a Tool result
+        # would make the root's required follow-up response look like a second
+        # candidate and could incorrectly hit the review limit.
+        return None
+    if status == "completed" and decision == "repair":
+        reason = (
+            reason_code.strip()[:1024]
+            if isinstance(reason_code, str) and reason_code.strip()
+            else "public_review_repair"
+        )
+        return _record_review_repair_decision_locked(
+            context,
+            agent_id,
+            {"decision": ReviewOutcome.REPAIR.value, "reason": reason},
+        )
+    outcome = (
+        ReviewOutcome.ERROR
+        if status == "unavailable"
+        else ReviewOutcome.UNCERTAIN
+    )
+    return _apply_event(
+        context,
+        agent_id,
+        ExecutionProtocolEvent(
+            kind=EventKind.REVIEW_RESULT,
+            review_outcome=outcome,
+        ),
+    )
 
 
 def record_terminal_fallback_submission(
@@ -6570,6 +6912,7 @@ __all__ = [
     "EXECUTION_PROTOCOL_HYPOTHESES_KEY",
     "EXECUTION_PROTOCOL_CRITIC_KEY",
     "EXECUTION_PROTOCOL_CONVERGENCE_GUIDANCE_KEY",
+    "EXECUTION_PROTOCOL_INLINE_GUIDANCE_KEY",
     "EXECUTION_PROTOCOL_PENDING_KEY",
     "EXECUTION_PROTOCOL_POLICY_KEY",
     "EXECUTION_PROTOCOL_PUBLIC_PROBES_KEY",
@@ -6604,6 +6947,7 @@ __all__ = [
     "record_acceptance_probe_observation",
     "record_acceptance_critic_decision",
     "record_review_error",
+    "record_advisory_review_result",
     "record_review_repair_decision",
     "record_review_tool_action",
     "record_tool_protocol_event",

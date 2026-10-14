@@ -30,20 +30,24 @@ state into TaskResponse without fabricating success.
 
 The bundled Agent also enables success-first terminal control. Short work stays
 on the historical fail-open path. Generic Tool/stagnation/deadline evidence may
-produce one bounded model-owned replan and an advisory convergence stage:
+produce one bounded inline replan guidance and an advisory convergence stage:
 produce a declared candidate, then validate, repair from public evidence, or
-submit. Built-in policies do not use static Tool-effect analysis to deny
-ordinary sandbox work; an explicit developer policy is required to enable that
-legacy hard admission mode. Once a candidate reaches the terminal boundary,
-the runtime reserves a bounded decision/finalization window and may request one
-model-owned review plus at most one repair. The review shares the original task
-budget, cannot mint verifier authority, cannot be blocked by candidate Tool
+submit. The built-in policy keeps ordinary Tools available in that same solver
+turn and counts the replan as applied only after framework-observed successful
+implementation, candidate update, validation, or delivery. Dedicated
+decision-only model checkpoints remain an explicit compatibility option.
+Built-in policies do not use static Tool-effect analysis to deny ordinary
+sandbox work; an explicit developer policy is required to enable that legacy
+hard admission mode. Once a candidate reaches the terminal boundary, the
+runtime reserves a bounded finalization window and may request one model-owned
+review plus at most one repair. The review shares the original task budget,
+cannot mint external verifier authority, cannot be blocked by candidate Tool
 admission, and is never retried after an unavailable or inconclusive result.
 
-An unavailable initial execution-profile response does not suppress later
-controller-requested replans. A newer ordinary stagnation or delivery-debt
-checkpoint is exposed as a replan boundary even when the initial profile failed
-open; terminal delivery checkpoints retain their bounded fail-open behavior.
+An explicit caller may retain the legacy model-owned execution-profile and
+decision boundary. For the built-in inline path, a newer ordinary stagnation or
+delivery-debt checkpoint is emitted directly as guidance and never depends on
+an initial profile response.
 
 ## Public task contract ledger
 
@@ -139,4 +143,9 @@ an executable obligation such as a function, import, command, service, or live
 process still requires a fresh public validation receipt before `ready` is
 promoted. The reviewer must challenge interacting public constraints with a
 task-derived counterexample and recommend a runnable public probe when that
-evidence is absent.
+evidence is absent. An inconclusive or unavailable result exposes a bounded
+`task_derived_validation_scope` containing only typed obligations from the
+public ledger. It opens at most one validation/repair opportunity and never
+counts as acceptance. If that turn materially changes the candidate or durable
+validation basis, the result may be submitted to the caller-owned canonical
+verifier without a second reviewer call; internal acceptance remains false.

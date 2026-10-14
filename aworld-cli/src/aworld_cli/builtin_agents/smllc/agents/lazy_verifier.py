@@ -86,6 +86,19 @@ _EXECUTABLE_OBLIGATION_KINDS = frozenset(
         "service_port",
     }
 )
+_TASK_DERIVED_VALIDATION_SCOPE_KINDS = frozenset(
+    {
+        "deliverable_file",
+        "function_signature",
+        "import_contract",
+        "negative_constraint",
+        "numeric_threshold",
+        "process_liveness",
+        "public_command",
+        "service_port",
+        "structured_field",
+    }
+)
 _CANONICAL_SHA256 = re.compile(r"sha256:[0-9a-f]{64}")
 _READ_ONLY_FILESYSTEM_ACTIONS = frozenset(
     {
@@ -394,6 +407,29 @@ class AdvisoryReviewResult:
             )
             payload["review_retry_allowed"] = False
         return payload
+
+
+def _task_derived_validation_scope(context: Any) -> list[dict[str, Any]]:
+    """Return bounded public obligations for one root-owned validation turn."""
+
+    public_task, error = _authoritative_public_task(context)
+    if error is not None:
+        return []
+    obligations = _authoritative_public_obligations(
+        context,
+        public_task=public_task,
+    )
+    return [
+        {
+            "obligation_id": obligation["obligation_id"],
+            "kind": obligation["kind"],
+            "subject": obligation["subject"],
+            "expectation": obligation["expectation"],
+            "source_fingerprint": obligation["source_fingerprint"],
+        }
+        for obligation in obligations
+        if obligation.get("kind") in _TASK_DERIVED_VALIDATION_SCOPE_KINDS
+    ][:12]
 
 
 BuilderLoader = Callable[[], Callable[..., Any]]
@@ -995,7 +1031,33 @@ class AdvisoryVerifierTool(AsyncTool):
             else:
                 result = await factory.review(request, context=context)
 
+        if context is not None and isinstance(factory, LazyVerifierFactory):
+            from aworld.runners.execution_protocol import (
+                record_advisory_review_result,
+            )
+
+            try:
+                record_advisory_review_result(
+                    context,
+                    factory.parent_agent.id(),
+                    status=result.status,
+                    decision=result.decision,
+                    reason_code=result.reason_code,
+                )
+            except Exception as exc:
+                # Protocol projection is diagnostic for this Tool boundary.
+                # Review availability and the public report must remain usable
+                # if a legacy/non-runtime Context cannot persist protocol state.
+                logger.warning(
+                    "Advisory review protocol projection unavailable; error_type=%s",
+                    type(exc).__name__,
+                )
+
         payload = result.to_payload()
+        if not result.conclusive:
+            validation_scope = _task_derived_validation_scope(context)
+            if validation_scope:
+                payload["task_derived_validation_scope"] = validation_scope
         return (
             Observation(content=json.dumps(payload, ensure_ascii=False)),
             1.0 if result.conclusive else 0.0,

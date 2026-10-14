@@ -1036,6 +1036,9 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 review_unarmed_candidates=False,
                 terminal_review_gate_enabled=terminal_gate,
                 hard_tool_admission_enabled=False,
+                model_decision_checkpoints_enabled=False,
+                advisory_uncertain_repair_enabled=True,
+                bounded_repair_submission_enabled=True,
                 independent_acceptance_enabled=False,
                 semantic_progress_enabled=True,
                 max_replans=1,
@@ -1060,6 +1063,9 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             policy = ExecutionProtocolPolicy(
                 mode=ProtocolMode.GUIDE,
                 hard_tool_admission_enabled=False,
+                model_decision_checkpoints_enabled=False,
+                advisory_uncertain_repair_enabled=True,
+                bounded_repair_submission_enabled=True,
                 review_unarmed_candidates=(
                     review_unarmed_candidates if active else False
                 ),
@@ -1576,8 +1582,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         if policy.mode is not ProtocolMode.GUIDE and boundary is None:
             return tools, empty_offer
         if (
-            boundary == "initial"
-            and _success_first_enabled()
+            _success_first_enabled()
             and self._explicit_execution_protocol_policy is None
             and protocol_state is not None
             and not protocol_state.long_horizon_armed
@@ -1585,9 +1590,8 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             # Success-first keeps genuinely short work on the historical fast
             # path.  Public contracts are already visible in the stable task
             # grounding prompt; they do not by themselves justify another
-            # planning model call.  The same initial decision becomes
-            # available after generic Tool/stagnation/deadline evidence arms
-            # the task.
+            # planning model call or optional per-Tool planning fields. Generic
+            # Tool/stagnation/deadline evidence may arm inline guidance later.
             return tools, empty_offer
         if boundary == "initial" and not self._long_horizon_skill_active():
             contract = getattr(context, "context_info", {}).get(
