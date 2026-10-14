@@ -6,6 +6,7 @@ from typing import List, Dict, Any, Callable
 from aworld.agents.llm_agent import Agent
 from aworld.core.common import Observation, ActionModel
 from aworld.core.event.base import Message, AgentMessage
+from aworld.logs.util import logger
 from aworld.utils.run_util import exec_agent
 
 
@@ -32,11 +33,20 @@ class ParallelizableAgent(Agent):
                            info: Dict[str, Any] = {},
                            message: Message = None,
                            **kwargs) -> List[ActionModel]:
+        context = message.context if message is not None else None
+        if context is None:
+            logger.error(
+                "ParallelizableAgent[{}] received a message without a context, so no parallel "
+                "sub-task is spawned; the caller must propagate the runtime context",
+                self.id(),
+            )
+            return []
+
         tasks = []
         if self.agents:
             for agent in self.agents:
                 tasks.append(asyncio.create_task(
-                    exec_agent(observation.content, agent=agent, context=message.context, sub_task=True)
+                    exec_agent(observation.content, agent=agent, context=context, sub_task=True)
                 ))
 
         results = await asyncio.gather(*tasks)
