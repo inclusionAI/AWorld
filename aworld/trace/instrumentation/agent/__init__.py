@@ -74,7 +74,7 @@ def _record_metric(duration, attributes, exception=None):
 def _record_exception(span, start_time, exception, attributes):
     try:
         duration = time.time() - start_time if "start_time" in locals() else 0
-        if span and span.is_recording:
+        if span and span.is_recording():
             span.record_exception(exception=exception)
         _record_metric(duration, attributes, exception)
     except Exception as e:

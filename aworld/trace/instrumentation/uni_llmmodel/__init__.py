@@ -190,7 +190,7 @@ def record_exception(span, start_time, exception):
     '''
     try:
         duration = time.time() - start_time if "start_time" in locals() else 0
-        if span.is_recording:
+        if span.is_recording():
             span.record_exception(exception=exception)
         record_exception_metric(exception=exception, duration=duration)
     except Exception as e:
