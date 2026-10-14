@@ -1,6 +1,7 @@
 import pytest
 
 import aworld.events.redis_backend as redis_backend
+from aworld.events import serialization as redis_serialization
 from aworld.core.event.base import Constants, Message
 from aworld.core.context.base import Context
 from aworld.events.redis_backend import RedisEventbus
@@ -15,7 +16,7 @@ async def test_redis_publish_propagates_transport_failure(monkeypatch):
     eventbus = RedisEventbus.__new__(RedisEventbus)
     eventbus.client = _Client()
     message = Message(headers={"context": Context(task_id="task-1")})
-    monkeypatch.setattr(redis_backend.pickle, "dumps", lambda _message: b"payload")
+    monkeypatch.setattr(redis_serialization, "dumps_message", lambda _message: b"payload")
 
     with pytest.raises(ConnectionError, match="redis unavailable"):
         await eventbus.publish(message)
@@ -29,7 +30,7 @@ async def test_redis_chunk_publish_has_no_info_log(monkeypatch):
 
     info_logs = []
     debug_logs = []
-    monkeypatch.setattr(redis_backend.pickle, "dumps", lambda _message: b"payload")
+    monkeypatch.setattr(redis_serialization, "dumps_message", lambda _message: b"payload")
     monkeypatch.setattr(redis_backend.logger, "info", info_logs.append)
     monkeypatch.setattr(redis_backend.logger, "debug", debug_logs.append)
     eventbus = RedisEventbus.__new__(RedisEventbus)
