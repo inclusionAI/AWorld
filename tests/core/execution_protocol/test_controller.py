@@ -1503,6 +1503,30 @@ def test_convergence_constraint_stops_future_replan_requests_and_advances_stage(
     )
 
 
+def test_delivery_only_exhaustion_enters_finalization_without_acceptance_claim():
+    state = replace(
+        _armed_state(),
+        convergence_constraint_active=True,
+        convergence_stage=ConvergenceStage.VALIDATE_REPAIR_OR_SUBMIT,
+        candidate_present=True,
+        public_candidate_mutated=True,
+    )
+
+    finalized = transition_execution_protocol(
+        state,
+        ExecutionProtocolEvent(kind=EventKind.DELIVERY_ONLY_EXHAUSTED),
+        ExecutionProtocolPolicy(mode="guide"),
+    )
+
+    assert finalized.decision.action is ControllerAction.ENTER_FINALIZATION
+    assert finalized.decision.reason is (
+        DecisionReason.DELIVERY_ONLY_DIAGNOSTIC_LIMIT
+    )
+    assert finalized.state.phase is ProtocolPhase.FINALIZE
+    assert finalized.state.finalization_entered is True
+    assert finalized.state.acceptance_confirmed is False
+
+
 def test_unprofiled_constraint_event_cannot_activate_a_gate():
     transition = transition_execution_protocol(
         _state(),

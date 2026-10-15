@@ -598,6 +598,59 @@ def _activate_validate_repair_convergence(
     return candidate_fingerprint
 
 
+def _activate_advisory_validate_repair_convergence(
+    context: Context,
+    agent_id: str = "agent",
+) -> str:
+    """Reach post-candidate convergence with built-in advisory admission."""
+
+    from aworld.core.context.compiler import semantic_fingerprint
+
+    configure_execution_protocol(
+        context,
+        agent_id,
+        ExecutionProtocolPolicy(
+            mode=ProtocolMode.GUIDE,
+            hard_tool_admission_enabled=False,
+            model_decision_checkpoints_enabled=False,
+            post_candidate_read_only_threshold=1,
+            repetition_threshold=99,
+            low_information_gain_threshold=99,
+            no_goal_progress_threshold=99,
+            stagnation_event_threshold=99,
+        ),
+    )
+    _declare_long_horizon(context, agent_id)
+    _set_deadline_progress(context, 0.40)
+    candidate_fingerprint = semantic_fingerprint("advisory-diagnostic-candidate")
+    record_tool_protocol_event(
+        context,
+        agent_id,
+        _semantic_state(
+            current_agent_step=1,
+            candidate_present=True,
+            candidate_advanced=True,
+            delivery_progress_advanced=True,
+            public_candidate_mutated=True,
+            public_delivery_fingerprint=candidate_fingerprint,
+        ),
+    )
+    record_tool_protocol_event(
+        context,
+        agent_id,
+        _semantic_state(
+            current_agent_step=2,
+            candidate_present=True,
+            public_candidate_mutated=True,
+            public_delivery_fingerprint=candidate_fingerprint,
+        ),
+    )
+    state = load_execution_protocol_state(context, agent_id)
+    assert state.convergence_constraint_active is True
+    assert state.convergence_stage is ConvergenceStage.VALIDATE_REPAIR_OR_SUBMIT
+    return candidate_fingerprint
+
+
 def _record_failed_candidate_validation(
     context: Context,
     candidate_fingerprint: str,
@@ -1925,6 +1978,84 @@ def test_deadline_guidance_moves_from_candidate_to_delivery_only() -> None:
     )
     assert "80%" in consume_execution_protocol_guidance(context, "agent")
     assert consume_execution_protocol_guidance(context, "agent") is None
+
+
+def test_advisory_delivery_only_finalizes_after_candidate_diagnostics() -> None:
+    context = _context("advisory-delivery-only-finalization")
+    candidate_fingerprint = _activate_advisory_validate_repair_convergence(
+        context
+    )
+    _set_deadline_progress(context, 0.79)
+
+    for step in (3, 4, 5):
+        record_tool_protocol_event(
+            context,
+            "agent",
+            _semantic_state(
+                current_agent_step=step,
+                candidate_present=True,
+                public_candidate_mutated=True,
+                public_delivery_fingerprint=candidate_fingerprint,
+                read_only_observed=True,
+            ),
+        )
+
+    gate = context.read_task_runtime_state(
+        "agent", "execution_protocol_mutation_gate"
+    )
+    assert gate["candidate_diagnostic_read_count"] == 3
+    assert gate["validation_window_open"] is False
+    guidance = consume_execution_protocol_guidance(context, "agent")
+    assert guidance is not None
+    assert "diagnostic allowance is exhausted" in guidance.lower()
+    assert "next provider turn Tool-free" in guidance
+    assert not execution_protocol_requires_tool_free_finalization(
+        context, "agent"
+    )
+
+    _set_deadline_progress(context, 0.80)
+    assert execution_protocol_requires_tool_free_finalization(context, "agent")
+    state = load_execution_protocol_state(context, "agent")
+    assert state.phase is ProtocolPhase.FINALIZE
+    assert state.history[-1].kind is EventKind.DELIVERY_ONLY_EXHAUSTED
+
+
+def test_advisory_delivery_only_preserves_evidence_backed_repair_window() -> None:
+    context = _context("advisory-delivery-only-repair")
+    candidate_fingerprint = _activate_advisory_validate_repair_convergence(
+        context
+    )
+    _record_failed_candidate_validation(
+        context,
+        candidate_fingerprint,
+        marker="delivery-only-repair",
+        step=3,
+    )
+    for step in (4, 5, 6):
+        record_tool_protocol_event(
+            context,
+            "agent",
+            _semantic_state(
+                current_agent_step=step,
+                candidate_present=True,
+                public_candidate_mutated=True,
+                public_delivery_fingerprint=candidate_fingerprint,
+                read_only_observed=True,
+            ),
+        )
+
+    gate = context.read_task_runtime_state(
+        "agent", "execution_protocol_mutation_gate"
+    )
+    assert gate["candidate_diagnostic_read_count"] == 3
+    assert gate["validation_window_open"] is True
+    _set_deadline_progress(context, 0.80)
+    assert not execution_protocol_requires_tool_free_finalization(
+        context, "agent"
+    )
+    assert load_execution_protocol_state(
+        context, "agent"
+    ).phase is ProtocolPhase.EXECUTE
 
 
 def test_40_percent_validate_guidance_never_requests_another_candidate() -> None:

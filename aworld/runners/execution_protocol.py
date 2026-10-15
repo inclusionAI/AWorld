@@ -3183,6 +3183,40 @@ def _update_mutation_gate_locked(
             candidate_diagnostic_high_water,
             candidate_fingerprint,
         )
+    policy = execution_protocol_policy(context, agent_id)
+    current_task_candidate = bool(
+        public_candidate_mutated
+        or transition.state.candidate_epoch_advanced
+        or transition.state.candidate_checkpoint_recorded
+    )
+    advisory_diagnostic_observed = bool(
+        not policy.hard_tool_admission_enabled
+        and transition.state.convergence_constraint_active
+        and convergence_stage is ConvergenceStage.VALIDATE_REPAIR_OR_SUBMIT
+        and candidate_present
+        and current_task_candidate
+        and _is_canonical_semantic_fingerprint(candidate_fingerprint)
+        and semantic_state.get("read_only_observed") is True
+        and semantic_state.get("validation_observed") is not True
+        and semantic_state.get("candidate_advanced") is not True
+        and semantic_state.get("delivery_progress_advanced") is not True
+        and semantic_state.get("workspace_mutated") is not True
+    )
+    if advisory_diagnostic_observed:
+        for slot in range(_MAX_CANDIDATE_DIAGNOSTIC_READS):
+            slot_fingerprint = _candidate_diagnostic_slot_fingerprint(
+                candidate_fingerprint,
+                slot,
+            )
+            if not _repair_evidence_seen(
+                candidate_diagnostic_high_water,
+                slot_fingerprint,
+            ):
+                candidate_diagnostic_high_water = _repair_evidence_add(
+                    candidate_diagnostic_high_water,
+                    slot_fingerprint,
+                )
+                break
     if candidate_binding_unresolved:
         candidate_diagnostic_read_count = _MAX_CANDIDATE_DIAGNOSTIC_READS
     elif _is_canonical_semantic_fingerprint(candidate_fingerprint):
@@ -6000,12 +6034,28 @@ def consume_execution_protocol_guidance(context, agent_id: str) -> str | None:
             _MAX_CANDIDATE_DIAGNOSTIC_READS
             - candidate_diagnostic_read_count,
         )
-        exhausted_suffix = (
-            " Ordinary exploration-only Tools are no longer admissible; use "
-            "a declared-deliverable revision surface, registered validation, "
-            "or submit without Tools."
-            if diagnostic_reads_remaining == 0
-            else ""
+        exhausted_suffix = ""
+        if diagnostic_reads_remaining == 0:
+            exhausted_suffix = (
+                " Ordinary exploration-only Tools are no longer admissible; use "
+                "a declared-deliverable revision surface, registered validation, "
+                "or submit without Tools."
+                if policy.hard_tool_admission_enabled
+                else (
+                    " The diagnostic allowance is exhausted. Do not issue another "
+                    "unchanged read. Use an evidence-backed repair or registered "
+                    "validation if one is live; otherwise submit the current result. "
+                    "At the 80% delivery-only checkpoint, AWorld makes the next "
+                    "provider turn Tool-free."
+                )
+            )
+        admission_suffix = (
+            " Unknown, helper, and unrelated mutations remain blocked."
+            if policy.hard_tool_admission_enabled
+            else (
+                " Do not return to unrelated exploration while this bounded "
+                "delivery decision is pending."
+            )
         )
         return (
             "AWorld mutation validation window: each current candidate permits "
@@ -6015,8 +6065,8 @@ def consume_execution_protocol_guidance(context, agent_id: str) -> str | None:
             "not spend this allowance. "
             f"{diagnostic_reads_remaining} diagnostic call(s) remain; then make "
             "a declared revision, use an evidence-backed repair, or submit the "
-            "current result accurately. Unknown, helper, and unrelated mutations "
-            "remain blocked."
+            "current result accurately."
+            + admission_suffix
             + exhausted_suffix
             + deadline_suffix(produce_candidate=False)
         )
@@ -6807,9 +6857,11 @@ def execution_protocol_requires_tool_free_finalization(context, agent_id: str) -
     in that case the production gate stays active until a real candidate or
     the outer task budget ends.  After a candidate exists, rejected batches
     following exhaustion of its diagnostic quota may establish the same fact
-    for revision/validation.  A durable eligible latch forces the next turn
-    Tool-free; admitted candidate progress changes the convergence stage
-    before the pre-generation boundary.
+    for revision/validation.  The built-in advisory policy also converges
+    directly at the 80% delivery-only checkpoint once three candidate-bound
+    diagnostics are exhausted and no evidence-backed repair window remains.
+    A durable eligible latch forces the next turn Tool-free; admitted candidate
+    progress changes the convergence stage before the pre-generation boundary.
     """
     owner = state_context(context)
     transaction = getattr(owner, "task_runtime_state_transaction", None)
@@ -6856,8 +6908,9 @@ def _execution_protocol_requires_tool_free_finalization_locked(
         and pre_candidate_latched
     )
     candidate_exhausted = False
+    delivery_only_exhausted = False
     if stage == ConvergenceStage.VALIDATE_REPAIR_OR_SUBMIT.value:
-        _mask, diagnostic_count, _canonical = (
+        _mask, diagnostic_count, diagnostic_state_is_canonical = (
             _normalized_candidate_diagnostic_state(gate)
         )
         _rejection_mask, _rejections, latched, _latch_is_canonical = (
@@ -6881,12 +6934,38 @@ def _execution_protocol_requires_tool_free_finalization_locked(
                 and latched
             )
         )
-    if not (pre_candidate_exhausted or candidate_exhausted):
+        deadline_progress = _task_deadline_progress(context)
+        delivery_only_exhausted = bool(
+            not policy.hard_tool_admission_enabled
+            and diagnostic_state_is_canonical
+            and diagnostic_count >= _MAX_CANDIDATE_DIAGNOSTIC_READS
+            and deadline_progress is not None
+            and deadline_progress[2] >= 0.80
+            and gate.get("candidate_present") is True
+            and gate.get("candidate_binding_unresolved") is False
+            and gate.get("validation_window_open") is False
+            and (
+                gate.get("public_candidate_mutated") is True
+                or state.candidate_epoch_advanced
+                or state.candidate_checkpoint_recorded
+            )
+        )
+    if not (
+        pre_candidate_exhausted
+        or candidate_exhausted
+        or delivery_only_exhausted
+    ):
         return False
     transition = _apply_event(
         context,
         agent_id,
-        ExecutionProtocolEvent(kind=EventKind.CONVERGENCE_EXHAUSTED),
+        ExecutionProtocolEvent(
+            kind=(
+                EventKind.DELIVERY_ONLY_EXHAUSTED
+                if delivery_only_exhausted
+                else EventKind.CONVERGENCE_EXHAUSTED
+            )
+        ),
     )
     if (
         transition.decision.action is ControllerAction.ENTER_FINALIZATION

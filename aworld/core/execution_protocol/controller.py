@@ -417,7 +417,10 @@ def transition_execution_protocol(
             _decision(ControllerAction.CONTINUE, DecisionReason.OBSERVATION_RECORDED),
         )
 
-    if event.kind is EventKind.CONVERGENCE_EXHAUSTED:
+    if event.kind in {
+        EventKind.CONVERGENCE_EXHAUSTED,
+        EventKind.DELIVERY_ONLY_EXHAUSTED,
+    }:
         if (
             state.phase not in {ProtocolPhase.EXECUTE, ProtocolPhase.REPAIR}
             or not state.convergence_constraint_active
@@ -451,7 +454,14 @@ def transition_execution_protocol(
         )
         return ProtocolTransition(
             next_state,
-            _decision(action, DecisionReason.CONVERGENCE_REJECTION_LIMIT),
+            _decision(
+                action,
+                (
+                    DecisionReason.DELIVERY_ONLY_DIAGNOSTIC_LIMIT
+                    if event.kind is EventKind.DELIVERY_ONLY_EXHAUSTED
+                    else DecisionReason.CONVERGENCE_REJECTION_LIMIT
+                ),
+            ),
         )
 
     if event.kind in {EventKind.TOOL_OBSERVATION, EventKind.DELIVERY_STATUS}:
