@@ -297,6 +297,27 @@ def test_authenticated_declared_candidate_requires_current_complete_projection(
     current = authenticated_declared_candidate_status(context, "agent")
     assert current["authenticated"] is True
     assert current["reason"] == "current_complete_projection"
+    assert current["candidate_checkpoint_recorded"] is True
+
+    store.save(
+        replace(
+            store.load(),
+            candidate_checkpoint_recorded=False,
+            public_candidate_mutated=True,
+        )
+    )
+    terminal_current = authenticated_declared_candidate_status(context, "agent")
+    assert terminal_current["authenticated"] is True
+    assert terminal_current["reason"] == "current_complete_projection"
+    assert terminal_current["candidate_checkpoint_recorded"] is False
+
+    store.save(
+        replace(
+            store.load(),
+            candidate_checkpoint_recorded=True,
+            public_candidate_mutated=False,
+        )
+    )
 
     layout.write_text('{"layout_pages":[{"page_number":1}]}', encoding="utf-8")
     stale = authenticated_declared_candidate_status(context, "agent")
@@ -1471,7 +1492,7 @@ def test_inline_guidance_keeps_model_checkpoint_off_and_applies_on_candidate() -
     assert telemetry["replan_decision_attempt_count"] == 0
 
 
-def test_inline_guidance_marks_two_nonproductive_observations_unapplied() -> None:
+def test_inline_guidance_remains_visible_then_marks_bounded_stagnation_unapplied() -> None:
     context = _context("inline-guidance-unapplied")
     configure_execution_protocol(
         context,
@@ -1499,7 +1520,7 @@ def test_inline_guidance_marks_two_nonproductive_observations_unapplied() -> Non
     )
     assert consume_execution_protocol_guidance(context, "agent") is not None
 
-    for step in (2, 3):
+    for step in (2, 3, 4, 5):
         record_tool_protocol_event(
             context,
             "agent",
@@ -1510,6 +1531,10 @@ def test_inline_guidance_marks_two_nonproductive_observations_unapplied() -> Non
                 result_hash=f"sha256:inline-read-result-{step}",
             ),
         )
+        if step < 5:
+            reminder = consume_execution_protocol_guidance(context, "agent")
+            assert reminder is not None
+            assert "checkpoint remains active" in reminder
 
     state = load_execution_protocol_state(context, "agent")
     assert state.decision_checkpoint_pending is False

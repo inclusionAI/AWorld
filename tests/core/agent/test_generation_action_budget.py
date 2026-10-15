@@ -951,6 +951,76 @@ async def test_exhausted_transient_provider_retries_resume_with_normal_tools(
 
 
 @pytest.mark.asyncio
+async def test_infrastructure_circuit_finalization_is_tool_free_and_bounded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent = _long_running_generation_agent(armed=True)
+    agent._llm = object()
+    agent.context._session = Session(session_id="infrastructure-finalization-s")
+    agent.context.set_task(
+        Task(
+            id="infrastructure-finalization",
+            name="infrastructure-finalization",
+            input="preserve the current public candidate",
+            timeout=600,
+        )
+    )
+    provider_calls: list[dict] = []
+
+    async def provider(*args, **kwargs):
+        provider_calls.append(kwargs)
+        return ModelResponse(
+            id="infrastructure-final",
+            model="fake-model",
+            content="Preserved the current candidate for caller evaluation.",
+            message={
+                "role": "assistant",
+                "content": "Preserved the current candidate for caller evaluation.",
+            },
+        )
+
+    async def no_memory(*args, **kwargs):
+        return None
+
+    async def no_output(*args, **kwargs):
+        return None
+
+    async def simple_input(observation, info=None, message=None, **kwargs):
+        return [{"role": "user", "content": str(observation.content or "")}]
+
+    monkeypatch.setattr(llm_agent_module, "acall_llm_model", provider)
+    monkeypatch.setattr(agent, "build_llm_input", simple_input)
+    monkeypatch.setattr(agent, "_add_message_to_memory", no_memory)
+    monkeypatch.setattr(agent, "send_agent_response_output", no_output)
+    message = Message(
+        category=Constants.AGENT,
+        payload=Observation(content="controller failure repeated"),
+        receiver=agent.id(),
+        headers={"context": agent.context},
+    )
+
+    actions = await agent.async_policy(
+        message.payload,
+        message=message,
+        stream=False,
+        _infrastructure_circuit_finalization={
+            "failure_codes": ["controller_write_barrier_timeout"],
+            "consecutive_count": 2,
+        },
+    )
+
+    assert len(provider_calls) == 1
+    assert not provider_calls[0].get("tools")
+    assert any(
+        "infrastructure circuit" in str(item.get("content", "")).lower()
+        for item in provider_calls[0]["messages"]
+    )
+    assert len(actions) == 1
+    assert actions[0].tool_name is None
+    assert "Preserved the current candidate" in actions[0].policy_info
+
+
+@pytest.mark.asyncio
 async def test_inline_replan_uses_normal_provider_retry_semantics(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

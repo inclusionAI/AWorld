@@ -97,6 +97,7 @@ _TERMINAL_CHECKPOINT_PROCESS_IDENTITY = (
     f"{os.getpid()}:{secrets.token_hex(16)}"
 )
 _MAX_CONSECUTIVE_UNAPPLIED_REPLANS = 2
+_INLINE_GUIDANCE_OBSERVATION_LIMIT = 4
 _MUTATION_GATE_READ_ONLY_THRESHOLD = 8
 _MUTATION_GATE_DEADLINE_MIN_READS = 3
 _MUTATION_GATE_DEADLINE_FRACTION = 0.20
@@ -2344,10 +2345,17 @@ def authenticated_declared_candidate_status(
             "candidate_count": candidate_count,
         }
     protocol_state = load_execution_protocol_state(context, agent_id)
+    current_task_candidate = bool(
+        protocol_state.public_deliverable_declared
+        and protocol_state.public_candidate_mutated
+    )
     if not (
         protocol_state.candidate_present is True
-        and protocol_state.candidate_checkpoint_recorded
         and protocol_state.public_deliverable_declared
+        and (
+            protocol_state.candidate_checkpoint_recorded
+            or current_task_candidate
+        )
     ):
         return {
             "schema_version": "aworld.authenticated-declared-candidate/v1",
@@ -2389,6 +2397,9 @@ def authenticated_declared_candidate_status(
         "declared_count": declared_count,
         "candidate_count": candidate_count,
         "candidate_fingerprint": current_fingerprint,
+        "candidate_checkpoint_recorded": (
+            protocol_state.candidate_checkpoint_recorded
+        ),
         "artifact_hashes": artifact_hashes,
     }
 
@@ -4873,10 +4884,10 @@ def _observe_inline_guidance_behavior(
             application=application,
         )
     observation_count = min(
-        2,
+        _INLINE_GUIDANCE_OBSERVATION_LIMIT,
         int(value.get("observation_count", 0) or 0) + 1,
     )
-    if observation_count >= 2:
+    if observation_count >= _INLINE_GUIDANCE_OBSERVATION_LIMIT:
         return _finish_inline_guidance(context, agent_id, application=None)
     _write_runtime_value(
         context,
@@ -6133,6 +6144,35 @@ def consume_execution_protocol_guidance(context, agent_id: str) -> str | None:
                 "repairs and final validation; do not restart discovery or reread "
                 f"unchanged inputs. Remaining time: {remaining:.0f}s."
             )
+    inline = _read_runtime_value(
+        context,
+        agent_id,
+        EXECUTION_PROTOCOL_INLINE_GUIDANCE_KEY,
+    )
+    if (
+        isinstance(inline, Mapping)
+        and inline.get("schema_version") == "aworld.inline-guidance/v1"
+        and inline.get("scope") == _model_decision_scope(context, agent_id)
+        and inline.get("request_sequence") == state.replan_requested_count
+        and state.decision_checkpoint_pending
+    ):
+        observed = min(
+            _INLINE_GUIDANCE_OBSERVATION_LIMIT,
+            max(0, int(inline.get("observation_count", 0) or 0)),
+        )
+        remaining_observations = max(
+            1,
+            _INLINE_GUIDANCE_OBSERVATION_LIMIT - observed,
+        )
+        return (
+            "AWorld convergence checkpoint remains active: the previous replan "
+            "guidance has not yet produced observable implementation, candidate, "
+            "validation, or delivery progress. Use the next action to create one "
+            "of those public progress signals, or submit the current limitation "
+            "accurately; do not repeat an unchanged observation merely to defer "
+            f"the decision. {remaining_observations} bounded observation(s) remain "
+            "before the checkpoint is recorded as unapplied."
+        )
     pending = _read_runtime_value(context, agent_id, EXECUTION_PROTOCOL_PENDING_KEY)
     if not isinstance(pending, Mapping):
         return None

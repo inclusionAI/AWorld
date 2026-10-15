@@ -55,6 +55,7 @@ CAST_SEARCH = "CAST_SEARCH"
 AWORLD_MAX_LOOP_STEPS_HARD_LIMIT = 1024
 AWORLD_DEFAULT_MAX_COMPLETION_TOKENS = 16384
 AWORLD_MAX_COMPLETION_TOKENS_HARD_LIMIT = 64000
+AWORLD_DEFAULT_INFRASTRUCTURE_CIRCUIT_THRESHOLD = 2
 AWORLD_BUILTIN_SUBAGENT_NAMES = (
     "developer",
     "evaluator",
@@ -431,6 +432,27 @@ def resolve_aworld_generation_budget() -> Optional[GenerationBudgetPolicy]:
         ),
         action_repair_enabled=repair_enabled,
     )
+
+
+def resolve_aworld_infrastructure_circuit_threshold() -> int:
+    """Bound repeated typed Tool-infrastructure failures before finalization."""
+
+    raw = os.environ.get("AWORLD_INFRASTRUCTURE_ERROR_CIRCUIT_BREAKER_THRESHOLD")
+    if raw is None or not raw.strip():
+        return AWORLD_DEFAULT_INFRASTRUCTURE_CIRCUIT_THRESHOLD
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise ValueError(
+            "AWORLD_INFRASTRUCTURE_ERROR_CIRCUIT_BREAKER_THRESHOLD must be "
+            "a non-negative integer"
+        ) from exc
+    if value < 0:
+        raise ValueError(
+            "AWORLD_INFRASTRUCTURE_ERROR_CIRCUIT_BREAKER_THRESHOLD must be "
+            "a non-negative integer"
+        )
+    return value
 
 
 def resolve_aworld_builtin_subagents() -> tuple[str, ...]:
@@ -850,6 +872,9 @@ def build_aworld_agent(include_skills: Optional[str] = None):
             resolve_aworld_artifact_observation_media_capability()
         ),
         skill_configs={},
+        infrastructure_error_circuit_breaker_threshold=(
+            resolve_aworld_infrastructure_circuit_threshold()
+        ),
         ext={"skill_resolver_inputs": resolver_inputs},
     )
 

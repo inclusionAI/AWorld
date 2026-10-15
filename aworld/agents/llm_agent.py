@@ -4855,6 +4855,67 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             )
             return None
 
+    async def async_finalize_at_infrastructure_failure(
+        self,
+        message: Message,
+        receipt: Dict[str, Any],
+        **kwargs,
+    ) -> Message | None:
+        """Preserve current work with one Tool-free terminal response.
+
+        The circuit receipt proves only that the execution channel repeatedly
+        failed. It never claims task correctness; the caller-owned evaluator
+        still scores the best public candidate independently.
+        """
+
+        try:
+            await self.async_pre_run(message)
+            policy_result = await self.async_policy(
+                message.payload,
+                message=message,
+                _infrastructure_circuit_finalization=dict(receipt),
+                **kwargs,
+            )
+            if not any(
+                str(getattr(action, "policy_info", "") or "").strip()
+                for action in policy_result or []
+            ):
+                raise AWorldRuntimeException(
+                    "infrastructure circuit finalization returned no textual response"
+                )
+            final_result = await self.async_post_run(
+                policy_result, message.payload, message
+            )
+            message.context.context_info[
+                f"agent_infrastructure_circuit_finalized:{self.id()}"
+            ] = {**dict(receipt), "finalization_performed": True}
+            from aworld.core.context.execution_state import record_execution_state
+
+            record_execution_state(
+                message.context,
+                self.id(),
+                "succeeded",
+                "infrastructure_circuit_finalized",
+                recoverable=False,
+            )
+            return final_result
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            message.context.context_info[
+                f"agent_infrastructure_circuit_finalization_error:{self.id()}"
+            ] = {
+                **dict(receipt),
+                "error_type": type(exc).__name__,
+            }
+            logger.warning(
+                "Infrastructure circuit finalization failed for agent %s; "
+                "preserving typed infrastructure failure (error_type=%s)",
+                self.id(),
+                type(exc).__name__,
+            )
+            return None
+
     @staticmethod
     def _transient_model_failure_details(
         exc: BaseException,
@@ -5732,6 +5793,12 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         model_response_recovery_turn = False
         long_horizon_review_deadline = None
         loop_budget_finalization = bool(kwargs.get("_loop_budget_finalization", False))
+        infrastructure_circuit_finalization = bool(
+            kwargs.get("_infrastructure_circuit_finalization")
+        )
+        bounded_terminal_finalization = bool(
+            loop_budget_finalization or infrastructure_circuit_finalization
+        )
         from aworld.runners.execution_protocol import (
             clear_candidate_fallback,
             execution_protocol_policy,
@@ -5929,7 +5996,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 automatic_timeout = self._is_long_horizon_auto_generation_timeout(
                     exc, message.context
                 )
-                if not loop_budget_finalization and (
+                if not bounded_terminal_finalization and (
                     transient_details is not None or automatic_timeout
                 ):
                     recovery_reason = (
@@ -6022,7 +6089,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             )
             if (
                 recoverable_model_state is not None
-                and not loop_budget_finalization
+                and not bounded_terminal_finalization
                 and not isinstance(
                     result,
                     (
@@ -6428,6 +6495,15 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         """
         logger.info(f"Agent{type(self)}#{self.id()}: async_policy start")
         loop_budget_finalization = bool(kwargs.pop("_loop_budget_finalization", False))
+        infrastructure_circuit_receipt = kwargs.pop(
+            "_infrastructure_circuit_finalization", None
+        )
+        infrastructure_circuit_finalization = isinstance(
+            infrastructure_circuit_receipt, dict
+        )
+        bounded_terminal_finalization = bool(
+            loop_budget_finalization or infrastructure_circuit_finalization
+        )
         transient_model_recovery_turn = bool(
             kwargs.pop("_transient_model_recovery_turn", False)
         )
@@ -6489,7 +6565,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         model_owned_review = model_owned_review_active(message.context, self.id())
 
         protocol_tool_free_finalization = (
-            not loop_budget_finalization
+            not bounded_terminal_finalization
             and pending_decision_boundary is None
             and (
                 execution_protocol_requires_tool_free_finalization(
@@ -6498,8 +6574,8 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 or self._pre_generation_caller_reserve_reached(message.context)
             )
         )
-        tool_free_finalization = (
-            loop_budget_finalization or protocol_tool_free_finalization
+        tool_free_finalization = bool(
+            bounded_terminal_finalization or protocol_tool_free_finalization
         )
         execution_control_offer = _LongHorizonControlOffer()
         if tool_free_finalization:
@@ -6615,6 +6691,34 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                         "This is a budget stop, not successful task completion. Report "
                         "verified outcomes and artifacts, state uncertainty instead "
                         "of inventing results, and do not request another tool call."
+                    ),
+                }
+            )
+            tools = None
+        elif infrastructure_circuit_finalization:
+            failure_codes = sorted(
+                {
+                    str(code)
+                    for code in (
+                        infrastructure_circuit_receipt.get("failure_codes") or ()
+                    )
+                    if isinstance(code, str) and code
+                }
+            )
+            failure_summary = ", ".join(failure_codes[:4]) or "unknown"
+            raw_messages = list(raw_messages)
+            raw_messages.append(
+                {
+                    "role": "user",
+                    "content": (
+                        "AWorld infrastructure circuit: the same typed execution "
+                        "failure repeated and the Tool channel is now closed "
+                        f"({failure_summary}). This is the single bounded "
+                        "Tool-free finalization turn. Preserve and submit the best "
+                        "current public candidate when one exists. Otherwise report "
+                        "the retained progress and blocker accurately. Do not claim "
+                        "unobserved validation, do not request another Tool call, "
+                        "and do not restart exploration."
                     ),
                 }
             )
@@ -7587,7 +7691,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                             clear_candidate_fallback(message.context, self.id())
                     if (
                         candidate_finished
-                        and not loop_budget_finalization
+                        and not bounded_terminal_finalization
                         and not critic_decision_handled
                         and not validation_feedback
                         and not response_incomplete

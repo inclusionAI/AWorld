@@ -16,6 +16,19 @@ class LoopBudgetAgent(BaseAgent):
         return observation
 
 
+class FinalizingCircuitAgent(LoopBudgetAgent):
+    async def async_finalize_at_infrastructure_failure(
+        self, message, receipt, **kwargs
+    ):
+        return Message(
+            category=Constants.AGENT,
+            payload={"preserved": True, "receipt": receipt},
+            sender=self.id(),
+            session_id=message.context.session_id,
+            headers=message.headers,
+        )
+
+
 def _tool_observation(
     *,
     success: bool = False,
@@ -78,6 +91,36 @@ async def test_repeated_typed_infrastructure_failure_opens_circuit_at_threshold(
     assert result.payload.msg == "agent_infrastructure_error_circuit_open"
     assert result.payload.data["consecutive_count"] == 3
     assert result.payload.data["failure_codes"] == [
+        "docker_checkpoint_create_failed"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_repeated_infrastructure_failure_can_finalize_preserved_work():
+    agent = FinalizingCircuitAgent(
+        name="infra-finalize",
+        conf=AgentConfig(
+            llm_provider="mock",
+            llm_model_name="mock-model",
+            infrastructure_error_circuit_breaker_threshold=2,
+        ),
+        max_loop_steps=100,
+    )
+    context = Context(task_id="infra-finalize-task", session_id="infra-session")
+
+    first = await agent.async_run(
+        _agent_message(agent, context, _tool_observation())
+    )
+    assert first.category == Constants.AGENT
+
+    final = await agent.async_run(
+        _agent_message(agent, context, _tool_observation())
+    )
+
+    assert final.category == Constants.AGENT
+    assert final.payload["preserved"] is True
+    assert final.payload["receipt"]["consecutive_count"] == 2
+    assert final.payload["receipt"]["failure_codes"] == [
         "docker_checkpoint_create_failed"
     ]
 

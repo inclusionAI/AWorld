@@ -1699,6 +1699,8 @@ class LocalAgentExecutor(BaseAgentExecutor):
         async def salvage_authenticated_candidate(*, completion_reason: str) -> bool:
             from aworld.runners.execution_protocol import (
                 authenticated_declared_candidate_status,
+                load_execution_protocol_state,
+                record_candidate_final,
                 record_validated_terminal_fallback_submission,
             )
 
@@ -1710,6 +1712,23 @@ class LocalAgentExecutor(BaseAgentExecutor):
                     "reason"
                 )
                 return False
+            if not load_execution_protocol_state(
+                task.context, root_id
+            ).candidate_checkpoint_recorded:
+                checkpoint = record_candidate_final(
+                    task.context,
+                    root_id,
+                    actions=None,
+                    review_boundary_available=False,
+                )
+                if (
+                    checkpoint is None
+                    or not checkpoint.state.candidate_checkpoint_recorded
+                ):
+                    telemetry["acceptance_candidate_authentication"] = (
+                        "terminal_transition_rejected"
+                    )
+                    return False
             transition = await record_validated_terminal_fallback_submission(
                 task.context, root_id
             )
