@@ -170,7 +170,7 @@ class RequestsInstrumentor(Instrumentor):
         _InstrumentedSession._tracer_provider = tracer_provider
         excluded_urls = kwargs.get("excluded_urls")
         _InstrumentedSession._excluded_urls = (
-            get_excluded_urls("FLASK")
+            get_excluded_urls("REQUESTS")
             if excluded_urls is None
             else parse_excluded_urls(excluded_urls)
         )
