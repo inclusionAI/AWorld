@@ -7,6 +7,7 @@ writes control state into the user's workspace.
 
 from __future__ import annotations
 
+import csv
 from copy import deepcopy
 from dataclasses import replace
 from datetime import datetime, timezone
@@ -68,6 +69,7 @@ EXECUTION_PROTOCOL_TERMINAL_CHECKPOINT_EPISODE_KEY = (
 EXECUTION_PROTOCOL_HYPOTHESES_KEY = "execution_protocol_hypotheses"
 EXECUTION_PROTOCOL_CRITIC_KEY = "execution_protocol_acceptance_critic"
 EXECUTION_PROTOCOL_PUBLIC_PROBES_KEY = "execution_protocol_public_probes"
+EXECUTION_PROTOCOL_PUBLIC_CONTRACT_KEY = "execution_protocol_public_contract"
 EXECUTION_PROTOCOL_DEADLINE_GUIDANCE_KEY = "execution_protocol_deadline_guidance"
 EXECUTION_PROTOCOL_CONVERGENCE_GUIDANCE_KEY = (
     "execution_protocol_convergence_guidance"
@@ -1120,16 +1122,258 @@ def _public_request_hash(context) -> str:
     return semantic_fingerprint(str(request))
 
 
+def _public_context_candidates(context) -> tuple[Any, ...]:
+    """Return the task-local context before its durable execution owner.
+
+    CLI-authenticated public contracts are installed on the task context.  Tool
+    runtime state can instead live on ``event_manager.context``.  Reading only
+    the latter silently discarded the contract in real executor runs.
+    """
+
+    owner = state_context(context)
+    return (context,) if owner is context else (context, owner)
+
+
+def _public_request_candidates(context) -> tuple[str, ...]:
+    values: list[str] = []
+    seen: set[str] = set()
+    for candidate in _public_context_candidates(context):
+        task = None
+        getter = getattr(candidate, "get_task", None) if candidate is not None else None
+        try:
+            task = getter() if callable(getter) else None
+        except Exception:
+            task = None
+        for value in (
+            getattr(candidate, "origin_user_input", None),
+            getattr(candidate, "task_input", None),
+            getattr(task, "input", None),
+        ):
+            text = str(value or "").strip()
+            if text and text not in seen:
+                seen.add(text)
+                values.append(text)
+    return tuple(values)
+
+
+def _public_request_text(context) -> str:
+    values = _public_request_candidates(context)
+    return values[0] if values else ""
+
+
+def _public_obligation_rows(context) -> tuple[dict[str, Any], ...]:
+    """Return only CLI-authenticated obligations from the public task text."""
+
+    value = None
+    for candidate in _public_context_candidates(context):
+        candidate_value = getattr(candidate, "context_info", {}).get(
+            "public_task_contract"
+        )
+        if isinstance(candidate_value, Mapping):
+            value = candidate_value
+            break
+    request_fingerprints = {
+        "sha256:" + hashlib.sha256(request.encode("utf-8")).hexdigest()
+        for request in _public_request_candidates(context)
+    }
+    if (
+        not request_fingerprints
+        or not isinstance(value, Mapping)
+        or value.get("schema_version") != "aworld.public-task-contract/v1"
+        or value.get("authority") != _PUBLIC_DELIVERABLE_AUTHORITY
+        or value.get("source") != "public_task_text"
+        or value.get("request_fingerprint") not in request_fingerprints
+    ):
+        return ()
+    raw_rows = value.get("obligations")
+    if not isinstance(raw_rows, list) or not 0 < len(raw_rows) <= 32:
+        return ()
+    rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for raw in raw_rows:
+        if not isinstance(raw, Mapping):
+            return ()
+        obligation_id = raw.get("obligation_id")
+        if (
+            not isinstance(obligation_id, str)
+            or not obligation_id
+            or len(obligation_id) > 128
+            or obligation_id in seen
+            or raw.get("authority") != _PUBLIC_DELIVERABLE_AUTHORITY
+            or raw.get("source") != "public_task_text"
+            or not isinstance(raw.get("kind"), str)
+            or not isinstance(raw.get("subject"), str)
+        ):
+            return ()
+        seen.add(obligation_id)
+        rows.append(
+            {
+                "obligation_id": obligation_id,
+                "kind": str(raw["kind"])[:64],
+                "subject": str(raw["subject"])[:512],
+                "expectation": deepcopy(raw.get("expectation")),
+            }
+        )
+    return tuple(rows)
+
+
+def _public_obligation_ids(context) -> frozenset[str]:
+    return frozenset(row["obligation_id"] for row in _public_obligation_rows(context))
+
+
+def _public_candidate_structured_fields(context) -> frozenset[str]:
+    """Read bounded JSON/CSV candidates and return their public field names."""
+
+    contract = None
+    for candidate in _public_context_candidates(context):
+        candidate_contract = getattr(candidate, "context_info", {}).get(
+            "public_deliverable_contract"
+        )
+        if isinstance(candidate_contract, Mapping):
+            contract = candidate_contract
+            break
+    artifacts = contract.get("artifacts") if isinstance(contract, Mapping) else None
+    if not isinstance(artifacts, list) or len(artifacts) > 16:
+        return frozenset()
+    fields: set[str] = set()
+
+    def collect_json(value: Any, *, depth: int = 0) -> None:
+        if depth >= 8 or len(fields) >= 512:
+            return
+        if isinstance(value, Mapping):
+            for key, item in list(value.items())[:256]:
+                if isinstance(key, str) and key:
+                    fields.add(key)
+                collect_json(item, depth=depth + 1)
+        elif isinstance(value, list):
+            for item in value[:64]:
+                collect_json(item, depth=depth + 1)
+
+    for item in artifacts:
+        if not isinstance(item, Mapping) or not isinstance(item.get("path"), str):
+            continue
+        path = Path(item["path"])
+        try:
+            if not path.is_file() or not 0 < path.stat().st_size <= 4 * 1024 * 1024:
+                continue
+            suffix = path.suffix.casefold()
+            if suffix == ".json":
+                collect_json(json.loads(path.read_text(encoding="utf-8")))
+            elif suffix in {".csv", ".tsv"}:
+                with path.open("r", encoding="utf-8-sig", newline="") as stream:
+                    dialect = "excel-tab" if suffix == ".tsv" else "excel"
+                    header = next(csv.reader(stream, dialect=dialect), ())
+                fields.update(
+                    str(value).strip() for value in header if str(value).strip()
+                )
+        except (OSError, UnicodeError, ValueError, TypeError, json.JSONDecodeError):
+            continue
+    return frozenset(fields)
+
+
+def public_contract_evidence_status(context, agent_id: str) -> dict[str, Any]:
+    """Project candidate-bound public evidence without judging hidden correctness."""
+
+    rows = _public_obligation_rows(context)
+    obligation_ids = {row["obligation_id"] for row in rows}
+    covered: dict[str, str] = {}
+    delivery = _public_delivery_status(context)
+    structured_fields = _public_candidate_structured_fields(context)
+    for row in rows:
+        if row["kind"] == "deliverable_file" and (
+            delivery.get("public_deliverable_declared") is True
+            and int(delivery.get("missing_public_deliverable_count", 0) or 0) == 0
+        ):
+            covered[row["obligation_id"]] = "candidate_artifact"
+        elif row["kind"] == "structured_field" and row["subject"] in structured_fields:
+            covered[row["obligation_id"]] = "candidate_structure"
+    current_receipts = []
+    for receipt in load_public_probe_receipts(context, agent_id):
+        ids = receipt.get("obligation_ids")
+        if (
+            receipt.get("stale") is False
+            and receipt.get("tool_execution_succeeded") is True
+            and isinstance(ids, list)
+            and all(isinstance(value, str) and value in obligation_ids for value in ids)
+        ):
+            current_receipts.append(str(receipt.get("receipt_id") or "")[:128])
+            for obligation_id in ids:
+                covered[obligation_id] = "public_probe"
+    candidate_hash, _ = _public_candidate_binding(context, agent_id)
+    unresolved = [
+        row["obligation_id"] for row in rows if row["obligation_id"] not in covered
+    ]
+    return {
+        "schema_version": "aworld.public-contract-evidence/v1",
+        "request_hash": _public_request_hash(context),
+        "candidate_hash": candidate_hash,
+        "obligation_count": len(rows),
+        "covered_count": len(covered),
+        "unresolved_count": len(unresolved),
+        "covered": covered,
+        "unresolved_obligation_ids": unresolved,
+        "current_probe_receipt_ids": [value for value in current_receipts if value][
+            -8:
+        ],
+        "closure_complete": bool(rows and not unresolved),
+    }
+
+
+def record_public_contract_evidence(context, agent_id: str) -> dict[str, Any]:
+    """Persist one bounded closure evaluation and publish protocol telemetry."""
+
+    status = public_contract_evidence_status(context, agent_id)
+    previous = _read_runtime_value(
+        context, agent_id, EXECUTION_PROTOCOL_PUBLIC_CONTRACT_KEY
+    )
+    previous = dict(previous) if isinstance(previous, Mapping) else {}
+    checkpoint_count = int(previous.get("closure_checkpoint_count", 0) or 0)
+    checkpoint_candidate = previous.get("checkpoint_candidate_hash")
+    if (
+        status["closure_complete"] is True
+        and checkpoint_candidate != status["candidate_hash"]
+    ):
+        checkpoint_count = min(_MAX_TELEMETRY_COUNTER, checkpoint_count + 1)
+        checkpoint_candidate = status["candidate_hash"]
+    value = {
+        **status,
+        "evaluation_count": min(
+            _MAX_TELEMETRY_COUNTER,
+            int(previous.get("evaluation_count", 0) or 0) + 1,
+        ),
+        "closure_checkpoint_count": checkpoint_count,
+        "checkpoint_candidate_hash": checkpoint_candidate,
+    }
+    _write_runtime_value(
+        context, agent_id, EXECUTION_PROTOCOL_PUBLIC_CONTRACT_KEY, value
+    )
+    owner = state_context(context)
+    metrics = getattr(owner, "context_info", {}).get(EXECUTION_PROTOCOL_METRICS_KEY)
+    if isinstance(metrics, dict):
+        metrics["public_contract_obligation_count"] = status["obligation_count"]
+        metrics["public_contract_covered_count"] = status["covered_count"]
+        metrics["public_contract_unresolved_count"] = status["unresolved_count"]
+        metrics["public_contract_closure_complete"] = status["closure_complete"]
+        metrics["public_contract_checkpoint_count"] = checkpoint_count
+    return value
+
+
 def _public_candidate_binding(context, agent_id: str) -> tuple[str, str | None]:
     from aworld.core.context.compiler import semantic_fingerprint
 
     fallback = load_candidate_fallback(context, agent_id) or ()
     candidate = str(getattr(fallback[0], "policy_info", "") or "") if fallback else ""
     stateful_mutation_fingerprint = None
+    public_delivery_fingerprint = None
     try:
         from aworld.runners.post_tool_progress import semantic_progress_for_agent
 
         semantic_state = semantic_progress_for_agent(context, agent_id=agent_id)
+        delivery_value = semantic_state.get("public_delivery_fingerprint")
+        if semantic_state.get(
+            "public_deliverable_declared"
+        ) is True and _is_canonical_semantic_fingerprint(delivery_value):
+            public_delivery_fingerprint = delivery_value
         if semantic_state.get("public_deliverable_declared") is not True:
             value = semantic_state.get("stateful_mutation_fingerprint")
             if _is_canonical_semantic_fingerprint(value):
@@ -1147,11 +1391,14 @@ def _public_candidate_binding(context, agent_id: str) -> tuple[str, str | None]:
         semantic_fingerprint(
             {
                 "candidate_response_hash": (
-                    stateful_mutation_fingerprint
+                    public_delivery_fingerprint
+                    or stateful_mutation_fingerprint
                     or semantic_fingerprint(candidate)
                 ),
                 "binding_kind": (
-                    "stateful_mutation"
+                    "public_delivery"
+                    if public_delivery_fingerprint is not None
+                    else "stateful_mutation"
                     if stateful_mutation_fingerprint is not None
                     else "candidate_response"
                 ),
@@ -1185,15 +1432,22 @@ def _normalize_public_probe_state(
             "revision": 0,
             "plans": {},
             "receipts": [],
+            "task_derived_validation": None,
         }
     plans = value.get("plans")
     receipts = value.get("receipts")
+    task_derived_validation = value.get("task_derived_validation")
     return {
         "schema_version": "aworld.public-probe-ledger/v1",
         "scope": dict(value.get("scope") or expected_scope or {}),
         "revision": int(value.get("revision", 0) or 0),
         "plans": dict(plans) if isinstance(plans, Mapping) else {},
         "receipts": list(receipts) if isinstance(receipts, list) else [],
+        "task_derived_validation": (
+            dict(task_derived_validation)
+            if isinstance(task_derived_validation, Mapping)
+            else None
+        ),
     }
 
 
@@ -1202,6 +1456,22 @@ def _public_probe_state(context, agent_id: str) -> dict[str, Any]:
         _read_runtime_value(context, agent_id, EXECUTION_PROTOCOL_PUBLIC_PROBES_KEY),
         expected_scope=_public_probe_scope(context, agent_id),
     )
+
+
+def _canonical_public_probe_tool_identity(value: str) -> str:
+    """Normalize provider-qualified and executed MCP Tool identities."""
+
+    normalized = ":".join(
+        part.strip().casefold() for part in str(value or "").split(":", 1)
+    )
+    if ":" not in normalized:
+        return normalized
+    namespace, action = normalized.split(":", 1)
+    if namespace == "mcp" and "__" in action:
+        tool_name, action_name = action.rsplit("__", 1)
+        if tool_name and action_name:
+            return f"{tool_name}:{action_name}"
+    return normalized
 
 
 def record_public_probe_plan(
@@ -1219,14 +1489,16 @@ def record_public_probe_plan(
     policy = execution_protocol_policy(context, agent_id)
     if policy.mode is ProtocolMode.OFF:
         return False
+    value_keys = frozenset(value) if isinstance(value, Mapping) else frozenset()
+    legacy_keys = {
+        "hypothesis_id",
+        "highest_risk_counterexample",
+        "probe_kind",
+    }
     if (
         not isinstance(value, Mapping)
-        or set(value)
-        != {
-            "hypothesis_id",
-            "highest_risk_counterexample",
-            "probe_kind",
-        }
+        or value_keys
+        not in {frozenset(legacy_keys), frozenset({*legacy_keys, "obligation_ids"})}
         or not isinstance(tool_call_id, str)
         or not tool_call_id
         or len(tool_call_id) > 256
@@ -1239,6 +1511,8 @@ def record_public_probe_plan(
     hypothesis_id = value.get("hypothesis_id")
     counterexample = value.get("highest_risk_counterexample")
     probe_kind = value.get("probe_kind")
+    raw_obligation_ids = value.get("obligation_ids", ())
+    trusted_obligation_ids = _public_obligation_ids(context)
     if (
         not isinstance(hypothesis_id, str)
         or not hypothesis_id.strip()
@@ -1247,11 +1521,16 @@ def record_public_probe_plan(
         or not counterexample.strip()
         or len(counterexample.strip()) > 1024
         or probe_kind not in {"smoke", "regression", "counterexample", "invariant"}
+        or not isinstance(raw_obligation_ids, (list, tuple))
+        or len(raw_obligation_ids) > 32
+        or any(
+            not isinstance(obligation_id, str)
+            or obligation_id not in trusted_obligation_ids
+            for obligation_id in raw_obligation_ids
+        )
     ):
         return False
-    normalized_tool_identity = ":".join(
-        part.strip().casefold() for part in tool_identity.split(":", 1)
-    )
+    normalized_tool_identity = _canonical_public_probe_tool_identity(tool_identity)
     candidate_hash, selected_candidate_id = _public_candidate_binding(context, agent_id)
     plan = {
         "tool_call_id": tool_call_id,
@@ -1261,6 +1540,7 @@ def record_public_probe_plan(
         "hypothesis_id": hypothesis_id.strip(),
         "highest_risk_counterexample": counterexample.strip(),
         "probe_kind": probe_kind,
+        "obligation_ids": list(dict.fromkeys(raw_obligation_ids)),
         "selected_candidate_id": selected_candidate_id,
         "request_hash": _public_request_hash(context),
         "candidate_hash": candidate_hash,
@@ -1310,6 +1590,59 @@ def record_public_probe_observations(
         for item in result_projections or ()
         if isinstance(item, Mapping) and isinstance(item.get("tool_call_id"), str)
     }
+
+    def task_derived_scope() -> list[str] | None:
+        for tool_call_id, action in action_by_id.items():
+            identity = ":".join(
+                (
+                    str(getattr(action, "tool_name", "") or ""),
+                    str(getattr(action, "action_name", "") or ""),
+                )
+            ).casefold()
+            if (
+                "aworld_advisory_verifier" not in identity
+                or "review_candidate" not in identity
+            ):
+                continue
+            result = result_by_id.get(tool_call_id)
+            content = result.get("content") if isinstance(result, Mapping) else None
+            if not isinstance(content, str) or len(content) > 128_000:
+                continue
+            try:
+                payload = json.loads(content)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                continue
+            if not isinstance(payload, Mapping):
+                continue
+            scope = payload.get("task_derived_validation_scope")
+            if (
+                payload.get("schema_version") != "aworld.advisory-review/v2"
+                or payload.get("authority") != "advisory_public_self_check"
+                or payload.get("recommended_framework_action")
+                != "task_derived_validation_once"
+                or not isinstance(scope, list)
+                or not 0 < len(scope) <= 32
+            ):
+                continue
+            obligation_ids: list[str] = []
+            for row in scope:
+                obligation_id = (
+                    row.get("obligation_id") if isinstance(row, Mapping) else None
+                )
+                if (
+                    not isinstance(obligation_id, str)
+                    or re.fullmatch(r"public-obligation-[1-9][0-9]{0,2}", obligation_id)
+                    is None
+                    or obligation_id in obligation_ids
+                ):
+                    obligation_ids = []
+                    break
+                obligation_ids.append(obligation_id)
+            if obligation_ids:
+                return obligation_ids
+        return None
+
+    derived_scope = task_derived_scope()
     observed_ids: set[str] = set()
     expected_scope = _public_probe_scope(context, agent_id)
 
@@ -1318,16 +1651,29 @@ def record_public_probe_observations(
         plans = state["plans"]
         receipts = [item for item in state["receipts"] if isinstance(item, Mapping)]
         observed_ids.clear()
+        if derived_scope is not None:
+            candidate_hash, selected_candidate_id = _public_candidate_binding(
+                context, agent_id
+            )
+            state["task_derived_validation"] = {
+                "obligation_ids": list(derived_scope),
+                "request_hash": _public_request_hash(context),
+                "candidate_hash": candidate_hash,
+                "selected_candidate_id": selected_candidate_id,
+            }
+            state["revision"] = int(state.get("revision", 0) or 0) + 1
+            return state
         for tool_call_id, plan in list(plans.items()):
             action = action_by_id.get(tool_call_id)
             result = result_by_id.get(tool_call_id)
             if action is None or result is None or not isinstance(plan, Mapping):
                 continue
-            actual_identity = ":".join(
-                part.strip().casefold()
-                for part in (
-                    str(getattr(action, "tool_name", "") or ""),
-                    str(getattr(action, "action_name", "") or ""),
+            actual_identity = _canonical_public_probe_tool_identity(
+                ":".join(
+                    (
+                        str(getattr(action, "tool_name", "") or ""),
+                        str(getattr(action, "action_name", "") or ""),
+                    )
                 )
             )
             actual_arguments = getattr(action, "params", None)
@@ -1345,6 +1691,7 @@ def record_public_probe_observations(
                 "hypothesis_id": plan.get("hypothesis_id"),
                 "highest_risk_counterexample": plan.get("highest_risk_counterexample"),
                 "probe_kind": plan.get("probe_kind"),
+                "obligation_ids": list(plan.get("obligation_ids") or ()),
                 "selected_candidate_id": plan.get("selected_candidate_id"),
                 "tool_identity": plan.get("tool_identity"),
                 "arguments_hash": plan.get("arguments_hash"),
@@ -1365,6 +1712,60 @@ def record_public_probe_observations(
             receipts.append(receipt_core)
             plans.pop(tool_call_id, None)
             observed_ids.add(tool_call_id)
+        derived = state.get("task_derived_validation")
+        if not observed_ids and isinstance(derived, Mapping):
+            matched = [
+                (tool_call_id, action_by_id[tool_call_id], result_by_id[tool_call_id])
+                for tool_call_id in action_by_id.keys() & result_by_id.keys()
+            ]
+            # The reviewer authorizes exactly one task-derived validation
+            # attempt.  Ambiguous batches consume the window without creating
+            # evidence; a failed Tool creates a non-closing receipt.
+            state["task_derived_validation"] = None
+            if len(matched) == 1:
+                tool_call_id, action, result = matched[0]
+                actual_arguments = getattr(action, "params", None)
+                if isinstance(actual_arguments, Mapping):
+                    tool_identity = _canonical_public_probe_tool_identity(
+                        ":".join(
+                            (
+                                str(getattr(action, "tool_name", "") or ""),
+                                str(getattr(action, "action_name", "") or ""),
+                            )
+                        )
+                    )
+                    receipt_core = {
+                        "schema_version": "aworld.public-probe-receipt/v1",
+                        "authority": "agent_self_check",
+                        "task_reward": "not_assessed",
+                        "hypothesis_id": "task-derived-validation",
+                        "highest_risk_counterexample": (
+                            "the candidate fails one or more explicit public obligations"
+                        ),
+                        "probe_kind": "counterexample",
+                        "obligation_ids": list(derived.get("obligation_ids") or ()),
+                        "selected_candidate_id": derived.get(
+                            "selected_candidate_id"
+                        ),
+                        "tool_identity": tool_identity,
+                        "arguments_hash": semantic_fingerprint(actual_arguments),
+                        "request_hash": derived.get("request_hash"),
+                        "candidate_hash": derived.get("candidate_hash"),
+                        "artifact_after_hash": semantic_fingerprint(artifact_after),
+                        "artifact_bound": artifact_after is not None,
+                        "result_hash": semantic_fingerprint(result),
+                        "tool_execution_succeeded": result.get("success") is True,
+                        "probe_assessment": "unassessed",
+                        "failure_code": (
+                            str(result.get("failure_code"))[:256]
+                            if result.get("failure_code") is not None
+                            else None
+                        ),
+                        "task_derived_review_scope": True,
+                    }
+                    receipt_core["receipt_id"] = semantic_fingerprint(receipt_core)
+                    receipts.append(receipt_core)
+                    observed_ids.add(tool_call_id)
         state["plans"] = dict(list(plans.items())[-16:])
         state["receipts"] = receipts[-16:]
         state["revision"] = int(state.get("revision", 0) or 0) + 1
@@ -2525,6 +2926,7 @@ def project_execution_protocol_telemetry(value: Any) -> dict[str, Any] | None:
         "convergence_constraint_active",
         "analysis_runway_open",
         "model_decision_checkpoints_enabled",
+        "public_contract_closure_complete",
     }
     counters = {
         "event_count",
@@ -2567,6 +2969,11 @@ def project_execution_protocol_telemetry(value: Any) -> dict[str, Any] | None:
         "inline_guidance_emitted_count",
         "inline_guidance_applied_count",
         "inline_guidance_unapplied_count",
+        "public_contract_obligation_count",
+        "public_contract_covered_count",
+        "public_contract_unresolved_count",
+        "public_contract_checkpoint_count",
+        "evidence_progress_gate_blocked_call_count",
     }
     numbers = {
         "terminal_checkpoint_created_at_monotonic",
@@ -2603,6 +3010,12 @@ def project_execution_protocol_telemetry(value: Any) -> dict[str, Any] | None:
         "inline_guidance_unapplied_count",
         "inline_guidance_last_application",
         "model_decision_checkpoints_enabled",
+        "public_contract_closure_complete",
+        "public_contract_obligation_count",
+        "public_contract_covered_count",
+        "public_contract_unresolved_count",
+        "public_contract_checkpoint_count",
+        "evidence_progress_gate_blocked_call_count",
         *numbers,
     }
     if (
@@ -2654,6 +3067,11 @@ def build_execution_protocol_telemetry(context, agent_id: str) -> dict[str, Any]
     )
     if not isinstance(mutation_gate, Mapping):
         mutation_gate = {}
+    public_contract = _read_runtime_value(
+        context, agent_id, EXECUTION_PROTOCOL_PUBLIC_CONTRACT_KEY
+    )
+    if not isinstance(public_contract, Mapping):
+        public_contract = {}
     owner = state_context(context)
     runtime_metrics = getattr(owner, "context_info", {}).get(
         EXECUTION_PROTOCOL_METRICS_KEY
@@ -2788,6 +3206,38 @@ def build_execution_protocol_telemetry(context, agent_id: str) -> dict[str, Any]
             mutation_gate.get(
                 "blocked_call_count", mutation_gate.get("blocked_read_only_call_count")
             )
+        ),
+        "evidence_progress_gate_blocked_call_count": (
+            _bounded_counter(
+                runtime_metrics.get("evidence_progress_gate_blocked_call_count")
+            )
+            if "evidence_progress_gate_blocked_call_count" in runtime_metrics
+            else None
+        ),
+        "public_contract_obligation_count": (
+            _bounded_counter(public_contract.get("obligation_count"))
+            if public_contract
+            else None
+        ),
+        "public_contract_covered_count": (
+            _bounded_counter(public_contract.get("covered_count"))
+            if public_contract
+            else None
+        ),
+        "public_contract_unresolved_count": (
+            _bounded_counter(public_contract.get("unresolved_count"))
+            if public_contract
+            else None
+        ),
+        "public_contract_checkpoint_count": (
+            _bounded_counter(public_contract.get("closure_checkpoint_count"))
+            if public_contract
+            else None
+        ),
+        "public_contract_closure_complete": (
+            public_contract.get("closure_complete") is True
+            if public_contract
+            else None
         ),
         "consecutive_read_only_observations": _bounded_counter(
             mutation_gate.get("consecutive_read_only_observations")
@@ -3618,6 +4068,117 @@ def terminal_reserve_tool_interception(
     }
 
 
+def _advisory_progress_gate_interception(
+    context,
+    agent_id: str,
+    gate: Any,
+    actions: list[Any],
+) -> dict[str, Any] | None:
+    """Block only exhausted read-only exploration in advisory GUIDE mode.
+
+    Unknown and mutating calls remain fail-open. This preserves long-running
+    builds and repairs while making repeated public-evidence-free reads
+    behaviorally expensive after the framework has observed stagnation.
+    """
+
+    if (
+        not isinstance(gate, Mapping)
+        or gate.get("schema_version")
+        not in {MUTATION_GATE_SCHEMA, *_LEGACY_MUTATION_GATE_SCHEMAS}
+        or not _gate_matches_current_scope(context, agent_id, gate)
+    ):
+        return None
+    active = gate.get("active") is True
+    pre_candidate_latched = gate.get("pre_candidate_latched") is True
+    if not active and not pre_candidate_latched:
+        return None
+    stage_value = gate.get("convergence_stage")
+    try:
+        stage = ConvergenceStage(stage_value) if stage_value is not None else None
+    except (TypeError, ValueError):
+        stage = None
+    diagnostic_count = _bounded_counter(gate.get("candidate_diagnostic_read_count"))
+    blocked_ids: list[str] = []
+    rejection_rows: list[tuple[str | None, MutationGateRejectionReason]] = []
+    for action in actions:
+        if not actions_are_provably_read_only([action]):
+            continue
+        if framework_observable_validation_kind(context, agent_id, action) is not None:
+            continue
+        should_block = bool(
+            pre_candidate_latched
+            or stage is ConvergenceStage.PRODUCE_CANDIDATE
+            or (
+                stage is ConvergenceStage.VALIDATE_REPAIR_OR_SUBMIT
+                and diagnostic_count >= _MAX_CANDIDATE_DIAGNOSTIC_READS
+            )
+        )
+        if not should_block:
+            continue
+        call_id = str(_action_value(action, "tool_call_id") or "")
+        blocked_ids.append(call_id)
+        rejection_rows.append(
+            (
+                call_id or None,
+                MutationGateRejectionReason.DIAGNOSTIC_QUOTA_EXHAUSTED
+                if stage is ConvergenceStage.VALIDATE_REPAIR_OR_SUBMIT
+                else MutationGateRejectionReason.VALIDATION_UNREGISTERED,
+            )
+        )
+    if not blocked_ids:
+        return None
+    unique_blocked = list(dict.fromkeys(value for value in blocked_ids if value))
+    block_all = len(unique_blocked) != len(blocked_ids) or len(blocked_ids) == len(actions)
+    updated = dict(gate)
+    updated["blocked_call_count"] = min(
+        _MAX_TELEMETRY_COUNTER,
+        _bounded_counter(
+            gate.get("blocked_call_count", gate.get("blocked_read_only_call_count"))
+        )
+        + len(blocked_ids),
+    )
+    updated["blocked_read_only_call_count"] = updated["blocked_call_count"]
+    updated["last_interception_kind"] = "evidence_progress_required"
+    _write_runtime_value(context, agent_id, MUTATION_GATE_STATE_KEY, updated)
+    owner = state_context(context)
+    metrics = getattr(owner, "context_info", {}).get(EXECUTION_PROTOCOL_METRICS_KEY)
+    if isinstance(metrics, dict):
+        metrics["mutation_gate_blocked_read_only_call_count"] = updated[
+            "blocked_read_only_call_count"
+        ]
+        metrics["convergence_gate_blocked_call_count"] = updated[
+            "blocked_call_count"
+        ]
+        metrics["evidence_progress_gate_blocked_call_count"] = updated[
+            "blocked_call_count"
+        ]
+    serialized, truncated = _serialized_call_rejections(rejection_rows)
+    return {
+        "schema_version": MUTATION_GATE_SCHEMA,
+        "kind": (
+            "candidate_convergence_required"
+            if stage is ConvergenceStage.VALIDATE_REPAIR_OR_SUBMIT
+            else "candidate_mutation_required"
+        ),
+        "agent_id": agent_id,
+        "tool_call_ids": unique_blocked,
+        "block_all": block_all,
+        "reason": "evidence_progress_required",
+        "convergence_stage": stage.value if stage is not None else None,
+        "blocked_call_count": updated["blocked_call_count"],
+        "blocked_read_only_call_count": updated["blocked_read_only_call_count"],
+        "consecutive_read_only_observations": updated.get(
+            "consecutive_read_only_observations", 0
+        ),
+        "post_candidate_no_delivery_progress_observations": updated.get(
+            "post_candidate_no_delivery_progress_observations", 0
+        ),
+        "candidate_diagnostic_read_count": diagnostic_count,
+        "call_rejections": serialized,
+        "call_rejections_truncated": truncated,
+    }
+
+
 def _mutation_gate_interception_locked(
     context,
     actions: list[Any],
@@ -3813,11 +4374,15 @@ def _mutation_gate_interception_locked(
             "call_rejections_truncated": truncated,
         }
     agent_id = next(iter(agent_ids))
-    if not execution_protocol_policy(
-        context, agent_id
-    ).hard_tool_admission_enabled:
-        return None
+    policy = execution_protocol_policy(context, agent_id)
     gate = _read_runtime_value(context, agent_id, MUTATION_GATE_STATE_KEY)
+    if not policy.hard_tool_admission_enabled:
+        return _advisory_progress_gate_interception(
+            context,
+            agent_id,
+            gate,
+            actions,
+        )
     if (
         not isinstance(gate, Mapping)
         or gate.get("schema_version")
@@ -7035,6 +7600,7 @@ __all__ = [
     "EXECUTION_PROTOCOL_PENDING_KEY",
     "EXECUTION_PROTOCOL_POLICY_KEY",
     "EXECUTION_PROTOCOL_PUBLIC_PROBES_KEY",
+    "EXECUTION_PROTOCOL_PUBLIC_CONTRACT_KEY",
     "configure_execution_protocol",
     "constrain_candidate_convergence_tool_catalog",
     "acceptance_critic_active",
@@ -7061,6 +7627,8 @@ __all__ = [
     "record_pre_generation_delivery_decision",
     "record_public_probe_observations",
     "record_public_probe_plan",
+    "record_public_contract_evidence",
+    "public_contract_evidence_status",
     "record_tool_hypotheses",
     "record_acceptance_probe_plan",
     "record_acceptance_probe_observation",

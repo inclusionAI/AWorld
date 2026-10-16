@@ -413,6 +413,28 @@ When finished I should be able to run `python /app/server.py`.
     assert all(item.source_fingerprint.startswith("sha256:") for item in obligations)
 
 
+def test_public_contract_extracts_named_fields_size_and_precision_requirements(
+    tmp_path: Path,
+) -> None:
+    obligations = infer_public_obligation_hints(
+        """Create `report.json` with required field `value`.
+The workbook must contain a sheet named `Summary`.
+The result must be within 0.01 of the published input total.
+The CSV must contain exactly 20 rows and stay under 2 MB.
+""",
+        workspace_path=tmp_path,
+    )
+
+    fields = {
+        item.subject for item in obligations if item.kind == "structured_field"
+    }
+    thresholds = [
+        item for item in obligations if item.kind == "numeric_threshold"
+    ]
+    assert {"value", "Summary"} <= fields
+    assert len(thresholds) == 2
+
+
 def test_public_contract_does_not_promote_examples_or_component_side_effects(
     tmp_path: Path,
 ) -> None:

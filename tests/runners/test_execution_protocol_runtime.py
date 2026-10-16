@@ -688,6 +688,55 @@ def _record_failed_candidate_validation(
     )
 
 
+def test_advisory_progress_gate_blocks_only_exhausted_read_only_exploration():
+    context = _context("advisory-evidence-progress-gate")
+    candidate_fingerprint = _activate_advisory_validate_repair_convergence(context)
+    for index in range(3):
+        record_tool_protocol_event(
+            context,
+            "agent",
+            _semantic_state(
+                current_agent_step=3 + index,
+                candidate_present=True,
+                public_candidate_mutated=True,
+                public_delivery_fingerprint=candidate_fingerprint,
+                read_only_observed=True,
+            ),
+        )
+
+    repeated_read = mutation_gate_interception(
+        context,
+        [
+            ActionModel(
+                tool_name="terminal",
+                action_name="run_code",
+                params={"code": "cat unchanged-report.json"},
+                tool_call_id="repeated-read",
+                agent_name="agent",
+            )
+        ],
+    )
+    assert repeated_read is not None
+    assert repeated_read["reason"] == "evidence_progress_required"
+    assert repeated_read["tool_call_ids"] == ["repeated-read"]
+    assert repeated_read["block_all"] is True
+
+    # Unknown or mutating work remains fail-open in advisory mode so a real
+    # long-running repair/build can continue to make candidate progress.
+    assert mutation_gate_interception(
+        context,
+        [
+            ActionModel(
+                tool_name="terminal",
+                action_name="run_code",
+                params={"code": "python repair_candidate.py"},
+                tool_call_id="candidate-repair",
+                agent_name="agent",
+            )
+        ],
+    ) is None
+
+
 def _activate_acceptance_repair_convergence(context: Context) -> str:
     context.configure_completion_contract(
         CompletionContract(

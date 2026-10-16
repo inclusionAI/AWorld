@@ -2143,6 +2143,96 @@ def test_agent_strips_and_records_optional_public_probe_control() -> None:
     assert load_public_probe_receipts(context, agent.id()) == []
 
 
+def test_agent_binds_single_public_probe_when_provider_normalizes_tool_name() -> None:
+    context = Context(task_id="public-probe-normalized-carrier")
+    context.set_task(Task(id="public-probe-normalized-carrier", input="validate output"))
+    policy = ExecutionProtocolPolicy(mode=ProtocolMode.GUIDE)
+    agent = _agent(context, policy)
+    configure_execution_protocol(context, agent.id(), policy)
+    action = ActionModel(
+        tool_name="terminal",
+        action_name="run_code",
+        tool_call_id="normalized-probe-call",
+        params={
+            "code": "true",
+            "__aworld_public_probe": {
+                "hypothesis_id": "normalized-carrier",
+                "highest_risk_counterexample": "the public check still fails",
+                "probe_kind": "counterexample",
+            },
+        },
+    )
+    result = AgentResult(current_state=None, actions=[action], is_call_tool=True)
+    offer = llm_agent_module._LongHorizonControlOffer(
+        carrier_function_name="provider__run_code",
+        injected_parameters=frozenset({"__aworld_public_probe"}),
+    )
+
+    assert agent._consume_public_probe_controls(result, context, offer=offer) == 1
+    assert action.params == {"code": "true"}
+
+
+def test_public_probe_schema_binds_checks_to_public_obligation_ids() -> None:
+    request = "Create report.json with required field value and validate it."
+    context = Context(task_id="public-probe-obligation-schema")
+    context.set_task(
+        Task(id="public-probe-obligation-schema", input=request, timeout=600)
+    )
+    context.context_info["public_task_contract"] = {
+        "schema_version": "aworld.public-task-contract/v1",
+        "authority": "public_task_advisory",
+        "source": "public_task_text",
+        "request_fingerprint": "sha256:" + hashlib.sha256(request.encode()).hexdigest(),
+        "obligations": [
+            {
+                "obligation_id": "public-obligation-1",
+                "kind": "structured_field",
+                "subject": "value",
+                "expectation": {"required": True},
+                "source_excerpt": "required field value",
+                "source_fingerprint": "sha256:" + "a" * 64,
+                "authority": "public_task_advisory",
+                "source": "public_task_text",
+            }
+        ],
+    }
+    policy = ExecutionProtocolPolicy(mode=ProtocolMode.GUIDE)
+    agent = _agent(context, policy)
+    configure_execution_protocol(context, agent.id(), policy)
+    record_model_execution_profile(
+        context,
+        agent.id(),
+        {
+            "horizon": "short",
+            "confidence": 0.9,
+            "milestone_count": 1,
+            "expected_tool_actions": 1,
+            "verification_required": True,
+        },
+    )
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "terminal__execute",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"command": {"type": "string"}},
+                },
+            },
+        }
+    ]
+
+    augmented, _ = agent._with_long_horizon_execution_profile(tools, context)
+    probe = augmented[0]["function"]["parameters"]["properties"][
+        "__aworld_public_probe"
+    ]
+    assert "obligation_ids" in probe["required"]
+    assert probe["properties"]["obligation_ids"]["items"]["enum"] == [
+        "public-obligation-1"
+    ]
+
+
 def test_agent_consumes_explicit_decision_without_forwarding_internal_tool() -> None:
     context = Context(task_id="profile-consume")
     context.set_task(Task(id="profile-consume", timeout=600))

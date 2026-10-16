@@ -1468,9 +1468,11 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             )
         return schema
 
-    @staticmethod
-    def _public_probe_schema() -> dict[str, Any]:
-        return {
+    def _public_probe_schema(self, context: Context) -> dict[str, Any]:
+        obligation_ids = [
+            row["obligation_id"] for row in self._public_task_obligations(context)
+        ]
+        schema = {
             "type": "object",
             "description": (
                 "Optional model-designed public self-check attached to the Tool "
@@ -1497,6 +1499,20 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 "probe_kind",
             ],
         }
+        if obligation_ids:
+            schema["properties"]["obligation_ids"] = {
+                "type": "array",
+                "description": (
+                    "Public obligation ids tested by this exact command. Include "
+                    "only ids from the framework-provided public contract ledger."
+                ),
+                "minItems": 1,
+                "maxItems": min(32, len(obligation_ids)),
+                "uniqueItems": True,
+                "items": {"type": "string", "enum": obligation_ids},
+            }
+            schema["required"].append("obligation_ids")
+        return schema
 
     @staticmethod
     def _long_horizon_control_carrier(
@@ -1719,7 +1735,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         carrier_index, carrier_name = carrier
         properties = augmented[carrier_index]["function"]["parameters"]["properties"]
         injected: set[str] = set()
-        properties[_PUBLIC_PROBE_PARAM] = self._public_probe_schema()
+        properties[_PUBLIC_PROBE_PARAM] = self._public_probe_schema(context)
         injected.add(_PUBLIC_PROBE_PARAM)
         properties[_LONG_HORIZON_HYPOTHESIS_PARAM] = {
             "type": "string",
@@ -1848,17 +1864,26 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         from aworld.runners.execution_protocol import record_public_probe_plan
 
         recorded = 0
-        for action in result.actions or ():
-            if (
-                _PUBLIC_PROBE_PARAM not in offer.injected_parameters
-                or not offer.matches(action)
-            ):
-                continue
+        if _PUBLIC_PROBE_PARAM not in offer.injected_parameters:
+            return recorded
+        controlled_actions = [
+            action
+            for action in result.actions or ()
+            if isinstance(getattr(action, "params", None), dict)
+            and _PUBLIC_PROBE_PARAM in action.params
+        ]
+        # Provider adapters do not all preserve the catalog's qualified Tool
+        # name on ActionModel.  The reserved parameter is injected into one
+        # carrier only, so a single occurrence is an unambiguous binding to
+        # the action that will actually execute.  Multiple occurrences are
+        # stripped but never admitted as evidence.
+        unambiguous_action = (
+            controlled_actions[0] if len(controlled_actions) == 1 else None
+        )
+        for action in controlled_actions:
             params = getattr(action, "params", None)
-            if not isinstance(params, dict):
-                continue
             value = params.pop(_PUBLIC_PROBE_PARAM, None)
-            if value is None:
+            if value is None or action is not unambiguous_action:
                 continue
             if record_public_probe_plan(
                 context,
@@ -2209,6 +2234,78 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             "verify its existence and contents "
             "before proposing another final response. This advisory milestone "
             "does not replace any content validator or canonical verifier."
+        )
+
+    def _public_contract_closure_feedback_if_unsatisfied(
+        self, context: Context
+    ) -> str | None:
+        """Request bounded public evidence without imposing a task-specific oracle."""
+
+        obligations = self._public_task_obligations(context)
+        if not obligations:
+            return None
+        from aworld.runners.execution_protocol import record_public_contract_evidence
+
+        status = record_public_contract_evidence(context, self.id())
+        context.context_info[f"public_contract_evidence:{self.id()}"] = status
+        if status.get("closure_complete") is True:
+            return None
+        unresolved_ids = status.get("unresolved_obligation_ids")
+        if not isinstance(unresolved_ids, list) or not unresolved_ids:
+            return None
+        candidate_hash = str(status.get("candidate_hash") or "")
+        feedback_key = f"public_contract_feedback:{self.id()}"
+        previous = context.context_info.get(feedback_key)
+        previous = dict(previous) if isinstance(previous, dict) else {}
+        attempts = (
+            int(previous.get("attempts", 0) or 0)
+            if previous.get("candidate_hash") == candidate_hash
+            else 0
+        )
+        # Keep the closure episode bounded. Long-running tasks retain their
+        # progress-sensitive runway; an unresolved ledger never creates an
+        # unbounded final-response loop.
+        if attempts >= 2:
+            context.context_info[feedback_key] = {
+                "candidate_hash": candidate_hash,
+                "attempts": attempts,
+                "bounded_unresolved": True,
+                "unresolved_count": len(unresolved_ids),
+            }
+            return None
+        attempts += 1
+        context.context_info[feedback_key] = {
+            "candidate_hash": candidate_hash,
+            "attempts": attempts,
+            "bounded_unresolved": False,
+            "unresolved_count": len(unresolved_ids),
+        }
+        by_id = {row["obligation_id"]: row for row in obligations}
+        unresolved = [
+            {
+                "obligation_id": obligation_id,
+                "kind": by_id[obligation_id]["kind"],
+                "subject": by_id[obligation_id]["subject"],
+            }
+            for obligation_id in unresolved_ids[:8]
+            if obligation_id in by_id
+        ]
+        return (
+            "The public contract evidence ledger is not closed for the current "
+            "candidate. Unresolved public obligations: "
+            + json.dumps(
+                unresolved,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            + ". Use one focused, reproducible check against the current "
+            "candidate and attach the framework-provided __aworld_public_probe "
+            "metadata with the exact obligation_ids it covers. If the check "
+            "fails, repair only from that public evidence. If it cannot be "
+            "verified from the public task and accessible environment, state "
+            "that uncertainty accurately. Do not inspect or infer hidden "
+            "verifier material."
         )
 
     @staticmethod
@@ -7749,6 +7846,33 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                             protocol_transition is not None
                             and protocol_transition.decision.action
                             is ControllerAction.STOP_INCOMPLETE
+                            and protocol_transition.decision.reason.value
+                            == "final_review_already_used"
+                        ):
+                            from aworld.runners.execution_protocol import (
+                                record_public_contract_evidence,
+                                record_terminal_fallback_submission,
+                            )
+
+                            closure = record_public_contract_evidence(
+                                message.context, self.id()
+                            )
+                            if closure.get("closure_complete") is True:
+                                fallback_transition = (
+                                    record_terminal_fallback_submission(
+                                        message.context, self.id()
+                                    )
+                                )
+                                if (
+                                    fallback_transition is not None
+                                    and fallback_transition.decision.action
+                                    is ControllerAction.SUBMIT_CURRENT_RESULT
+                                ):
+                                    protocol_transition = fallback_transition
+                        if (
+                            protocol_transition is not None
+                            and protocol_transition.decision.action
+                            is ControllerAction.STOP_INCOMPLETE
                         ):
                             from aworld.core.context.execution_state import (
                                 record_execution_state,
@@ -7836,6 +7960,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                                             "receipt_id",
                                             "hypothesis_id",
                                             "probe_kind",
+                                            "obligation_ids",
                                             "selected_candidate_id",
                                             "tool_execution_succeeded",
                                             "probe_assessment",
@@ -7877,6 +8002,17 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                     ):
                         validation_feedback = (
                             self._public_deliverable_feedback_if_unsatisfied(
+                                message.context
+                            )
+                        )
+                    if (
+                        candidate_finished
+                        and not long_horizon_review_feedback
+                        and not validation_feedback
+                        and not response_incomplete
+                    ):
+                        validation_feedback = (
+                            self._public_contract_closure_feedback_if_unsatisfied(
                                 message.context
                             )
                         )

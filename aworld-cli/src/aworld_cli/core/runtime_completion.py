@@ -140,7 +140,8 @@ _COMMAND_CONTEXT = re.compile(
 )
 _THRESHOLD_CONTEXT = re.compile(
     r"(?i)(?:at\s+most|at\s+least|less\s+than|more\s+than|no\s+more\s+than|"
-    r"no\s+less\s+than|under|over|<=|>=|≤|≥)[^\r\n.!?]{0,96}\d"
+    r"no\s+less\s+than|under|over|exactly|within|tolerance|precision|"
+    r"accuracy|size|<=|>=|≤|≥)[^\r\n.!?]{0,96}\d"
 )
 _NEGATIVE_CONSTRAINT = re.compile(
     r"(?i)\b(?:do\s+not|don't|must\s+not|should\s+not|never|without)\b"
@@ -361,6 +362,21 @@ def infer_public_obligation_hints(
             continue
         clause = _public_clause(bounded_request, match.start(), match.end())
         command = " ".join(match.group(1).split())
+        if (
+            re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.-]{0,127}", command)
+            and re.search(
+                r"(?i)\b(?:field|key|column|sheet|property|attribute|header|member)\b",
+                clause,
+            )
+        ):
+            add(
+                "structured_field",
+                command,
+                {"required": True},
+                clause,
+            )
+            classified_code_spans.add(match.span())
+            continue
         if (
             _COMMAND_CONTEXT.search(clause) is not None
             and _NEGATIVE_CONSTRAINT.search(clause) is None
