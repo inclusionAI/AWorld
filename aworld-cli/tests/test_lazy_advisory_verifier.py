@@ -569,6 +569,14 @@ async def test_default_runner_uses_private_manager_and_exact_caller_context(
     assert delegation_spec.token_budget == 32_768
     assert delegation_spec.max_output_tokens == 4_096
     assert delegation_spec.max_turns == 2
+    assert "read_file" in delegation_spec.allowed_tools
+    assert "filesystem__read_file" in delegation_spec.allowed_tools
+    assert "mcp__filesystem__read_file" in delegation_spec.allowed_tools
+    assert not any(
+        operation in tool_name
+        for tool_name in delegation_spec.allowed_tools
+        for operation in ("write", "edit", "delete", "execute")
+    )
     assert delegation_spec.may_use_parent_finalization_reserve is False
     assert delegation_spec.deadline is not None
     assert delegation_spec.deadline.tzinfo is not None

@@ -1473,6 +1473,81 @@ def test_registered_validation_semantics_require_canonical_cwd(tmp_path) -> None
     assert wrong.validation_kind is None
 
 
+@pytest.mark.parametrize(
+    ("code", "language", "expected_kind"),
+    (
+        ("pytest -q", "shell", "task-check:test-suite"),
+        (
+            "python -m json.tool report.json",
+            "shell",
+            "task-check:artifact-syntax",
+        ),
+        ("cmp expected.txt actual.txt", "shell", "task-check:comparison"),
+        ("curl --fail http://localhost:8080", "shell", "task-check:service-probe"),
+        ("python check_candidate.py", "shell", "task-check:python-check"),
+        ("assert candidate == expected", "python", "task-check:python-assertion"),
+    ),
+)
+def test_generic_executable_checks_have_validation_semantics(
+    code: str,
+    language: str,
+    expected_kind: str,
+) -> None:
+    semantics = build_planned_action_semantic_receipt(
+        context=_context(),
+        tool_name="terminal__run_code",
+        arguments={"code": code, "language": language},
+        delivery_intent="validate_candidate",
+    )
+
+    assert semantics.effect == "validation"
+    assert semantics.validation_kind == expected_kind
+
+
+def test_observed_mutation_promotes_unknown_semantic_effect() -> None:
+    runtime = SandboxToolObservationRuntime()
+    context = _context()
+    code = """python3 - <<'PY'
+import urllib.request
+with open('analysis.txt', 'w', encoding='utf-8') as handle:
+    handle.write('new evidence')
+PY
+"""
+    plan = plan_terminal_execution(code)
+    assert plan.effect == "unknown"
+    action = {
+        "tool_name": "terminal",
+        "action_name": "run_code",
+        "tool_call_id": "observed-unknown-write",
+        "params": {"code": code},
+    }
+    receipt = build_terminal_execution_receipt(
+        code=code,
+        plan=plan,
+        executed=True,
+        exit_code=0,
+        timed_out=False,
+        mutation_observed=True,
+    )
+
+    result = runtime.record(
+        action,
+        ActionResult(
+            success=True,
+            tool_call_id="observed-unknown-write",
+            content="ok",
+            parameter={"code": code},
+            metadata={TERMINAL_EXECUTION_RECEIPT_KEY: receipt},
+        ),
+        context=context,
+    )
+
+    sandbox = result.metadata["sandbox_observation"]
+    assert sandbox["effect"] == "mutating"
+    assert sandbox["workspace_mutated"] is True
+    assert sandbox["action_semantic_receipt"]["effect"] == "mutating"
+
+
 def test_shell_classifier_does_not_treat_fd_redirection_as_file_mutation() -> None:
     effect = classify_tool_effect(
         {

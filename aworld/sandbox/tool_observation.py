@@ -302,6 +302,79 @@ def _registered_validation_kind(
     return None
 
 
+_ARTIFACT_SYNTAX_VALIDATION = re.compile(
+    r"(?:^|[;&|]\s*|\b(?:timeout|env)\s+(?:[^;&|]+\s+)?)"
+    r"(?:python(?:3(?:\.\d+)?)?\s+-m\s+json\.tool|jq\s+-e\b)",
+    re.IGNORECASE,
+)
+_TEST_SUITE_VALIDATION = re.compile(
+    r"(?:^|[;&|]\s*|\b(?:timeout|env)\s+(?:[^;&|]+\s+)?)"
+    r"(?:python(?:3(?:\.\d+)?)?\s+-m\s+(?:pytest|unittest)|"
+    r"pytest|py\.test|tox|nox|ctest|jest|vitest|"
+    r"go\s+test|cargo\s+(?:test|check)|"
+    r"(?:npm|pnpm|yarn)\s+(?:run\s+)?(?:test|check|lint)|"
+    r"(?:mvn|mvnw)\s+(?:[^;&|]+\s+)*(?:test|verify)|"
+    r"(?:gradle|gradlew)\s+(?:[^;&|]+\s+)*(?:test|check)|"
+    r"make\s+(?:[^;&|]+\s+)*(?:test|check))",
+    re.IGNORECASE,
+)
+_COMPARISON_VALIDATION = re.compile(
+    r"(?:^|[;&|]\s*)(?:cmp|diff)\s+",
+    re.IGNORECASE,
+)
+_SERVICE_VALIDATION = re.compile(
+    r"(?:curl\s+[^;&|]*(?:--fail|-f)\b|"
+    r"(?:nc|netcat)\s+[^;&|]*-z\b|"
+    r"(?:kill\s+-0|pgrep\b))",
+    re.IGNORECASE,
+)
+_PYTHON_ASSERTION = re.compile(
+    r"(?m)^\s*(?:assert\s+|raise\s+(?:AssertionError|SystemExit)\b)|"
+    r"\b(?:unittest\.main|pytest\.main)\s*\(",
+)
+
+
+def _generic_validation_kind(
+    *,
+    code: str | None,
+    language: str,
+) -> str | None:
+    """Recognize task-neutral executable checks without judging their result.
+
+    This signal only says that an actual check was attempted. It never makes
+    the check authoritative or equates process success with task correctness.
+    """
+
+    if not isinstance(code, str) or not code.strip():
+        return None
+    if language == "python" and _PYTHON_ASSERTION.search(code):
+        return "task-check:python-assertion"
+    if language == "shell":
+        if _ARTIFACT_SYNTAX_VALIDATION.search(code):
+            return "task-check:artifact-syntax"
+        if _TEST_SUITE_VALIDATION.search(code):
+            return "task-check:test-suite"
+        if _COMPARISON_VALIDATION.search(code):
+            return "task-check:comparison"
+        if _SERVICE_VALIDATION.search(code):
+            return "task-check:service-probe"
+        if re.search(
+            r"\bpython(?:3(?:\.\d+)?)?\s+(?:-[A-Za-z]+\s+)*"
+            r"(?:[^\s;&|]*/)?(?:test|check|verify|validate)[^/\s;&|]*\.py\b",
+            code,
+            re.IGNORECASE,
+        ):
+            return "task-check:python-check"
+        if re.search(r"\bpython(?:3(?:\.\d+)?)?\b", code) and (
+            _PYTHON_ASSERTION.search(code)
+        ):
+            return "task-check:python-assertion"
+        stripped = code.strip()
+        if stripped.startswith(("test ", "[ ")):
+            return "task-check:shell-predicate"
+    return None
+
+
 def _terminal_environment_override(arguments: Mapping[str, Any]) -> bool:
     """Return true when model arguments can alter process execution semantics."""
 
@@ -464,6 +537,11 @@ def build_planned_action_semantic_receipt(
         code=code if isinstance(code, str) else None,
         cwd=arguments.get("cwd"),
     )
+    if validation_kind is None:
+        validation_kind = _generic_validation_kind(
+            code=code if isinstance(code, str) else None,
+            language=str(arguments.get("language", "shell") or "shell"),
+        )
     effect = fallback.effect
     normalized_tool = tool.casefold().replace("_", "-")
     normalized_operation = operation.casefold().replace("-", "_")
@@ -544,6 +622,11 @@ def _observed_action_semantic_receipt(
         code=code if isinstance(code, str) else None,
         cwd=params.get("cwd"),
     )
+    if validation_kind is None:
+        validation_kind = _generic_validation_kind(
+            code=code if isinstance(code, str) else None,
+            language=str(params.get("language", "shell") or "shell"),
+        )
     semantic_effect = effect.effect
     if _terminal_environment_override(params):
         validation_kind = None
@@ -554,6 +637,16 @@ def _observed_action_semantic_receipt(
         and terminal_receipt.get("write_set_complete") is not True
     ):
         semantic_effect = "unknown"
+    if (
+        terminal_receipt is not None
+        and terminal_receipt.get("mutation_observed") is True
+        and semantic_effect == "unknown"
+        and not _terminal_environment_override(params)
+    ):
+        # A provider-authenticated before/after snapshot is stronger than an
+        # incomplete static command parse. Promote only the observed semantic
+        # effect; replay safety and the terminal receipt remain conservative.
+        semantic_effect = "mutating"
     if validation_kind is not None and (
         terminal_receipt is not None or not _trusted_terminal_receipt_identity(action)
     ):
@@ -2175,6 +2268,12 @@ class SandboxToolObservationRuntime:
                 workspace_mutated = observed_mutation
             else:
                 workspace_mutated = None
+            if (
+                effect.effect == "unknown"
+                and observed_mutation is True
+                and success
+            ):
+                effective_effect = "mutating"
             if effect.effect == "mutating" and not success:
                 effective_effect = "unknown"
         elif effect.effect == "mutating":

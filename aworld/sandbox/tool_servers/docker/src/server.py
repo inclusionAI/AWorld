@@ -721,6 +721,19 @@ def _literal_container_write_paths(
     return paths or None
 
 
+def _container_observation_paths(
+    write_paths: list[str] | None,
+    declared_targets: tuple[dict[str, str], ...],
+) -> list[str] | None:
+    """Combine parser-known writes with exact public targets, preserving order."""
+
+    values = [
+        *(write_paths or ()),
+        *(target["path"] for target in declared_targets),
+    ]
+    return list(dict.fromkeys(values)) or None
+
+
 async def _container_path_states(
     paths: list[str] | None,
     *,
@@ -1778,10 +1791,8 @@ async def run_code(
             controlled_read_request = None
             controlled_read_probe = None
     write_paths = _literal_container_write_paths(code, potential_plan)
-    lease_paths = [
-        *(write_paths or ()),
-        *(target["path"] for target in declared_targets),
-    ]
+    observation_paths = _container_observation_paths(write_paths, declared_targets)
+    lease_paths = observation_paths or []
     controlled_execution: (
         tuple[
             bytes,
@@ -1840,7 +1851,7 @@ async def run_code(
         )
     try:
         before_write_states = await _container_path_states(
-            write_paths,
+            observation_paths,
             timeout=timeout,
         )
         if controlled_read_request is not None and execution_context is not None:
@@ -1902,7 +1913,7 @@ async def run_code(
                 workdir=bridge.workdir,
             )
         after_write_states = await _container_path_states(
-            write_paths,
+            observation_paths,
             timeout=timeout,
         )
         mutation_observed = (

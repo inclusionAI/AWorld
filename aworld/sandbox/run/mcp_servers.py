@@ -80,6 +80,89 @@ _MAX_RETAINED_CANCELLED_PROVIDER_CALLS = 32
 _PROVIDER_FORCE_CANCEL_ROUNDS = 3
 
 
+def _command_mentions_public_target(
+    command: str,
+    target_path: str,
+    *,
+    workspace_path: str | None,
+    basename_is_unique: bool,
+) -> bool:
+    """Match an exact public path spelling without inferring write intent."""
+
+    spellings = {target_path}
+    basename = os.path.basename(target_path)
+    if basename_is_unique and basename:
+        spellings.add(basename)
+    if workspace_path:
+        try:
+            relative = os.path.relpath(target_path, workspace_path)
+        except (OSError, TypeError, ValueError):
+            relative = ""
+        if relative and relative != "." and not relative.startswith(".." + os.sep):
+            spellings.add(relative)
+    return any(
+        re.search(
+            rf"(?<![A-Za-z0-9_./-]){re.escape(value)}(?![A-Za-z0-9_./-])",
+            command,
+        )
+        is not None
+        for value in spellings
+        if value
+    )
+
+
+def _infer_public_declared_write_paths(
+    context: Context | None,
+    parameter: Mapping[str, Any],
+) -> tuple[str, ...]:
+    """Select referenced public targets for provider-side change observation.
+
+    Targets come only from the authenticated public-task contract. The result
+    does not assert that a write will occur and grants no completion authority;
+    it lets the provider compare those exact files before and after an otherwise
+    opaque command.
+    """
+
+    if context is None or parameter.get("declared_write_paths") is not None:
+        return ()
+    command = next(
+        (
+            parameter.get(key)
+            for key in ("code", "command")
+            if isinstance(parameter.get(key), str) and parameter.get(key).strip()
+        ),
+        None,
+    )
+    if not isinstance(command, str):
+        return ()
+    contract = build_declared_public_write_contract(context)
+    targets = contract.get("targets") if isinstance(contract, Mapping) else None
+    if not isinstance(targets, list):
+        return ()
+    basename_counts: dict[str, int] = {}
+    for target in targets:
+        if isinstance(target, Mapping) and isinstance(target.get("path"), str):
+            basename = os.path.basename(target["path"])
+            basename_counts[basename] = basename_counts.get(basename, 0) + 1
+    workspace_path = getattr(context, "workspace_path", None)
+    if not isinstance(workspace_path, str):
+        workspace_path = None
+    selected: list[str] = []
+    for target in targets:
+        path = target.get("path") if isinstance(target, Mapping) else None
+        if not isinstance(path, str):
+            continue
+        basename = os.path.basename(path)
+        if _command_mentions_public_target(
+            command,
+            path,
+            workspace_path=workspace_path,
+            basename_is_unique=basename_counts.get(basename) == 1,
+        ):
+            selected.append(path)
+    return tuple(selected[:16])
+
+
 class _ProviderCleanupState:
     __slots__ = ("calls", "worker")
 
@@ -2362,6 +2445,13 @@ class McpServers:
             env_content_value["prompt_namespace"] = agent_id.strip()
         if isinstance(tool_call_id, str) and tool_call_id:
             env_content_value["tool_call_id"] = tool_call_id
+        if (
+            tool_key.rsplit("__", 1)[-1] == "run_code"
+            and parameter.get("declared_write_paths") is None
+        ):
+            inferred_paths = _infer_public_declared_write_paths(context, parameter)
+            if inferred_paths:
+                parameter["declared_write_paths"] = list(inferred_paths)
         if (
             tool_key.rsplit("__", 1)[-1] == "run_code"
             and parameter.get("declared_write_paths") is not None

@@ -1288,17 +1288,28 @@ def public_contract_evidence_status(context, agent_id: str) -> dict[str, Any]:
         elif row["kind"] == "structured_field" and row["subject"] in structured_fields:
             covered[row["obligation_id"]] = "candidate_structure"
     current_receipts = []
+    obligations_by_id = {row["obligation_id"]: row for row in rows}
     for receipt in load_public_probe_receipts(context, agent_id):
         ids = receipt.get("obligation_ids")
+        validation_kind = receipt.get("validation_kind")
         if (
             receipt.get("stale") is False
             and receipt.get("tool_execution_succeeded") is True
+            and receipt.get("probe_assessment") == "assertion_executed"
+            and isinstance(validation_kind, str)
             and isinstance(ids, list)
             and all(isinstance(value, str) and value in obligation_ids for value in ids)
         ):
             current_receipts.append(str(receipt.get("receipt_id") or "")[:128])
             for obligation_id in ids:
-                covered[obligation_id] = "public_probe"
+                obligation = obligations_by_id[obligation_id]
+                if (
+                    validation_kind == "task-check:artifact-syntax"
+                    and obligation["kind"]
+                    not in {"deliverable_file", "structured_field"}
+                ):
+                    continue
+                covered[obligation_id] = "public_probe_assertion"
     candidate_hash, _ = _public_candidate_binding(context, agent_id)
     unresolved = [
         row["obligation_id"] for row in rows if row["obligation_id"] not in covered
@@ -1591,6 +1602,17 @@ def record_public_probe_observations(
         if isinstance(item, Mapping) and isinstance(item.get("tool_call_id"), str)
     }
 
+    def validation_kind_for(action: Any) -> str | None:
+        try:
+            semantics = build_preflight_action_semantic_receipt(
+                context=context,
+                action=action,
+                delivery_intent=DeliveryIntent.VALIDATE_CANDIDATE.value,
+            )
+        except (TypeError, ValueError):
+            return None
+        return semantics.validation_kind
+
     def task_derived_scope() -> list[str] | None:
         for tool_call_id, action in action_by_id.items():
             identity = ":".join(
@@ -1684,6 +1706,8 @@ def record_public_probe_observations(
             ):
                 continue
             artifact_after_hash = semantic_fingerprint(artifact_after)
+            validation_kind = validation_kind_for(action)
+            tool_execution_succeeded = result.get("success") is True
             receipt_core = {
                 "schema_version": "aworld.public-probe-receipt/v1",
                 "authority": "agent_self_check",
@@ -1700,8 +1724,13 @@ def record_public_probe_observations(
                 "artifact_after_hash": artifact_after_hash,
                 "artifact_bound": artifact_after is not None,
                 "result_hash": semantic_fingerprint(result),
-                "tool_execution_succeeded": result.get("success") is True,
-                "probe_assessment": "unassessed",
+                "tool_execution_succeeded": tool_execution_succeeded,
+                "validation_kind": validation_kind,
+                "probe_assessment": (
+                    "assertion_executed"
+                    if tool_execution_succeeded and validation_kind is not None
+                    else "unassessed"
+                ),
                 "failure_code": (
                     str(result.get("failure_code"))[:256]
                     if result.get("failure_code") is not None
@@ -1734,6 +1763,8 @@ def record_public_probe_observations(
                             )
                         )
                     )
+                    validation_kind = validation_kind_for(action)
+                    tool_execution_succeeded = result.get("success") is True
                     receipt_core = {
                         "schema_version": "aworld.public-probe-receipt/v1",
                         "authority": "agent_self_check",
@@ -1754,8 +1785,14 @@ def record_public_probe_observations(
                         "artifact_after_hash": semantic_fingerprint(artifact_after),
                         "artifact_bound": artifact_after is not None,
                         "result_hash": semantic_fingerprint(result),
-                        "tool_execution_succeeded": result.get("success") is True,
-                        "probe_assessment": "unassessed",
+                        "tool_execution_succeeded": tool_execution_succeeded,
+                        "validation_kind": validation_kind,
+                        "probe_assessment": (
+                            "assertion_executed"
+                            if tool_execution_succeeded
+                            and validation_kind is not None
+                            else "unassessed"
+                        ),
                         "failure_code": (
                             str(result.get("failure_code"))[:256]
                             if result.get("failure_code") is not None

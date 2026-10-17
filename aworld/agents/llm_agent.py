@@ -2300,8 +2300,10 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 separators=(",", ":"),
             )
             + ". Use one focused, reproducible check against the current "
-            "candidate and attach the framework-provided __aworld_public_probe "
-            "metadata with the exact obligation_ids it covers. If the check "
+            "candidate that exits nonzero when its counterexample is observed; "
+            "printing a boolean alone is not an assertion. Attach the "
+            "framework-provided __aworld_public_probe metadata with the exact "
+            "obligation_ids it covers. If the check "
             "fails, repair only from that public evidence. If it cannot be "
             "verified from the public task and accessible environment, state "
             "that uncertainty accurately. Do not inspect or infer hidden "
@@ -7854,21 +7856,28 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                                 record_terminal_fallback_submission,
                             )
 
-                            closure = record_public_contract_evidence(
+                            # Advisory review is bounded to one attempt. A
+                            # second model-owned submission must not turn an
+                            # authenticated, preserved candidate into a task
+                            # failure merely because that advisory budget was
+                            # already consumed. Refresh public evidence for
+                            # telemetry, then take the controller's explicit
+                            # liveness fallback. This records delivery without
+                            # claiming review acceptance or verifier success.
+                            record_public_contract_evidence(
                                 message.context, self.id()
                             )
-                            if closure.get("closure_complete") is True:
-                                fallback_transition = (
-                                    record_terminal_fallback_submission(
-                                        message.context, self.id()
-                                    )
+                            fallback_transition = (
+                                record_terminal_fallback_submission(
+                                    message.context, self.id()
                                 )
-                                if (
-                                    fallback_transition is not None
-                                    and fallback_transition.decision.action
-                                    is ControllerAction.SUBMIT_CURRENT_RESULT
-                                ):
-                                    protocol_transition = fallback_transition
+                            )
+                            if (
+                                fallback_transition is not None
+                                and fallback_transition.decision.action
+                                is ControllerAction.SUBMIT_CURRENT_RESULT
+                            ):
+                                protocol_transition = fallback_transition
                         if (
                             protocol_transition is not None
                             and protocol_transition.decision.action
@@ -7963,6 +7972,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                                             "obligation_ids",
                                             "selected_candidate_id",
                                             "tool_execution_succeeded",
+                                            "validation_kind",
                                             "probe_assessment",
                                             "stale",
                                         )

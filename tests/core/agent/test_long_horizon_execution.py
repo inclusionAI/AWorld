@@ -3871,7 +3871,8 @@ async def test_final_review_guidance_reaches_the_second_model_request() -> None:
     assert "framework probe receipt" not in guidance
     assert "accept requires" not in guidance
     assert "public self-check receipts" in guidance
-    assert '"probe_assessment":"unassessed"' in guidance
+    assert '"probe_assessment":"assertion_executed"' in guidance
+    assert '"validation_kind":"task-check:test-suite"' in guidance
     assert '"stale":true' in guidance
     execution_state = get_execution_state(context, agent.id())
     assert execution_state["status"] == "succeeded"
@@ -4079,6 +4080,9 @@ async def test_single_review_repair_returns_to_normal_tool_execution() -> None:
     repair_state = ExecutionProtocolStore(context, agent.id(), policy).load()
     assert repair_state.repair_count == 1
     assert final[0].policy_info == "final after bounded repair"
+    final_state = ExecutionProtocolStore(context, agent.id(), policy).load()
+    assert final_state.phase is ProtocolPhase.COMPLETE
+    assert final_state.terminal_incomplete is False
     assert calls == 3
     assert prepared_tools[-1] is not None
     review_control = "__aworld_review_decision"

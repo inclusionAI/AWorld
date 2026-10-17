@@ -67,7 +67,7 @@ _REVIEW_TOKEN_BUDGET = max(
 _REVIEW_OUTPUT_TOKEN_BUDGET = (
     _REVIEW_MAX_TURNS * _REVIEW_OUTPUT_TOKENS_PER_TURN
 )
-_REVIEW_WALL_CLOCK_SECONDS = 180.0
+_REVIEW_WALL_CLOCK_SECONDS = 240.0
 _REVIEW_MIN_START_SECONDS = 20.0
 _REVIEW_MAX_ATTEMPTS = 1
 _DECLARED_SNAPSHOT_SCHEMA = "aworld.declared-artifact-snapshot/v1"
@@ -110,6 +110,19 @@ _READ_ONLY_FILESYSTEM_ACTIONS = frozenset(
         "search_content",
         "search_files",
     }
+)
+_READ_ONLY_DELEGATION_TOOLS = tuple(
+    sorted(
+        {
+            value
+            for action in _READ_ONLY_FILESYSTEM_ACTIONS
+            for value in (
+                action,
+                f"filesystem__{action}",
+                f"mcp__filesystem__{action}",
+            )
+        }
+    )
 )
 _DECISION_PATTERN = re.compile(
     r"(?im)^\s*-?\s*Decision:\s*`?(ready|repair|uncertain)`?\s*[.\s]*$"
@@ -926,7 +939,12 @@ class LazyVerifierFactory:
             delegation_spec=DelegationSpec(
                 objective=directive,
                 context_item_ids=(),
-                allowed_tools=(),
+                # ContextPack intersects this set with both the parent's live
+                # surface and the verifier's fail-closed filesystem allowlist.
+                # Explicit read-only identities let the first verifier turn
+                # inspect public artifacts instead of returning an unexecuted
+                # textual Tool call.
+                allowed_tools=_READ_ONLY_DELEGATION_TOOLS,
                 token_budget=_REVIEW_TOKEN_BUDGET,
                 max_output_tokens=_REVIEW_OUTPUT_TOKEN_BUDGET,
                 max_turns=_REVIEW_MAX_TURNS,
@@ -1791,6 +1809,8 @@ def _authoritative_validation_receipts(
         for raw in load_public_probe_receipts(context, agent_id)[-4:]:
             if (
                 raw.get("tool_execution_succeeded") is not True
+                or raw.get("probe_assessment") != "assertion_executed"
+                or not isinstance(raw.get("validation_kind"), str)
                 or raw.get("stale") is not False
                 or not isinstance(raw.get("receipt_id"), str)
                 or not isinstance(raw.get("result_hash"), str)
@@ -1806,6 +1826,7 @@ def _authoritative_validation_receipts(
                     "source": "public_probe",
                     "hypothesis_id": str(raw.get("hypothesis_id") or "")[:128],
                     "probe_kind": str(raw.get("probe_kind") or "")[:64],
+                    "validation_kind": raw["validation_kind"][:128],
                     "receipt_id": raw["receipt_id"][:128],
                 }
             )

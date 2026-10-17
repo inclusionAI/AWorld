@@ -203,7 +203,8 @@ def test_public_probe_receipt_binds_request_candidate_action_and_observation():
     assert receipt["hypothesis_id"] == "report-parses"
     assert receipt["selected_candidate_id"] == "candidate-2"
     assert receipt["tool_execution_succeeded"] is True
-    assert receipt["probe_assessment"] == "unassessed"
+    assert receipt["probe_assessment"] == "assertion_executed"
+    assert receipt["validation_kind"] == "task-check:artifact-syntax"
     assert receipt["candidate_current"] is True
     assert receipt["request_current"] is True
     assert receipt["artifact_current"] is False
@@ -416,6 +417,80 @@ def test_public_contract_closes_only_with_candidate_bound_public_evidence(tmp_pa
     assert closed["closure_checkpoint_count"] == 1
 
 
+def test_successful_non_asserting_probe_does_not_close_semantic_obligation(
+    tmp_path,
+):
+    context = _context()
+    output = tmp_path / "report.json"
+    _install_public_contract(context, output)
+    output.write_text('{"value": 12}', encoding="utf-8")
+    action = ActionModel(
+        tool_name="terminal",
+        action_name="execute",
+        tool_call_id="non-asserting-probe",
+        params={"command": "echo looks-good"},
+    )
+    assert record_public_probe_plan(
+        context,
+        "agent",
+        tool_call_id="non-asserting-probe",
+        tool_identity="terminal:execute",
+        arguments_projection=action.params,
+        value=_probe_value(obligation_ids=["public-obligation-3"]),
+    )
+    assert record_public_probe_observations(
+        context,
+        "agent",
+        actions=[action],
+        result_projections=[
+            {"tool_call_id": "non-asserting-probe", "success": True}
+        ],
+    ) == 1
+
+    receipt = load_public_probe_receipts(context, "agent")[-1]
+    assert receipt["probe_assessment"] == "unassessed"
+    assert receipt["validation_kind"] is None
+    status = public_contract_evidence_status(context, "agent")
+    assert status["closure_complete"] is False
+    assert status["unresolved_obligation_ids"] == ["public-obligation-3"]
+
+
+def test_artifact_syntax_probe_does_not_close_numeric_obligation(tmp_path):
+    context = _context()
+    output = tmp_path / "report.json"
+    _install_public_contract(context, output)
+    output.write_text('{"value": 12}', encoding="utf-8")
+    action = ActionModel(
+        tool_name="terminal",
+        action_name="execute",
+        tool_call_id="syntax-only-probe",
+        params={"command": "python -m json.tool report.json"},
+    )
+    assert record_public_probe_plan(
+        context,
+        "agent",
+        tool_call_id="syntax-only-probe",
+        tool_identity="terminal:execute",
+        arguments_projection=action.params,
+        value=_probe_value(obligation_ids=["public-obligation-3"]),
+    )
+    assert record_public_probe_observations(
+        context,
+        "agent",
+        actions=[action],
+        result_projections=[
+            {"tool_call_id": "syntax-only-probe", "success": True}
+        ],
+    ) == 1
+
+    receipt = load_public_probe_receipts(context, "agent")[-1]
+    assert receipt["probe_assessment"] == "assertion_executed"
+    assert receipt["validation_kind"] == "task-check:artifact-syntax"
+    status = public_contract_evidence_status(context, "agent")
+    assert status["closure_complete"] is False
+    assert status["unresolved_obligation_ids"] == ["public-obligation-3"]
+
+
 def test_public_contract_survives_split_task_and_runtime_contexts(tmp_path):
     runtime_context = _context()
     task_context = _context()
@@ -569,7 +644,12 @@ def test_public_probe_receipt_is_projected_into_operational_evidence_ledger():
     assert state["public_probe_receipt_count"] == 1
     assert state["public_probe_receipts"][0]["hypothesis_id"] == "report-parses"
     assert state["public_probe_receipts"][0]["tool_execution_succeeded"] is True
-    assert state["public_probe_receipts"][0]["probe_assessment"] == "unassessed"
+    assert state["public_probe_receipts"][0]["probe_assessment"] == (
+        "assertion_executed"
+    )
+    assert state["public_probe_receipts"][0]["validation_kind"] == (
+        "task-check:artifact-syntax"
+    )
     assert state["public_probe_receipts"][0]["stale"] is False
 
 
