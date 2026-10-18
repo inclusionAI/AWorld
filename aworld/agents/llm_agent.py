@@ -2265,7 +2265,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         # Keep the closure episode bounded. Long-running tasks retain their
         # progress-sensitive runway; an unresolved ledger never creates an
         # unbounded final-response loop.
-        if attempts >= 2:
+        if attempts >= 1:
             context.context_info[feedback_key] = {
                 "candidate_hash": candidate_hash,
                 "attempts": attempts,
@@ -2290,7 +2290,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             for obligation_id in unresolved_ids[:8]
             if obligation_id in by_id
         ]
-        return (
+        feedback = (
             "The public contract evidence ledger is not closed for the current "
             "candidate. Unresolved public obligations: "
             + json.dumps(
@@ -2309,6 +2309,10 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             "that uncertainty accurately. Do not inspect or infer hidden "
             "verifier material."
         )
+        context.context_info[
+            f"public_contract_validation_feedback:{self.id()}"
+        ] = canonical_json_hash({"feedback": feedback})
+        return feedback
 
     @staticmethod
     def _public_executable_hints(context: Context) -> tuple[str, ...]:
@@ -8194,6 +8198,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 message=message,
                 kwargs=continuation_request_kwargs,
                 iterative=True,
+                candidate_actions=agent_result.actions,
             )
 
         message.context.context_info.pop(
@@ -8597,8 +8602,20 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         message: Message,
         kwargs: Dict[str, Any],
         iterative: bool = False,
+        candidate_actions: Sequence[ActionModel] | None = None,
     ) -> List[ActionModel]:
-        retry_key = self._result_validation_retry_key(self.id())
+        advisory_feedback_key = (
+            f"public_contract_validation_feedback:{self.id()}"
+        )
+        public_contract_advisory = (
+            message.context.context_info.get(advisory_feedback_key)
+            == canonical_json_hash({"feedback": validation_feedback})
+        )
+        retry_key = (
+            f"public_contract_validation_retry_count:{self.id()}"
+            if public_contract_advisory
+            else self._result_validation_retry_key(self.id())
+        )
         retry_count = int(message.context.context_info.get(retry_key, 0) or 0)
         recovery_brief = validation_feedback
         authoritative_request = self._authoritative_request_from_context(
@@ -8614,12 +8631,67 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             )
 
         contract = getattr(message.context, "completion_contract", None)
-        maximum_repairs = contract.max_repairs if contract is not None else 1
+        from aworld.core.context.compiler import CompletionMode
+
+        explicit_completion_enforcement = bool(
+            contract is not None
+            and getattr(message.context, "completion_mode", None)
+            is CompletionMode.ENFORCE
+            and message.context.context_info.get(
+                "completion_enforcement_explicit", True
+            )
+            is not False
+        )
+        maximum_repairs = (
+            1
+            if public_contract_advisory
+            else contract.max_repairs
+            if contract is not None
+            else 1
+        )
         if maximum_repairs is not None and retry_count >= maximum_repairs:
             from aworld.core.context.execution_state import (
                 record_execution_state,
                 checkpoint_execution_state,
             )
+
+            if public_contract_advisory and not explicit_completion_enforcement:
+                from aworld.runners.execution_protocol import (
+                    load_candidate_fallback,
+                    record_terminal_fallback_submission,
+                    store_candidate_fallback,
+                )
+
+                preserved_actions = list(candidate_actions or ())
+                if preserved_actions:
+                    store_candidate_fallback(
+                        message.context, self.id(), preserved_actions
+                    )
+                else:
+                    preserved_actions = list(
+                        load_candidate_fallback(message.context, self.id()) or ()
+                    )
+                transition = record_terminal_fallback_submission(
+                    message.context, self.id()
+                )
+                if (
+                    preserved_actions
+                    and transition is not None
+                    and transition.decision.action
+                    is ControllerAction.SUBMIT_CURRENT_RESULT
+                ):
+                    message.context.context_info.pop(retry_key, None)
+                    message.context.context_info.pop(advisory_feedback_key, None)
+                    record_execution_state(
+                        message.context,
+                        self.id(),
+                        "succeeded",
+                        "public_contract_advisory_unresolved_submit_current",
+                        recoverable=False,
+                    )
+                    await checkpoint_execution_state(message.context)
+                    self._finished = True
+                    return preserved_actions
 
             record_execution_state(
                 message.context,

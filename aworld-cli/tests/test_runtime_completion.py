@@ -452,6 +452,47 @@ def test_public_contract_does_not_promote_examples_or_component_side_effects(
     assert "/tmp/frame.bmp" not in serialized
 
 
+def test_public_contract_does_not_treat_input_filename_as_structured_field(
+    tmp_path: Path,
+) -> None:
+    obligations = infer_public_obligation_hints(
+        "The domain and problem file paths are specified by the domain and "
+        "problem keys in `problem.json`. Write each generated plan to its "
+        "declared output path.",
+        workspace_path=tmp_path,
+    )
+
+    assert not any(
+        item.kind == "structured_field" and item.subject == "problem.json"
+        for item in obligations
+    )
+
+
+def test_public_contract_does_not_treat_config_description_as_threshold(
+    tmp_path: Path,
+) -> None:
+    obligations = infer_public_obligation_hints(
+        "Cache parameters are in `/root/config.json`: `block_size`, "
+        "`cache_capacity_blocks` (maximum resident blocks), policy S3FIFO, "
+        "`small_ratio`, and `max_freq`.",
+        workspace_path=tmp_path,
+    )
+
+    assert not any(item.kind == "numeric_threshold" for item in obligations)
+
+
+def test_public_contract_recognizes_explicit_existing_file_edit(
+    tmp_path: Path,
+) -> None:
+    hints = infer_public_deliverable_hints(
+        "In `/app/workspace/solution.lean`, use Lean to finalize the proof. "
+        "Do not change its first fourteen lines.",
+        workspace_path=tmp_path,
+    )
+
+    assert [item.path for item in hints] == ["/app/workspace/solution.lean"]
+
+
 def test_public_contract_is_bounded_and_deduplicated(tmp_path: Path) -> None:
     request = "\n".join(
         "Use port 5328 and keep the service running in the background."

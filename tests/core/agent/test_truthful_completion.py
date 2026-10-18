@@ -457,3 +457,110 @@ async def test_validation_repair_exhaustion_is_incomplete():
     await agent._retry_for_result_validation(validation_feedback="required artifact missing",
         observation=Observation(observer=agent.id(), content=""), info={}, message=message, kwargs={})
     assert get_execution_state(message.context)["status"] == "incomplete"
+
+
+@pytest.mark.asyncio
+async def test_public_contract_advisory_exhaustion_submits_preserved_candidate():
+    from dataclasses import replace
+
+    from aworld.core.common import ActionModel
+    from aworld.core.execution_protocol import (
+        ExecutionProtocolPolicy,
+        ExecutionProtocolStore,
+        ProtocolMode,
+        ProtocolPhase,
+    )
+    from aworld.core.tool.base import Observation
+    from aworld.runners.execution_protocol import (
+        configure_execution_protocol,
+        store_candidate_fallback,
+    )
+    from aworld.core.context.compiler.frozen_json import canonical_json_hash
+
+    agent = _agent(policy=GenerationBudgetPolicy(total_timeout_seconds=5))
+    message = _message("public-contract-advisory")
+    protocol = ExecutionProtocolPolicy(
+        mode=ProtocolMode.GUIDE,
+        terminal_review_gate_enabled=True,
+        independent_acceptance_enabled=False,
+    )
+    configure_execution_protocol(message.context, agent.id(), protocol)
+    store = ExecutionProtocolStore(message.context, agent.id(), protocol)
+    store.save(
+        replace(
+            store.load(),
+            phase=ProtocolPhase.REVIEW,
+            candidate_present=False,
+            candidate_checkpoint_recorded=False,
+            candidate_final_count=1,
+            finalization_entered=True,
+        )
+    )
+    candidate = [
+        ActionModel(agent_name=agent.id(), policy_info="best current result")
+    ]
+    store_candidate_fallback(message.context, agent.id(), candidate)
+    feedback = "The public contract evidence ledger is not closed."
+    message.context.context_info[
+        f"public_contract_validation_feedback:{agent.id()}"
+    ] = canonical_json_hash({"feedback": feedback})
+    message.context.context_info[
+        f"public_contract_validation_retry_count:{agent.id()}"
+    ] = 1
+
+    result = await agent._retry_for_result_validation(
+        validation_feedback=feedback,
+        observation=Observation(observer=agent.id(), content=""),
+        info={},
+        message=message,
+        kwargs={},
+        candidate_actions=candidate,
+    )
+
+    assert result == candidate
+    assert get_execution_state(message.context)["status"] == "succeeded"
+    assert store.load().phase is ProtocolPhase.COMPLETE
+
+
+@pytest.mark.asyncio
+async def test_public_contract_cannot_bypass_explicit_completion_enforcement():
+    from aworld.core.common import ActionModel
+    from aworld.core.context.compiler import CompletionContract, CompletionMode
+    from aworld.core.context.compiler.frozen_json import canonical_json_hash
+    from aworld.core.tool.base import Observation
+
+    agent = _agent(policy=GenerationBudgetPolicy(total_timeout_seconds=5))
+    message = _message("enforced-public-contract")
+    message.context.configure_completion_contract(
+        CompletionContract(
+            required_artifacts=(),
+            immutable_inputs=(),
+            validation_commands=(),
+            max_evidence_age_seconds=None,
+            required_final_evidence=(),
+            max_repairs=1,
+        ),
+        mode=CompletionMode.ENFORCE,
+    )
+    message.context.context_info["completion_enforcement_explicit"] = True
+    feedback = "The public contract evidence ledger is not closed."
+    message.context.context_info[
+        f"public_contract_validation_feedback:{agent.id()}"
+    ] = canonical_json_hash({"feedback": feedback})
+    message.context.context_info[
+        f"public_contract_validation_retry_count:{agent.id()}"
+    ] = 1
+
+    result = await agent._retry_for_result_validation(
+        validation_feedback=feedback,
+        observation=Observation(observer=agent.id(), content=""),
+        info={},
+        message=message,
+        kwargs={},
+        candidate_actions=[
+            ActionModel(agent_name=agent.id(), policy_info="candidate")
+        ],
+    )
+
+    assert "not claiming success" in result[0].policy_info
+    assert get_execution_state(message.context)["status"] == "incomplete"

@@ -45,6 +45,14 @@ _VALIDATION_DIAGNOSTIC_CODE = re.compile(r"[a-z][a-z0-9_.:-]{0,127}\Z")
 _DELIVERABLE_TOKEN = r"(?:`([^`\r\n]+)`|'([^'\r\n]+)'|\"([^\"\r\n]+)\"|([^\s,;:!?]+))"
 _PUBLIC_DELIVERABLE_PATTERNS = (
     re.compile(
+        r"(?i)\bin\s+" + _DELIVERABLE_TOKEN
+        + r"[\s\S]{0,512}?\b(?:edit|modify|update|complete|finalize|fix|repair)\b"
+    ),
+    re.compile(
+        r"(?i)\b(?:edit|modify|update|complete|finalize|fix|repair)\b"
+        r"\s+(?:the\s+)?(?:file\s+)?" + _DELIVERABLE_TOKEN
+    ),
+    re.compile(
         r"(?i)\b(?:output|result|artifact|report|deliverable)(?:\s+[a-z0-9_-]+){0,3}\s+"
         r"(?:file\s+)?(?:should|must|shall|needs?\s+to|is\s+to)?\s*(?:be\s+)?"
         r"(?:named|called|titled|saved|written|created|generated|exported|stored)"
@@ -141,7 +149,7 @@ _COMMAND_CONTEXT = re.compile(
 _THRESHOLD_CONTEXT = re.compile(
     r"(?i)(?:at\s+most|at\s+least|less\s+than|more\s+than|no\s+more\s+than|"
     r"no\s+less\s+than|under|over|exactly|within|tolerance|precision|"
-    r"accuracy|size|<=|>=|≤|≥)[^\r\n.!?]{0,96}\d"
+    r"accuracy|size|<=|>=|≤|≥)[^\r\n.!?]{0,96}(?<![A-Za-z_])\d"
 )
 _NEGATIVE_CONSTRAINT = re.compile(
     r"(?i)\b(?:do\s+not|don't|must\s+not|should\s+not|never|without)\b"
@@ -364,6 +372,23 @@ def infer_public_obligation_hints(
         command = " ".join(match.group(1).split())
         if (
             re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.-]{0,127}", command)
+            and Path(command).suffix.casefold()
+            not in {
+                ".csv",
+                ".doc",
+                ".docx",
+                ".json",
+                ".md",
+                ".pdf",
+                ".ppt",
+                ".pptx",
+                ".proto",
+                ".toml",
+                ".tsv",
+                ".txt",
+                ".yaml",
+                ".yml",
+            }
             and re.search(
                 r"(?i)\b(?:field|key|column|sheet|property|attribute|header|member)\b",
                 clause,

@@ -7177,8 +7177,17 @@ def _apply_terminal_fallback_submission(
     agent_id: str,
     policy: ExecutionProtocolPolicy,
 ) -> ProtocolTransition:
+    fallback = load_candidate_fallback(context, agent_id) or ()
+    fallback_basis = (
+        _candidate_review_basis(context, agent_id, fallback)
+        if fallback
+        else None
+    )
     transition = ExecutionProtocolStore(context, agent_id, policy).apply(
-        ExecutionProtocolEvent(kind=EventKind.TERMINAL_FALLBACK_SUBMIT)
+        ExecutionProtocolEvent(
+            kind=EventKind.TERMINAL_FALLBACK_SUBMIT,
+            result_hash=fallback_basis,
+        )
     )
     _record_transition_metrics(context, transition)
     return transition

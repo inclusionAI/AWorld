@@ -491,6 +491,39 @@ def test_non_enforce_terminal_fallback_remains_compatible(tmp_path) -> None:
     assert transition.decision.action is ControllerAction.SUBMIT_CURRENT_RESULT
 
 
+def test_terminal_fallback_preserves_framework_stored_contractless_candidate() -> None:
+    context = _context("contractless-fallback")
+    policy = ExecutionProtocolPolicy(
+        mode=ProtocolMode.GUIDE,
+        terminal_review_gate_enabled=True,
+        independent_acceptance_enabled=False,
+    )
+    configure_execution_protocol(context, "agent", policy)
+    store = ExecutionProtocolStore(context, "agent", policy)
+    store.save(
+        replace(
+            store.load(),
+            phase=ProtocolPhase.REVIEW,
+            candidate_present=False,
+            candidate_checkpoint_recorded=False,
+            candidate_final_count=1,
+            finalization_entered=True,
+        )
+    )
+    store_candidate_fallback(
+        context,
+        "agent",
+        [ActionModel(agent_name="agent", policy_info="completed workspace task")],
+    )
+
+    transition = record_terminal_fallback_submission(context, "agent")
+
+    assert transition is not None
+    assert transition.decision.action is ControllerAction.SUBMIT_CURRENT_RESULT
+    assert transition.state.phase is ProtocolPhase.COMPLETE
+    assert transition.state.terminal_incomplete is False
+
+
 def _declare_long_horizon(context: Context, agent_id: str = "agent") -> None:
     transition = record_model_execution_profile(
         context,

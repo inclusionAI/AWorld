@@ -1149,8 +1149,15 @@ def transition_execution_protocol(
         # claims that review accepted the candidate: acceptance_confirmed
         # remains false and the reason is explicit in telemetry/history.
         candidate_available = bool(
-            next_state.candidate_present is True
-            and next_state.candidate_checkpoint_recorded
+            (
+                next_state.candidate_present is True
+                and next_state.candidate_checkpoint_recorded
+            )
+            or (
+                next_state.candidate_final_count > 0
+                and isinstance(event.result_hash, str)
+                and bool(event.result_hash)
+            )
         )
         fallback_enabled = bool(
             not policy.independent_acceptance_enabled
