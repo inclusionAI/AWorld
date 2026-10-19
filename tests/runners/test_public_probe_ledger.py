@@ -543,6 +543,12 @@ def test_reviewer_scope_arms_one_task_derived_public_validation(tmp_path):
         "task_derived_validation_scope": [
             {"obligation_id": "public-obligation-3"}
         ],
+        "task_derived_counterexample": {
+            "schema_version": "aworld.task-derived-counterexample/v1",
+            "counterexample": "assert the public threshold at its exact boundary",
+            "obligation_ids": ["public-obligation-3"],
+            "requirements": ["execute an assertion"],
+        },
     }
     assert record_public_probe_observations(
         context,
@@ -575,6 +581,91 @@ def test_reviewer_scope_arms_one_task_derived_public_validation(tmp_path):
     receipts = load_public_probe_receipts(context, "agent")
     assert receipts[-1]["obligation_ids"] == ["public-obligation-3"]
     assert receipts[-1]["tool_execution_succeeded"] is True
+    assert receipts[-1]["highest_risk_counterexample"] == (
+        "assert the public threshold at its exact boundary"
+    )
+
+
+def test_reviewer_task_derived_validation_rejects_repeated_probe(tmp_path):
+    context = _context()
+    output = tmp_path / "report.json"
+    _install_public_contract(context, output)
+    output.write_text('{"value": 12}', encoding="utf-8")
+    repeated = ActionModel(
+        tool_name="terminal",
+        action_name="execute",
+        tool_call_id="original-validation",
+        params={"command": "python check_threshold.py"},
+    )
+    assert record_public_probe_plan(
+        context,
+        "agent",
+        tool_call_id=repeated.tool_call_id,
+        tool_identity="terminal:execute",
+        arguments_projection=repeated.params,
+        value=_probe_value(obligation_ids=["public-obligation-3"]),
+    )
+    assert record_public_probe_observations(
+        context,
+        "agent",
+        actions=[repeated],
+        result_projections=[
+            {"tool_call_id": repeated.tool_call_id, "success": True}
+        ],
+    ) == 1
+
+    review = ActionModel(
+        tool_name="AWORLD_ADVISORY_VERIFIER",
+        action_name="review_candidate",
+        tool_call_id="review-call",
+        params={"candidate_claim": "report is ready"},
+    )
+    payload = {
+        "schema_version": "aworld.advisory-review/v2",
+        "authority": "advisory_public_self_check",
+        "status": "inconclusive",
+        "decision": "uncertain",
+        "recommended_framework_action": "task_derived_validation_once",
+        "task_derived_validation_scope": [
+            {"obligation_id": "public-obligation-3"}
+        ],
+        "task_derived_counterexample": {
+            "schema_version": "aworld.task-derived-counterexample/v1",
+            "counterexample": "use a different boundary input",
+            "obligation_ids": ["public-obligation-3"],
+            "requirements": ["execute an assertion"],
+        },
+    }
+    assert record_public_probe_observations(
+        context,
+        "agent",
+        actions=[review],
+        result_projections=[
+            {
+                "tool_call_id": review.tool_call_id,
+                "success": True,
+                "content": json.dumps(payload),
+            }
+        ],
+    ) == 0
+
+    repeated_after_review = repeated.model_copy(
+        update={"tool_call_id": "derived-validation"}
+    )
+    assert record_public_probe_observations(
+        context,
+        "agent",
+        actions=[repeated_after_review],
+        result_projections=[
+            {
+                "tool_call_id": repeated_after_review.tool_call_id,
+                "success": True,
+            }
+        ],
+    ) == 1
+    assert load_public_probe_receipts(context, "agent")[-1][
+        "probe_assessment"
+    ] == "repeated_probe"
 
 
 def test_public_probe_rejects_action_tail_collision_beyond_bounded_projection():

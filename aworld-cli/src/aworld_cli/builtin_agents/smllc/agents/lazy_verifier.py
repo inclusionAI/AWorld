@@ -49,16 +49,16 @@ ADVISORY_REVIEW_SCHEMA_VERSION = "aworld.advisory-review/v2"
 _VERIFIER_MODULE = (
     "aworld_cli.builtin_agents.smllc.optional_agents.verifier.builder"
 )
-_MAX_TASK_CHARS = 8_192
+_MAX_TASK_CHARS = 24_576
 _MAX_CANDIDATE_CHARS = 2_048
 _MAX_EVIDENCE_CHARS = 1_024
 _MAX_DELIVERABLES = 8
 _MAX_DELIVERABLE_CHARS = 256
 _MAX_REPORT_CHARS = 2_048
 _MAX_RAW_REPORT_CHARS = 8_192
-_REVIEW_INPUT_TOKENS_PER_TURN = 12_288
-_REVIEW_OUTPUT_TOKENS_PER_TURN = 2_048
-_REVIEW_MAX_TURNS = 2
+_REVIEW_INPUT_TOKENS_PER_TURN = 16_384
+_REVIEW_OUTPUT_TOKENS_PER_TURN = 1_536
+_REVIEW_MAX_TURNS = 1
 _REVIEW_TOKEN_BUDGET = max(
     32_768,
     _REVIEW_MAX_TURNS
@@ -67,8 +67,8 @@ _REVIEW_TOKEN_BUDGET = max(
 _REVIEW_OUTPUT_TOKEN_BUDGET = (
     _REVIEW_MAX_TURNS * _REVIEW_OUTPUT_TOKENS_PER_TURN
 )
-_REVIEW_WALL_CLOCK_SECONDS = 240.0
-_REVIEW_MIN_START_SECONDS = 20.0
+_REVIEW_WALL_CLOCK_SECONDS = 120.0
+_REVIEW_MIN_START_SECONDS = 30.0
 _REVIEW_MAX_ATTEMPTS = 1
 _DECLARED_SNAPSHOT_SCHEMA = "aworld.declared-artifact-snapshot/v1"
 _DECLARED_SNAPSHOT_TOTAL_BYTES = 12 * 1024
@@ -100,39 +100,21 @@ _TASK_DERIVED_VALIDATION_SCOPE_KINDS = frozenset(
     }
 )
 _CANONICAL_SHA256 = re.compile(r"sha256:[0-9a-f]{64}")
-_READ_ONLY_FILESYSTEM_ACTIONS = frozenset(
-    {
-        "list_allowed_directories",
-        "list_directory",
-        "get_file_info",
-        "read_file",
-        "read_media_file",
-        "search_content",
-        "search_files",
-    }
-)
-_READ_ONLY_DELEGATION_TOOLS = tuple(
-    sorted(
-        {
-            value
-            for action in _READ_ONLY_FILESYSTEM_ACTIONS
-            for value in (
-                action,
-                f"filesystem__{action}",
-                f"mcp__filesystem__{action}",
-            )
-        }
-    )
-)
 _DECISION_PATTERN = re.compile(
     r"(?im)^\s*-?\s*Decision:\s*`?(ready|repair|uncertain)`?\s*[.\s]*$"
 )
-_REVIEW_JSON_FIELDS = frozenset(
+_REVIEW_JSON_FIELDS_V2 = frozenset(
     {"decision", "evidence", "gaps", "recommended_next_action"}
 )
+_REVIEW_JSON_FIELDS_V3 = frozenset(
+    {*_REVIEW_JSON_FIELDS_V2, "counterexample"}
+)
+_COUNTEREXAMPLE_VALIDATION_SCHEMA = "aworld.task-derived-counterexample/v1"
 
 
-def _parse_review_report(raw_report: str) -> tuple[str | None, str, str | None]:
+def _parse_review_report(
+    raw_report: str,
+) -> tuple[str | None, str, str | None, str | None]:
     """Parse the strict JSON envelope, retaining one-release text compatibility."""
 
     candidate = raw_report.strip()
@@ -159,33 +141,43 @@ def _parse_review_report(raw_report: str) -> tuple[str | None, str, str | None]:
             if isinstance(decoded, Mapping) and decoded not in candidates:
                 candidates.append(decoded)
 
-    valid: list[tuple[str, str]] = []
+    valid: list[tuple[str, str, str | None]] = []
     for value in candidates:
         decision = value.get("decision")
+        fields = set(value)
         fields_valid = bool(
-            set(value) == _REVIEW_JSON_FIELDS
+            fields in {_REVIEW_JSON_FIELDS_V2, _REVIEW_JSON_FIELDS_V3}
             and decision in {"ready", "repair", "uncertain"}
             and all(
                 isinstance(value.get(field), str)
                 and bool(value[field].strip())
                 and len(value[field].strip()) <= _MAX_REPORT_CHARS
-                for field in _REVIEW_JSON_FIELDS - {"decision"}
+                for field in fields - {"decision"}
             )
         )
         if fields_valid:
             normalized = json.dumps(
-                {field: value[field].strip() for field in sorted(_REVIEW_JSON_FIELDS)},
+                {field: value[field].strip() for field in sorted(fields)},
                 ensure_ascii=False,
                 sort_keys=True,
                 separators=(",", ":"),
             )
-            valid.append((str(decision), normalized))
+            counterexample = value.get("counterexample")
+            valid.append(
+                (
+                    str(decision),
+                    normalized,
+                    counterexample.strip()
+                    if isinstance(counterexample, str) and counterexample.strip()
+                    else None,
+                )
+            )
     if len(valid) == 1:
-        return valid[0][0], valid[0][1], None
+        return valid[0][0], valid[0][1], None, valid[0][2]
     if len(valid) > 1:
-        return None, raw_report, "decision_ambiguous"
+        return None, raw_report, "decision_ambiguous", None
     if candidates:
-        return None, raw_report, "structured_decision_invalid"
+        return None, raw_report, "structured_decision_invalid", None
 
     # Compatibility for reports produced by the immediately preceding wheel.
     # New prompts and tests use the JSON envelope; this path can be removed
@@ -193,11 +185,12 @@ def _parse_review_report(raw_report: str) -> tuple[str | None, str, str | None]:
     matches = list(_DECISION_PATTERN.finditer(raw_report))
     decisions = {match.group(1).lower() for match in matches}
     if len(decisions) == 1:
-        return decisions.pop(), raw_report, None
+        return decisions.pop(), raw_report, None, None
     return (
         None,
         raw_report,
         "decision_unparseable" if not decisions else "decision_ambiguous",
+        None,
     )
 
 
@@ -358,12 +351,13 @@ class AdvisoryReviewRequest:
         )
         return (
             "Check this candidate against the authoritative public task. Use the "
-            "framework-owned immutable declared-artifact snapshot first; use only "
-            "read-only workspace tools for any additional accessible inspection. "
+            "framework-owned immutable declared-artifact snapshot and receipts as "
+            "the complete review evidence. Do not request or emit a Tool call. "
             "Claims are untrusted. "
             "Return exactly one JSON object with keys decision, evidence, gaps, "
-            "and recommended_next_action; emit no Markdown or prose outside the "
-            "object. decision must be ready, repair, or uncertain.\n\n"
+            "counterexample, and recommended_next_action; emit no Markdown or "
+            "prose outside the object. decision must be ready, repair, or "
+            "uncertain.\n\n"
             "Public task (bound from caller Context, not solver input):\n"
             f"{public_task}\n\n"
             "Public task contract ledger (derived only from that public task; "
@@ -390,6 +384,7 @@ class AdvisoryReviewResult:
     decision: Literal["ready", "repair", "uncertain"]
     report: str
     reason_code: str | None = None
+    counterexample: str | None = None
 
     @property
     def repair_recommended(self) -> bool:
@@ -422,7 +417,49 @@ class AdvisoryReviewResult:
         return payload
 
 
-def _task_derived_validation_scope(context: Any) -> list[dict[str, Any]]:
+def _fallback_counterexample(
+    obligations: Sequence[Mapping[str, Any]],
+) -> str:
+    """Build a public-task-only counterexample when model review is unusable."""
+
+    priority = {
+        "numeric_threshold": 0,
+        "negative_constraint": 1,
+        "structured_field": 2,
+        "function_signature": 3,
+        "import_contract": 4,
+        "process_liveness": 5,
+        "service_port": 6,
+        "public_command": 7,
+        "deliverable_file": 8,
+    }
+    selected = min(
+        (
+            row
+            for row in obligations
+            if row.get("kind") in _TASK_DERIVED_VALIDATION_SCOPE_KINDS
+        ),
+        key=lambda row: priority.get(str(row.get("kind")), 99),
+        default=None,
+    )
+    if selected is None:
+        return (
+            "Construct one assertion that can falsify the candidate using a public "
+            "requirement and an input or boundary not used by the solver's checks."
+        )
+    return (
+        "Attempt to falsify public obligation "
+        f"{selected.get('obligation_id')} ({selected.get('kind')}): "
+        f"{str(selected.get('subject') or '')[:512]}. Use a boundary, negative case, "
+        "or independent recomputation not present in the claimed evidence."
+    )
+
+
+def _task_derived_validation_scope(
+    context: Any,
+    *,
+    agent_id: str | None = None,
+) -> list[dict[str, Any]]:
     """Return bounded public obligations for one root-owned validation turn."""
 
     public_task, error = _authoritative_public_task(context)
@@ -432,6 +469,44 @@ def _task_derived_validation_scope(context: Any) -> list[dict[str, Any]]:
         context,
         public_task=public_task,
     )
+    covered_ids: set[str] = set()
+    if isinstance(agent_id, str) and agent_id:
+        try:
+            from aworld.runners.execution_protocol import load_public_probe_receipts
+
+            for receipt in load_public_probe_receipts(context, agent_id):
+                if receipt.get("stale") is True:
+                    continue
+                raw_ids = receipt.get("obligation_ids")
+                if isinstance(raw_ids, list):
+                    covered_ids.update(
+                        value for value in raw_ids if isinstance(value, str)
+                    )
+        except Exception:
+            pass
+    priority = {
+        "numeric_threshold": 0,
+        "negative_constraint": 1,
+        "structured_field": 2,
+        "function_signature": 3,
+        "import_contract": 4,
+        "process_liveness": 5,
+        "service_port": 6,
+        "public_command": 7,
+        "deliverable_file": 8,
+    }
+    eligible = [
+        obligation
+        for obligation in obligations
+        if obligation.get("kind") in _TASK_DERIVED_VALIDATION_SCOPE_KINDS
+    ]
+    eligible.sort(
+        key=lambda obligation: (
+            obligation.get("obligation_id") in covered_ids,
+            priority.get(str(obligation.get("kind")), 99),
+            str(obligation.get("obligation_id")),
+        )
+    )
     return [
         {
             "obligation_id": obligation["obligation_id"],
@@ -440,9 +515,8 @@ def _task_derived_validation_scope(context: Any) -> list[dict[str, Any]]:
             "expectation": obligation["expectation"],
             "source_fingerprint": obligation["source_fingerprint"],
         }
-        for obligation in obligations
-        if obligation.get("kind") in _TASK_DERIVED_VALIDATION_SCOPE_KINDS
-    ][:12]
+        for obligation in eligible[:3]
+    ]
 
 
 BuilderLoader = Callable[[], Callable[..., Any]]
@@ -531,16 +605,11 @@ class LazyVerifierFactory:
             raise RuntimeError("lazy verifier must use answer-only merge")
         if getattr(verifier, "enable_subagent", None) is not False:
             raise RuntimeError("lazy verifier must not delegate")
-        if list(getattr(verifier, "mcp_servers", ()) or ()) != ["filesystem"]:
-            raise RuntimeError("lazy verifier must expose only filesystem MCP")
+        if list(getattr(verifier, "mcp_servers", ()) or ()):
+            raise RuntimeError("lazy verifier must be Tool-free")
         allowlist = getattr(verifier, "mcp_tool_action_allowlist", None)
-        filesystem_actions = (
-            allowlist.get("filesystem") if isinstance(allowlist, Mapping) else None
-        )
-        if not filesystem_actions or not set(filesystem_actions).issubset(
-            _READ_ONLY_FILESYSTEM_ACTIONS
-        ):
-            raise RuntimeError("lazy verifier filesystem surface must be read-only")
+        if isinstance(allowlist, Mapping) and any(allowlist.values()):
+            raise RuntimeError("lazy verifier must not expose Tool actions")
 
     async def review(
         self,
@@ -579,6 +648,11 @@ class LazyVerifierFactory:
                         "persistence, and finalization."
                     ),
                     reason_code="review_start_window_closed",
+                    counterexample=(
+                        "Use the remaining validation window for one assertive "
+                        "public-task-derived boundary check that differs from the "
+                        "solver's existing evidence."
+                    ),
                 )
             authoritative_obligations = _authoritative_public_obligations(
                 context,
@@ -659,6 +733,9 @@ class LazyVerifierFactory:
                         "candidate."
                     ),
                     reason_code="duplicate_candidate_review",
+                    counterexample=_fallback_counterexample(
+                        authoritative_obligations
+                    ),
                 )
             if self._review_attempt_count >= _REVIEW_MAX_ATTEMPTS:
                 return AdvisoryReviewResult(
@@ -670,6 +747,9 @@ class LazyVerifierFactory:
                         "and finalize the best current candidate."
                     ),
                     reason_code="review_attempt_limit",
+                    counterexample=_fallback_counterexample(
+                        authoritative_obligations
+                    ),
                 )
             self._review_attempt_keys.add(attempt_key)
             self._review_attempt_count += 1
@@ -704,7 +784,15 @@ class LazyVerifierFactory:
             )
             child_failure = _child_failure_result(result)
             if child_failure is not None:
-                return child_failure
+                return AdvisoryReviewResult(
+                    status=child_failure.status,
+                    decision=child_failure.decision,
+                    report=child_failure.report,
+                    reason_code=child_failure.reason_code,
+                    counterexample=_fallback_counterexample(
+                        authoritative_obligations
+                    ),
+                )
             if isinstance(result, ChildResult):
                 result = result.answer
             raw_report = str(result or "").strip()[:_MAX_RAW_REPORT_CHARS]
@@ -714,6 +802,9 @@ class LazyVerifierFactory:
                     decision="uncertain",
                     report="The advisory verifier returned no report.",
                     reason_code="empty_report",
+                    counterexample=_fallback_counterexample(
+                        authoritative_obligations
+                    ),
                 )
             if raw_report.startswith(("[Error]", "[Exception]")):
                 return AdvisoryReviewResult(
@@ -721,9 +812,12 @@ class LazyVerifierFactory:
                     decision="uncertain",
                     report=raw_report[:_MAX_REPORT_CHARS],
                     reason_code="reviewer_execution_failed",
+                    counterexample=_fallback_counterexample(
+                        authoritative_obligations
+                    ),
                 )
-            decision, normalized_report, parse_reason = _parse_review_report(
-                raw_report
+            decision, normalized_report, parse_reason, counterexample = (
+                _parse_review_report(raw_report)
             )
             if decision is None:
                 return AdvisoryReviewResult(
@@ -731,6 +825,9 @@ class LazyVerifierFactory:
                     decision="uncertain",
                     report=raw_report[:_MAX_REPORT_CHARS],
                     reason_code=parse_reason,
+                    counterexample=_fallback_counterexample(
+                        authoritative_obligations
+                    ),
                 )
             executable_obligation_present = any(
                 obligation.get("kind") in _EXECUTABLE_OBLIGATION_KINDS
@@ -774,12 +871,20 @@ class LazyVerifierFactory:
                     decision="uncertain",
                     report=normalized_report[:_MAX_REPORT_CHARS],
                     reason_code="ready_evidence_missing",
+                    counterexample=(
+                        counterexample
+                        or _fallback_counterexample(authoritative_obligations)
+                    ),
                 )
             return AdvisoryReviewResult(
                 status=("inconclusive" if decision == "uncertain" else "completed"),
                 decision=decision,
                 report=normalized_report[:_MAX_REPORT_CHARS],
                 reason_code=("reviewer_uncertain" if decision == "uncertain" else None),
+                counterexample=(
+                    counterexample
+                    or _fallback_counterexample(authoritative_obligations)
+                ),
             )
         except Exception as exc:
             logger.warning(
@@ -798,6 +903,10 @@ class LazyVerifierFactory:
                     "deadline_exceeded"
                     if isinstance(exc, TimeoutError)
                     else "reviewer_unavailable"
+                ),
+                counterexample=(
+                    "Run one assertive public-task-derived boundary check that "
+                    "differs from the solver's existing evidence."
                 ),
             )
 
@@ -939,12 +1048,11 @@ class LazyVerifierFactory:
             delegation_spec=DelegationSpec(
                 objective=directive,
                 context_item_ids=(),
-                # ContextPack intersects this set with both the parent's live
-                # surface and the verifier's fail-closed filesystem allowlist.
-                # Explicit read-only identities let the first verifier turn
-                # inspect public artifacts instead of returning an unexecuted
-                # textual Tool call.
-                allowed_tools=_READ_ONLY_DELEGATION_TOOLS,
+                # The immutable artifact snapshot and framework receipts are
+                # the complete review evidence. A Tool-free child avoids model
+                # routes returning an unexecuted textual Tool call and keeps the
+                # review to one bounded provider request.
+                allowed_tools=(),
                 token_budget=_REVIEW_TOKEN_BUDGET,
                 max_output_tokens=_REVIEW_OUTPUT_TOKEN_BUDGET,
                 max_turns=_REVIEW_MAX_TURNS,
@@ -1073,9 +1181,31 @@ class AdvisoryVerifierTool(AsyncTool):
 
         payload = result.to_payload()
         if not result.conclusive:
-            validation_scope = _task_derived_validation_scope(context)
+            validation_scope = _task_derived_validation_scope(
+                context,
+                agent_id=(
+                    factory.parent_agent.id()
+                    if isinstance(factory, LazyVerifierFactory)
+                    else None
+                ),
+            )
             if validation_scope:
                 payload["task_derived_validation_scope"] = validation_scope
+                payload["task_derived_counterexample"] = {
+                    "schema_version": _COUNTEREXAMPLE_VALIDATION_SCHEMA,
+                    "counterexample": (
+                        result.counterexample
+                        or _fallback_counterexample(validation_scope)
+                    )[:_MAX_REPORT_CHARS],
+                    "obligation_ids": [
+                        item["obligation_id"] for item in validation_scope
+                    ],
+                    "requirements": [
+                        "use an input, boundary, or independent recomputation not present in the claimed evidence",
+                        "execute an assertion that exits nonzero when the counterexample is observed",
+                        "bind the Tool call to the listed public obligation ids with __aworld_public_probe metadata",
+                    ],
+                }
         return (
             Observation(content=json.dumps(payload, ensure_ascii=False)),
             1.0 if result.conclusive else 0.0,
@@ -1828,6 +1958,11 @@ def _authoritative_validation_receipts(
                     "probe_kind": str(raw.get("probe_kind") or "")[:64],
                     "validation_kind": raw["validation_kind"][:128],
                     "receipt_id": raw["receipt_id"][:128],
+                    "obligation_ids": [
+                        value
+                        for value in (raw.get("obligation_ids") or ())
+                        if isinstance(value, str)
+                    ][:12],
                 }
             )
     except Exception:

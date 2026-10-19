@@ -53,12 +53,8 @@ class _FakeVerifier:
     subagent_context_mode = "fresh"
     subagent_merge_mode = "answer_only"
     enable_subagent = False
-    mcp_servers = ["filesystem"]
-    mcp_tool_action_allowlist = {
-        "filesystem": frozenset(
-            {"read_file", "list_directory", "search_content"}
-        )
-    }
+    mcp_servers = []
+    mcp_tool_action_allowlist = {}
 
     def id(self):
         return "verifier-id"
@@ -511,7 +507,7 @@ async def test_explicit_review_lazily_constructs_fresh_read_only_verifier() -> N
     assert captured["runner"]["context"] is context
     assert captured["runner"]["verifier"].subagent_context_mode == "fresh"
     assert captured["runner"]["verifier"].subagent_merge_mode == "answer_only"
-    assert captured["runner"]["verifier"].mcp_servers == ["filesystem"]
+    assert captured["runner"]["verifier"].mcp_servers == []
     assert "/app/result.json" in captured["runner"]["directive"]
     assert result.status == "completed"
     assert result.decision == "repair"
@@ -567,16 +563,9 @@ async def test_default_runner_uses_private_manager_and_exact_caller_context(
     assert delegation_spec.objective == "public directive"
     assert delegation_spec.expected_output_schema["type"] == "string"
     assert delegation_spec.token_budget == 32_768
-    assert delegation_spec.max_output_tokens == 4_096
-    assert delegation_spec.max_turns == 2
-    assert "read_file" in delegation_spec.allowed_tools
-    assert "filesystem__read_file" in delegation_spec.allowed_tools
-    assert "mcp__filesystem__read_file" in delegation_spec.allowed_tools
-    assert not any(
-        operation in tool_name
-        for tool_name in delegation_spec.allowed_tools
-        for operation in ("write", "edit", "delete", "execute")
-    )
+    assert delegation_spec.max_output_tokens == 1_536
+    assert delegation_spec.max_turns == 1
+    assert delegation_spec.allowed_tools == ()
     assert delegation_spec.may_use_parent_finalization_reserve is False
     assert delegation_spec.deadline is not None
     assert delegation_spec.deadline.tzinfo is not None
@@ -977,6 +966,9 @@ async def test_strict_json_review_envelope_is_parsed_without_regex_inference() -
                 "decision": "repair",
                 "evidence": "the current response omits the required field",
                 "gaps": "required field is absent",
+                "counterexample": (
+                    "parse an input where the required field is absent and assert failure"
+                ),
                 "recommended_next_action": "add the field and revalidate once",
             }
         )
@@ -990,6 +982,9 @@ async def test_strict_json_review_envelope_is_parsed_without_regex_inference() -
     assert result.status == "completed"
     assert result.decision == "repair"
     assert result.reason_code is None
+    assert result.counterexample == (
+        "parse an input where the required field is absent and assert failure"
+    )
     assert json.loads(result.report)["decision"] == "repair"
 
 
@@ -1248,6 +1243,14 @@ async def test_uncertain_review_projects_only_public_validation_scope() -> None:
     serialized = json.dumps(scope, sort_keys=True)
     assert "verifier" not in serialized.lower()
     assert "reward" not in serialized.lower()
+    counterexample = payload["task_derived_counterexample"]
+    assert counterexample["schema_version"] == (
+        "aworld.task-derived-counterexample/v1"
+    )
+    assert counterexample["obligation_ids"] == [
+        item["obligation_id"] for item in scope
+    ]
+    assert "exits nonzero" in " ".join(counterexample["requirements"])
 
 
 @pytest.mark.asyncio

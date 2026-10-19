@@ -1613,7 +1613,7 @@ def record_public_probe_observations(
             return None
         return semantics.validation_kind
 
-    def task_derived_scope() -> list[str] | None:
+    def task_derived_scope() -> dict[str, Any] | None:
         for tool_call_id, action in action_by_id.items():
             identity = ":".join(
                 (
@@ -1637,6 +1637,7 @@ def record_public_probe_observations(
             if not isinstance(payload, Mapping):
                 continue
             scope = payload.get("task_derived_validation_scope")
+            counterexample = payload.get("task_derived_counterexample")
             if (
                 payload.get("schema_version") != "aworld.advisory-review/v2"
                 or payload.get("authority") != "advisory_public_self_check"
@@ -1644,6 +1645,12 @@ def record_public_probe_observations(
                 != "task_derived_validation_once"
                 or not isinstance(scope, list)
                 or not 0 < len(scope) <= 32
+                or not isinstance(counterexample, Mapping)
+                or counterexample.get("schema_version")
+                != "aworld.task-derived-counterexample/v1"
+                or not isinstance(counterexample.get("counterexample"), str)
+                or not counterexample["counterexample"].strip()
+                or len(counterexample["counterexample"].strip()) > 2048
             ):
                 continue
             obligation_ids: list[str] = []
@@ -1661,7 +1668,13 @@ def record_public_probe_observations(
                     break
                 obligation_ids.append(obligation_id)
             if obligation_ids:
-                return obligation_ids
+                counterexample_ids = counterexample.get("obligation_ids")
+                if counterexample_ids != obligation_ids:
+                    continue
+                return {
+                    "obligation_ids": obligation_ids,
+                    "counterexample": counterexample["counterexample"].strip(),
+                }
         return None
 
     derived_scope = task_derived_scope()
@@ -1678,10 +1691,18 @@ def record_public_probe_observations(
                 context, agent_id
             )
             state["task_derived_validation"] = {
-                "obligation_ids": list(derived_scope),
+                "obligation_ids": list(derived_scope["obligation_ids"]),
+                "counterexample": derived_scope["counterexample"],
                 "request_hash": _public_request_hash(context),
                 "candidate_hash": candidate_hash,
                 "selected_candidate_id": selected_candidate_id,
+                "excluded_arguments_hashes": [
+                    receipt.get("arguments_hash")
+                    for receipt in receipts
+                    if receipt.get("request_hash") == _public_request_hash(context)
+                    and receipt.get("candidate_hash") == candidate_hash
+                    and isinstance(receipt.get("arguments_hash"), str)
+                ][-16:],
             }
             state["revision"] = int(state.get("revision", 0) or 0) + 1
             return state
@@ -1765,13 +1786,24 @@ def record_public_probe_observations(
                     )
                     validation_kind = validation_kind_for(action)
                     tool_execution_succeeded = result.get("success") is True
+                    arguments_hash = semantic_fingerprint(actual_arguments)
+                    repeated_probe = arguments_hash in set(
+                        derived.get("excluded_arguments_hashes") or ()
+                    )
+                    probe_assessment = (
+                        "repeated_probe"
+                        if repeated_probe
+                        else "assertion_executed"
+                        if tool_execution_succeeded and validation_kind is not None
+                        else "unassessed"
+                    )
                     receipt_core = {
                         "schema_version": "aworld.public-probe-receipt/v1",
                         "authority": "agent_self_check",
                         "task_reward": "not_assessed",
                         "hypothesis_id": "task-derived-validation",
                         "highest_risk_counterexample": (
-                            "the candidate fails one or more explicit public obligations"
+                            str(derived.get("counterexample") or "")[:2048]
                         ),
                         "probe_kind": "counterexample",
                         "obligation_ids": list(derived.get("obligation_ids") or ()),
@@ -1779,7 +1811,7 @@ def record_public_probe_observations(
                             "selected_candidate_id"
                         ),
                         "tool_identity": tool_identity,
-                        "arguments_hash": semantic_fingerprint(actual_arguments),
+                        "arguments_hash": arguments_hash,
                         "request_hash": derived.get("request_hash"),
                         "candidate_hash": derived.get("candidate_hash"),
                         "artifact_after_hash": semantic_fingerprint(artifact_after),
@@ -1787,12 +1819,7 @@ def record_public_probe_observations(
                         "result_hash": semantic_fingerprint(result),
                         "tool_execution_succeeded": tool_execution_succeeded,
                         "validation_kind": validation_kind,
-                        "probe_assessment": (
-                            "assertion_executed"
-                            if tool_execution_succeeded
-                            and validation_kind is not None
-                            else "unassessed"
-                        ),
+                        "probe_assessment": probe_assessment,
                         "failure_code": (
                             str(result.get("failure_code"))[:256]
                             if result.get("failure_code") is not None
@@ -6786,14 +6813,17 @@ def consume_execution_protocol_guidance(context, agent_id: str) -> str | None:
             return (
                 "AWorld deadline checkpoint: about 65% of caller-owned task time "
                 "has elapsed. Converge now: stop expanding exploration, validate "
-                "the best current candidate against the public contract, and make "
+                "the best current candidate against the public contract, invoke "
+                "the one fresh advisory reviewer now when a candidate exists, and make "
                 f"only evidence-driven repairs. Remaining time: {remaining:.0f}s."
             )
         if stage == "delivery_only":
             return (
                 "AWorld deadline checkpoint: about 80% of caller-owned task time "
-                "has elapsed. Use remaining actions only for delivery-impacting "
-                "repairs and final validation; do not restart discovery or reread "
+                "has elapsed. If an evidence-backed candidate exists and its one "
+                "fresh advisory review has not run, invoke it before any further "
+                "optimization. Use remaining actions only for delivery-impacting "
+                "counterexample validation or repairs; do not restart discovery or reread "
                 f"unchanged inputs. Remaining time: {remaining:.0f}s."
             )
     inline = _read_runtime_value(
