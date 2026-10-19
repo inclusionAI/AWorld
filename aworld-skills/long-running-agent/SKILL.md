@@ -30,6 +30,12 @@ because this skill is enabled. Adopt the long-running workflow only when the
 AWorld execution engine requests a checkpoint or final review, or when sustained
 dependent work actually needs a recoverable rolling plan.
 
+Do not manufacture reviewer work either. A reviewer value lease is relevant
+only after AWorld has armed a long task, observed a real current candidate, and
+selected one unresolved obligation from the authoritative public contract. A
+short or unarmed task, a task without an actionable public contract, or work
+without a current candidate stays on its existing path.
+
 ## Make the execution decision explicitly
 
 Before the first ordinary Tool action, AWorld may expose only the internal
@@ -191,36 +197,49 @@ evidence or report the unresolved gap accurately.
 
 ## Review before declaring completion
 
-When preparing a candidate final result:
+When an armed long task first produces a real candidate with an unresolved
+public obligation, use an offered reviewer value lease promptly while useful
+Tool time remains. Do not postpone that lease merely because the candidate is
+not yet a final response. AWorld binds the lease to the current candidate and
+exactly one public assertion; do not broaden it to a general audit or request a
+second review of unchanged evidence.
+
+For an offered lease:
 
 1. Reconcile every public requirement in the charter with current evidence.
 2. Check whether later changes made earlier evidence stale.
 3. Identify direct contradictions and material evidence gaps.
-4. When `AWORLD_ADVISORY_VERIFIER.review_candidate` is exposed and a fresh
-   check could change the completion decision, invoke it with the bounded
-   candidate claim, public deliverable locations, and evidence summary. AWorld
-   binds the authoritative caller task itself; do not restate or narrow it.
-   Treat the fresh-context, read-only report as advice, not external scoring
-   evidence or completion authority. If the capability is absent, an explicitly
-   selected `verifier` collaborator may serve the same advisory role.
-5. When comparison or implementation can be safely isolated, use the
+4. Invoke `AWORLD_ADVISORY_VERIFIER.review_candidate` for the bound candidate
+   and obligation. A reviewer outcome of `ready`, `repair`, `uncertain`, or a
+   timeout is advice only. None proves correctness. Consume the lease's typed,
+   task-derived counterexample through one independent validation Tool call.
+5. Make that validation batch contain exactly one Tool call. Use a fresh,
+   relevant assertion. Repeated parameters for the same candidate, an unrelated
+   Tool, or an ambiguous multi-Tool batch consumes the bounded opportunity
+   without producing value; do not retry it under the same lease.
+6. If the independent validation passes, close the lease. Only a concrete
+   observed contradiction may open one repair. After a changed candidate is
+   observed, run the one allowed revalidation, then close the lease whether it
+   passes, fails, repeats, or is unavailable.
+7. When comparison or implementation can be safely isolated, use the
    fresh-context `evaluator` or `developer` collaborator only if its result can
    materially change the next decision. Give it a bounded public subtask and
    integrate its answer; availability never requires delegation.
-6. If a candidate-management Workbench is available and the task has multiple
+8. If a candidate-management Workbench is available and the task has multiple
    valuable artifact candidates, use it to snapshot, validate, compare, and
    publish the selected candidate. Do not manufacture a Workbench contract for
    direct work. Its receipts remain agent self-check evidence.
-7. If a concrete gap can be resolved within the remaining budget, resume the
+9. If a concrete gap can be resolved within the remaining budget, resume the
    normal bounded-step workflow, use the Tools needed to finish it, and
    reassess before producing a new candidate final result.
-8. Otherwise return the best current result and describe material uncertainty
+10. Otherwise return the best current result and describe material uncertainty
    accurately.
 
 Keep the review itself bounded. A model decision that work is incomplete may
 resume normal execution under the original task deadline and step budget; it
 does not grant a new budget or permission for open-ended exploration. Do not
-manufacture evidence to make the result appear complete.
+manufacture evidence to make the result appear complete. The caller's external
+verifier remains the authority for external acceptance.
 
 ## Fail open
 

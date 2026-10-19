@@ -1468,7 +1468,12 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             )
         return schema
 
-    def _public_probe_schema(self, context: Context) -> dict[str, Any]:
+    def _public_probe_schema(
+        self,
+        context: Context,
+        *,
+        reviewer_binding: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
         obligation_ids = [
             row["obligation_id"] for row in self._public_task_obligations(context)
         ]
@@ -1486,7 +1491,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 "hypothesis_id": {"type": "string", "maxLength": 128},
                 "highest_risk_counterexample": {
                     "type": "string",
-                    "maxLength": 1024,
+                    "maxLength": 2048,
                 },
                 "probe_kind": {
                     "type": "string",
@@ -1512,6 +1517,36 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 "items": {"type": "string", "enum": obligation_ids},
             }
             schema["required"].append("obligation_ids")
+        if reviewer_binding is not None:
+            schema["description"] = (
+                "Required reviewer-value validation metadata. Copy the exact "
+                "framework-provided values into the single Tool call that "
+                "executes the requested counterexample assertion. AWorld "
+                "removes this object before Tool execution."
+            )
+            for key in (
+                "hypothesis_id",
+                "highest_risk_counterexample",
+                "probe_kind",
+            ):
+                value = reviewer_binding.get(key)
+                if isinstance(value, str):
+                    schema["properties"][key]["enum"] = [value]
+            bound_ids = reviewer_binding.get("obligation_ids")
+            if isinstance(bound_ids, list) and bound_ids:
+                schema["properties"]["obligation_ids"] = {
+                    "type": "array",
+                    "description": (
+                        "Exact public obligation ids selected by the active "
+                        "reviewer-value lease."
+                    ),
+                    "minItems": len(bound_ids),
+                    "maxItems": len(bound_ids),
+                    "uniqueItems": True,
+                    "items": {"type": "string", "enum": list(bound_ids)},
+                }
+                if "obligation_ids" not in schema["required"]:
+                    schema["required"].append("obligation_ids")
         return schema
 
     @staticmethod
@@ -1733,9 +1768,24 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         if carrier is None:
             return augmented, empty_offer
         carrier_index, carrier_name = carrier
-        properties = augmented[carrier_index]["function"]["parameters"]["properties"]
+        parameters = augmented[carrier_index]["function"]["parameters"]
+        properties = parameters["properties"]
         injected: set[str] = set()
-        properties[_PUBLIC_PROBE_PARAM] = self._public_probe_schema(context)
+        from aworld.runners.execution_protocol import (
+            reviewer_validation_probe_binding,
+        )
+
+        reviewer_binding = reviewer_validation_probe_binding(
+            context, self.id()
+        )
+        properties[_PUBLIC_PROBE_PARAM] = self._public_probe_schema(
+            context,
+            reviewer_binding=reviewer_binding,
+        )
+        if reviewer_binding is not None:
+            required = parameters.setdefault("required", [])
+            if _PUBLIC_PROBE_PARAM not in required:
+                required.append(_PUBLIC_PROBE_PARAM)
         injected.add(_PUBLIC_PROBE_PARAM)
         properties[_LONG_HORIZON_HYPOTHESIS_PARAM] = {
             "type": "string",
@@ -1861,7 +1911,10 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         offer: _LongHorizonControlOffer,
     ) -> int:
         """Strip and bind optional public self-check metadata before dispatch."""
-        from aworld.runners.execution_protocol import record_public_probe_plan
+        from aworld.runners.execution_protocol import (
+            record_public_probe_plan,
+            reviewer_validation_probe_binding,
+        )
 
         recorded = 0
         if _PUBLIC_PROBE_PARAM not in offer.injected_parameters:
@@ -1880,10 +1933,15 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         unambiguous_action = (
             controlled_actions[0] if len(controlled_actions) == 1 else None
         )
+        reviewer_binding = reviewer_validation_probe_binding(
+            context, self.id()
+        )
         for action in controlled_actions:
             params = getattr(action, "params", None)
             value = params.pop(_PUBLIC_PROBE_PARAM, None)
             if value is None or action is not unambiguous_action:
+                continue
+            if reviewer_binding is not None and value != reviewer_binding:
                 continue
             if record_public_probe_plan(
                 context,
@@ -7805,6 +7863,8 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                             final_review_guidance,
                             load_execution_protocol_state,
                             record_candidate_final,
+                            reviewer_value_lease_guidance,
+                            reviewer_value_lease_requires_continuation,
                             store_candidate_fallback,
                         )
 
@@ -7818,17 +7878,31 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                             store_candidate_fallback(
                                 message.context, self.id(), agent_result.actions
                             )
-                        protocol_transition = record_candidate_final(
+                        lease_guidance = reviewer_value_lease_guidance(
                             message.context,
                             self.id(),
-                            actions=agent_result.actions,
-                            review_boundary_available=(
-                                self._candidate_review_boundary_available(
-                                    message.context,
-                                    tools=tools,
-                                )
-                            ),
+                            terminal=True,
                         )
+                        if (
+                            lease_guidance
+                            and reviewer_value_lease_requires_continuation(
+                                message.context, self.id()
+                            )
+                        ):
+                            protocol_transition = None
+                            long_horizon_review_feedback = lease_guidance
+                        else:
+                            protocol_transition = record_candidate_final(
+                                message.context,
+                                self.id(),
+                                actions=agent_result.actions,
+                                review_boundary_available=(
+                                    self._candidate_review_boundary_available(
+                                        message.context,
+                                        tools=tools,
+                                    )
+                                ),
+                            )
                         if (
                             protocol_transition is not None
                             and protocol_transition.decision.action
@@ -7949,14 +8023,15 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                                     "invalid_event",
                                 },
                             )
-                        long_horizon_review_feedback = final_review_guidance(
-                            protocol_transition,
-                            independent_acceptance_enabled=(
-                                execution_protocol_policy(
-                                    message.context, self.id()
-                                ).independent_acceptance_enabled
-                            ),
-                        )
+                        if long_horizon_review_feedback is None:
+                            long_horizon_review_feedback = final_review_guidance(
+                                protocol_transition,
+                                independent_acceptance_enabled=(
+                                    execution_protocol_policy(
+                                        message.context, self.id()
+                                    ).independent_acceptance_enabled
+                                ),
+                            )
                         if long_horizon_review_feedback:
                             from aworld.runners.execution_protocol import (
                                 load_public_probe_receipts,

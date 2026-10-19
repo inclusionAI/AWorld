@@ -43,8 +43,8 @@ def test_runtime_compatibility_versions_and_dependency_are_explicit() -> None:
     core_version = _literal_assignment(ROOT / "aworld/version_gen.py", "__version__")
     metadata = tomllib.loads(RUNTIME_CLI_METADATA.read_text(encoding="utf-8"))
 
-    assert core_version == "0.2.22"
-    assert metadata["project"]["version"] == "0.1.14"
+    assert core_version == "0.2.23"
+    assert metadata["project"]["version"] == "0.1.15"
     assert f"aworld=={core_version}" in metadata["project"]["dependencies"]
 
 
@@ -74,7 +74,7 @@ def test_core_source_checkout_ignores_unrelated_installed_metadata(monkeypatch) 
 
 def test_installed_core_uses_its_own_distribution_metadata(monkeypatch) -> None:
     class CurrentDistribution:
-        version = "0.2.22"
+        version = "0.2.23"
 
         @staticmethod
         def locate_file(_path: str) -> Path:
@@ -83,7 +83,7 @@ def test_installed_core_uses_its_own_distribution_metadata(monkeypatch) -> None:
     monkeypatch.setattr(aworld, "_is_source_checkout", lambda: False)
     monkeypatch.setattr(aworld, "distribution", lambda _name: CurrentDistribution())
 
-    assert aworld._resolve_version() == "0.2.22"
+    assert aworld._resolve_version() == "0.2.23"
 
 
 def test_runtime_builder_requires_an_explicit_reproducible_epoch() -> None:

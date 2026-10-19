@@ -62,41 +62,61 @@ were compacted.
 
 ## Final review contract
 
-Every candidate produced while this Skill is active receives the same final
-review, even when the initial model-owned horizon choice was `short` or
-`unknown`. An explicit public deliverable also participates in the existing
-candidate-decision reserve without being reclassified as long-horizon work.
-These are generic delivery boundaries: they do not add benchmark-specific
-acceptance rules. Named-file presence is only an inspectable milestone;
-content correctness still comes from a registered completion validator when
-one exists, otherwise from the model-owned review with accurate uncertainty.
+A reviewer value lease appears only when all of these facts hold: AWorld has
+armed a long task, a real current candidate is observable, and the authoritative
+public contract contains an actionable obligation that current evidence has not
+closed. Short or unarmed work, tasks without an actionable public contract, and
+work without a current candidate do not manufacture a review. An explicit
+public deliverable may still participate in ordinary candidate and deadline
+checkpoints without being reclassified as long-horizon work.
+
+Use the lease at the first viable candidate/evidence boundary while useful Tool
+time remains. One lease binds one candidate epoch and one public assertion. It
+permits one reviewer claim, one task-derived independent validation, and—only
+after a concrete observed contradiction—one repair followed by one
+revalidation. It never authorizes a broad audit, a second review of unchanged
+evidence, or open-ended retries.
 
 Review the candidate result against the public charter and return one of these
 semantic outcomes:
 
 - **ready**: current evidence supports the material completion claims;
-- **repairable**: a specific observed contradiction or material evidence gap
+- **repair**: a specific observed contradiction or material evidence gap
   can be addressed within the remaining task budget;
 - **uncertain**: evidence is incomplete, ambiguous, unavailable, or the review
   itself could not complete.
 
-For `repairable`, identify the supporting observation and affected claim, then
-resume the normal bounded-step workflow. Use only the Tool actions needed to
-finish and verify the missing work within the original task budget; the review
-does not create a second budget. Do not request broad reimplementation or
-indefinite investigation at the final boundary. For `uncertain`, preserve the
-candidate result and describe the uncertainty; absence of proof is not
-automatically a contradiction.
+These outcomes, including `ready`, are reviewer claims rather than correctness
+evidence. A timeout or malformed result is the same in that respect. AWorld
+supplies a deterministic public-contract fallback when needed, so every claimed
+lease yields one typed task-derived counterexample. Consume that counterexample
+with one independent validation before deciding whether the affected
+obligation is closed or contradicted.
+
+The validation batch must contain exactly one Tool call. Bind it to the selected
+public obligation and use an assertion that can falsify the candidate. Reusing
+the same parameters against the unchanged candidate, calling an unrelated Tool,
+or sending an ambiguous multi-Tool batch consumes the validation opportunity
+without producing value. Do not retry the reviewer or validation under the same
+lease.
+
+Only a concrete contradiction observed by that validation opens repair. Make
+one bounded repair, require an observed candidate change, and then run one
+revalidation. The revalidation may reuse the same assertion parameters because
+the candidate changed. Pass, contradiction, repeated evidence, ambiguity, or
+unavailability all close the lease; none opens another repair.
 
 After repair work, reassess only the affected claims plus anything the repair
 may have invalidated. Reuse still-current evidence rather than restarting the
-task.
+task. The external verifier remains authoritative for external acceptance;
+neither the reviewer nor the lease replaces it.
 
 ## Fail-open contract
 
-The semantic review advises execution; it is not an authority that may discard
-the current result. If review is unavailable, inconclusive, contradictory, or
-out of budget:
+The semantic review advises execution; it is not correctness authority and may
+not discard the current result. If review or its bounded validation is
+unavailable, inconclusive, repeated, ambiguous, contradictory, or out of
+budget:
 
 - preserve completed work and direct observations;
 - avoid additional unbounded actions;

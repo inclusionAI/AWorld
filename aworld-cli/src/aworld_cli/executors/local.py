@@ -1490,6 +1490,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
             build_execution_protocol_telemetry,
             execution_protocol_policy,
             load_execution_protocol_state,
+            reviewer_value_lease_requires_continuation,
         )
         from aworld.core.execution_protocol import ProtocolMode
 
@@ -1564,6 +1565,14 @@ class LocalAgentExecutor(BaseAgentExecutor):
         protocol_converging = bool(
             protocol_state.convergence_constraint_active
         )
+        if reviewer_value_lease_requires_continuation(task.context, root_id):
+            current_telemetry["acceptance_continuation_suppressed"] = (
+                "reviewer_lease_active"
+            )
+            self.last_execution_protocol = current_telemetry
+            if response is not None:
+                response.execution_protocol = current_telemetry
+            return None
         if policy.mode is ProtocolMode.GUIDE and (
             protocol_finalized
             or (

@@ -1253,7 +1253,7 @@ def test_scoped_state_and_bounded_telemetry_are_public_read_only_views() -> None
     assert state.scope.task_id == "telemetry"
     assert state.long_horizon_armed is False
     assert telemetry == {
-        "schema_version": "aworld.execution-protocol-telemetry/v2",
+        "schema_version": "aworld.execution-protocol-telemetry/v3",
         "mode": "guide",
         "phase": "execute",
         "armed": False,
@@ -1290,6 +1290,12 @@ def test_scoped_state_and_bounded_telemetry_are_public_read_only_views() -> None
         "candidate_final_count": 0,
         "final_review_count": 0,
         "repair_count": 0,
+        "reviewer_admission_count": 0,
+        "reviewer_skip_count": 0,
+        "reviewer_claim_count": 0,
+        "reviewer_validation_attempt_count": 0,
+        "reviewer_repair_attempt_count": 0,
+        "reviewer_revalidation_attempt_count": 0,
         "finalization_entered": False,
         "mutation_gate_active": False,
         "mutation_gate_validation_window_open": False,
@@ -1308,7 +1314,7 @@ def test_scoped_state_and_bounded_telemetry_are_public_read_only_views() -> None
     }
 
 
-def test_telemetry_v2_is_explicit_and_new_reader_still_accepts_v1() -> None:
+def test_telemetry_v3_is_explicit_and_new_reader_accepts_prior_versions() -> None:
     legacy = {
         "schema_version": "aworld.execution-protocol-telemetry/v1",
         "mode": "guide",
@@ -1330,6 +1336,22 @@ def test_telemetry_v2_is_explicit_and_new_reader_still_accepts_v1() -> None:
         "schema_version": "aworld.execution-protocol-telemetry/v2",
     }
     assert project_execution_protocol_telemetry(current) == current
+
+    current_v3 = {
+        **current,
+        "schema_version": "aworld.execution-protocol-telemetry/v3",
+        "reviewer_lease_status": "validation_pending",
+        "reviewer_claim_count": 1,
+        "reviewer_usage_reported": False,
+        "reviewer_reason": "authoritative_task_unavailable",
+    }
+    assert project_execution_protocol_telemetry(current_v3) == current_v3
+
+    mislabeled_v2 = {
+        **current_v3,
+        "schema_version": "aworld.execution-protocol-telemetry/v2",
+    }
+    assert project_execution_protocol_telemetry(mislabeled_v2) is None
 
 
 def test_short_estimate_arms_only_after_strict_double_action_overrun() -> None:

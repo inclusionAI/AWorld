@@ -42,10 +42,24 @@ from aworld.core.execution_protocol import (
     ProtocolMode,
     ProtocolPhase,
     ProtocolTransition,
+    ReviewerDirectiveSource,
+    ReviewerLeaseClosureReason,
+    ReviewerLeaseStatus,
+    ReviewerValidationOutcome,
+    ReviewerValueLease,
     ReviewOutcome,
     action_signature,
     compare_action_semantic_shape,
     execution_protocol_eligible,
+    claim_reviewer_value_lease,
+    close_reviewer_value_lease_for_liveness as _close_reviewer_value_lease,
+    mark_reviewer_directive_pending,
+    offer_reviewer_value_lease,
+    record_reviewer_directive,
+    record_reviewer_repair,
+    reopen_reviewer_revalidation_for_candidate_change,
+    record_reviewer_revalidation,
+    record_reviewer_validation,
 )
 from aworld.sandbox.tool_observation import (
     actions_are_provably_read_only,
@@ -70,6 +84,7 @@ EXECUTION_PROTOCOL_HYPOTHESES_KEY = "execution_protocol_hypotheses"
 EXECUTION_PROTOCOL_CRITIC_KEY = "execution_protocol_acceptance_critic"
 EXECUTION_PROTOCOL_PUBLIC_PROBES_KEY = "execution_protocol_public_probes"
 EXECUTION_PROTOCOL_PUBLIC_CONTRACT_KEY = "execution_protocol_public_contract"
+EXECUTION_PROTOCOL_REVIEWER_VALUE_KEY = "execution_protocol_reviewer_value"
 EXECUTION_PROTOCOL_DEADLINE_GUIDANCE_KEY = "execution_protocol_deadline_guidance"
 EXECUTION_PROTOCOL_CONVERGENCE_GUIDANCE_KEY = (
     "execution_protocol_convergence_guidance"
@@ -90,6 +105,10 @@ INDEPENDENT_ACCEPTANCE_CRITIC_ENV = "AWORLD_INDEPENDENT_ACCEPTANCE_CRITIC"
 SEMANTIC_PROGRESS_LEDGER_ENV = "AWORLD_SEMANTIC_PROGRESS_LEDGER"
 _MAX_FALLBACK_CHARS = 64_000
 _MAX_TELEMETRY_COUNTER = 1_000_000
+_REVIEWER_VALUE_STATE_SCHEMA = "aworld.reviewer-value-state/v1"
+_REVIEWER_VALUE_MIN_VALIDATION_SECONDS = 45.0
+_REVIEWER_VALUE_MIN_REPAIR_SECONDS = 60.0
+_REVIEWER_VALUE_MIN_REVALIDATION_SECONDS = 45.0
 _PUBLIC_DELIVERABLE_SCHEMA = "aworld.public-deliverables/v1"
 _PUBLIC_DELIVERABLE_AUTHORITY = "public_task_advisory"
 _MAX_DECISION_ATTEMPTS = 2
@@ -1161,6 +1180,37 @@ def _public_request_text(context) -> str:
     return values[0] if values else ""
 
 
+def _public_expectation_is_bounded(value: Any, *, depth: int = 0) -> bool:
+    if depth > 8:
+        return False
+    if value is None or isinstance(value, (bool, str)):
+        return not isinstance(value, str) or len(value) <= 512
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        try:
+            return math.isfinite(float(value))
+        except (OverflowError, ValueError):
+            return False
+    if isinstance(value, Mapping):
+        return bool(
+            len(value) <= 64
+            and all(
+                isinstance(key, str)
+                and 0 < len(key) <= 128
+                and _public_expectation_is_bounded(item, depth=depth + 1)
+                for key, item in value.items()
+            )
+        )
+    if isinstance(value, (list, tuple)):
+        return bool(
+            len(value) <= 64
+            and all(
+                _public_expectation_is_bounded(item, depth=depth + 1)
+                for item in value
+            )
+        )
+    return False
+
+
 def _public_obligation_rows(context) -> tuple[dict[str, Any], ...]:
     """Return only CLI-authenticated obligations from the public task text."""
 
@@ -1194,6 +1244,7 @@ def _public_obligation_rows(context) -> tuple[dict[str, Any], ...]:
         if not isinstance(raw, Mapping):
             return ()
         obligation_id = raw.get("obligation_id")
+        expectation = raw.get("expectation")
         if (
             not isinstance(obligation_id, str)
             or not obligation_id
@@ -1203,7 +1254,24 @@ def _public_obligation_rows(context) -> tuple[dict[str, Any], ...]:
             or raw.get("source") != "public_task_text"
             or not isinstance(raw.get("kind"), str)
             or not isinstance(raw.get("subject"), str)
+            or not isinstance(raw.get("source_fingerprint"), str)
+            or not _is_canonical_semantic_fingerprint(
+                raw.get("source_fingerprint")
+            )
+            or not _public_expectation_is_bounded(expectation)
         ):
+            return ()
+        try:
+            encoded_expectation = json.dumps(
+                expectation,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            ).encode("utf-8")
+        except (TypeError, ValueError, OverflowError):
+            return ()
+        if len(encoded_expectation) > 4096:
             return ()
         seen.add(obligation_id)
         rows.append(
@@ -1211,7 +1279,8 @@ def _public_obligation_rows(context) -> tuple[dict[str, Any], ...]:
                 "obligation_id": obligation_id,
                 "kind": str(raw["kind"])[:64],
                 "subject": str(raw["subject"])[:512],
-                "expectation": deepcopy(raw.get("expectation")),
+                "expectation": deepcopy(expectation),
+                "source_fingerprint": raw["source_fingerprint"],
             }
         )
     return tuple(rows)
@@ -1367,6 +1436,735 @@ def record_public_contract_evidence(context, agent_id: str) -> dict[str, Any]:
         metrics["public_contract_closure_complete"] = status["closure_complete"]
         metrics["public_contract_checkpoint_count"] = checkpoint_count
     return value
+
+
+def _reviewer_value_scope(context, agent_id: str) -> dict[str, Any]:
+    owner = state_context(context)
+    return {
+        "task_id": str(getattr(owner, "task_id", "") or ""),
+        "task_epoch": int(getattr(owner, "task_epoch", 0) or 0),
+        "agent_id": agent_id,
+    }
+
+
+def _empty_reviewer_value_state(context, agent_id: str) -> dict[str, Any]:
+    return {
+        "schema_version": _REVIEWER_VALUE_STATE_SCHEMA,
+        "scope": _reviewer_value_scope(context, agent_id),
+        "revision": 0,
+        "lease": None,
+        "review_consumed": False,
+        "admission_count": 0,
+        "skip_count": 0,
+        "last_admission_reason": None,
+        "last_admission_basis": None,
+        "guidance_counts": {},
+        "review_status": None,
+        "review_decision": None,
+        "review_reason": None,
+    }
+
+
+def _normalize_reviewer_value_state(
+    context,
+    agent_id: str,
+    value: Any,
+) -> dict[str, Any]:
+    expected_scope = _reviewer_value_scope(context, agent_id)
+    if (
+        not isinstance(value, Mapping)
+        or value.get("schema_version") != _REVIEWER_VALUE_STATE_SCHEMA
+        or value.get("scope") != expected_scope
+    ):
+        return _empty_reviewer_value_state(context, agent_id)
+    lease = value.get("lease")
+    try:
+        normalized_lease = (
+            ReviewerValueLease.from_dict(lease).to_dict()
+            if isinstance(lease, Mapping)
+            else None
+        )
+    except (TypeError, ValueError, KeyError):
+        normalized_lease = None
+    guidance_counts = value.get("guidance_counts")
+    return {
+        "schema_version": _REVIEWER_VALUE_STATE_SCHEMA,
+        "scope": expected_scope,
+        "revision": _bounded_counter(value.get("revision")),
+        "lease": normalized_lease,
+        "review_consumed": value.get("review_consumed") is True,
+        "admission_count": _bounded_counter(value.get("admission_count")),
+        "skip_count": _bounded_counter(value.get("skip_count")),
+        "last_admission_reason": (
+            str(value.get("last_admission_reason"))[:128]
+            if value.get("last_admission_reason") is not None
+            else None
+        ),
+        "last_admission_basis": (
+            str(value.get("last_admission_basis"))[:128]
+            if value.get("last_admission_basis") is not None
+            else None
+        ),
+        "guidance_counts": {
+            str(key)[:64]: min(2, _bounded_counter(item))
+            for key, item in list(guidance_counts.items())[:8]
+            if isinstance(key, str)
+        }
+        if isinstance(guidance_counts, Mapping)
+        else {},
+        "review_status": (
+            str(value.get("review_status"))[:64]
+            if value.get("review_status") is not None
+            else None
+        ),
+        "review_decision": (
+            str(value.get("review_decision"))[:64]
+            if value.get("review_decision") is not None
+            else None
+        ),
+        "review_reason": (
+            str(value.get("review_reason"))[:128]
+            if value.get("review_reason") is not None
+            else None
+        ),
+    }
+
+
+def _reviewer_value_state(context, agent_id: str) -> dict[str, Any]:
+    return _normalize_reviewer_value_state(
+        context,
+        agent_id,
+        _read_runtime_value(context, agent_id, EXECUTION_PROTOCOL_REVIEWER_VALUE_KEY),
+    )
+
+
+def load_reviewer_value_lease(
+    context, agent_id: str
+) -> ReviewerValueLease | None:
+    value = _reviewer_value_state(context, agent_id).get("lease")
+    if not isinstance(value, Mapping):
+        return None
+    try:
+        return ReviewerValueLease.from_dict(value)
+    except (TypeError, ValueError, KeyError):
+        return None
+
+
+def reviewer_value_lease_id(lease: ReviewerValueLease) -> str:
+    """Return a content-free stable identity for one public review lease."""
+    from aworld.core.context.compiler import semantic_fingerprint
+
+    return semantic_fingerprint(
+        {
+            "scope_hash": lease.scope_hash,
+            "request_hash": lease.request_hash,
+            "candidate_hash": lease.candidate_hash,
+            "obligation_id": lease.obligation_id,
+            "obligation_source_fingerprint": lease.obligation_source_fingerprint,
+        }
+    )
+
+
+def _reviewer_candidate_present(context, agent_id: str) -> bool:
+    try:
+        from aworld.runners.post_tool_progress import semantic_progress_for_agent
+
+        semantic_state = semantic_progress_for_agent(context, agent_id=agent_id)
+        candidate_fingerprint = (
+            semantic_state.get("public_delivery_fingerprint")
+            or semantic_state.get("stateful_candidate_fingerprint")
+        )
+        return bool(
+            semantic_state.get("candidate_present") is True
+            and _is_canonical_semantic_fingerprint(candidate_fingerprint)
+        )
+    except Exception:
+        return False
+
+
+def _reviewer_value_reserve_available(
+    context, policy: ExecutionProtocolPolicy
+) -> bool:
+    remaining = _remaining_task_seconds(context)
+    if remaining is None:
+        return False
+    review_seconds = min(
+        120.0,
+        max(30.0, float(policy.final_review_timeout_seconds or 120.0)),
+    )
+    required = (
+        float(policy.finalization_reserve_seconds)
+        + review_seconds
+        + _REVIEWER_VALUE_MIN_VALIDATION_SECONDS
+        + _REVIEWER_VALUE_MIN_REPAIR_SECONDS
+        + _REVIEWER_VALUE_MIN_REVALIDATION_SECONDS
+    )
+    return remaining >= required
+
+
+def _select_reviewer_obligation(
+    context, agent_id: str
+) -> Mapping[str, Any] | None:
+    status = public_contract_evidence_status(context, agent_id)
+    unresolved = set(status.get("unresolved_obligation_ids") or ())
+    priority = {
+        "range_constraint": 0,
+        "numeric_threshold": 1,
+        "quantity_constraint": 2,
+        "negative_constraint": 3,
+        "quality_constraint": 4,
+        "structured_field": 5,
+        "enumerated_set": 6,
+        "function_signature": 7,
+        "import_contract": 8,
+        "process_liveness": 9,
+        "service_port": 10,
+        "public_command": 11,
+        "deliverable_file": 12,
+    }
+    eligible = [
+        row
+        for row in _public_obligation_rows(context)
+        if row.get("obligation_id") in unresolved
+        and isinstance(row.get("source_fingerprint"), str)
+        and row.get("kind") in priority
+    ]
+    return min(
+        eligible,
+        key=lambda row: (
+            priority.get(str(row.get("kind")), 99),
+            str(row.get("obligation_id")),
+        ),
+        default=None,
+    )
+
+
+def _record_reviewer_admission_skip(
+    context,
+    agent_id: str,
+    *,
+    reason: str,
+    basis: str,
+) -> None:
+    def update(current):
+        state = _normalize_reviewer_value_state(context, agent_id, current)
+        if (
+            state.get("last_admission_reason") == reason
+            and state.get("last_admission_basis") == basis
+        ):
+            return state
+        state["skip_count"] = min(
+            _MAX_TELEMETRY_COUNTER, int(state.get("skip_count", 0) or 0) + 1
+        )
+        state["last_admission_reason"] = reason
+        state["last_admission_basis"] = basis[:128]
+        state["revision"] = min(
+            _MAX_TELEMETRY_COUNTER, int(state.get("revision", 0) or 0) + 1
+        )
+        return state
+
+    _update_runtime_value(
+        context, agent_id, EXECUTION_PROTOCOL_REVIEWER_VALUE_KEY, update
+    )
+
+
+def ensure_reviewer_value_lease_offer(
+    context, agent_id: str
+) -> ReviewerValueLease | None:
+    """Offer one early, actionable review without constructing a reviewer."""
+    from aworld.core.context.compiler import semantic_fingerprint
+
+    policy = execution_protocol_policy(context, agent_id)
+    protocol_state = ExecutionProtocolStore(context, agent_id, policy).load()
+    current = _reviewer_value_state(context, agent_id)
+    existing = load_reviewer_value_lease(context, agent_id)
+    if current.get("review_consumed") is True:
+        return existing
+    candidate_hash, _ = _public_candidate_binding(context, agent_id)
+    basis = semantic_fingerprint(
+        {
+            "candidate_hash": candidate_hash,
+            "phase": protocol_state.phase.value,
+            "armed": protocol_state.long_horizon_armed,
+        }
+    )
+    reason = None
+    if policy.mode is not ProtocolMode.GUIDE:
+        reason = "mode_not_guide"
+    elif not policy.terminal_review_gate_enabled:
+        reason = "terminal_review_gate_disabled"
+    elif not protocol_state.long_horizon_armed:
+        reason = "short_or_unarmed"
+    elif protocol_state.phase in {ProtocolPhase.FINALIZE, ProtocolPhase.COMPLETE}:
+        reason = "phase_not_actionable"
+    elif not _reviewer_candidate_present(context, agent_id):
+        reason = "no_current_candidate"
+    elif not _reviewer_value_reserve_available(context, policy):
+        reason = "insufficient_closure_reserve"
+    obligation = None if reason is not None else _select_reviewer_obligation(
+        context, agent_id
+    )
+    if reason is None and obligation is None:
+        reason = "no_unresolved_public_obligation"
+    if reason is not None:
+        _record_reviewer_admission_skip(
+            context, agent_id, reason=reason, basis=basis
+        )
+        return None
+
+    if (
+        existing is not None
+        and existing.status is ReviewerLeaseStatus.CLOSED
+        and existing.request_hash == _public_request_hash(context)
+        and existing.candidate_hash == candidate_hash
+        and existing.obligation_id == obligation["obligation_id"]
+    ):
+        return existing
+
+    if (
+        existing is not None
+        and existing.status is ReviewerLeaseStatus.OFFERED
+        and existing.candidate_hash == candidate_hash
+        and existing.obligation_id == obligation["obligation_id"]
+    ):
+        return existing
+    scope_hash = semantic_fingerprint(_reviewer_value_scope(context, agent_id))
+    lease = offer_reviewer_value_lease(
+        scope_hash=scope_hash,
+        request_hash=_public_request_hash(context),
+        candidate_hash=candidate_hash,
+        obligation_id=str(obligation["obligation_id"]),
+        obligation_source_fingerprint=str(obligation["source_fingerprint"]),
+    )
+
+    def update(current_value):
+        state = _normalize_reviewer_value_state(
+            context, agent_id, current_value
+        )
+        if state.get("review_consumed") is True:
+            return state
+        state["lease"] = lease.to_dict()
+        state["admission_count"] = min(
+            _MAX_TELEMETRY_COUNTER,
+            int(state.get("admission_count", 0) or 0) + 1,
+        )
+        state["last_admission_reason"] = "admitted"
+        state["last_admission_basis"] = basis[:128]
+        state["revision"] = min(
+            _MAX_TELEMETRY_COUNTER, int(state.get("revision", 0) or 0) + 1
+        )
+        return state
+
+    saved = _update_runtime_value(
+        context, agent_id, EXECUTION_PROTOCOL_REVIEWER_VALUE_KEY, update
+    )
+    normalized = _normalize_reviewer_value_state(context, agent_id, saved)
+    try:
+        return ReviewerValueLease.from_dict(normalized["lease"])
+    except (TypeError, ValueError, KeyError):
+        return None
+
+
+def claim_reviewer_value_lease_for_review(
+    context, agent_id: str
+) -> ReviewerValueLease | None:
+    """Atomically claim the offered lease before any reviewer cost is spent."""
+    current_candidate_hash, _ = _public_candidate_binding(context, agent_id)
+    won = False
+
+    def update(current):
+        nonlocal won
+        state = _normalize_reviewer_value_state(context, agent_id, current)
+        raw = state.get("lease")
+        try:
+            lease = ReviewerValueLease.from_dict(raw)
+        except (TypeError, ValueError, KeyError):
+            return state
+        if (
+            state.get("review_consumed") is True
+            or lease.status is not ReviewerLeaseStatus.OFFERED
+            or lease.request_hash != _public_request_hash(context)
+            or lease.candidate_hash != current_candidate_hash
+        ):
+            return state
+        try:
+            claimed = mark_reviewer_directive_pending(
+                claim_reviewer_value_lease(lease)
+            )
+        except ValueError:
+            return state
+        state["lease"] = claimed.to_dict()
+        state["review_consumed"] = True
+        won = True
+        state["revision"] = min(
+            _MAX_TELEMETRY_COUNTER, int(state.get("revision", 0) or 0) + 1
+        )
+        return state
+
+    saved = _update_runtime_value(
+        context, agent_id, EXECUTION_PROTOCOL_REVIEWER_VALUE_KEY, update
+    )
+    normalized = _normalize_reviewer_value_state(context, agent_id, saved)
+    try:
+        persisted = ReviewerValueLease.from_dict(normalized.get("lease"))
+    except (TypeError, ValueError, KeyError):
+        return None
+    if (
+        won
+        and
+        normalized.get("review_consumed") is True
+        and persisted.status is ReviewerLeaseStatus.DIRECTIVE_PENDING
+        and persisted.request_hash == _public_request_hash(context)
+        and persisted.candidate_hash == current_candidate_hash
+    ):
+        return persisted
+    return None
+
+
+def reviewer_value_lease_obligation(
+    context, agent_id: str, lease: ReviewerValueLease
+) -> Mapping[str, Any] | None:
+    for row in _public_obligation_rows(context):
+        if (
+            row.get("obligation_id") == lease.obligation_id
+            and row.get("source_fingerprint")
+            == lease.obligation_source_fingerprint
+        ):
+            return row
+    return None
+
+
+def record_reviewer_value_directive(
+    context,
+    agent_id: str,
+    *,
+    lease_id: str,
+    counterexample: str,
+    source: ReviewerDirectiveSource,
+    status: str,
+    decision: str,
+    reason_code: str | None,
+    review_elapsed_ms: int | None,
+    reported_input_tokens: int | None = None,
+    reported_output_tokens: int | None = None,
+) -> ReviewerValueLease | None:
+    """Persist one bounded directive and ROI receipt for the claimed lease."""
+    from aworld.core.context.compiler import semantic_fingerprint
+
+    won = False
+
+    def update(current):
+        nonlocal won
+        state = _normalize_reviewer_value_state(context, agent_id, current)
+        try:
+            lease = ReviewerValueLease.from_dict(state.get("lease"))
+        except (TypeError, ValueError, KeyError):
+            return state
+        if lease.candidate_hash != _public_candidate_binding(context, agent_id)[0]:
+            state["lease"] = _close_reviewer_value_lease(lease).to_dict()
+            state["review_status"] = "unavailable"
+            state["review_decision"] = "uncertain"
+            state["review_reason"] = "candidate_changed_during_review"
+            state["revision"] = min(
+                _MAX_TELEMETRY_COUNTER,
+                int(state.get("revision", 0) or 0) + 1,
+            )
+            return state
+        if (
+            lease.status is not ReviewerLeaseStatus.DIRECTIVE_PENDING
+            or reviewer_value_lease_id(lease) != lease_id
+            or not isinstance(counterexample, str)
+            or not counterexample.strip()
+        ):
+            return state
+        usage_reported = bool(
+            reported_input_tokens is not None or reported_output_tokens is not None
+        )
+        try:
+            updated = record_reviewer_directive(
+                lease,
+                source=source,
+                directive_hash=semantic_fingerprint(counterexample.strip()),
+                review_elapsed_ms=review_elapsed_ms,
+                reported_input_tokens=reported_input_tokens,
+                reported_output_tokens=reported_output_tokens,
+                usage_reported=usage_reported,
+            )
+        except (TypeError, ValueError):
+            return state
+        state["lease"] = updated.to_dict()
+        won = True
+        state["review_status"] = status[:64]
+        state["review_decision"] = decision[:64]
+        state["review_reason"] = (
+            reason_code[:128] if isinstance(reason_code, str) else None
+        )
+        state["revision"] = min(
+            _MAX_TELEMETRY_COUNTER, int(state.get("revision", 0) or 0) + 1
+        )
+        return state
+
+    saved = _update_runtime_value(
+        context, agent_id, EXECUTION_PROTOCOL_REVIEWER_VALUE_KEY, update
+    )
+    normalized = _normalize_reviewer_value_state(context, agent_id, saved)
+    try:
+        persisted = ReviewerValueLease.from_dict(normalized.get("lease"))
+    except (TypeError, ValueError, KeyError):
+        return None
+    return (
+        persisted
+        if won
+        and persisted.status is ReviewerLeaseStatus.VALIDATION_PENDING
+        and reviewer_value_lease_id(persisted) == lease_id
+        else None
+    )
+
+
+def _update_reviewer_value_lease(
+    context,
+    agent_id: str,
+    transform,
+) -> ReviewerValueLease | None:
+    won = False
+
+    def update(current):
+        nonlocal won
+        state = _normalize_reviewer_value_state(context, agent_id, current)
+        try:
+            lease = ReviewerValueLease.from_dict(state.get("lease"))
+            candidate = transform(lease)
+        except (TypeError, ValueError, KeyError):
+            return state
+        if not isinstance(candidate, ReviewerValueLease):
+            return state
+        state["lease"] = candidate.to_dict()
+        won = True
+        state["revision"] = min(
+            _MAX_TELEMETRY_COUNTER, int(state.get("revision", 0) or 0) + 1
+        )
+        return state
+
+    saved = _update_runtime_value(
+        context, agent_id, EXECUTION_PROTOCOL_REVIEWER_VALUE_KEY, update
+    )
+    normalized = _normalize_reviewer_value_state(context, agent_id, saved)
+    try:
+        persisted = ReviewerValueLease.from_dict(normalized.get("lease"))
+    except (TypeError, ValueError, KeyError):
+        return None
+    return persisted if won else None
+
+
+def record_reviewer_value_validation(
+    context,
+    agent_id: str,
+    *,
+    lease_id: str,
+    candidate_hash: str,
+    arguments_hash: str,
+    outcome: ReviewerValidationOutcome,
+) -> ReviewerValueLease | None:
+    def transform(lease: ReviewerValueLease) -> ReviewerValueLease:
+        if reviewer_value_lease_id(lease) != lease_id:
+            raise ValueError("reviewer value lease identity changed")
+        if lease.status is ReviewerLeaseStatus.VALIDATION_PENDING:
+            return record_reviewer_validation(
+                lease,
+                candidate_hash=candidate_hash,
+                arguments_hash=arguments_hash,
+                outcome=outcome,
+            )
+        if lease.status is ReviewerLeaseStatus.REVALIDATION_PENDING:
+            return record_reviewer_revalidation(
+                lease,
+                candidate_hash=candidate_hash,
+                arguments_hash=arguments_hash,
+                outcome=outcome,
+            )
+        raise ValueError("reviewer value lease is not awaiting validation")
+
+    return _update_reviewer_value_lease(context, agent_id, transform)
+
+
+def record_reviewer_value_repair_observation(
+    context,
+    agent_id: str,
+    *,
+    candidate_hash: str,
+) -> ReviewerValueLease | None:
+    def transform(lease: ReviewerValueLease) -> ReviewerValueLease:
+        if lease.status is not ReviewerLeaseStatus.REPAIR_PENDING:
+            raise ValueError("reviewer value lease is not awaiting repair")
+        return record_reviewer_repair(lease, candidate_hash=candidate_hash)
+
+    return _update_reviewer_value_lease(context, agent_id, transform)
+
+
+def close_reviewer_value_lease_for_liveness(
+    context, agent_id: str
+) -> ReviewerValueLease | None:
+    """Close the active lease before yielding to external verification."""
+
+    return _update_reviewer_value_lease(
+        context,
+        agent_id,
+        _close_reviewer_value_lease,
+    )
+
+
+def reviewer_value_lease_guidance(
+    context,
+    agent_id: str,
+    *,
+    terminal: bool = False,
+) -> str | None:
+    """Return one lifecycle-specific instruction without creating a new loop."""
+    lease = ensure_reviewer_value_lease_offer(context, agent_id)
+    if lease is None:
+        return None
+    current_candidate_hash, _ = _public_candidate_binding(context, agent_id)
+    if (
+        lease.status is ReviewerLeaseStatus.CLOSED
+        and lease.closure_reason
+        is ReviewerLeaseClosureReason.VALIDATION_PASSED
+        and current_candidate_hash != lease.candidate_hash
+    ):
+        reopened = _update_reviewer_value_lease(
+            context,
+            agent_id,
+            lambda current: reopen_reviewer_revalidation_for_candidate_change(
+                current,
+                candidate_hash=current_candidate_hash,
+            ),
+        )
+        if (
+            reopened is not None
+            and reopened.status is ReviewerLeaseStatus.REVALIDATION_PENDING
+            and _arm_task_derived_validation_from_lease(
+                context, agent_id, reopened
+            )
+        ):
+            lease = reopened
+    guidance_by_status = {
+        ReviewerLeaseStatus.OFFERED: (
+            "AWorld reviewer value lease: an inspectable long-horizon candidate "
+            "and one unresolved public obligation are ready for an actionable "
+            "cross-check. Invoke AWORLD_ADVISORY_VERIFIER.review_candidate now "
+            f"for {lease.obligation_id}; do not spend this candidate epoch on "
+            "additional broad exploration. The reviewer is advisory and the "
+            "lease still requires one independent Tool-backed assertion."
+        ),
+        ReviewerLeaseStatus.VALIDATION_PENDING: (
+            "AWorld reviewer value lease: execute exactly one independent, "
+            f"assertive validation for {lease.obligation_id} now. Use a boundary, "
+            "negative case, or recomputation not present in prior evidence; run "
+            "one Tool call in the batch and make the assertion exit nonzero when "
+            "the selected counterexample is observed."
+        ),
+        ReviewerLeaseStatus.REPAIR_PENDING: (
+            "AWorld reviewer value lease: the independent assertion contradicted "
+            f"{lease.obligation_id}. Make exactly one evidence-backed repair that "
+            "changes the current candidate, then re-run the same discriminating "
+            "assertion. Do not broaden the repair or request another review."
+        ),
+        ReviewerLeaseStatus.REVALIDATION_PENDING: (
+            "AWorld reviewer value lease: the bounded repair changed the candidate. "
+            f"Revalidate {lease.obligation_id} exactly once now; the same assertion "
+            "arguments may be reused because the candidate changed. No second "
+            "repair or reviewer call is available."
+        ),
+    }
+    guidance = guidance_by_status.get(lease.status)
+    if guidance is None:
+        return None
+    state = _reviewer_value_state(context, agent_id)
+    key = lease.status.value
+    count = int(state.get("guidance_counts", {}).get(key, 0) or 0)
+    limit = 2 if terminal else 1
+    if count >= limit:
+        if terminal:
+            close_reviewer_value_lease_for_liveness(context, agent_id)
+
+            def exhaust(current):
+                normalized = _normalize_reviewer_value_state(
+                    context, agent_id, current
+                )
+                normalized["last_admission_reason"] = (
+                    "lease_guidance_exhausted"
+                )
+                normalized["revision"] = min(
+                    _MAX_TELEMETRY_COUNTER,
+                    int(normalized.get("revision", 0) or 0) + 1,
+                )
+                return normalized
+
+            _update_runtime_value(
+                context,
+                agent_id,
+                EXECUTION_PROTOCOL_REVIEWER_VALUE_KEY,
+                exhaust,
+            )
+        return None
+
+    def update(current):
+        normalized = _normalize_reviewer_value_state(context, agent_id, current)
+        counts = dict(normalized.get("guidance_counts") or {})
+        counts[key] = min(2, int(counts.get(key, 0) or 0) + 1)
+        normalized["guidance_counts"] = counts
+        normalized["revision"] = min(
+            _MAX_TELEMETRY_COUNTER,
+            int(normalized.get("revision", 0) or 0) + 1,
+        )
+        return normalized
+
+    _update_runtime_value(
+        context, agent_id, EXECUTION_PROTOCOL_REVIEWER_VALUE_KEY, update
+    )
+    return guidance
+
+
+def reviewer_value_lease_terminal_ready(context, agent_id: str) -> bool:
+    """Return whether a consumed lease may yield to external verification."""
+    lease = load_reviewer_value_lease(context, agent_id)
+    current_candidate_hash, _ = _public_candidate_binding(context, agent_id)
+    expected_candidate_hash = (
+        lease.repair_candidate_hash
+        if lease is not None and lease.repair_candidate_hash is not None
+        else lease.candidate_hash
+        if lease is not None
+        else None
+    )
+    return bool(
+        lease is not None
+        and lease.review_claim_count == 1
+        and lease.status is ReviewerLeaseStatus.CLOSED
+        and current_candidate_hash == expected_candidate_hash
+    )
+
+
+def _reviewer_value_lease_consumed_and_closed(context, agent_id: str) -> bool:
+    lease = load_reviewer_value_lease(context, agent_id)
+    return bool(
+        lease is not None
+        and lease.review_claim_count == 1
+        and lease.status is ReviewerLeaseStatus.CLOSED
+    )
+
+
+def reviewer_value_lease_requires_continuation(context, agent_id: str) -> bool:
+    lease = load_reviewer_value_lease(context, agent_id)
+    return bool(
+        lease is not None
+        and lease.status
+        in {
+            ReviewerLeaseStatus.OFFERED,
+            ReviewerLeaseStatus.DIRECTIVE_PENDING,
+            ReviewerLeaseStatus.VALIDATION_PENDING,
+            ReviewerLeaseStatus.REPAIR_PENDING,
+            ReviewerLeaseStatus.REVALIDATION_PENDING,
+        }
+    )
 
 
 def _public_candidate_binding(context, agent_id: str) -> tuple[str, str | None]:
@@ -1530,7 +2328,7 @@ def record_public_probe_plan(
         or len(hypothesis_id.strip()) > 128
         or not isinstance(counterexample, str)
         or not counterexample.strip()
-        or len(counterexample.strip()) > 1024
+        or len(counterexample.strip()) > 2048
         or probe_kind not in {"smoke", "regression", "counterexample", "invariant"}
         or not isinstance(raw_obligation_ids, (list, tuple))
         or len(raw_obligation_ids) > 32
@@ -1580,6 +2378,110 @@ def record_public_probe_plan(
     return recorded
 
 
+def reviewer_validation_probe_binding(
+    context,
+    agent_id: str,
+) -> dict[str, Any] | None:
+    """Return exact reserved Tool metadata for an active reviewer probe.
+
+    The binding is framework-owned and contains only the already persisted
+    public obligation id and reviewer counterexample. Requiring this object on
+    the next validation Tool call makes the model explicitly select the probe
+    without trusting an arbitrary next successful command.
+    """
+    from aworld.core.context.compiler import semantic_fingerprint
+
+    lease = load_reviewer_value_lease(context, agent_id)
+    if lease is None or lease.status not in {
+        ReviewerLeaseStatus.VALIDATION_PENDING,
+        ReviewerLeaseStatus.REVALIDATION_PENDING,
+    }:
+        return None
+    derived = _public_probe_state(context, agent_id).get(
+        "task_derived_validation"
+    )
+    if not isinstance(derived, Mapping):
+        return None
+    counterexample = derived.get("counterexample")
+    obligation_ids = derived.get("obligation_ids")
+    candidate_hash, selected_candidate_id = _public_candidate_binding(
+        context, agent_id
+    )
+    if (
+        derived.get("lease_id") != reviewer_value_lease_id(lease)
+        or derived.get("request_hash") != lease.request_hash
+        or derived.get("candidate_hash") != candidate_hash
+        or derived.get("selected_candidate_id") != selected_candidate_id
+        or candidate_hash
+        not in {lease.candidate_hash, lease.repair_candidate_hash}
+        or not isinstance(counterexample, str)
+        or not counterexample.strip()
+        or len(counterexample.strip()) > 2048
+        or semantic_fingerprint(counterexample.strip()) != lease.directive_hash
+        or obligation_ids != [lease.obligation_id]
+    ):
+        return None
+    return {
+        "hypothesis_id": "reviewer-value-validation",
+        "highest_risk_counterexample": counterexample.strip(),
+        "probe_kind": "counterexample",
+        "obligation_ids": [lease.obligation_id],
+    }
+
+
+def _arm_task_derived_validation_from_lease(
+    context,
+    agent_id: str,
+    lease: ReviewerValueLease,
+) -> bool:
+    """Arm one revalidation from the public counterexample already observed."""
+    if lease.status is not ReviewerLeaseStatus.REVALIDATION_PENDING:
+        return False
+    expected_lease_id = reviewer_value_lease_id(lease)
+    public_state = _public_probe_state(context, agent_id)
+    counterexample = next(
+        (
+            str(receipt.get("highest_risk_counterexample") or "").strip()
+            for receipt in reversed(public_state.get("receipts") or ())
+            if isinstance(receipt, Mapping)
+            and receipt.get("reviewer_lease_id") == expected_lease_id
+            and str(receipt.get("highest_risk_counterexample") or "").strip()
+        ),
+        "",
+    )
+    if not counterexample:
+        return False
+    candidate_hash, selected_candidate_id = _public_candidate_binding(
+        context, agent_id
+    )
+    if candidate_hash != lease.repair_candidate_hash:
+        return False
+
+    def update(current):
+        state = _normalize_public_probe_state(
+            current, expected_scope=_public_probe_scope(context, agent_id)
+        )
+        state["task_derived_validation"] = {
+            "obligation_ids": [lease.obligation_id],
+            "counterexample": counterexample[:2048],
+            "request_hash": lease.request_hash,
+            "candidate_hash": candidate_hash,
+            "selected_candidate_id": selected_candidate_id,
+            "lease_id": expected_lease_id,
+            "excluded_arguments_hashes": [],
+        }
+        state["revision"] = int(state.get("revision", 0) or 0) + 1
+        return state
+
+    value = _update_runtime_value(
+        context,
+        agent_id,
+        EXECUTION_PROTOCOL_PUBLIC_PROBES_KEY,
+        update,
+    )
+    return isinstance(value, Mapping)
+
+
 def record_public_probe_observations(
     context,
     agent_id: str,
@@ -1590,6 +2492,10 @@ def record_public_probe_observations(
 ) -> int:
     """Create advisory receipts from separately observed Tool results."""
     from aworld.core.context.compiler import semantic_fingerprint
+
+    reviewer_lease_before = load_reviewer_value_lease(context, agent_id)
+    reviewer_validation_update: dict[str, Any] | None = None
+    reviewer_plan_updates: list[dict[str, Any]] = []
 
     action_by_id = {
         getattr(action, "tool_call_id", None): action
@@ -1612,6 +2518,90 @@ def record_public_probe_observations(
         except (TypeError, ValueError):
             return None
         return semantics.validation_kind
+
+    def reviewer_validation_outcome(
+        result: Mapping[str, Any],
+        *,
+        validation_kind: str | None,
+        arguments_hash: str,
+        excluded_arguments_hashes: Sequence[Any],
+    ) -> ReviewerValidationOutcome:
+        if arguments_hash in {
+            value
+            for value in excluded_arguments_hashes
+            if isinstance(value, str)
+        }:
+            return ReviewerValidationOutcome.REPEATED
+        tool_execution_succeeded = result.get("success") is True
+        if tool_execution_succeeded and validation_kind is not None:
+            return ReviewerValidationOutcome.PASSED
+        raw_return_code = result.get("return_code")
+        if raw_return_code is None and isinstance(result.get("metadata"), Mapping):
+            raw_return_code = result["metadata"].get(
+                "return_code", result["metadata"].get("exit_code")
+            )
+        return_code = (
+            int(raw_return_code)
+            if isinstance(raw_return_code, str)
+            and raw_return_code.strip().lstrip("-").isdigit()
+            else raw_return_code
+            if isinstance(raw_return_code, int)
+            and not isinstance(raw_return_code, bool)
+            else None
+        )
+        failure_code = (
+            str(result.get("failure_code"))[:256]
+            if result.get("failure_code") is not None
+            else None
+        )
+        metadata = (
+            result.get("metadata")
+            if isinstance(result.get("metadata"), Mapping)
+            else {}
+        )
+        terminal_receipt = metadata.get("terminal_execution_receipt")
+        infrastructure_text = " ".join(
+            str(value or "").casefold()
+            for value in (
+                failure_code,
+                result.get("error"),
+                metadata.get("error"),
+                metadata.get("error_type"),
+                metadata.get("failure_code"),
+            )
+        )
+        infrastructure_failure = bool(
+            any(
+                marker in infrastructure_text
+                for marker in (
+                    "timeout",
+                    "timed_out",
+                    "cancel",
+                    "transport",
+                    "provider",
+                    "unavailable",
+                    "not_found",
+                    "not found",
+                )
+            )
+            or (
+                isinstance(terminal_receipt, Mapping)
+                and (
+                    terminal_receipt.get("timed_out") is not False
+                    or terminal_receipt.get("executed") is not True
+                )
+            )
+            or return_code in {-1, 126, 127}
+            or (isinstance(return_code, int) and return_code >= 128)
+        )
+        if (
+            validation_kind is not None
+            and return_code == 1
+            and failure_code is None
+            and not infrastructure_failure
+        ):
+            return ReviewerValidationOutcome.CONTRADICTED
+        return ReviewerValidationOutcome.UNAVAILABLE
 
     def task_derived_scope() -> dict[str, Any] | None:
         for tool_call_id, action in action_by_id.items():
@@ -1653,6 +2643,20 @@ def record_public_probe_observations(
                 or len(counterexample["counterexample"].strip()) > 2048
             ):
                 continue
+            lease_id = counterexample.get("lease_id")
+            active_lease = load_reviewer_value_lease(context, agent_id)
+            if active_lease is not None:
+                if (
+                    len(scope) != 1
+                    or not isinstance(lease_id, str)
+                    or not _is_canonical_semantic_fingerprint(lease_id)
+                    or active_lease.status
+                    is not ReviewerLeaseStatus.VALIDATION_PENDING
+                    or reviewer_value_lease_id(active_lease) != lease_id
+                ):
+                    continue
+            elif lease_id is not None:
+                continue
             obligation_ids: list[str] = []
             for row in scope:
                 obligation_id = (
@@ -1674,6 +2678,7 @@ def record_public_probe_observations(
                 return {
                     "obligation_ids": obligation_ids,
                     "counterexample": counterexample["counterexample"].strip(),
+                    "lease_id": lease_id,
                 }
         return None
 
@@ -1682,6 +2687,8 @@ def record_public_probe_observations(
     expected_scope = _public_probe_scope(context, agent_id)
 
     def add_observations(current):
+        nonlocal reviewer_validation_update
+        reviewer_plan_updates.clear()
         state = _normalize_public_probe_state(current, expected_scope=expected_scope)
         plans = state["plans"]
         receipts = [item for item in state["receipts"] if isinstance(item, Mapping)]
@@ -1696,6 +2703,7 @@ def record_public_probe_observations(
                 "request_hash": _public_request_hash(context),
                 "candidate_hash": candidate_hash,
                 "selected_candidate_id": selected_candidate_id,
+                "lease_id": derived_scope["lease_id"],
                 "excluded_arguments_hashes": [
                     receipt.get("arguments_hash")
                     for receipt in receipts
@@ -1762,6 +2770,64 @@ def record_public_probe_observations(
             receipts.append(receipt_core)
             plans.pop(tool_call_id, None)
             observed_ids.add(tool_call_id)
+            derived_for_plan = state.get("task_derived_validation")
+            active_reviewer_lease = load_reviewer_value_lease(context, agent_id)
+            if (
+                isinstance(derived_for_plan, Mapping)
+                and isinstance(derived_for_plan.get("lease_id"), str)
+                and active_reviewer_lease is not None
+                and active_reviewer_lease.directive_hash
+                == semantic_fingerprint(
+                    str(plan.get("highest_risk_counterexample") or "")
+                )
+                and list(plan.get("obligation_ids") or ())
+                == list(derived_for_plan.get("obligation_ids") or ())
+                and plan.get("candidate_hash")
+                == derived_for_plan.get("candidate_hash")
+            ):
+                receipt_core["reviewer_lease_id"] = derived_for_plan.get(
+                    "lease_id"
+                )
+                receipt_core.pop("receipt_id", None)
+                receipt_core["receipt_id"] = semantic_fingerprint(receipt_core)
+                reviewer_plan_updates.append({
+                    "lease_id": derived_for_plan.get("lease_id"),
+                    "candidate_hash": derived_for_plan.get("candidate_hash"),
+                    "arguments_hash": plan.get("arguments_hash"),
+                    "outcome": reviewer_validation_outcome(
+                        result,
+                        validation_kind=validation_kind,
+                        arguments_hash=str(plan.get("arguments_hash") or ""),
+                        excluded_arguments_hashes=(
+                            derived_for_plan.get("excluded_arguments_hashes") or ()
+                        ),
+                    ),
+                })
+        if reviewer_plan_updates:
+            state["task_derived_validation"] = None
+            if len(reviewer_plan_updates) == 1:
+                reviewer_validation_update = reviewer_plan_updates[0]
+            else:
+                ambiguous_lease_id = reviewer_plan_updates[0].get("lease_id")
+                for receipt in receipts:
+                    if receipt.get("reviewer_lease_id") != ambiguous_lease_id:
+                        continue
+                    receipt["probe_assessment"] = "ambiguous_batch"
+                    receipt.pop("receipt_id", None)
+                    receipt["receipt_id"] = semantic_fingerprint(receipt)
+                reviewer_validation_update = {
+                    "lease_id": ambiguous_lease_id,
+                    "candidate_hash": reviewer_plan_updates[0].get(
+                        "candidate_hash"
+                    ),
+                    "arguments_hash": semantic_fingerprint(
+                        sorted(
+                            str(item.get("arguments_hash") or "")
+                            for item in reviewer_plan_updates
+                        )
+                    ),
+                    "outcome": ReviewerValidationOutcome.AMBIGUOUS,
+                }
         derived = state.get("task_derived_validation")
         if not observed_ids and isinstance(derived, Mapping):
             matched = [
@@ -1772,6 +2838,63 @@ def record_public_probe_observations(
             # attempt.  Ambiguous batches consume the window without creating
             # evidence; a failed Tool creates a non-closing receipt.
             state["task_derived_validation"] = None
+            if isinstance(derived.get("lease_id"), str):
+                # A reviewer value lease is stricter than the one-release
+                # compatibility path below.  The root must bind the exact
+                # selected obligation and counterexample through
+                # ``__aworld_public_probe``; an arbitrary successful check may
+                # not inherit reviewer authority merely because it was next.
+                if len(matched) == 1:
+                    _tool_call_id, action, _result = matched[0]
+                    actual_arguments = getattr(action, "params", None)
+                    if isinstance(actual_arguments, Mapping):
+                        reviewer_validation_update = {
+                            "lease_id": derived.get("lease_id"),
+                            "candidate_hash": derived.get("candidate_hash"),
+                            "arguments_hash": semantic_fingerprint(
+                                actual_arguments
+                            ),
+                            "outcome": ReviewerValidationOutcome.UNAVAILABLE,
+                        }
+                elif len(matched) > 1:
+                    reviewer_validation_update = {
+                        "lease_id": derived.get("lease_id"),
+                        "candidate_hash": derived.get("candidate_hash"),
+                        "arguments_hash": semantic_fingerprint(
+                            sorted(
+                                str(tool_call_id)
+                                for tool_call_id, _action, _result in matched
+                            )
+                        ),
+                        "outcome": ReviewerValidationOutcome.AMBIGUOUS,
+                    }
+                elif action_by_id:
+                    reviewer_validation_update = {
+                        "lease_id": derived.get("lease_id"),
+                        "candidate_hash": derived.get("candidate_hash"),
+                        "arguments_hash": semantic_fingerprint(
+                            sorted(
+                                semantic_fingerprint(
+                                    getattr(action, "params", None) or {}
+                                )
+                                for action in action_by_id.values()
+                            )
+                        ),
+                        "outcome": ReviewerValidationOutcome.UNAVAILABLE,
+                    }
+                for pending_call_id, pending_plan in list(plans.items()):
+                    if (
+                        isinstance(pending_plan, Mapping)
+                        and list(pending_plan.get("obligation_ids") or ())
+                        == list(derived.get("obligation_ids") or ())
+                        and pending_plan.get("candidate_hash")
+                        == derived.get("candidate_hash")
+                    ):
+                        plans.pop(pending_call_id, None)
+                state["plans"] = dict(list(plans.items())[-16:])
+                state["receipts"] = receipts[-16:]
+                state["revision"] = int(state.get("revision", 0) or 0) + 1
+                return state
             if len(matched) == 1:
                 tool_call_id, action, result = matched[0]
                 actual_arguments = getattr(action, "params", None)
@@ -1796,6 +2919,14 @@ def record_public_probe_observations(
                         else "assertion_executed"
                         if tool_execution_succeeded and validation_kind is not None
                         else "unassessed"
+                    )
+                    validation_outcome = reviewer_validation_outcome(
+                        result,
+                        validation_kind=validation_kind,
+                        arguments_hash=arguments_hash,
+                        excluded_arguments_hashes=(
+                            derived.get("excluded_arguments_hashes") or ()
+                        ),
                     )
                     receipt_core = {
                         "schema_version": "aworld.public-probe-receipt/v1",
@@ -1826,10 +2957,29 @@ def record_public_probe_observations(
                             else None
                         ),
                         "task_derived_review_scope": True,
+                        "reviewer_lease_id": derived.get("lease_id"),
                     }
                     receipt_core["receipt_id"] = semantic_fingerprint(receipt_core)
                     receipts.append(receipt_core)
                     observed_ids.add(tool_call_id)
+                    reviewer_validation_update = {
+                        "lease_id": derived.get("lease_id"),
+                        "candidate_hash": derived.get("candidate_hash"),
+                        "arguments_hash": arguments_hash,
+                        "outcome": validation_outcome,
+                    }
+            elif len(matched) > 1:
+                reviewer_validation_update = {
+                    "lease_id": derived.get("lease_id"),
+                    "candidate_hash": derived.get("candidate_hash"),
+                    "arguments_hash": semantic_fingerprint(
+                        sorted(
+                            str(tool_call_id)
+                            for tool_call_id, _action, _result in matched
+                        )
+                    ),
+                    "outcome": ReviewerValidationOutcome.AMBIGUOUS,
+                }
         state["plans"] = dict(list(plans.items())[-16:])
         state["receipts"] = receipts[-16:]
         state["revision"] = int(state.get("revision", 0) or 0) + 1
@@ -1841,6 +2991,31 @@ def record_public_probe_observations(
         EXECUTION_PROTOCOL_PUBLIC_PROBES_KEY,
         add_observations,
     )
+    if reviewer_validation_update is not None:
+        try:
+            record_reviewer_value_validation(
+                context,
+                agent_id,
+                **reviewer_validation_update,
+            )
+        except (TypeError, ValueError):
+            pass
+    if (
+        reviewer_lease_before is not None
+        and reviewer_lease_before.status is ReviewerLeaseStatus.REPAIR_PENDING
+        and action_by_id
+    ):
+        candidate_hash, _ = _public_candidate_binding(context, agent_id)
+        repaired = record_reviewer_value_repair_observation(
+            context,
+            agent_id,
+            candidate_hash=candidate_hash,
+        )
+        if (
+            repaired is not None
+            and repaired.status is ReviewerLeaseStatus.REVALIDATION_PENDING
+        ):
+            _arm_task_derived_validation_from_lease(context, agent_id, repaired)
     return len(observed_ids)
 
 
@@ -2874,6 +4049,7 @@ def project_execution_protocol_telemetry(value: Any) -> dict[str, Any] | None:
     if not isinstance(value, Mapping) or value.get("schema_version") not in {
         "aworld.execution-protocol-telemetry/v1",
         "aworld.execution-protocol-telemetry/v2",
+        "aworld.execution-protocol-telemetry/v3",
     }:
         return None
     required = {"mode", "phase", "armed"}
@@ -2949,6 +4125,7 @@ def project_execution_protocol_telemetry(value: Any) -> dict[str, Any] | None:
             "protocol_convergence",
             "protocol_finalization",
             "candidate_continuation_limit",
+            "reviewer_lease_active",
         },
         "acceptance_candidate_authentication": {
             "current_complete_projection",
@@ -2969,6 +4146,52 @@ def project_execution_protocol_telemetry(value: Any) -> dict[str, Any] | None:
             "validation",
             "delivery_progress",
             "delivery",
+        },
+        "reviewer_lease_status": {
+            status.value for status in ReviewerLeaseStatus
+        },
+        "reviewer_admission_reason": {
+            "admitted",
+            "mode_not_guide",
+            "terminal_review_gate_disabled",
+            "short_or_unarmed",
+            "lease_guidance_exhausted",
+            "phase_not_actionable",
+            "no_current_candidate",
+            "insufficient_closure_reserve",
+            "no_unresolved_public_obligation",
+        },
+        "reviewer_directive_source": {
+            source.value for source in ReviewerDirectiveSource
+        },
+        "reviewer_closure_reason": {
+            reason.value for reason in ReviewerLeaseClosureReason
+        },
+        "reviewer_status": {"completed", "inconclusive", "unavailable"},
+        "reviewer_decision": {"ready", "repair", "uncertain"},
+        "reviewer_reason": {
+            "context_unavailable",
+            "empty_report",
+            "factory_unavailable",
+            "ready_evidence_missing",
+            "review_start_window_closed",
+            "reviewer_execution_failed",
+            "reviewer_lease_claim_rejected",
+            "reviewer_lease_not_offered",
+            "reviewer_lease_obligation_stale",
+            "candidate_changed_during_review",
+            "decision_ambiguous",
+            "structured_decision_invalid",
+            "decision_unparseable",
+            "deadline_exceeded",
+            "reviewer_budget_exceeded",
+            "reviewer_cancelled",
+            "reviewer_depth_exceeded",
+            "reviewer_output_invalid",
+            "reviewer_uncertain",
+            "reviewer_unavailable",
+            "authoritative_task_unavailable",
+            "authoritative_task_too_large",
         },
     }
     booleans = {
@@ -2991,6 +4214,9 @@ def project_execution_protocol_telemetry(value: Any) -> dict[str, Any] | None:
         "analysis_runway_open",
         "model_decision_checkpoints_enabled",
         "public_contract_closure_complete",
+        "reviewer_usage_reported",
+        "reviewer_value_realized",
+        "reviewer_candidate_current",
     }
     counters = {
         "event_count",
@@ -3038,6 +4264,15 @@ def project_execution_protocol_telemetry(value: Any) -> dict[str, Any] | None:
         "public_contract_unresolved_count",
         "public_contract_checkpoint_count",
         "evidence_progress_gate_blocked_call_count",
+        "reviewer_admission_count",
+        "reviewer_skip_count",
+        "reviewer_claim_count",
+        "reviewer_validation_attempt_count",
+        "reviewer_repair_attempt_count",
+        "reviewer_revalidation_attempt_count",
+        "reviewer_elapsed_ms",
+        "reviewer_reported_input_tokens",
+        "reviewer_reported_output_tokens",
     }
     numbers = {
         "terminal_checkpoint_created_at_monotonic",
@@ -3082,9 +4317,39 @@ def project_execution_protocol_telemetry(value: Any) -> dict[str, Any] | None:
         "evidence_progress_gate_blocked_call_count",
         *numbers,
     }
+    v3_fields = {
+        "reviewer_lease_status",
+        "reviewer_admission_reason",
+        "reviewer_directive_source",
+        "reviewer_closure_reason",
+        "reviewer_status",
+        "reviewer_decision",
+        "reviewer_reason",
+        "reviewer_usage_reported",
+        "reviewer_value_realized",
+        "reviewer_candidate_current",
+        "reviewer_admission_count",
+        "reviewer_skip_count",
+        "reviewer_claim_count",
+        "reviewer_validation_attempt_count",
+        "reviewer_repair_attempt_count",
+        "reviewer_revalidation_attempt_count",
+        "reviewer_elapsed_ms",
+        "reviewer_reported_input_tokens",
+        "reviewer_reported_output_tokens",
+    }
     if (
         value.get("schema_version") == "aworld.execution-protocol-telemetry/v1"
         and set(value).intersection(v2_fields)
+    ):
+        return None
+    if (
+        value.get("schema_version")
+        in {
+            "aworld.execution-protocol-telemetry/v1",
+            "aworld.execution-protocol-telemetry/v2",
+        }
+        and set(value).intersection(v3_fields)
     ):
         return None
     projected = {"schema_version": value["schema_version"]}
@@ -3136,6 +4401,8 @@ def build_execution_protocol_telemetry(context, agent_id: str) -> dict[str, Any]
     )
     if not isinstance(public_contract, Mapping):
         public_contract = {}
+    reviewer_value = _reviewer_value_state(context, agent_id)
+    reviewer_lease = load_reviewer_value_lease(context, agent_id)
     owner = state_context(context)
     runtime_metrics = getattr(owner, "context_info", {}).get(
         EXECUTION_PROTOCOL_METRICS_KEY
@@ -3148,7 +4415,7 @@ def build_execution_protocol_telemetry(context, agent_id: str) -> dict[str, Any]
     if not isinstance(terminal_metrics, Mapping):
         terminal_metrics = {}
     telemetry = {
-        "schema_version": "aworld.execution-protocol-telemetry/v2",
+        "schema_version": "aworld.execution-protocol-telemetry/v3",
         "mode": policy.mode.value,
         "phase": state.phase.value,
         "armed": state.long_horizon_armed,
@@ -3301,6 +4568,100 @@ def build_execution_protocol_telemetry(context, agent_id: str) -> dict[str, Any]
         "public_contract_closure_complete": (
             public_contract.get("closure_complete") is True
             if public_contract
+            else None
+        ),
+        "reviewer_lease_status": (
+            reviewer_lease.status.value if reviewer_lease is not None else None
+        ),
+        "reviewer_admission_reason": reviewer_value.get(
+            "last_admission_reason"
+        ),
+        "reviewer_directive_source": (
+            reviewer_lease.directive_source.value
+            if reviewer_lease is not None
+            and reviewer_lease.directive_source is not None
+            else None
+        ),
+        "reviewer_closure_reason": (
+            reviewer_lease.closure_reason.value
+            if reviewer_lease is not None
+            and reviewer_lease.closure_reason is not None
+            else None
+        ),
+        "reviewer_status": reviewer_value.get("review_status"),
+        "reviewer_decision": reviewer_value.get("review_decision"),
+        "reviewer_reason": reviewer_value.get("review_reason"),
+        "reviewer_usage_reported": (
+            reviewer_lease.usage_reported
+            if reviewer_lease is not None
+            else None
+        ),
+        "reviewer_value_realized": (
+            bool(
+                reviewer_lease.validation_attempt_count == 1
+                and reviewer_lease.closure_reason
+                not in {
+                    ReviewerLeaseClosureReason.VALIDATION_REPEATED,
+                    ReviewerLeaseClosureReason.VALIDATION_AMBIGUOUS,
+                    ReviewerLeaseClosureReason.VALIDATION_UNAVAILABLE,
+                    ReviewerLeaseClosureReason.REVALIDATION_REPEATED,
+                    ReviewerLeaseClosureReason.REVALIDATION_AMBIGUOUS,
+                    ReviewerLeaseClosureReason.REVALIDATION_UNAVAILABLE,
+                }
+            )
+            if reviewer_lease is not None
+            else None
+        ),
+        "reviewer_candidate_current": (
+            (
+                _public_candidate_binding(context, agent_id)[0]
+                == (
+                    reviewer_lease.repair_candidate_hash
+                    or reviewer_lease.candidate_hash
+                )
+            )
+            if reviewer_lease is not None
+            else None
+        ),
+        "reviewer_admission_count": _bounded_counter(
+            reviewer_value.get("admission_count")
+        ),
+        "reviewer_skip_count": _bounded_counter(
+            reviewer_value.get("skip_count")
+        ),
+        "reviewer_claim_count": (
+            reviewer_lease.review_claim_count
+            if reviewer_lease is not None
+            else 0
+        ),
+        "reviewer_validation_attempt_count": (
+            reviewer_lease.validation_attempt_count
+            if reviewer_lease is not None
+            else 0
+        ),
+        "reviewer_repair_attempt_count": (
+            reviewer_lease.repair_attempt_count
+            if reviewer_lease is not None
+            else 0
+        ),
+        "reviewer_revalidation_attempt_count": (
+            reviewer_lease.revalidation_attempt_count
+            if reviewer_lease is not None
+            else 0
+        ),
+        "reviewer_elapsed_ms": (
+            reviewer_lease.review_elapsed_ms
+            if reviewer_lease is not None
+            else None
+        ),
+        "reviewer_reported_input_tokens": (
+            reviewer_lease.reported_input_tokens
+            if reviewer_lease is not None
+            else None
+        ),
+        "reviewer_reported_output_tokens": (
+            reviewer_lease.reported_output_tokens
+            if reviewer_lease is not None
             else None
         ),
         "consecutive_read_only_observations": _bounded_counter(
@@ -6555,6 +7916,9 @@ def consume_execution_protocol_guidance(context, agent_id: str) -> str | None:
     policy = execution_protocol_policy(context, agent_id)
     if policy.mode is not ProtocolMode.GUIDE:
         return None
+    reviewer_guidance = reviewer_value_lease_guidance(context, agent_id)
+    if reviewer_guidance is not None:
+        return reviewer_guidance
     deadline_progress = _task_deadline_progress(context)
 
     def deadline_suffix(*, produce_candidate: bool) -> str:
@@ -6964,6 +8328,14 @@ def record_candidate_final(
             application="delivery",
         )
     store = ExecutionProtocolStore(context, agent_id, policy)
+    if (
+        store.load().review_pending
+        and (
+            reviewer_value_lease_terminal_ready(context, agent_id)
+            or _reviewer_value_lease_consumed_and_closed(context, agent_id)
+        )
+    ):
+        return _apply_terminal_fallback_submission(context, agent_id, policy)
     if store.load().review_pending:
         transition = store.apply(
             ExecutionProtocolEvent(
@@ -6995,6 +8367,24 @@ def record_candidate_final(
         )
     )
     _record_transition_metrics(context, transition)
+    if (
+        transition.decision.action is ControllerAction.REQUEST_FINAL_REVIEW
+        and policy.terminal_review_gate_enabled
+    ):
+        if (
+            reviewer_value_lease_terminal_ready(context, agent_id)
+            or _reviewer_value_lease_consumed_and_closed(context, agent_id)
+        ):
+            return _apply_terminal_fallback_submission(context, agent_id, policy)
+        reviewer_state = _reviewer_value_state(context, agent_id)
+        if reviewer_state.get("last_admission_reason") in {
+            "no_unresolved_public_obligation",
+            "no_current_candidate",
+            "insufficient_closure_reserve",
+            "short_or_unarmed",
+            "lease_guidance_exhausted",
+        }:
+            return _apply_terminal_fallback_submission(context, agent_id, policy)
     return transition
 
 
@@ -7677,6 +9067,7 @@ __all__ = [
     "EXECUTION_PROTOCOL_POLICY_KEY",
     "EXECUTION_PROTOCOL_PUBLIC_PROBES_KEY",
     "EXECUTION_PROTOCOL_PUBLIC_CONTRACT_KEY",
+    "EXECUTION_PROTOCOL_REVIEWER_VALUE_KEY",
     "configure_execution_protocol",
     "constrain_candidate_convergence_tool_catalog",
     "acceptance_critic_active",
@@ -7703,8 +9094,21 @@ __all__ = [
     "record_pre_generation_delivery_decision",
     "record_public_probe_observations",
     "record_public_probe_plan",
+    "reviewer_validation_probe_binding",
     "record_public_contract_evidence",
     "public_contract_evidence_status",
+    "ensure_reviewer_value_lease_offer",
+    "claim_reviewer_value_lease_for_review",
+    "close_reviewer_value_lease_for_liveness",
+    "load_reviewer_value_lease",
+    "record_reviewer_value_directive",
+    "record_reviewer_value_validation",
+    "record_reviewer_value_repair_observation",
+    "reviewer_value_lease_guidance",
+    "reviewer_value_lease_id",
+    "reviewer_value_lease_obligation",
+    "reviewer_value_lease_requires_continuation",
+    "reviewer_value_lease_terminal_ready",
     "record_tool_hypotheses",
     "record_acceptance_probe_plan",
     "record_acceptance_probe_observation",

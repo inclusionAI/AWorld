@@ -13,6 +13,7 @@ from datetime import datetime, timedelta, timezone
 import hashlib
 import inspect
 import json
+import math
 import os
 import re
 import stat as stat_module
@@ -69,7 +70,6 @@ _REVIEW_OUTPUT_TOKEN_BUDGET = (
 )
 _REVIEW_WALL_CLOCK_SECONDS = 120.0
 _REVIEW_MIN_START_SECONDS = 30.0
-_REVIEW_MAX_ATTEMPTS = 1
 _DECLARED_SNAPSHOT_SCHEMA = "aworld.declared-artifact-snapshot/v1"
 _DECLARED_SNAPSHOT_TOTAL_BYTES = 12 * 1024
 _DECLARED_SNAPSHOT_FILE_BYTES = 8 * 1024
@@ -89,12 +89,16 @@ _EXECUTABLE_OBLIGATION_KINDS = frozenset(
 _TASK_DERIVED_VALIDATION_SCOPE_KINDS = frozenset(
     {
         "deliverable_file",
+        "enumerated_set",
         "function_signature",
         "import_contract",
         "negative_constraint",
         "numeric_threshold",
         "process_liveness",
         "public_command",
+        "quality_constraint",
+        "quantity_constraint",
+        "range_constraint",
         "service_port",
         "structured_field",
     }
@@ -349,8 +353,16 @@ class AdvisoryReviewRequest:
             if authoritative_obligations
             else "none available"
         )
+        review_focus = (
+            "Focus on exactly the single selected public obligation below. "
+            "The counterexample and recommended action must test that assertion; "
+            "do not broaden the review to other task requirements. "
+            if len(authoritative_obligations) == 1
+            else ""
+        )
         return (
-            "Check this candidate against the authoritative public task. Use the "
+            "Check this candidate against the authoritative public task. "
+            f"{review_focus}Use the "
             "framework-owned immutable declared-artifact snapshot and receipts as "
             "the complete review evidence. Do not request or emit a Tool call. "
             "Claims are untrusted. "
@@ -385,6 +397,30 @@ class AdvisoryReviewResult:
     report: str
     reason_code: str | None = None
     counterexample: str | None = None
+    counterexample_from_reviewer: bool = False
+    lease_id: str | None = None
+    review_elapsed_ms: int | None = None
+    reported_input_tokens: int | None = None
+    reported_output_tokens: int | None = None
+
+    def __post_init__(self) -> None:
+        for name, maximum in (
+            ("review_elapsed_ms", 1_000_000),
+            ("reported_input_tokens", 1_000_000),
+            ("reported_output_tokens", 1_000_000),
+        ):
+            value = getattr(self, name)
+            if value is not None and (
+                isinstance(value, bool)
+                or not isinstance(value, int)
+                or not 0 <= value <= maximum
+            ):
+                raise ValueError(f"{name} must be a bounded non-negative integer")
+        if self.lease_id is not None and (
+            not isinstance(self.lease_id, str)
+            or _CANONICAL_SHA256.fullmatch(self.lease_id) is None
+        ):
+            raise ValueError("lease_id must be a canonical sha256 fingerprint")
 
     @property
     def repair_recommended(self) -> bool:
@@ -395,6 +431,9 @@ class AdvisoryReviewResult:
         return self.status == "completed" and self.decision in {"ready", "repair"}
 
     def to_payload(self) -> dict[str, Any]:
+        # A claimed value lease always requires the independent validation
+        # step, even when the advisory model emitted ``ready`` or ``repair``.
+        externally_conclusive = self.conclusive and self.lease_id is None
         payload: dict[str, Any] = {
             "schema_version": ADVISORY_REVIEW_SCHEMA_VERSION,
             "status": self.status,
@@ -403,13 +442,28 @@ class AdvisoryReviewResult:
             "fresh_context": True,
             "answer_only": True,
             "read_only": True,
-            "conclusive": self.conclusive,
+            "conclusive": externally_conclusive,
             "repair_recommended": self.repair_recommended,
             "report": self.report[:_MAX_REPORT_CHARS],
         }
         if self.reason_code:
             payload["reason_code"] = self.reason_code
-        if self.status != "completed" or self.decision == "uncertain":
+        if self.review_elapsed_ms is not None:
+            payload["review_elapsed_ms"] = self.review_elapsed_ms
+        usage_reported = bool(
+            self.reported_input_tokens is not None
+            or self.reported_output_tokens is not None
+        )
+        payload["usage_reported"] = usage_reported
+        if self.reported_input_tokens is not None:
+            payload["reported_input_tokens"] = self.reported_input_tokens
+        if self.reported_output_tokens is not None:
+            payload["reported_output_tokens"] = self.reported_output_tokens
+        if (
+            self.lease_id is not None
+            or self.status != "completed"
+            or self.decision == "uncertain"
+        ):
             payload["recommended_framework_action"] = (
                 "task_derived_validation_once"
             )
@@ -423,15 +477,19 @@ def _fallback_counterexample(
     """Build a public-task-only counterexample when model review is unusable."""
 
     priority = {
-        "numeric_threshold": 0,
-        "negative_constraint": 1,
-        "structured_field": 2,
-        "function_signature": 3,
-        "import_contract": 4,
-        "process_liveness": 5,
-        "service_port": 6,
-        "public_command": 7,
-        "deliverable_file": 8,
+        "range_constraint": 0,
+        "numeric_threshold": 1,
+        "quantity_constraint": 2,
+        "negative_constraint": 3,
+        "quality_constraint": 4,
+        "structured_field": 5,
+        "enumerated_set": 6,
+        "function_signature": 7,
+        "import_contract": 8,
+        "process_liveness": 9,
+        "service_port": 10,
+        "public_command": 11,
+        "deliverable_file": 12,
     }
     selected = min(
         (
@@ -460,7 +518,7 @@ def _task_derived_validation_scope(
     *,
     agent_id: str | None = None,
 ) -> list[dict[str, Any]]:
-    """Return bounded public obligations for one root-owned validation turn."""
+    """Compatibility scope for explicit OFF/OBSERVE manual review."""
 
     public_task, error = _authoritative_public_task(context)
     if error is not None:
@@ -477,46 +535,72 @@ def _task_derived_validation_scope(
             for receipt in load_public_probe_receipts(context, agent_id):
                 if receipt.get("stale") is True:
                     continue
-                raw_ids = receipt.get("obligation_ids")
-                if isinstance(raw_ids, list):
-                    covered_ids.update(
-                        value for value in raw_ids if isinstance(value, str)
-                    )
+                covered_ids.update(
+                    value
+                    for value in (receipt.get("obligation_ids") or ())
+                    if isinstance(value, str)
+                )
         except Exception:
             pass
     priority = {
-        "numeric_threshold": 0,
-        "negative_constraint": 1,
-        "structured_field": 2,
-        "function_signature": 3,
-        "import_contract": 4,
-        "process_liveness": 5,
-        "service_port": 6,
-        "public_command": 7,
-        "deliverable_file": 8,
+        "range_constraint": 0,
+        "numeric_threshold": 1,
+        "quantity_constraint": 2,
+        "negative_constraint": 3,
+        "quality_constraint": 4,
+        "structured_field": 5,
+        "enumerated_set": 6,
+        "function_signature": 7,
+        "import_contract": 8,
+        "process_liveness": 9,
+        "service_port": 10,
+        "public_command": 11,
+        "deliverable_file": 12,
     }
     eligible = [
-        obligation
-        for obligation in obligations
-        if obligation.get("kind") in _TASK_DERIVED_VALIDATION_SCOPE_KINDS
+        row
+        for row in obligations
+        if row.get("kind") in _TASK_DERIVED_VALIDATION_SCOPE_KINDS
     ]
     eligible.sort(
-        key=lambda obligation: (
-            obligation.get("obligation_id") in covered_ids,
-            priority.get(str(obligation.get("kind")), 99),
-            str(obligation.get("obligation_id")),
+        key=lambda row: (
+            row.get("obligation_id") in covered_ids,
+            priority.get(str(row.get("kind")), 99),
+            str(row.get("obligation_id")),
         )
     )
     return [
         {
-            "obligation_id": obligation["obligation_id"],
-            "kind": obligation["kind"],
-            "subject": obligation["subject"],
-            "expectation": obligation["expectation"],
-            "source_fingerprint": obligation["source_fingerprint"],
+            key: obligation[key]
+            for key in (
+                "obligation_id",
+                "kind",
+                "subject",
+                "expectation",
+                "source_fingerprint",
+            )
         }
         for obligation in eligible[:3]
     ]
+
+
+def _selected_validation_scope(
+    obligation: Mapping[str, Any] | None,
+) -> list[dict[str, Any]]:
+    """Project exactly one runner-authenticated public obligation."""
+
+    if not isinstance(obligation, Mapping):
+        return []
+    required = (
+        "obligation_id",
+        "kind",
+        "subject",
+        "expectation",
+        "source_fingerprint",
+    )
+    if any(key not in obligation for key in required):
+        return []
+    return [{key: obligation[key] for key in required}]
 
 
 BuilderLoader = Callable[[], Callable[..., Any]]
@@ -556,8 +640,7 @@ class LazyVerifierFactory:
         self._builder_loader = builder_loader or self._load_builder
         self._review_runner = review_runner or self._run_with_subagent_manager
         self._construction_count = 0
-        self._review_attempt_keys: set[str] = set()
-        self._review_attempt_count = 0
+        self._legacy_review_used = False
 
     @property
     def construction_count(self) -> int:
@@ -616,9 +699,53 @@ class LazyVerifierFactory:
         request: AdvisoryReviewRequest,
         *,
         context: Any,
+        authoritative_obligation: Mapping[str, Any] | None = None,
+        lease_id: str | None = None,
     ) -> AdvisoryReviewResult:
-        """Run one deadline-bound review and fail open as unavailable."""
+        """Run one deadline-bound review and return bounded ROI metadata.
 
+        The production Tool supplies a runner-claimed lease and its one selected
+        public obligation.  Direct callers may omit both for compatibility, but
+        this factory never owns review admission or retry authority.
+        """
+
+        started = time.monotonic()
+        result = await self._review_once(
+            request,
+            context=context,
+            authoritative_obligation=authoritative_obligation,
+        )
+        elapsed_ms = min(
+            1_000_000,
+            max(0, int((time.monotonic() - started) * 1000)),
+        )
+        return AdvisoryReviewResult(
+            status=result.status,
+            decision=result.decision,
+            report=result.report,
+            reason_code=result.reason_code,
+            counterexample=result.counterexample,
+            counterexample_from_reviewer=result.counterexample_from_reviewer,
+            lease_id=lease_id,
+            review_elapsed_ms=elapsed_ms,
+            reported_input_tokens=result.reported_input_tokens,
+            reported_output_tokens=result.reported_output_tokens,
+        )
+
+    async def _review_once(
+        self,
+        request: AdvisoryReviewRequest,
+        *,
+        context: Any,
+        authoritative_obligation: Mapping[str, Any] | None,
+    ) -> AdvisoryReviewResult:
+        """Execute a review already admitted by the owning caller."""
+
+        fallback_obligations = (
+            (dict(authoritative_obligation),)
+            if isinstance(authoritative_obligation, Mapping)
+            else ()
+        )
         try:
             public_task, request_error = _authoritative_public_task(context)
             if request_error is not None:
@@ -631,14 +758,6 @@ class LazyVerifierFactory:
                     ),
                     reason_code=request_error,
                 )
-            gate = _current_candidate_gate(
-                context, agent_id=self._parent_agent.id()
-            )
-            candidate_fingerprint = (
-                gate.get("candidate_fingerprint")
-                if isinstance(gate, Mapping)
-                else None
-            )
             if not self._review_start_window_open(context):
                 return AdvisoryReviewResult(
                     status="unavailable",
@@ -648,16 +767,18 @@ class LazyVerifierFactory:
                         "persistence, and finalization."
                     ),
                     reason_code="review_start_window_closed",
-                    counterexample=(
-                        "Use the remaining validation window for one assertive "
-                        "public-task-derived boundary check that differs from the "
-                        "solver's existing evidence."
-                    ),
+                    counterexample=_fallback_counterexample(fallback_obligations),
                 )
             authoritative_obligations = _authoritative_public_obligations(
                 context,
                 public_task=public_task,
             )
+            if authoritative_obligation is not None:
+                # The runner has already matched both the obligation id and
+                # source fingerprint to the claimed lease.  Treat that narrow
+                # projection as authoritative instead of reselecting here.
+                selected = dict(authoritative_obligation)
+                authoritative_obligations = (selected,)
             authoritative_deliverables = _authoritative_delivery_paths(
                 context,
                 authoritative_obligations=authoritative_obligations,
@@ -706,53 +827,6 @@ class LazyVerifierFactory:
                         for path in authoritative_deliverables
                     ],
                 }
-            attempt_key = hashlib.sha256(
-                json.dumps(
-                    {
-                        "public_task": public_task,
-                        "candidate_claim": request.candidate_claim,
-                        "deliverables": request.deliverables,
-                        "evidence_summary": request.evidence_summary,
-                        "candidate_fingerprint": candidate_fingerprint,
-                        "artifact_snapshot": authoritative_artifact_snapshot,
-                        "public_obligations": authoritative_obligations,
-                    },
-                    ensure_ascii=False,
-                    sort_keys=True,
-                    separators=(",", ":"),
-                ).encode("utf-8")
-            ).hexdigest()
-            if attempt_key in self._review_attempt_keys:
-                return AdvisoryReviewResult(
-                    status="unavailable",
-                    decision="uncertain",
-                    report=(
-                        "The current candidate has already received this bounded "
-                        "advisory review attempt. The root agent should use the "
-                        "existing result or continue with an explicitly revised "
-                        "candidate."
-                    ),
-                    reason_code="duplicate_candidate_review",
-                    counterexample=_fallback_counterexample(
-                        authoritative_obligations
-                    ),
-                )
-            if self._review_attempt_count >= _REVIEW_MAX_ATTEMPTS:
-                return AdvisoryReviewResult(
-                    status="unavailable",
-                    decision="uncertain",
-                    report=(
-                        "The bounded candidate review has already been used. Run "
-                        "one task-derived validation "
-                        "and finalize the best current candidate."
-                    ),
-                    reason_code="review_attempt_limit",
-                    counterexample=_fallback_counterexample(
-                        authoritative_obligations
-                    ),
-                )
-            self._review_attempt_keys.add(attempt_key)
-            self._review_attempt_count += 1
             verifier = self._construct_verifier()
             authoritative_validation_receipts = _authoritative_validation_receipts(
                 context,
@@ -769,7 +843,20 @@ class LazyVerifierFactory:
                 ),
                 authoritative_obligations=authoritative_obligations,
             )
-            review_deadline = self._review_deadline(context)
+            try:
+                from aworld.runners.execution_protocol import (
+                    execution_protocol_policy,
+                )
+
+                review_timeout = execution_protocol_policy(
+                    context, self._parent_agent.id()
+                ).final_review_timeout_seconds
+            except Exception:
+                review_timeout = None
+            review_deadline = self._review_deadline(
+                context,
+                cap_seconds=review_timeout,
+            )
             result = await self._invoke_review_runner(
                 verifier=verifier,
                 directive=directive,
@@ -782,6 +869,9 @@ class LazyVerifierFactory:
                     )
                 ),
             )
+            reported_input_tokens, reported_output_tokens = (
+                _reported_child_usage(result)
+            )
             child_failure = _child_failure_result(result)
             if child_failure is not None:
                 return AdvisoryReviewResult(
@@ -792,6 +882,8 @@ class LazyVerifierFactory:
                     counterexample=_fallback_counterexample(
                         authoritative_obligations
                     ),
+                    reported_input_tokens=reported_input_tokens,
+                    reported_output_tokens=reported_output_tokens,
                 )
             if isinstance(result, ChildResult):
                 result = result.answer
@@ -805,6 +897,8 @@ class LazyVerifierFactory:
                     counterexample=_fallback_counterexample(
                         authoritative_obligations
                     ),
+                    reported_input_tokens=reported_input_tokens,
+                    reported_output_tokens=reported_output_tokens,
                 )
             if raw_report.startswith(("[Error]", "[Exception]")):
                 return AdvisoryReviewResult(
@@ -815,6 +909,8 @@ class LazyVerifierFactory:
                     counterexample=_fallback_counterexample(
                         authoritative_obligations
                     ),
+                    reported_input_tokens=reported_input_tokens,
+                    reported_output_tokens=reported_output_tokens,
                 )
             decision, normalized_report, parse_reason, counterexample = (
                 _parse_review_report(raw_report)
@@ -828,6 +924,8 @@ class LazyVerifierFactory:
                     counterexample=_fallback_counterexample(
                         authoritative_obligations
                     ),
+                    reported_input_tokens=reported_input_tokens,
+                    reported_output_tokens=reported_output_tokens,
                 )
             executable_obligation_present = any(
                 obligation.get("kind") in _EXECUTABLE_OBLIGATION_KINDS
@@ -875,6 +973,9 @@ class LazyVerifierFactory:
                         counterexample
                         or _fallback_counterexample(authoritative_obligations)
                     ),
+                    counterexample_from_reviewer=counterexample is not None,
+                    reported_input_tokens=reported_input_tokens,
+                    reported_output_tokens=reported_output_tokens,
                 )
             return AdvisoryReviewResult(
                 status=("inconclusive" if decision == "uncertain" else "completed"),
@@ -885,6 +986,9 @@ class LazyVerifierFactory:
                     counterexample
                     or _fallback_counterexample(authoritative_obligations)
                 ),
+                counterexample_from_reviewer=counterexample is not None,
+                reported_input_tokens=reported_input_tokens,
+                reported_output_tokens=reported_output_tokens,
             )
         except Exception as exc:
             logger.warning(
@@ -904,10 +1008,7 @@ class LazyVerifierFactory:
                     if isinstance(exc, TimeoutError)
                     else "reviewer_unavailable"
                 ),
-                counterexample=(
-                    "Run one assertive public-task-derived boundary check that "
-                    "differs from the solver's existing evidence."
-                ),
+                counterexample=_fallback_counterexample(fallback_obligations),
             )
 
     async def _invoke_review_runner(
@@ -983,10 +1084,20 @@ class LazyVerifierFactory:
         return float(remaining) - safe_reserve >= _REVIEW_MIN_START_SECONDS
 
     @staticmethod
-    def _review_deadline(context: Any) -> datetime:
+    def _review_deadline(
+        context: Any,
+        *,
+        cap_seconds: float | None = None,
+    ) -> datetime:
         """Return a finite child deadline without consuming caller persistence time."""
 
         available = _REVIEW_WALL_CLOCK_SECONDS
+        if (
+            isinstance(cap_seconds, (int, float))
+            and not isinstance(cap_seconds, bool)
+            and cap_seconds > 0
+        ):
+            available = min(available, float(cap_seconds))
         get_task = getattr(context, "get_task", None)
         try:
             task = get_task() if callable(get_task) else None
@@ -1131,6 +1242,11 @@ class AdvisoryVerifierTool(AsyncTool):
             return self._invalid(
                 f"advisory verifier caller identity rejected: {resolution_error}"
             )
+        claimed_lease = None
+        selected_obligation: Mapping[str, Any] | None = None
+        lease_id: str | None = None
+        directive_recorded = None
+        legacy_review = False
         if not isinstance(factory, LazyVerifierFactory):
             result = AdvisoryReviewResult(
                 status="unavailable",
@@ -1155,39 +1271,198 @@ class AdvisoryVerifierTool(AsyncTool):
                     reason_code="context_unavailable",
                 )
             else:
-                result = await factory.review(request, context=context)
+                from aworld.core.execution_protocol import ReviewerDirectiveSource
+                from aworld.runners.execution_protocol import (
+                    claim_reviewer_value_lease_for_review,
+                    close_reviewer_value_lease_for_liveness,
+                    ensure_reviewer_value_lease_offer,
+                    record_reviewer_value_directive,
+                    reviewer_value_lease_id,
+                    reviewer_value_lease_obligation,
+                )
 
-        if context is not None and isinstance(factory, LazyVerifierFactory):
+                agent_id = factory.parent_agent.id()
+                try:
+                    offered = ensure_reviewer_value_lease_offer(context, agent_id)
+                except Exception as exc:
+                    logger.warning(
+                        "Reviewer value lease offer unavailable; error_type=%s",
+                        type(exc).__name__,
+                    )
+                    offered = None
+                if offered is None:
+                    try:
+                        from aworld.core.execution_protocol import ProtocolMode
+                        from aworld.runners.execution_protocol import (
+                            execution_protocol_policy,
+                        )
+
+                        compatibility_mode = execution_protocol_policy(
+                            context, agent_id
+                        ).mode in {ProtocolMode.OFF, ProtocolMode.OBSERVE}
+                    except Exception:
+                        compatibility_mode = False
+                    if compatibility_mode and not factory._legacy_review_used:
+                        factory._legacy_review_used = True
+                        legacy_review = True
+                        result = await factory.review(request, context=context)
+                    else:
+                        result = AdvisoryReviewResult(
+                            status="unavailable",
+                            decision="uncertain",
+                            report=(
+                                "No actionable reviewer value lease is available "
+                                "for the current candidate."
+                            ),
+                            reason_code=(
+                                "review_attempt_limit"
+                                if compatibility_mode
+                                else "reviewer_lease_not_offered"
+                            ),
+                        )
+                else:
+                    try:
+                        claimed_lease = claim_reviewer_value_lease_for_review(
+                            context, agent_id
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "Reviewer value lease claim unavailable; error_type=%s",
+                            type(exc).__name__,
+                        )
+                        claimed_lease = None
+                    if claimed_lease is None:
+                        result = AdvisoryReviewResult(
+                            status="unavailable",
+                            decision="uncertain",
+                            report=(
+                                "The reviewer value lease is consumed or no longer "
+                                "matches the current candidate."
+                            ),
+                            reason_code="reviewer_lease_claim_rejected",
+                        )
+                    else:
+                        lease_id = reviewer_value_lease_id(claimed_lease)
+                        selected_obligation = reviewer_value_lease_obligation(
+                            context, agent_id, claimed_lease
+                        )
+                        if selected_obligation is None:
+                            fallback_obligation = {
+                                "obligation_id": claimed_lease.obligation_id,
+                                "kind": "public_obligation",
+                                "subject": claimed_lease.obligation_id,
+                                "expectation": {"required": True},
+                                "source_fingerprint": (
+                                    claimed_lease.obligation_source_fingerprint
+                                ),
+                            }
+                            result = AdvisoryReviewResult(
+                                status="unavailable",
+                                decision="uncertain",
+                                report=(
+                                    "The claimed public obligation is no longer "
+                                    "current. The reviewer was not constructed."
+                                ),
+                                reason_code="reviewer_lease_obligation_stale",
+                                counterexample=_fallback_counterexample(
+                                    (fallback_obligation,)
+                                ),
+                                lease_id=lease_id,
+                                review_elapsed_ms=0,
+                            )
+                            selected_obligation = fallback_obligation
+                        else:
+                            result = await factory.review(
+                                request,
+                                context=context,
+                                authoritative_obligation=selected_obligation,
+                                lease_id=lease_id,
+                            )
+
+                        counterexample = (
+                            result.counterexample
+                            or _fallback_counterexample((selected_obligation,))
+                        )[:_MAX_REPORT_CHARS]
+                        source = (
+                            ReviewerDirectiveSource.REVIEWER
+                            if result.counterexample_from_reviewer
+                            else ReviewerDirectiveSource.PUBLIC_CONTRACT_FALLBACK
+                        )
+                        try:
+                            directive_recorded = record_reviewer_value_directive(
+                                context,
+                                agent_id,
+                                lease_id=lease_id,
+                                counterexample=counterexample,
+                                source=source,
+                                status=result.status,
+                                decision=result.decision,
+                                reason_code=result.reason_code,
+                                review_elapsed_ms=result.review_elapsed_ms,
+                                reported_input_tokens=result.reported_input_tokens,
+                                reported_output_tokens=result.reported_output_tokens,
+                            )
+                        except Exception as exc:
+                            logger.warning(
+                                "Reviewer value directive persistence unavailable; "
+                                "error_type=%s",
+                                type(exc).__name__,
+                            )
+                        if directive_recorded is None:
+                            try:
+                                close_reviewer_value_lease_for_liveness(
+                                    context, agent_id
+                                )
+                            except Exception as exc:
+                                logger.warning(
+                                    "Reviewer value lease liveness closure unavailable; "
+                                    "error_type=%s",
+                                    type(exc).__name__,
+                                )
+
+        if legacy_review and context is not None and isinstance(
+            factory, LazyVerifierFactory
+        ):
             from aworld.runners.execution_protocol import (
                 record_advisory_review_result,
             )
 
-            try:
-                record_advisory_review_result(
-                    context,
-                    factory.parent_agent.id(),
-                    status=result.status,
-                    decision=result.decision,
-                    reason_code=result.reason_code,
-                )
-            except Exception as exc:
-                # Protocol projection is diagnostic for this Tool boundary.
-                # Review availability and the public report must remain usable
-                # if a legacy/non-runtime Context cannot persist protocol state.
-                logger.warning(
-                    "Advisory review protocol projection unavailable; error_type=%s",
-                    type(exc).__name__,
-                )
+            record_advisory_review_result(
+                context,
+                factory.parent_agent.id(),
+                status=result.status,
+                decision=result.decision,
+                reason_code=result.reason_code,
+            )
 
         payload = result.to_payload()
-        if not result.conclusive:
+        if claimed_lease is not None and directive_recorded is not None:
+            validation_scope = _selected_validation_scope(selected_obligation)
+            if validation_scope:
+                payload["task_derived_validation_scope"] = validation_scope
+                payload["task_derived_counterexample"] = {
+                    "schema_version": _COUNTEREXAMPLE_VALIDATION_SCHEMA,
+                    "lease_id": lease_id,
+                    "counterexample": (
+                        result.counterexample
+                        or _fallback_counterexample(validation_scope)
+                    )[:_MAX_REPORT_CHARS],
+                    "obligation_ids": [
+                        item["obligation_id"] for item in validation_scope
+                    ],
+                    "requirements": [
+                        "use an input, boundary, or independent recomputation "
+                        "not present in the claimed evidence",
+                        "execute an assertion that exits nonzero when the "
+                        "counterexample is observed",
+                        "bind the Tool call to the listed public obligation ids "
+                        "with __aworld_public_probe metadata",
+                    ],
+                }
+        elif legacy_review and not result.conclusive:
             validation_scope = _task_derived_validation_scope(
                 context,
-                agent_id=(
-                    factory.parent_agent.id()
-                    if isinstance(factory, LazyVerifierFactory)
-                    else None
-                ),
+                agent_id=factory.parent_agent.id(),
             )
             if validation_scope:
                 payload["task_derived_validation_scope"] = validation_scope
@@ -1201,17 +1476,21 @@ class AdvisoryVerifierTool(AsyncTool):
                         item["obligation_id"] for item in validation_scope
                     ],
                     "requirements": [
-                        "use an input, boundary, or independent recomputation not present in the claimed evidence",
-                        "execute an assertion that exits nonzero when the counterexample is observed",
-                        "bind the Tool call to the listed public obligation ids with __aworld_public_probe metadata",
+                        "execute one independent assertion",
                     ],
                 }
         return (
             Observation(content=json.dumps(payload, ensure_ascii=False)),
-            1.0 if result.conclusive else 0.0,
+            1.0 if legacy_review and result.conclusive else 0.0,
             False,
             False,
-            {"advisory_review": {key: value for key, value in payload.items() if key != "report"}},
+            {
+                "advisory_review": {
+                    key: value
+                    for key, value in payload.items()
+                    if key != "report"
+                }
+            },
         )
 
     @staticmethod
@@ -1370,6 +1649,27 @@ def _terminal_review_reserve_authorized(
             for action in fallback
         )
     )
+
+
+def _reported_child_usage(value: Any) -> tuple[int | None, int | None]:
+    """Return only non-empty framework-attributed ChildResult usage."""
+
+    if not isinstance(value, ChildResult):
+        return None, None
+    usage = getattr(value, "usage", None)
+    input_tokens = getattr(usage, "input_tokens", None)
+    output_tokens = getattr(usage, "output_tokens", None)
+    if (
+        isinstance(input_tokens, bool)
+        or not isinstance(input_tokens, int)
+        or input_tokens < 0
+        or isinstance(output_tokens, bool)
+        or not isinstance(output_tokens, int)
+        or output_tokens < 0
+        or not (input_tokens or output_tokens)
+    ):
+        return None, None
+    return min(input_tokens, 1_000_000), min(output_tokens, 1_000_000)
 
 
 def _child_failure_result(value: Any) -> AdvisoryReviewResult | None:
@@ -1562,9 +1862,19 @@ def _authoritative_public_obligations(
         ):
             return ()
         expectation = row.get("expectation")
+        if not _bounded_public_expectation(expectation):
+            return ()
         try:
-            json.dumps(expectation, ensure_ascii=False, sort_keys=True)
-        except (TypeError, ValueError):
+            encoded_expectation = json.dumps(
+                expectation,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            ).encode("utf-8")
+        except (TypeError, ValueError, OverflowError):
+            return ()
+        if len(encoded_expectation) > 4096:
             return ()
         seen.add(obligation_id)
         result.append(
@@ -1577,6 +1887,37 @@ def _authoritative_public_obligations(
             }
         )
     return tuple(result)
+
+
+def _bounded_public_expectation(value: Any, *, depth: int = 0) -> bool:
+    if depth > 8:
+        return False
+    if value is None or isinstance(value, (bool, str)):
+        return not isinstance(value, str) or len(value) <= 512
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        try:
+            return math.isfinite(float(value))
+        except (OverflowError, ValueError):
+            return False
+    if isinstance(value, Mapping):
+        return bool(
+            len(value) <= 64
+            and all(
+                isinstance(key, str)
+                and 0 < len(key) <= 128
+                and _bounded_public_expectation(item, depth=depth + 1)
+                for key, item in value.items()
+            )
+        )
+    if isinstance(value, (list, tuple)):
+        return bool(
+            len(value) <= 64
+            and all(
+                _bounded_public_expectation(item, depth=depth + 1)
+                for item in value
+            )
+        )
+    return False
 
 
 def _derive_public_obligations(public_task: str) -> tuple[dict[str, Any], ...]:

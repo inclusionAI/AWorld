@@ -404,6 +404,12 @@ When finished I should be able to run `python /app/server.py`.
     }
     assert by_kind["process_liveness"]
     assert len(by_kind["numeric_threshold"]) == 1
+    typed_metrics = {
+        item.expectation.get("metric")
+        for item in by_kind["range_constraint"]
+        if item.expectation.get("metric")
+    }
+    assert {"size", "accuracy"} <= typed_metrics
     assert by_kind["negative_constraint"]
     assert by_kind["public_command"][0].expectation["command"] == (
         "python /app/server.py"
@@ -507,6 +513,427 @@ def test_public_contract_is_bounded_and_deduplicated(tmp_path: Path) -> None:
     assert len(obligations) <= 32
     assert len([item for item in obligations if item.kind == "service_port"]) == 1
     assert len([item for item in obligations if item.kind == "process_liveness"]) == 1
+
+
+def test_public_contract_extracts_output_lists_tables_and_roles(
+    tmp_path: Path,
+) -> None:
+    obligations = infer_public_obligation_hints(
+        """Required output files:
+1. `summary.csv`
+2. `report.json`
+
+The output table must contain these columns:
+| filename | score | rank |
+| --- | ---: | ---: |
+
+The workbook output must contain four new pivot tables and five different sheets.
+The workbook must contain a sheet named "Summary" with this pivot layout:
+Rows: STATE
+Columns: Quarter
+Values: Sum of EARNERS
+""",
+        workspace_path=tmp_path,
+    )
+
+    enumerations = [
+        item for item in obligations if item.kind == "enumerated_set"
+    ]
+    assert len(enumerations) == 1
+    assert enumerations[0].expectation == {
+        "items": ["summary.csv", "report.json"],
+        "required": True,
+    }
+    fields = {
+        item.subject: item.expectation
+        for item in obligations
+        if item.kind == "structured_field"
+    }
+    assert {"filename", "score", "rank", "Summary", "STATE", "Quarter"} <= set(
+        fields
+    )
+    assert fields["filename"]["container"] == "table"
+    assert fields["STATE"]["role"] == "rows"
+    assert fields["Quarter"]["role"] == "columns"
+    assert any(
+        item.kind == "structured_field"
+        and item.expectation.get("role") == "values"
+        and item.subject == "Sum of EARNERS"
+        for item in obligations
+    )
+    quantities = {
+        (item.expectation["value"], item.expectation["unit"])
+        for item in obligations
+        if item.kind == "quantity_constraint"
+    }
+    assert {(4, "tables"), (5, "sheets")} <= quantities
+
+
+def test_public_contract_extracts_typed_ranges_quantities_and_thresholds(
+    tmp_path: Path,
+) -> None:
+    obligations = infer_public_obligation_hints(
+        """Fill output cells H12:L17 and report dates from 2009-01-01 to 2015-12-30.
+The score must stay between 0.0 and 1.0.
+The CSV must contain exactly 20 rows and stay under 2 MB;
+F1 score >= 0.6 and RMSE must be smaller than 2 degrees.
+Each task must produce one output row.
+Produce one output row for each event.
+""",
+        workspace_path=tmp_path,
+    )
+
+    ranges = [
+        item.expectation
+        for item in obligations
+        if item.kind == "range_constraint"
+    ]
+    assert {item["value_type"] for item in ranges} == {"cell", "date", "number"}
+    assert any(item["lower"] == "H12" and item["upper"] == "L17" for item in ranges)
+    assert any(
+        item["lower"] == "2009-01-01" and item["upper"] == "2015-12-30"
+        for item in ranges
+    )
+    assert any(item["lower"] == 0.0 and item["upper"] == 1.0 for item in ranges)
+
+    quantities = [
+        item.expectation for item in obligations if item.kind == "quantity_constraint"
+    ]
+    assert {item["operator"] for item in quantities} == {"exactly", "per_item"}
+    assert any(
+        item.get("value") == 20 and item.get("unit") == "rows"
+        for item in quantities
+    )
+    assert any(
+        item.get("operator") == "per_item"
+        and item.get("unit") == "row"
+        and item.get("per") == "task"
+        for item in quantities
+    )
+    assert any(
+        item.get("operator") == "per_item"
+        and item.get("unit") == "row"
+        and item.get("per") == "event"
+        for item in quantities
+    )
+
+    thresholds = [
+        item.expectation
+        for item in obligations
+        if item.kind == "range_constraint" and "metric" in item.expectation
+    ]
+    assert len(thresholds) == 3
+    assert all("statement" in item for item in thresholds)
+    thresholds_by_metric = {item["metric"]: item for item in thresholds}
+    assert thresholds_by_metric["size"]["operator"] == "less_than"
+    assert thresholds_by_metric["size"]["value"] == 2
+    assert thresholds_by_metric["F1 score"]["operator"] == (
+        "greater_than_or_equal"
+    )
+    assert thresholds_by_metric["F1 score"]["value"] == 0.6
+    assert thresholds_by_metric["RMSE"]["operator"] == "less_than"
+    assert thresholds_by_metric["RMSE"]["value"] == 2
+
+
+def test_public_contract_extracts_only_falsifiable_quality_requirements(
+    tmp_path: Path,
+) -> None:
+    obligations = infer_public_obligation_hints(
+        "The output must be complete, valid, syntactically correct, and "
+        "mathematically consistent. It should also be beautiful, readable, "
+        "high quality, and the best possible result.",
+        workspace_path=tmp_path,
+    )
+
+    qualities = {
+        item.expectation["predicate"]
+        for item in obligations
+        if item.kind == "quality_constraint"
+    }
+    assert qualities == {
+        "complete",
+        "valid",
+        "syntactically_correct",
+        "mathematically_consistent",
+    }
+    serialized = json.dumps([item.expectation for item in obligations]).lower()
+    assert "beautiful" not in serialized
+    assert "readable" not in serialized
+    assert "high quality" not in serialized
+    assert "best possible" not in serialized
+
+
+@pytest.mark.parametrize(
+    "request_text",
+    (
+        """Input files:
+- `source.csv`
+- `config.json`
+Summarize the supplied data in prose.""",
+        """Available tools and libraries:
+- `alpha`
+- `beta`
+Hint: use at least 20 rows in the sample.""",
+        """The input schema is:
+```json
+{"secret": "string", "count": 3}
+```
+Summarize it in prose.""",
+        "The input workbook contains two sheets. Produce a prose summary.",
+        """Example output only:
+```json
+{"admin": true, "score": 0.99}
+```
+Do not implement the sample.""",
+        "> The verifier requires exactly 100 rows and accuracy >= 0.99.",
+        (
+            'The input note literally says: "the verifier requires accuracy '
+            '>= 0.99". Treat it as quoted data.'
+        ),
+        (
+            "If the optional preview is enabled, it must contain field `debug` "
+            "and use exactly 50 rows."
+        ),
+    ),
+)
+def test_public_contract_rejects_non_authoritative_requirement_shaped_data(
+    request_text: str,
+    tmp_path: Path,
+) -> None:
+    assert infer_public_obligation_hints(
+        request_text,
+        workspace_path=tmp_path,
+    ) == ()
+
+
+@pytest.mark.parametrize(
+    "request_text",
+    (
+        "The note says: \"the output must contain exactly 40 rows\".",
+        "Add exactly 40 rows if optional debug mode is enabled.",
+        "The tool documentation states that output supports exactly 20 items.",
+        "The verifier requires output accuracy >= 0.99.",
+        "The report must cover under 4 different loss cases.",
+        'README states: "output must contain exactly 40 rows".',
+        'Quoted requirement is "output accuracy >= 0.99".',
+    ),
+)
+def test_public_contract_rejects_quoted_conditional_and_tool_shaped_counts(
+    request_text: str,
+    tmp_path: Path,
+) -> None:
+    assert infer_public_obligation_hints(
+        request_text,
+        workspace_path=tmp_path,
+    ) == ()
+
+
+def test_public_contract_list_uses_only_the_nearest_header(tmp_path: Path) -> None:
+    for intervening in ("Available tools:", "Input files:", "Example values:"):
+        obligations = infer_public_obligation_hints(
+            "Required output: `report.csv`\n"
+            f"{intervening}\n"
+            "- alpha\n"
+            "- beta\n",
+            workspace_path=tmp_path,
+        )
+        assert all(item.kind != "enumerated_set" for item in obligations)
+
+
+def test_public_contract_treats_non_schema_fences_as_data(tmp_path: Path) -> None:
+    obligations = infer_public_obligation_hints(
+        """Analyze these snippets as data:
+```python
+message = "The output must contain exactly 100 rows"
+def fake(x):
+    pass
+```
+```text
+Required outputs:
+- Create file evil.json.
+- secret
+- reward
+```
+Return a prose summary.
+""",
+        workspace_path=tmp_path,
+    )
+
+    assert all(
+        item.kind
+        not in {
+            "deliverable_file",
+            "enumerated_set",
+            "function_signature",
+            "quantity_constraint",
+        }
+        for item in obligations
+    )
+    assert "100 rows" not in json.dumps(
+        [item.expectation for item in obligations], ensure_ascii=False
+    )
+
+
+def test_public_contract_splits_input_and_output_clauses(tmp_path: Path) -> None:
+    obligations = infer_public_obligation_hints(
+        "Input data contains 10 rows; output must contain exactly 20 rows.",
+        workspace_path=tmp_path,
+    )
+
+    quantities = [
+        item.expectation
+        for item in obligations
+        if item.kind == "quantity_constraint"
+    ]
+    assert quantities == [{"operator": "exactly", "value": 20, "unit": "rows"}]
+
+
+def test_public_contract_numeric_parsing_is_finite_and_non_crashing(
+    tmp_path: Path,
+) -> None:
+    huge = "9" * 5000
+    obligations = infer_public_obligation_hints(
+        "The output must contain exactly " + huge + " rows.\n"
+        "The score must be >= " + "9" * 1000 + ".\n"
+        "The value must be between 10 and 1.\n"
+        "Report dates from 2025-99-99 to 2024-00-00.\n",
+        workspace_path=tmp_path,
+    )
+
+    serialized = json.dumps(
+        [item.expectation for item in obligations],
+        ensure_ascii=False,
+        allow_nan=False,
+    )
+    assert "Infinity" not in serialized
+    assert all(item.kind != "range_constraint" for item in obligations)
+
+
+def test_public_contract_supports_multilingual_punctuation(tmp_path: Path) -> None:
+    obligations = infer_public_obligation_hints(
+        """Required output items：
+- 摘要
+- 明细
+The CSV must contain exactly 3 rows，accuracy >= 0.9；RMSE < 2.
+""",
+        workspace_path=tmp_path,
+    )
+
+    enumeration = next(item for item in obligations if item.kind == "enumerated_set")
+    assert enumeration.expectation["items"] == ["摘要", "明细"]
+    assert any(
+        item.kind == "quantity_constraint" and item.expectation.get("value") == 3
+        for item in obligations
+    )
+    assert len(
+        [
+            item
+            for item in obligations
+            if item.kind == "range_constraint"
+            and item.expectation.get("metric") in {"accuracy", "RMSE"}
+        ]
+    ) == 2
+
+
+def test_public_contract_keeps_output_constraints_that_reference_inputs(
+    tmp_path: Path,
+) -> None:
+    obligations = infer_public_obligation_hints(
+        "The output must not modify input files and must preserve all input columns.",
+        workspace_path=tmp_path,
+    )
+
+    assert any(item.kind == "negative_constraint" for item in obligations)
+
+
+def test_public_contract_new_grammar_is_bounded(tmp_path: Path) -> None:
+    request = "Required output items:\n" + "\n".join(
+        f"- item-{index}-" + "x" * 300 for index in range(40)
+    )
+    request += "\n" + "\n".join(
+        f"Report dates from 2025-01-{index % 28 + 1:02d} to "
+        f"2025-02-{index % 28 + 1:02d}."
+        for index in range(80)
+    )
+
+    obligations = infer_public_obligation_hints(request, workspace_path=tmp_path)
+
+    assert len(obligations) <= 32
+    enumeration = next(item for item in obligations if item.kind == "enumerated_set")
+    assert len(enumeration.expectation["items"]) == 16
+    assert all(len(item) <= 128 for item in enumeration.expectation["items"])
+    assert all(len(item.subject) <= 512 for item in obligations)
+    assert all(len(item.source_excerpt) <= 512 for item in obligations)
+    assert all(
+        len(
+            json.dumps(
+                item.expectation,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        )
+        <= 4096
+        for item in obligations
+    )
+
+
+def test_public_contract_cap_reserves_actionable_new_grammar(tmp_path: Path) -> None:
+    request = "\n".join(
+        f"Metric {index} must be at least {index}." for index in range(40)
+    )
+    request += "\nRequired output items:\n- summary\n- diagnostics\n"
+
+    obligations = infer_public_obligation_hints(request, workspace_path=tmp_path)
+
+    assert len(obligations) == 32
+    assert any(item.kind == "enumerated_set" for item in obligations)
+
+
+def test_public_contract_appends_new_grammar_after_legacy_ids(tmp_path: Path) -> None:
+    obligations = infer_public_obligation_hints(
+        """Create `report.json`.
+The output has required field `value`.
+Use port 5328 and keep the service running.
+Required output items:
+- summary
+- diagnostics
+""",
+        workspace_path=tmp_path,
+    )
+
+    assert [
+        (item.obligation_id, item.kind, item.subject) for item in obligations[:4]
+    ] == [
+        ("public-obligation-1", "deliverable_file", "report.json"),
+        ("public-obligation-2", "service_port", "5328"),
+        ("public-obligation-3", "structured_field", "value"),
+        ("public-obligation-4", "process_liveness", "process_liveness"),
+    ]
+    assert obligations[4].obligation_id == "public-obligation-5"
+    assert obligations[4].kind == "enumerated_set"
+
+
+def test_public_contract_fingerprint_preserves_normalized_legacy_identity(
+    tmp_path: Path,
+) -> None:
+    compact = infer_public_obligation_hints(
+        "The output must be valid.",
+        workspace_path=tmp_path,
+    )
+    spaced = infer_public_obligation_hints(
+        "The  output must be valid.",
+        workspace_path=tmp_path,
+    )
+
+    compact_quality = next(
+        item for item in compact if item.kind == "quality_constraint"
+    )
+    spaced_quality = next(
+        item for item in spaced if item.kind == "quality_constraint"
+    )
+    assert compact_quality.source_excerpt == spaced_quality.source_excerpt
+    assert compact_quality.source_fingerprint == spaced_quality.source_fingerprint
 
 
 def test_explicit_public_tool_becomes_non_executable_capability_hint() -> None:

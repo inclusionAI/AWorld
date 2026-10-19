@@ -441,6 +441,73 @@ async def test_direct_acceptance_never_reopens_protocol_finalization() -> None:
 
 
 @pytest.mark.asyncio
+async def test_direct_acceptance_does_not_duplicate_active_reviewer_lease(
+    monkeypatch,
+) -> None:
+    from aworld.core.context.base import Context
+    from aworld.core.execution_protocol import ExecutionProtocolPolicy
+    from aworld.core.task import Task, TaskResponse
+    from aworld.runners import execution_protocol as protocol_module
+
+    context = Context(task_id="reviewer-lease-segment")
+    task = Task(
+        id="reviewer-lease-segment",
+        input="finish the requested work",
+        context=context,
+        timeout=600,
+    )
+    context.set_task(task)
+    protocol_module.configure_execution_protocol(
+        context,
+        "root-agent",
+        ExecutionProtocolPolicy(mode="guide"),
+    )
+    monkeypatch.setattr(
+        protocol_module,
+        "reviewer_value_lease_requires_continuation",
+        lambda _context, _agent_id: True,
+    )
+    executor = object.__new__(LocalAgentExecutor)
+    executor._session_mode = "direct"
+    executor._base_runtime = None
+    executor.swarm = SimpleNamespace(
+        communicate_agent=SimpleNamespace(id=lambda: "root-agent")
+    )
+    response = TaskResponse(
+        success=False,
+        answer="review validation remains",
+        semantic_status="incomplete",
+        recoverable=True,
+    )
+
+    continuation = await executor._direct_acceptance_continuation(
+        task=task,
+        response=response,
+        answer=response.answer,
+        event={
+            "task_id": task.id,
+            "semantic_status": "incomplete",
+            "recoverable": True,
+            "final_answer": response.answer,
+        },
+        origin_user_input="finish the requested work",
+        logical_task_state=new_goal_contract_state("finish the requested work"),
+        acceptance_state=None,
+    )
+
+    assert continuation is None
+    assert response.execution_protocol["acceptance_continuation_suppressed"] == (
+        "reviewer_lease_active"
+    )
+    assert (
+        protocol_module.project_execution_protocol_telemetry(
+            response.execution_protocol
+        )["acceptance_continuation_suppressed"]
+        == "reviewer_lease_active"
+    )
+
+
+@pytest.mark.asyncio
 async def test_media_empty_recovery_does_not_consume_implicit_acceptance_budget() -> None:
     from dataclasses import replace
 

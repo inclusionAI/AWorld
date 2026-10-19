@@ -70,6 +70,15 @@ def test_long_running_agent_skill_is_domain_and_benchmark_independent() -> None:
     assert "repeatable safety margin" in text
     assert "aworld control-state directories" in text
     assert "aworld_advisory_verifier.review_candidate" in text
+    assert "reviewer value lease" in text
+    assert "armed a long task" in text
+    assert "exactly one public assertion" in text
+    assert "one independent validation" in text
+    assert "exactly one tool call" in text
+    assert "ambiguous multi-tool batch" in text
+    assert "one repair followed by one" in text
+    assert "external verifier remains" in text
+    assert "do not manufacture reviewer work" in text
     assert Path(skill_root / "references" / "execution-semantics.md").is_file()
 
 

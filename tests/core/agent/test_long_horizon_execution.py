@@ -2227,10 +2227,86 @@ def test_public_probe_schema_binds_checks_to_public_obligation_ids() -> None:
     probe = augmented[0]["function"]["parameters"]["properties"][
         "__aworld_public_probe"
     ]
+    assert "__aworld_public_probe" not in augmented[0]["function"][
+        "parameters"
+    ].get("required", [])
     assert "obligation_ids" in probe["required"]
     assert probe["properties"]["obligation_ids"]["items"]["enum"] == [
         "public-obligation-1"
     ]
+
+
+def test_reviewer_validation_requires_exact_public_probe_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request = "Create report.json whose value is at least 10."
+    context = Context(task_id="required-reviewer-probe")
+    context.set_task(Task(id="required-reviewer-probe", input=request, timeout=600))
+    context.context_info["public_task_contract"] = {
+        "schema_version": "aworld.public-task-contract/v1",
+        "authority": "public_task_advisory",
+        "source": "public_task_text",
+        "request_fingerprint": "sha256:" + hashlib.sha256(request.encode()).hexdigest(),
+        "obligations": [
+            {
+                "obligation_id": "public-obligation-1",
+                "kind": "numeric_threshold",
+                "subject": "value",
+                "expectation": {"minimum": 10},
+                "source_fingerprint": "sha256:" + "b" * 64,
+                "authority": "public_task_advisory",
+                "source": "public_task_text",
+            }
+        ],
+    }
+    policy = ExecutionProtocolPolicy(mode=ProtocolMode.GUIDE)
+    agent = _agent(context, policy)
+    configure_execution_protocol(context, agent.id(), policy)
+    _declare_long_horizon(context, agent.id())
+    binding = {
+        "hypothesis_id": "reviewer-value-validation",
+        "highest_risk_counterexample": "assert value 9 is rejected",
+        "probe_kind": "counterexample",
+        "obligation_ids": ["public-obligation-1"],
+    }
+    monkeypatch.setattr(
+        execution_protocol_module,
+        "reviewer_validation_probe_binding",
+        lambda _context, _agent_id: dict(binding),
+    )
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "terminal__run_code",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"code": {"type": "string"}},
+                    "required": ["code"],
+                },
+            },
+        }
+    ]
+
+    augmented, offer = agent._with_long_horizon_execution_profile(tools, context)
+    parameters = augmented[0]["function"]["parameters"]
+    assert "__aworld_public_probe" in parameters["required"]
+    probe = parameters["properties"]["__aworld_public_probe"]
+    assert probe["properties"]["highest_risk_counterexample"]["enum"] == [
+        binding["highest_risk_counterexample"]
+    ]
+    assert probe["properties"]["obligation_ids"]["items"]["enum"] == [
+        "public-obligation-1"
+    ]
+    action = ActionModel(
+        tool_name="terminal",
+        action_name="run_code",
+        tool_call_id="required-reviewer-probe-call",
+        params={"code": "assert_value.py", "__aworld_public_probe": dict(binding)},
+    )
+    result = AgentResult(current_state=None, actions=[action], is_call_tool=True)
+    assert agent._consume_public_probe_controls(result, context, offer=offer) == 1
+    assert action.params == {"code": "assert_value.py"}
 
 
 def test_agent_consumes_explicit_decision_without_forwarding_internal_tool() -> None:

@@ -15,7 +15,8 @@ import shutil
 import signal
 from collections.abc import Iterable, Sequence
 from dataclasses import asdict, dataclass, replace
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
+import math
 from pathlib import Path
 
 from aworld.core.context.compiler import (
@@ -39,7 +40,11 @@ PUBLIC_TASK_CONTRACT_SCHEMA = "aworld.public-task-contract/v1"
 PUBLIC_DELIVERABLE_AUTHORITY = "public_task_advisory"
 _MAX_PUBLIC_DELIVERABLES = 16
 _MAX_PUBLIC_OBLIGATIONS = 32
+_MAX_PUBLIC_OBLIGATION_CANDIDATES = 128
 _MAX_PUBLIC_OBLIGATION_TEXT = 512
+_MAX_PUBLIC_ENUMERATED_ITEMS = 16
+_MAX_PUBLIC_ENUMERATED_ITEM_TEXT = 128
+_MAX_PUBLIC_EXPECTATION_BYTES = 4096
 _MAX_VALIDATION_DIAGNOSTIC_BYTES = 16 * 1024
 _VALIDATION_DIAGNOSTIC_CODE = re.compile(r"[a-z][a-z0-9_.:-]{0,127}\Z")
 _DELIVERABLE_TOKEN = r"(?:`([^`\r\n]+)`|'([^'\r\n]+)'|\"([^\"\r\n]+)\"|([^\s,;:!?]+))"
@@ -158,6 +163,133 @@ _LIVENESS_CONSTRAINT = re.compile(
     r"(?i)\b(?:keep|leave|left|remain|stays?|continue)\b"
     r"[^\r\n.!?]{0,96}\b(?:running|background|alive|available)\b"
 )
+_COUNT_LIKE_THRESHOLD = re.compile(
+    r"(?i)\b(?:under|over|less\s+than|more\s+than)\s+\d{1,9}\s+"
+    r"(?:different\s+(?:[A-Za-z_-]+\s+)?(?:cases?|items?)|"
+    r"rows?|columns?|files?|records?|events?|"
+    r"tasks?)\b"
+)
+_PUBLIC_LIST_ITEM = re.compile(
+    r"^\s*(?:[-*+]|\d+[.)])\s+(?P<item>\S(?:.*?\S)?)\s*$"
+)
+_PUBLIC_REQUIREMENT_PARENT = re.compile(
+    r"(?i)\b(?:output|outputs|deliverable|deliverables|required|requirements?|"
+    r"expected\s+output)\b"
+)
+_PUBLIC_NON_AUTHORITATIVE_CONTEXT = re.compile(
+    r"(?i)(?:^|\b)(?:examples?|samples?|hints?|available\s+(?:tools?|libraries)|"
+    r"pre[- ]installed\s+(?:tools?|libraries)|exclusion\s+keywords?)\b"
+)
+_PUBLIC_INPUT_CONTEXT = re.compile(
+    r"(?i)^\s*(?:the\s+)?input\s+(?:files?|schema|data|fields?|columns?|items?|"
+    r"tables?|workbooks?|sheets?|notes?)\b"
+)
+_PUBLIC_CONDITIONAL_PREFIX = re.compile(
+    r"(?i)^\s*(?:if|only\s+if|unless|provided\s+that|in\s+case|"
+    r"when\s+(?:the\s+)?optional)\b"
+)
+_PUBLIC_CONDITIONAL_CLAUSE = re.compile(
+    r"(?i)\b(?:if|unless|when)\s+(?:the\s+)?(?:optional|debug|preview|"
+    r"feature|mode)\b[^.]*[.!?]?$"
+)
+_MARKDOWN_TABLE_SEPARATOR = re.compile(
+    r"^\s*\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?\s*$"
+)
+_CELL_RANGE = re.compile(r"(?<![A-Za-z0-9_])([A-Z]{1,3}\d+)\s*:\s*([A-Z]{1,3}\d+)\b")
+_DATE_RANGE = re.compile(
+    r"(?<!\d)(\d{4}-\d{2}-\d{2})\s+(?:to|through|until|[-–—])\s+"
+    r"(\d{4}-\d{2}-\d{2})(?!\d)",
+    re.IGNORECASE,
+)
+_NUMBER_RANGE = re.compile(
+    r"(?i)\b(?:between\s+(-?\d{1,24}(?:\.\d{1,12})?)\s+and\s+"
+    r"(-?\d{1,24}(?:\.\d{1,12})?)|from\s+"
+    r"(-?\d{1,24}(?:\.\d{1,12})?)\s+to\s+"
+    r"(-?\d{1,24}(?:\.\d{1,12})?))\b"
+)
+_QUANTITY_UNIT = (
+    r"rows?|columns?|files?|items?|sheets?|tables?|records?|events?|tasks?|"
+    r"stocks?|digits?|decimal\s+places?|ioctls?|outputs?|artifacts?"
+)
+_QUANTITY_CONSTRAINT = re.compile(
+    rf"(?i)\b(?P<operator>exactly|at\s+least|at\s+most|no\s+more\s+than|"
+    rf"no\s+less\s+than|all)\s+(?P<value>\d{{1,9}})\s+"
+    rf"(?P<unit>{_QUANTITY_UNIT})\b"
+)
+_TOTAL_QUANTITY_CONSTRAINT = re.compile(
+    rf"(?i)\b(?P<value>\d{{1,9}})\s+(?P<unit>{_QUANTITY_UNIT})\s+"
+    rf"(?:in\s+)?total\b"
+)
+_BARE_QUANTITY_CONSTRAINT = re.compile(
+    rf"(?i)\b(?P<value>\d{{1,9}})\s+"
+    rf"(?:new\s+|different\s+)?(?:pivot\s+)?"
+    rf"(?P<unit>{_QUANTITY_UNIT})\b"
+)
+_WORD_QUANTITY_CONSTRAINT = re.compile(
+    rf"(?i)\b(?P<value>one|two|three|four|five|six|seven|eight|nine|ten|"
+    rf"eleven|twelve|thirteen|fourteen|fifteen|sixteen)\s+"
+    rf"(?:new\s+|different\s+)?(?:pivot\s+)?(?P<unit>{_QUANTITY_UNIT})\b"
+)
+_NUMBER_WORDS = {
+    value: index
+    for index, value in enumerate(
+        (
+            "zero",
+            "one",
+            "two",
+            "three",
+            "four",
+            "five",
+            "six",
+            "seven",
+            "eight",
+            "nine",
+            "ten",
+            "eleven",
+            "twelve",
+            "thirteen",
+            "fourteen",
+            "fifteen",
+            "sixteen",
+        )
+    )
+}
+_PER_ITEM_QUANTITY = re.compile(
+    rf"(?i)\b(?:each|every)\s+(?P<per>[A-Za-z][A-Za-z_-]{{0,31}})\b"
+    rf"[^\r\n.!?]{{0,96}}?\b(?:one|1)\s+(?:output\s+)?"
+    rf"(?P<unit>{_QUANTITY_UNIT})\b"
+)
+_ONE_PER_ITEM_QUANTITY = re.compile(
+    rf"(?i)\b(?:one|1)\s+(?:output\s+)?(?P<unit>{_QUANTITY_UNIT})\s+"
+    rf"(?:for\s+each|per)\s+(?P<per>[A-Za-z][A-Za-z_-]{{0,31}})\b"
+)
+_SYMBOLIC_THRESHOLD = re.compile(
+    r"(?i)(?P<metric>[A-Za-z][A-Za-z0-9 _./-]{0,63}?)\s*"
+    r"(?P<operator><=|>=|<|>|≤|≥)\s*"
+    r"(?P<value>-?\d{1,24}(?:\.\d{1,12})?)\s*"
+    r"(?P<unit>%|ms|milliseconds?|seconds?|s|bytes?|KB|MB|GB|degrees?|°C|C)?\b"
+)
+_VERBAL_THRESHOLD = re.compile(
+    r"(?i)(?P<metric>[A-Za-z][A-Za-z0-9 _./-]{0,63}?)\s+"
+    r"(?:(?:must|should|needs?\s+to)\s+)?"
+    r"(?:(?:be|stay|remain|reach)\s+)?"
+    r"(?P<operator>at\s+most|at\s+least|less\s+than|smaller\s+than|"
+    r"more\s+than|greater\s+than|no\s+more\s+than|no\s+less\s+than|"
+    r"under|over|within)\s+"
+    r"(?P<value>-?\d{1,24}(?:\.\d{1,12})?)\s*"
+    r"(?P<unit>%|ms|milliseconds?|seconds?|s|bytes?|KB|MB|GB|degrees?|°C|C|"
+    r"accuracy|precision|tolerance)?\b"
+)
+_QUALITY_PREDICATES = (
+    ("syntactically_correct", re.compile(r"(?i)\bsyntactically\s+correct\b")),
+    (
+        "mathematically_consistent",
+        re.compile(r"(?i)\b(?:mathematically\s+consistent|math\s+is\s+consistent)\b"),
+    ),
+    ("complete", re.compile(r"(?i)\bcomplete\b")),
+    ("valid", re.compile(r"(?i)\bvalid\b")),
+    ("consistent", re.compile(r"(?i)\bconsistent\b")),
+)
 
 
 @dataclass(frozen=True)
@@ -219,6 +351,261 @@ def _public_clause(request: str, start: int, end: int) -> str:
     return request[left + 1 : right].strip()
 
 
+def _public_lines(value: str) -> tuple[tuple[int, int, str], ...]:
+    """Return bounded lines with exact offsets into the authoritative request."""
+
+    return tuple(
+        (match.start(), match.end(), match.group(0))
+        for match in re.finditer(r"(?m)^.*$", value)
+    )
+
+
+def _public_clauses(value: str) -> tuple[tuple[int, int, str], ...]:
+    """Split prose without letting an input prefix hide a later output clause."""
+
+    return tuple(
+        (match.start(), match.end(), match.group(0))
+        for match in re.finditer(r"[^\r\n;；]+", value)
+        if match.group(0).strip()
+    )
+
+
+def _is_non_authoritative_public_text(value: str) -> bool:
+    """Reject requirement-shaped data, examples, and conditional branches."""
+
+    normalized = value.strip()
+    if not normalized:
+        return True
+    if normalized.startswith(">") or _PUBLIC_CONDITIONAL_PREFIX.match(normalized):
+        return True
+    if (
+        _PUBLIC_NON_AUTHORITATIVE_CONTEXT.search(normalized)
+        or _PUBLIC_INPUT_CONTEXT.search(normalized)
+        or _PUBLIC_CONDITIONAL_CLAUSE.search(normalized)
+        or re.search(
+            r"(?i)\b(?:the\s+)?(?:verifier|grader|scorer)\s+"
+            r"(?:requires?|expects?|checks?|asserts?)\b",
+            normalized,
+        )
+        or re.search(
+            r"(?i)^\s*(?:the\s+)?(?:tool|api|library|command)\s+"
+            r"(?:documentation|docs?|reference)\b",
+            normalized,
+        )
+    ):
+        return True
+    if re.search(
+        r"(?i)\b(?:literally\s+says?|quoted\s+data|treat\s+it\s+as\s+"
+        r"(?:quoted\s+)?data)\b",
+        normalized,
+    ):
+        return True
+    if re.search(
+        r"(?i)\b(?:input|note|log|document|text|message)\b[^\r\n]{0,96}"
+        r"[\"“][^\"”]{0,256}\b(?:must|required|exactly|at\s+least|"
+        r"at\s+most|do\s+not|never)\b[^\"”]{0,256}[\"”]",
+        normalized,
+    ):
+        return True
+    if re.search(
+        r"(?i)[\"“][^\"”]{0,256}\bverifier\b[^\"”]{0,256}[\"”]",
+        normalized,
+    ):
+        return True
+    if re.search(
+        r"(?i)[\"“][^\"”]{0,256}\b(?:output|result|report|artifact|file|"
+        r"requirement)\b[^\"”]{0,128}\b(?:must|required|exactly|at\s+least|"
+        r"at\s+most|do\s+not|never|accuracy|precision|rmse|f1)\b"
+        r"[^\"”]{0,256}[\"”]",
+        normalized,
+    ):
+        return True
+    return False
+
+
+def _non_authoritative_fenced_ranges(value: str) -> tuple[tuple[int, int], ...]:
+    ranges = []
+    for match in re.finditer(r"```[^\n]*\n.*?```", value, re.DOTALL):
+        prefix = value[max(0, match.start() - 240) : match.start()]
+        if not _authoritative_schema_prefix(prefix):
+            ranges.append(match.span())
+    return tuple(ranges)
+
+
+def _position_in_ranges(position: int, ranges: Sequence[tuple[int, int]]) -> bool:
+    return any(start <= position < end for start, end in ranges)
+
+
+def _has_public_requirement_anchor(value: str) -> bool:
+    return bool(
+        re.search(
+            r"(?i)\b(?:must|should|shall|required|needs?\s+to|output|result|"
+            r"report|deliverable|write|produce|generate|create|fill|contain|"
+            r"include|keep|stay|remain|return)\b",
+            value,
+        )
+    )
+
+
+def _has_explicit_quantity_anchor(value: str, position: int) -> bool:
+    prefix = value[max(0, position - 160) : position]
+    return bool(
+        re.search(
+            r"(?i)(?:\b(?:output|result|report|deliverable)\b|"
+            r"\b(?:must|should|shall|needs?\s+to)\b[^\r\n.!?]{0,96}$|"
+            r"\b(?:generate|write|produce|return|give|keep|create|fill)\b"
+            r"[^\r\n.!?]{0,96}$)",
+            prefix,
+        )
+    )
+
+
+def _authoritative_schema_prefix(value: str) -> bool:
+    if _is_non_authoritative_public_text(value):
+        return False
+    return bool(
+        re.search(
+            r"(?i)(?:exact(?:ly)?\s+(?:public\s+)?interface|required\s+output|"
+            r"required\s+(?:json|toml|yaml|yml|proto(?:buf)?)?\s*"
+            r"(?:format|schema|structure)|"
+            r"output\s+(?:format|schema|structure)|following\s+(?:format|structure)|"
+            r"must\s+contain)",
+            value,
+        )
+    )
+
+
+def _bounded_list_item(value: str) -> str:
+    item = value.strip()
+    code = re.match(r"^`([^`\r\n]+)`", item)
+    bold = re.match(r"^\*\*([^*\r\n]+)\*\*", item)
+    quoted = re.match(r"^[\"“]([^\"”\r\n]+)[\"”]", item)
+    if code or bold or quoted:
+        item = next(group for group in (code, bold, quoted) if group).group(1)
+    else:
+        item = re.split(r"\s*[:：]\s*", item, maxsplit=1)[0]
+    return " ".join(item.strip().strip("`*_'\"“”").split())[
+        :_MAX_PUBLIC_ENUMERATED_ITEM_TEXT
+    ]
+
+
+def _number_value(value: str) -> int | float | None:
+    if not isinstance(value, str) or len(value) > 40:
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if not math.isfinite(parsed):
+        return None
+    if parsed.is_integer() and abs(parsed) <= 10**18:
+        return int(parsed)
+    return parsed
+
+
+def _cell_coordinate(value: str) -> tuple[int, int] | None:
+    match = re.fullmatch(r"([A-Z]{1,3})(\d+)", value)
+    if match is None:
+        return None
+    column = 0
+    for character in match.group(1):
+        column = column * 26 + (ord(character) - ord("A") + 1)
+    row = int(match.group(2))
+    return (row, column) if row > 0 else None
+
+
+def _ordered_date_range(lower: str, upper: str) -> bool:
+    try:
+        return date.fromisoformat(lower) <= date.fromisoformat(upper)
+    except ValueError:
+        return False
+
+
+def _threshold_operator(value: str) -> str:
+    return {
+        "<": "less_than",
+        "less than": "less_than",
+        "smaller than": "less_than",
+        "under": "less_than",
+        "<=": "less_than_or_equal",
+        "≤": "less_than_or_equal",
+        "at most": "less_than_or_equal",
+        "no more than": "less_than_or_equal",
+        ">": "greater_than",
+        "more than": "greater_than",
+        "greater than": "greater_than",
+        "over": "greater_than",
+        ">=": "greater_than_or_equal",
+        "≥": "greater_than_or_equal",
+        "at least": "greater_than_or_equal",
+        "no less than": "greater_than_or_equal",
+        "within": "within",
+    }[value.casefold()]
+
+
+def _threshold_metric(value: str, unit: str | None) -> str:
+    compact = " ".join(value.strip(" ,;:，；：").split())
+    for pattern, canonical in (
+        (r"(?i)\bF1\s+score\b", "F1 score"),
+        (r"(?i)\bRMSE\b", "RMSE"),
+        (r"(?i)\baccuracy\b", "accuracy"),
+        (r"(?i)\bprecision\b", "precision"),
+        (r"(?i)\brecall\b", "recall"),
+        (r"(?i)\b(?:file|artifact|output)\s+size\b", "size"),
+    ):
+        if re.search(pattern, compact):
+            return canonical
+    if unit and unit.casefold() in {"kb", "mb", "gb", "byte", "bytes"}:
+        return "size"
+    if unit and unit.casefold() in {"accuracy", "precision", "tolerance"}:
+        return unit.casefold()
+    compact = re.sub(
+        r"(?i)^(?:and\s+)?(?:the\s+)?|\b(?:must|should|shall|needs?\s+to|"
+        r"be|stay|remain|reach)$",
+        "",
+        compact,
+    ).strip()
+    return compact[-64:] or "value"
+
+
+def _typed_numeric_thresholds(value: str) -> tuple[dict[str, object], ...]:
+    results: list[dict[str, object]] = []
+    seen: set[str] = set()
+    statement = _bounded_public_excerpt(value)
+    for pattern in (_SYMBOLIC_THRESHOLD, _VERBAL_THRESHOLD):
+        for match in pattern.finditer(value):
+            if re.match(
+                r"(?i)\s*(?:different\s+(?:[A-Za-z_-]+\s+)?"
+                r"(?:cases?|items?)|rows?|columns?|"
+                r"files?|records?|events?|tasks?)\b",
+                value[match.end() :],
+            ):
+                continue
+            unit = match.group("unit") or None
+            metric = _threshold_metric(match.group("metric"), unit)
+            numeric_value = _number_value(match.group("value"))
+            if numeric_value is None:
+                continue
+            expectation: dict[str, object] = {
+                "statement": statement,
+                "metric": metric,
+                "operator": _threshold_operator(match.group("operator")),
+                "value": numeric_value,
+            }
+            if unit:
+                expectation["unit"] = unit
+            identity = json.dumps(
+                expectation,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            )
+            if identity not in seen:
+                seen.add(identity)
+                results.append(expectation)
+    return tuple(results)
+
+
 def infer_public_obligation_hints(
     request: str | None,
     *,
@@ -234,12 +621,24 @@ def infer_public_obligation_hints(
     if not isinstance(request, str) or not request.strip():
         return ()
     bounded_request = request[:256_000]
-    rows: list[tuple[str, str, object, str]] = []
+    rows: list[tuple[str, str, object, str, str]] = []
     seen: set[str] = set()
 
     def add(kind: str, subject: str, expectation: object, excerpt: str) -> None:
         normalized_excerpt = _bounded_public_excerpt(excerpt)
         if not normalized_excerpt or not subject:
+            return
+        try:
+            encoded_expectation = json.dumps(
+                expectation,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            )
+        except (TypeError, ValueError):
+            return
+        if len(encoded_expectation.encode("utf-8")) > _MAX_PUBLIC_EXPECTATION_BYTES:
             return
         identity = json.dumps(
             [kind, subject, expectation],
@@ -247,10 +646,28 @@ def infer_public_obligation_hints(
             sort_keys=True,
             separators=(",", ":"),
         )
-        if identity in seen or len(rows) >= _MAX_PUBLIC_OBLIGATIONS:
+        if identity in seen or len(rows) >= _MAX_PUBLIC_OBLIGATION_CANDIDATES:
             return
         seen.add(identity)
-        rows.append((kind, subject[:512], expectation, normalized_excerpt))
+        rows.append(
+            (
+                kind,
+                subject[:512],
+                expectation,
+                normalized_excerpt,
+                _public_fingerprint(normalized_excerpt),
+            )
+        )
+
+    def has_kind_subject(kind: str, subject: str) -> bool:
+        return any(
+            row_kind == kind and row_subject == subject
+            for row_kind, row_subject, *_ in rows
+        )
+
+    blocked_fenced_ranges = _non_authoritative_fenced_ranges(bounded_request)
+    public_lines = _public_lines(bounded_request)
+    public_clauses = _public_clauses(bounded_request)
 
     deliverables = infer_public_deliverable_hints(
         bounded_request, workspace_path=workspace_path
@@ -263,7 +680,9 @@ def infer_public_obligation_hints(
             next(
                 (
                     _public_clause(bounded_request, match.start(), match.end())
-                    for match in re.finditer(re.escape(item.display_path), bounded_request)
+                    for match in re.finditer(
+                        re.escape(item.display_path), bounded_request
+                    )
                 ),
                 item.display_path,
             ),
@@ -271,16 +690,25 @@ def infer_public_obligation_hints(
 
     for match in _FENCED_PUBLIC_SCHEMA.finditer(bounded_request):
         prefix = bounded_request[max(0, match.start() - 240) : match.start()]
-        if _EXPLICIT_SCHEMA_CONTEXT.search(prefix) is None:
+        if (
+            _EXPLICIT_SCHEMA_CONTEXT.search(prefix) is None
+            or not _authoritative_schema_prefix(prefix)
+        ):
             continue
         language, body = match.group(1).lower(), match.group(2)
         fields: list[tuple[str, str | None]] = []
         if language == "json":
-            fields.extend((name, None) for name in re.findall(r'"([^"\r\n]{1,128})"\s*:', body))
+            fields.extend(
+                (name, None)
+                for name in re.findall(r'"([^"\r\n]{1,128})"\s*:', body)
+            )
         elif language == "toml":
             fields.extend(
                 (name, None)
-                for name in re.findall(r"(?m)^\s*([A-Za-z_][A-Za-z0-9_.-]{0,127})\s*=", body)
+                for name in re.findall(
+                    r"(?m)^\s*([A-Za-z_][A-Za-z0-9_.-]{0,127})\s*=",
+                    body,
+                )
             )
         elif language in {"proto", "protobuf"}:
             fields.extend(
@@ -300,22 +728,35 @@ def infer_public_obligation_hints(
             add(
                 "structured_field",
                 name,
-                {"required": True, **({"declared_type": declared_type} if declared_type else {})},
+                {
+                    "required": True,
+                    **({"declared_type": declared_type} if declared_type else {}),
+                },
                 excerpt,
             )
 
     for match in _FUNCTION_SIGNATURE.finditer(bounded_request):
+        clause = _public_clause(bounded_request, match.start(), match.end())
+        if _position_in_ranges(
+            match.start(), blocked_fenced_ranges
+        ) or _is_non_authoritative_public_text(clause):
+            continue
         signature = " ".join(match.group(1).split())
         add(
             "function_signature",
             signature.split("(", 1)[0].removeprefix("async ").removeprefix("def "),
             {"signature": signature},
-            _public_clause(bounded_request, match.start(), match.end()),
+            clause,
         )
 
     code_spans = list(_COMMAND_CODE_SPAN.finditer(bounded_request))
     classified_code_spans: set[tuple[int, int]] = set()
     for match in code_spans:
+        clause = _public_clause(bounded_request, match.start(), match.end())
+        if _position_in_ranges(
+            match.start(), blocked_fenced_ranges
+        ) or _is_non_authoritative_public_text(clause):
+            continue
         content = " ".join(match.group(1).split())
         signature = _CALLABLE_SIGNATURE.fullmatch(content)
         if signature is not None:
@@ -324,7 +765,7 @@ def infer_public_obligation_hints(
                 "function_signature",
                 name,
                 {"signature": signature.group(1)},
-                _public_clause(bounded_request, match.start(), match.end()),
+                clause,
             )
             classified_code_spans.add(match.span())
             continue
@@ -340,13 +781,22 @@ def infer_public_obligation_hints(
                         for value in import_contract.group(2).split(",")
                     ],
                 },
-                _public_clause(bounded_request, match.start(), match.end()),
+                clause,
             )
             classified_code_spans.add(match.span())
 
     for match in _TYPED_IDENTIFIER.finditer(bounded_request):
         clause = _public_clause(bounded_request, match.start(), match.end())
-        if re.search(r"(?i)\b(?:field|parameter|message|request|response|includes?|contains?|returns?)\b", clause) is None:
+        if (
+            _position_in_ranges(match.start(), blocked_fenced_ranges)
+            or _is_non_authoritative_public_text(clause)
+            or re.search(
+                r"(?i)\b(?:field|parameter|message|request|response|includes?|"
+                r"contains?|returns?)\b",
+                clause,
+            )
+            is None
+        ):
             continue
         add(
             "structured_field",
@@ -356,19 +806,28 @@ def infer_public_obligation_hints(
         )
 
     for match in _PORT_REQUIREMENT.finditer(bounded_request):
+        clause = _public_clause(bounded_request, match.start(), match.end())
+        if _position_in_ranges(
+            match.start(), blocked_fenced_ranges
+        ) or _is_non_authoritative_public_text(clause):
+            continue
         port = int(match.group(1) or match.group(2))
         if 0 < port <= 65535:
             add(
                 "service_port",
                 str(port),
                 {"port": port, "required": True},
-                _public_clause(bounded_request, match.start(), match.end()),
+                clause,
             )
 
     for match in code_spans:
         if match.span() in classified_code_spans:
             continue
         clause = _public_clause(bounded_request, match.start(), match.end())
+        if _position_in_ranges(
+            match.start(), blocked_fenced_ranges
+        ) or _is_non_authoritative_public_text(clause):
+            continue
         command = " ".join(match.group(1).split())
         if (
             re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.-]{0,127}", command)
@@ -416,12 +875,406 @@ def infer_public_obligation_hints(
 
     for match in re.finditer(r"[^\r\n]+", bounded_request):
         excerpt = match.group(0).strip()
-        if _THRESHOLD_CONTEXT.search(excerpt):
-            add("numeric_threshold", _bounded_public_excerpt(excerpt), {"statement": _bounded_public_excerpt(excerpt)}, excerpt)
+        if (
+            _position_in_ranges(match.start(), blocked_fenced_ranges)
+            or _is_non_authoritative_public_text(excerpt)
+        ):
+            continue
+        if (
+            _THRESHOLD_CONTEXT.search(excerpt)
+            and _COUNT_LIKE_THRESHOLD.search(excerpt) is None
+        ):
+            add(
+                "numeric_threshold",
+                _bounded_public_excerpt(excerpt),
+                {"statement": _bounded_public_excerpt(excerpt)},
+                excerpt,
+            )
         if _NEGATIVE_CONSTRAINT.search(excerpt):
-            add("negative_constraint", _bounded_public_excerpt(excerpt), {"statement": _bounded_public_excerpt(excerpt)}, excerpt)
+            add(
+                "negative_constraint",
+                _bounded_public_excerpt(excerpt),
+                {"statement": _bounded_public_excerpt(excerpt)},
+                excerpt,
+            )
         if _LIVENESS_CONSTRAINT.search(excerpt):
-            add("process_liveness", "process_liveness", {"statement": _bounded_public_excerpt(excerpt)}, excerpt)
+            add(
+                "process_liveness",
+                "process_liveness",
+                {"statement": _bounded_public_excerpt(excerpt)},
+                excerpt,
+            )
+
+    # New grammar is intentionally appended after all legacy passes so existing
+    # obligation ids retain their relative order whenever the old text yields
+    # the same obligations.
+    line_index = 0
+    while line_index < len(public_lines):
+        item_match = _PUBLIC_LIST_ITEM.match(public_lines[line_index][2])
+        if item_match is None:
+            line_index += 1
+            continue
+        group_start = line_index
+        raw_items: list[str] = []
+        while line_index < len(public_lines):
+            current = _PUBLIC_LIST_ITEM.match(public_lines[line_index][2])
+            if current is None:
+                break
+            item = _bounded_list_item(current.group("item"))
+            if (
+                item
+                and item not in raw_items
+                and len(raw_items) < _MAX_PUBLIC_ENUMERATED_ITEMS
+            ):
+                raw_items.append(item)
+            line_index += 1
+        if _position_in_ranges(
+            public_lines[group_start][0], blocked_fenced_ranges
+        ):
+            continue
+        parent = ""
+        parent_line_index: int | None = None
+        parent_index = group_start - 1
+        while parent_index >= 0:
+            candidate_index = parent_index
+            candidate = public_lines[candidate_index][2].strip()
+            parent_index -= 1
+            if not candidate:
+                continue
+            if _PUBLIC_REQUIREMENT_PARENT.search(candidate):
+                parent = candidate
+                parent_line_index = candidate_index
+            break
+        if (
+            raw_items
+            and _PUBLIC_REQUIREMENT_PARENT.search(parent)
+            and not _is_non_authoritative_public_text(parent)
+        ):
+            excerpt_start = public_lines[
+                parent_line_index if parent_line_index is not None else group_start
+            ][0]
+            excerpt_end = public_lines[max(group_start, line_index - 1)][1]
+            excerpt = bounded_request[excerpt_start:excerpt_end]
+            add(
+                "enumerated_set",
+                _bounded_public_excerpt(parent),
+                {
+                    "items": raw_items[:_MAX_PUBLIC_ENUMERATED_ITEMS],
+                    "required": True,
+                },
+                excerpt,
+            )
+
+    for index, (line_start, _line_end, line) in enumerate(public_lines[:-1]):
+        if (
+            "|" not in line
+            or not _MARKDOWN_TABLE_SEPARATOR.match(public_lines[index + 1][2])
+            or _position_in_ranges(line_start, blocked_fenced_ranges)
+        ):
+            continue
+        parent = " ".join(
+            candidate[2].strip()
+            for candidate in public_lines[max(0, index - 3) : index]
+            if candidate[2].strip()
+        )
+        if (
+            not _PUBLIC_REQUIREMENT_PARENT.search(parent)
+            or _is_non_authoritative_public_text(parent)
+        ):
+            continue
+        fields = [
+            " ".join(value.strip().strip("`*_\"").split())[:128]
+            for value in line.strip().strip("|").split("|")[:16]
+        ]
+        for ordinal, field in enumerate((value for value in fields if value), start=1):
+            if not has_kind_subject("structured_field", field):
+                add(
+                    "structured_field",
+                    field,
+                    {
+                        "required": True,
+                        "container": "table",
+                        "ordinal": ordinal,
+                    },
+                    line,
+                )
+
+    sheet_pattern = re.compile(
+        r"(?i)\b(?:workbook|output)\b[^\r\n.!?]{0,96}?\bsheet\s+"
+        r"(?:named|called)\s+[`\"“]([^`\"”\r\n]{1,128})[`\"”]"
+    )
+    role_pattern = re.compile(r"(?i)^\s*(Rows?|Columns?|Values?)\s*[:：]\s*(\S.*?)\s*$")
+    for index, (line_start, _line_end, line) in enumerate(public_lines):
+        if (
+            _position_in_ranges(line_start, blocked_fenced_ranges)
+            or _is_non_authoritative_public_text(line)
+        ):
+            continue
+        sheet = sheet_pattern.search(line)
+        if sheet is not None and not has_kind_subject(
+            "structured_field", sheet.group(1)
+        ):
+            add(
+                "structured_field",
+                sheet.group(1),
+                {"required": True, "container": "workbook", "role": "sheet"},
+                line,
+            )
+        role = role_pattern.match(line)
+        if role is None:
+            continue
+        context = " ".join(
+            candidate[2].strip()
+            for candidate in public_lines[max(0, index - 8) : index]
+            if candidate[2].strip()
+        )
+        if (
+            not re.search(r"(?i)\b(?:output|workbook|sheet|pivot|table)\b", context)
+            or _is_non_authoritative_public_text(context)
+        ):
+            continue
+        subject = " ".join(role.group(2).strip().strip("`*_\"").split())[:128]
+        if subject and not has_kind_subject("structured_field", subject):
+            add(
+                "structured_field",
+                subject,
+                {
+                    "required": True,
+                    "container": "table",
+                    "role": role.group(1).casefold()
+                    if role.group(1).casefold().endswith("s")
+                    else role.group(1).casefold() + "s",
+                },
+                line,
+            )
+
+    for line_start, _line_end, line in public_clauses:
+        excerpt = line.strip()
+        typed_thresholds = _typed_numeric_thresholds(excerpt)
+        if (
+            not excerpt
+            or _position_in_ranges(line_start, blocked_fenced_ranges)
+            or _is_non_authoritative_public_text(excerpt)
+            or (
+                not _has_public_requirement_anchor(excerpt)
+                and not typed_thresholds
+            )
+        ):
+            continue
+        for threshold in typed_thresholds:
+            add(
+                "range_constraint",
+                str(threshold.get("metric") or "value"),
+                {"value_type": "number", **threshold},
+                excerpt,
+            )
+        for match in _CELL_RANGE.finditer(excerpt):
+            lower_cell = _cell_coordinate(match.group(1))
+            upper_cell = _cell_coordinate(match.group(2))
+            if (
+                lower_cell is None
+                or upper_cell is None
+                or lower_cell[0] > upper_cell[0]
+                or lower_cell[1] > upper_cell[1]
+            ):
+                continue
+            add(
+                "range_constraint",
+                "cells",
+                {
+                    "value_type": "cell",
+                    "lower": match.group(1),
+                    "upper": match.group(2),
+                    "inclusive": True,
+                },
+                excerpt,
+            )
+        for match in _DATE_RANGE.finditer(excerpt):
+            if not _ordered_date_range(match.group(1), match.group(2)):
+                continue
+            add(
+                "range_constraint",
+                "dates",
+                {
+                    "value_type": "date",
+                    "lower": match.group(1),
+                    "upper": match.group(2),
+                    "inclusive": True,
+                },
+                excerpt,
+            )
+        for match in _NUMBER_RANGE.finditer(excerpt):
+            lower = match.group(1) or match.group(3)
+            upper = match.group(2) or match.group(4)
+            lower_value = _number_value(lower)
+            upper_value = _number_value(upper)
+            if (
+                lower_value is None
+                or upper_value is None
+                or lower_value > upper_value
+            ):
+                continue
+            prefix = excerpt[max(0, match.start() - 64) : match.start()]
+            subject = _threshold_metric(prefix, None)
+            add(
+                "range_constraint",
+                subject,
+                {
+                    "value_type": "number",
+                    "lower": lower_value,
+                    "upper": upper_value,
+                    "inclusive": True,
+                },
+                excerpt,
+            )
+
+        for match in _QUANTITY_CONSTRAINT.finditer(excerpt):
+            operator = match.group("operator").casefold()
+            operator = {
+                "at least": "at_least",
+                "no less than": "at_least",
+                "at most": "at_most",
+                "no more than": "at_most",
+                "all": "exactly",
+                "exactly": "exactly",
+            }[operator]
+            unit = " ".join(match.group("unit").casefold().split())
+            add(
+                "quantity_constraint",
+                unit,
+                {
+                    "operator": operator,
+                    "value": int(match.group("value")),
+                    "unit": unit,
+                },
+                excerpt,
+            )
+        for match in _TOTAL_QUANTITY_CONSTRAINT.finditer(excerpt):
+            unit = " ".join(match.group("unit").casefold().split())
+            add(
+                "quantity_constraint",
+                unit,
+                {
+                    "operator": "exactly",
+                    "value": int(match.group("value")),
+                    "unit": unit,
+                },
+                excerpt,
+            )
+        for match in _BARE_QUANTITY_CONSTRAINT.finditer(excerpt):
+            prefix = excerpt[max(0, match.start() - 32) : match.start()]
+            if (
+                not _has_explicit_quantity_anchor(excerpt, match.start())
+                or re.search(
+                    r"(?i)(?:exactly|at\s+least|at\s+most|no\s+more\s+than|"
+                    r"no\s+less\s+than|all|each|every)\s*$",
+                    prefix,
+                )
+            ):
+                continue
+            unit = " ".join(match.group("unit").casefold().split())
+            add(
+                "quantity_constraint",
+                unit,
+                {
+                    "operator": "exactly",
+                    "value": int(match.group("value")),
+                    "unit": unit,
+                },
+                excerpt,
+            )
+        for match in _WORD_QUANTITY_CONSTRAINT.finditer(excerpt):
+            prefix = excerpt[max(0, match.start() - 96) : match.start()]
+            suffix = excerpt[match.end() : match.end() + 48]
+            if (
+                not _has_explicit_quantity_anchor(excerpt, match.start())
+                or re.search(r"(?i)\b(?:each|every)\b", prefix)
+                or re.match(r"(?i)\s+(?:for\s+each|per)\b", suffix)
+            ):
+                continue
+            unit = " ".join(match.group("unit").casefold().split())
+            add(
+                "quantity_constraint",
+                unit,
+                {
+                    "operator": "exactly",
+                    "value": _NUMBER_WORDS[match.group("value").casefold()],
+                    "unit": unit,
+                },
+                excerpt,
+            )
+        for match in _PER_ITEM_QUANTITY.finditer(excerpt):
+            unit = " ".join(match.group("unit").casefold().split())
+            add(
+                "quantity_constraint",
+                unit,
+                {
+                    "operator": "per_item",
+                    "value": 1,
+                    "unit": unit,
+                    "per": match.group("per").casefold(),
+                },
+                excerpt,
+            )
+        for match in _ONE_PER_ITEM_QUANTITY.finditer(excerpt):
+            unit = " ".join(match.group("unit").casefold().split())
+            add(
+                "quantity_constraint",
+                unit,
+                {
+                    "operator": "per_item",
+                    "value": 1,
+                    "unit": unit,
+                    "per": match.group("per").casefold(),
+                },
+                excerpt,
+            )
+
+        specific_consistency = bool(
+            re.search(
+                r"(?i)\b(?:mathematically\s+consistent|"
+                r"math\s+is\s+consistent)\b",
+                excerpt,
+            )
+        )
+        for predicate, pattern in _QUALITY_PREDICATES:
+            if predicate == "consistent" and specific_consistency:
+                continue
+            quality_match = pattern.search(excerpt)
+            if quality_match is None:
+                continue
+            quality_prefix = excerpt[
+                max(0, quality_match.start() - 160) : quality_match.start()
+            ]
+            target_match = re.search(
+                r"(?i)\b(output|result|report|artifact|file|files|plan|table|"
+                r"schema|json|data)\b[^.]{0,96}\b"
+                r"(?:must|should|shall|needs?\s+to|is|are|be)\b[^.]{0,64}$",
+                quality_prefix,
+            )
+            if target_match is None:
+                continue
+            add(
+                "quality_constraint",
+                target_match.group(1).casefold(),
+                {"predicate": predicate, "required": True},
+                excerpt,
+            )
+
+    selected_rows = rows[:_MAX_PUBLIC_OBLIGATIONS]
+    new_kinds = {
+        "enumerated_set",
+        "quality_constraint",
+        "quantity_constraint",
+        "range_constraint",
+    }
+    if (
+        len(rows) > _MAX_PUBLIC_OBLIGATIONS
+        and not any(row[0] in new_kinds for row in selected_rows)
+    ):
+        supplements = [row for row in rows[28:] if row[0] in new_kinds][:4]
+        if supplements:
+            selected_rows = [*rows[:28], *supplements]
 
     return tuple(
         PublicObligationHint(
@@ -430,9 +1283,15 @@ def infer_public_obligation_hints(
             subject=subject,
             expectation=expectation,
             source_excerpt=excerpt,
-            source_fingerprint=_public_fingerprint(excerpt),
+            source_fingerprint=source_fingerprint,
         )
-        for index, (kind, subject, expectation, excerpt) in enumerate(rows, start=1)
+        for index, (
+            kind,
+            subject,
+            expectation,
+            excerpt,
+            source_fingerprint,
+        ) in enumerate(selected_rows, start=1)
     )
 
 
@@ -580,11 +1439,19 @@ def infer_public_deliverable_hints(
 
     if not isinstance(request, str) or not request.strip():
         return ()
+    bounded_request = request[:256_000]
+    blocked_fenced_ranges = _non_authoritative_fenced_ranges(bounded_request)
     discovered: list[tuple[str, str]] = []
     seen: set[str] = set()
     for pattern in _PUBLIC_DELIVERABLE_PATTERNS:
-        for match in pattern.finditer(request[:256_000]):
-            if _is_described_runtime_side_effect(request, match):
+        for match in pattern.finditer(bounded_request):
+            if (
+                _position_in_ranges(match.start(), blocked_fenced_ranges)
+                or _is_non_authoritative_public_text(
+                    _public_clause(bounded_request, match.start(), match.end())
+                )
+                or _is_described_runtime_side_effect(request, match)
+            ):
                 continue
             resolved = _resolve_public_deliverable(
                 _matched_deliverable_token(match),
@@ -603,8 +1470,14 @@ def infer_public_deliverable_hints(
         if len(discovered) >= _MAX_PUBLIC_DELIVERABLES:
             break
     for pattern in _PUBLIC_DELIVERABLE_IMPERATIVE_TO_PATTERNS:
-        for match in pattern.finditer(request[:256_000]):
-            if _is_described_runtime_side_effect(request, match):
+        for match in pattern.finditer(bounded_request):
+            if (
+                _position_in_ranges(match.start(), blocked_fenced_ranges)
+                or _is_non_authoritative_public_text(
+                    _public_clause(bounded_request, match.start(), match.end())
+                )
+                or _is_described_runtime_side_effect(request, match)
+            ):
                 continue
             resolved = _resolve_public_deliverable(
                 _matched_deliverable_token(match),
@@ -630,9 +1503,19 @@ def infer_public_deliverable_hints(
     # only explicit Markdown list-item filenames to the explicitly declared
     # directory; do not recursively infer paths from prose or code examples.
     for directory_match in _PUBLIC_DELIVERABLE_DIRECTORY_PATTERN.finditer(
-        request[:256_000]
+        bounded_request
     ):
-        if _is_described_runtime_side_effect(request, directory_match):
+        if (
+            _position_in_ranges(directory_match.start(), blocked_fenced_ranges)
+            or _is_non_authoritative_public_text(
+                _public_clause(
+                    bounded_request,
+                    directory_match.start(),
+                    directory_match.end(),
+                )
+            )
+            or _is_described_runtime_side_effect(request, directory_match)
+        ):
             continue
         resolved_directory = _resolve_public_deliverable(
             _matched_deliverable_token(directory_match),
