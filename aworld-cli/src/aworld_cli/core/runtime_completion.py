@@ -50,6 +50,11 @@ _VALIDATION_DIAGNOSTIC_CODE = re.compile(r"[a-z][a-z0-9_.:-]{0,127}\Z")
 _DELIVERABLE_TOKEN = r"(?:`([^`\r\n]+)`|'([^'\r\n]+)'|\"([^\"\r\n]+)\"|([^\s,;:!?]+))"
 _PUBLIC_DELIVERABLE_PATTERNS = (
     re.compile(
+        r"(?i)\b(?:return|provide|submit)\b[^\r\n.!?]{0,160}?"
+        r"\b(?:final\s+)?output(?:\s+(?:file|document|artifact))?\s+"
+        r"(?:at|to|as)\s+" + _DELIVERABLE_TOKEN
+    ),
+    re.compile(
         r"(?i)\bin\s+" + _DELIVERABLE_TOKEN
         + r"[\s\S]{0,512}?\b(?:edit|modify|update|complete|finalize|fix|repair)\b"
     ),
@@ -108,6 +113,15 @@ _PUBLIC_DELIVERABLE_DIRECTORY_PATTERN = re.compile(
     r"[^\r\n.!?]{0,40}?\b(?:under|in|into|to|at)\s+"
     + _DELIVERABLE_TOKEN
 )
+_PUBLIC_NAMED_FILE_IN_DIRECTORY = re.compile(
+    r"(?i)\b(?:file|document|artifact)\s+(?:named|called)\s+"
+    r"(?:`(?P<backtick_file>[^`\r\n]+)`|'(?P<single_file>[^'\r\n]+)'|"
+    r'\"(?P<double_file>[^\"\r\n]+)\"|(?P<plain_file>[^\s,;:!?]+))'
+    r"\s+(?:in|under)\s+"
+    r"(?:`(?P<backtick_dir>[^`\r\n]+)`|'(?P<single_dir>[^'\r\n]+)'|"
+    r'\"(?P<double_dir>[^\"\r\n]+)\"|(?P<plain_dir>[^\s,;:!?]+))'
+    r"(?:\s+(?:folder|directory))?"
+)
 _PUBLIC_DELIVERABLE_LIST_ITEM = re.compile(
     r"(?im)^\s*(?:\d+[.)]|[-*])\s+`([^`\r\n]+)`"
 )
@@ -122,7 +136,9 @@ _FENCED_PUBLIC_SCHEMA = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 _EXPLICIT_SCHEMA_CONTEXT = re.compile(
-    r"(?i)(?:exact(?:ly)?|required\s+output|output\s+format|"
+    r"(?i)(?:exact(?:ly)?|required\s+output|"
+    r"required\s+(?:json|toml|ya?ml|proto(?:buf)?)\s+"
+    r"(?:format|structure|schema)|output\s+format|"
     r"following\s+(?:format|structure)|field\s+names?|schema|must\s+contain)"
 )
 _FUNCTION_SIGNATURE = re.compile(
@@ -174,7 +190,8 @@ _PUBLIC_LIST_ITEM = re.compile(
 )
 _PUBLIC_REQUIREMENT_PARENT = re.compile(
     r"(?i)\b(?:output|outputs|deliverable|deliverables|required|requirements?|"
-    r"expected\s+output)\b"
+    r"expected\s+output|following\s+information|create|add|must\s+contain|"
+    r"should\s+contain)\b"
 )
 _PUBLIC_NON_AUTHORITATIVE_CONTEXT = re.compile(
     r"(?i)(?:^|\b)(?:examples?|samples?|hints?|available\s+(?:tools?|libraries)|"
@@ -289,6 +306,38 @@ _QUALITY_PREDICATES = (
     ("complete", re.compile(r"(?i)\bcomplete\b")),
     ("valid", re.compile(r"(?i)\bvalid\b")),
     ("consistent", re.compile(r"(?i)\bconsistent\b")),
+)
+_STRUCTURAL_REQUIREMENT_NOUN = re.compile(
+    r"(?i)\b(?:nodes?|edges?|graphs?|frames?|masks?|columns?|headers?|fields?|"
+    r"cells?|formulas?|rows?|keys?|sheets?|signatures?|functions?|routes?|"
+    r"records?|entries|invoices?|paths?)\b"
+)
+_STRUCTURAL_REQUIREMENT_PREDICATE = re.compile(
+    r"(?i)\b(?:must|should|required|make\s+sure|only\s+include|"
+    r"same\s+(?:order|names?|format)|for\s+each|every|all|exactly|"
+    r"append|return|reachable|targets?\s+must\s+exist|stores?|records?|"
+    r"using|compute|replace)\b"
+)
+_OUTPUT_FORMAT_PREDICATE = re.compile(
+    r"(?i)\b(?:only\s+write|only\s+include|format|1-based|one-based|"
+    r"sorted\s+in|replace\s+each|same\s+(?:order|names?))\b"
+)
+_STRUCTURED_FIELD_CONTEXT = re.compile(
+    r"(?i)\b(?:columns?|headers?|fields?|keys?|schema|json\s+structure|"
+    r"append\s+(?:a\s+)?new\s+column)\b"
+)
+_QUOTED_PUBLIC_TOKEN = re.compile(
+    r"`([A-Za-z_][A-Za-z0-9_.-]{0,127})`|"
+    r"[\"“]([A-Za-z_][A-Za-z0-9_.-]{0,127})[\"”]"
+)
+_PUBLIC_OBJECTIVE_PREDICATE = re.compile(
+    r"(?i)\b(?:find|calculate|compute|determine|identify|recover|analy[sz]e|"
+    r"compare|count|classify|harmonize|optimi[sz]e|parse|detect|audit|"
+    r"edit|update|convert|design|solve|serve)\b"
+)
+_PUBLIC_QUESTION = re.compile(
+    r"(?i)(?:\b(?:what(?:['’]s|\s+is|\s+are)|which|how\s+many)\b"
+    r"[^?]{0,480}\?|^\s*\d+[.)]\s+(?:what|which|how|list)\b)"
 )
 
 
@@ -469,7 +518,7 @@ def _authoritative_schema_prefix(value: str) -> bool:
             r"required\s+(?:json|toml|yaml|yml|proto(?:buf)?)?\s*"
             r"(?:format|schema|structure)|"
             r"output\s+(?:format|schema|structure)|following\s+(?:format|structure)|"
-            r"must\s+contain)",
+            r"(?:follow(?:ing)?\s+(?:the\s+)?)?file\s+schema|must\s+contain)",
             value,
         )
     )
@@ -606,11 +655,11 @@ def _typed_numeric_thresholds(value: str) -> tuple[dict[str, object], ...]:
     return tuple(results)
 
 
-def infer_public_obligation_hints(
+def _infer_public_obligation_hints_with_roles(
     request: str | None,
     *,
     workspace_path: str | os.PathLike[str],
-) -> tuple[PublicObligationHint, ...]:
+) -> tuple[tuple[PublicObligationHint, ...], tuple[str, ...]]:
     """Conservatively derive a typed ledger from public task text only.
 
     The ledger is advisory task grounding.  It is never populated from a
@@ -619,10 +668,12 @@ def infer_public_obligation_hints(
     """
 
     if not isinstance(request, str) or not request.strip():
-        return ()
+        return (), ()
     bounded_request = request[:256_000]
     rows: list[tuple[str, str, object, str, str]] = []
     seen: set[str] = set()
+    advisory_only_identities: set[str] = set()
+    completion_required_default = True
 
     def add(kind: str, subject: str, expectation: object, excerpt: str) -> None:
         normalized_excerpt = _bounded_public_excerpt(excerpt)
@@ -649,15 +700,23 @@ def infer_public_obligation_hints(
         if identity in seen or len(rows) >= _MAX_PUBLIC_OBLIGATION_CANDIDATES:
             return
         seen.add(identity)
-        rows.append(
-            (
-                kind,
-                subject[:512],
-                expectation,
-                normalized_excerpt,
-                _public_fingerprint(normalized_excerpt),
-            )
+        row = (
+            kind,
+            subject[:512],
+            expectation,
+            normalized_excerpt,
+            _public_fingerprint(normalized_excerpt),
         )
+        if not completion_required_default:
+            advisory_only_identities.add(
+                json.dumps(
+                    [row[0], row[1], row[2]],
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+            )
+        rows.append(row)
 
     def has_kind_subject(kind: str, subject: str) -> bool:
         return any(
@@ -908,6 +967,7 @@ def infer_public_obligation_hints(
     # New grammar is intentionally appended after all legacy passes so existing
     # obligation ids retain their relative order whenever the old text yields
     # the same obligations.
+    completion_required_default = False
     line_index = 0
     while line_index < len(public_lines):
         item_match = _PUBLIC_LIST_ITEM.match(public_lines[line_index][2])
@@ -1004,6 +1064,8 @@ def infer_public_obligation_hints(
         r"(?:named|called)\s+[`\"“]([^`\"”\r\n]{1,128})[`\"”]"
     )
     role_pattern = re.compile(r"(?i)^\s*(Rows?|Columns?|Values?)\s*[:：]\s*(\S.*?)\s*$")
+    objective_count = 0
+    question_items: list[str] = []
     for index, (line_start, _line_end, line) in enumerate(public_lines):
         if (
             _position_in_ranges(line_start, blocked_fenced_ranges)
@@ -1261,12 +1323,194 @@ def infer_public_obligation_hints(
                 excerpt,
             )
 
+    for index, (line_start, _line_end, line) in enumerate(public_lines):
+        excerpt = line.strip()
+        if (
+            not excerpt
+            or _position_in_ranges(line_start, blocked_fenced_ranges)
+            or _is_non_authoritative_public_text(excerpt)
+        ):
+            continue
+        nearby_context = " ".join(
+            candidate[2].strip()
+            for candidate in public_lines[max(0, index - 5) : index]
+            if candidate[2].strip()
+        )
+        requirement_context = bool(
+            _has_public_requirement_anchor(excerpt)
+            or _PUBLIC_QUESTION.search(excerpt)
+            or (
+                _PUBLIC_OBJECTIVE_PREDICATE.search(excerpt)
+                and re.search(
+                    r"(?i)\b(?:your\s+task|task\s+is|goal\s+is|"
+                    r"you\s+need\s+to|please)\b",
+                    excerpt,
+                )
+            )
+            or re.search(
+                r"(?i)^\s*(?:append|add|copy|write|save|return|include|recover)\b",
+                excerpt,
+            )
+            or _PUBLIC_REQUIREMENT_PARENT.search(nearby_context)
+            or re.search(
+                r"(?i)\b(?:create|add|write|save|format|structure)\b",
+                nearby_context,
+            )
+        )
+        if not requirement_context:
+            continue
+
+        structured_field_context = bool(
+            _STRUCTURED_FIELD_CONTEXT.search(excerpt)
+            or (
+                _COMMAND_CODE_SPAN.search(excerpt)
+                and _STRUCTURED_FIELD_CONTEXT.search(nearby_context)
+                and re.search(
+                    r"(?i)\b(?:output|results?|write|save|return|produce)\b",
+                    nearby_context,
+                )
+            )
+        )
+        if structured_field_context:
+            structure_text = f"{nearby_context} {excerpt}"
+            container = (
+                "workbook"
+                if re.search(r"(?i)\b(?:workbook|sheet|excel)\b", structure_text)
+                else "table"
+                if re.search(r"(?i)\b(?:columns?|headers?|csv)\b", structure_text)
+                else "structured_output"
+            )
+            for token_match in _QUOTED_PUBLIC_TOKEN.finditer(excerpt):
+                field = next(
+                    value for value in token_match.groups() if isinstance(value, str)
+                )
+                if field.casefold() in {
+                    "json",
+                    "csv",
+                    "xlsx",
+                    "data",
+                    "output",
+                    "input",
+                } or Path(field).suffix.casefold() in {
+                    ".csv",
+                    ".doc",
+                    ".docx",
+                    ".json",
+                    ".pdf",
+                    ".ppt",
+                    ".pptx",
+                    ".toml",
+                    ".tsv",
+                    ".txt",
+                    ".yaml",
+                    ".yml",
+                }:
+                    continue
+                if not has_kind_subject("structured_field", field):
+                    add(
+                        "structured_field",
+                        field,
+                        {"required": True, "container": container},
+                        excerpt,
+                    )
+            for code_span in _COMMAND_CODE_SPAN.finditer(excerpt):
+                candidates = [
+                    item.strip()
+                    for item in code_span.group(1).split(",")
+                    if item.strip()
+                ]
+                if not 1 < len(candidates) <= 16 or any(
+                    re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.-]{0,127}", item)
+                    is None
+                    for item in candidates
+                ):
+                    continue
+                for field in candidates:
+                    if not has_kind_subject("structured_field", field):
+                        add(
+                            "structured_field",
+                            field,
+                            {"required": True, "container": container},
+                            excerpt,
+                        )
+
+        structural_noun = _STRUCTURAL_REQUIREMENT_NOUN.search(excerpt)
+        if structural_noun is not None and _STRUCTURAL_REQUIREMENT_PREDICATE.search(
+            excerpt
+        ):
+            add(
+                "structural_constraint",
+                structural_noun.group(0).casefold(),
+                {"statement": _bounded_public_excerpt(excerpt)},
+                excerpt,
+            )
+        if _OUTPUT_FORMAT_PREDICATE.search(excerpt):
+            add(
+                "format_constraint",
+                "output_format",
+                {"statement": _bounded_public_excerpt(excerpt)},
+                excerpt,
+            )
+        objective_match = _PUBLIC_OBJECTIVE_PREDICATE.search(excerpt)
+        question_match = _PUBLIC_QUESTION.search(excerpt)
+        if (
+            question_match is not None
+            and excerpt not in question_items
+            and len(question_items) < 8
+        ):
+            question_items.append(_bounded_public_excerpt(excerpt))
+        if objective_count < 4 and (
+            question_match is not None
+            or (
+                objective_match is not None
+                and (
+                    requirement_context
+                    or re.search(
+                        r"(?i)\b(?:your\s+task|task\s+is|goal\s+is|"
+                        r"you\s+need\s+to|please)\b",
+                        excerpt,
+                    )
+                    or re.match(
+                        r"(?i)^\s*(?:find|calculate|compute|determine|identify|"
+                        r"recover|analy[sz]e|compare|count|classify|harmonize|"
+                        r"optimi[sz]e|parse|detect|audit|edit|update|convert|"
+                        r"design|solve)\b",
+                        excerpt,
+                    )
+                )
+            )
+        ):
+            subject = (
+                objective_match.group(0).casefold()
+                if objective_match is not None
+                else "question"
+            )
+            add(
+                "answer_constraint",
+                subject,
+                {"statement": _bounded_public_excerpt(excerpt)},
+                excerpt,
+            )
+            objective_count += 1
+
+    if len(question_items) > 1:
+        add(
+            "answer_set_constraint",
+            "questions",
+            {"items": question_items, "required": True},
+            " ".join(question_items),
+        )
+
     selected_rows = rows[:_MAX_PUBLIC_OBLIGATIONS]
     new_kinds = {
+        "answer_constraint",
+        "answer_set_constraint",
         "enumerated_set",
+        "format_constraint",
         "quality_constraint",
         "quantity_constraint",
         "range_constraint",
+        "structural_constraint",
     }
     if (
         len(rows) > _MAX_PUBLIC_OBLIGATIONS
@@ -1276,7 +1520,7 @@ def infer_public_obligation_hints(
         if supplements:
             selected_rows = [*rows[:28], *supplements]
 
-    return tuple(
+    hints = tuple(
         PublicObligationHint(
             obligation_id=f"public-obligation-{index}",
             kind=kind,
@@ -1293,6 +1537,32 @@ def infer_public_obligation_hints(
             source_fingerprint,
         ) in enumerate(selected_rows, start=1)
     )
+    completion_obligation_ids = tuple(
+        hint.obligation_id
+        for hint, row in zip(hints, selected_rows)
+        if json.dumps(
+            [row[0], row[1], row[2]],
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        not in advisory_only_identities
+    )
+    return hints, completion_obligation_ids
+
+
+def infer_public_obligation_hints(
+    request: str | None,
+    *,
+    workspace_path: str | os.PathLike[str],
+) -> tuple[PublicObligationHint, ...]:
+    """Return all public obligations, including reviewer-only risk targets."""
+
+    hints, _completion_obligation_ids = _infer_public_obligation_hints_with_roles(
+        request,
+        workspace_path=workspace_path,
+    )
+    return hints
 
 
 def _matched_deliverable_token(match: re.Match[str]) -> str:
@@ -1495,6 +1765,63 @@ def infer_public_deliverable_hints(
                 break
         if len(discovered) >= _MAX_PUBLIC_DELIVERABLES:
             break
+    for match in _PUBLIC_NAMED_FILE_IN_DIRECTORY.finditer(bounded_request):
+        if (
+            _position_in_ranges(match.start(), blocked_fenced_ranges)
+            or _is_non_authoritative_public_text(
+                _public_clause(bounded_request, match.start(), match.end())
+            )
+            or _is_described_runtime_side_effect(request, match)
+        ):
+            continue
+        filename = next(
+            (
+                value.strip()
+                for value in (
+                    match.group("backtick_file"),
+                    match.group("single_file"),
+                    match.group("double_file"),
+                    match.group("plain_file"),
+                )
+                if isinstance(value, str) and value.strip()
+            ),
+            "",
+        )
+        directory = next(
+            (
+                value.strip()
+                for value in (
+                    match.group("backtick_dir"),
+                    match.group("single_dir"),
+                    match.group("double_dir"),
+                    match.group("plain_dir"),
+                )
+                if isinstance(value, str) and value.strip()
+            ),
+            "",
+        )
+        candidate = Path(filename)
+        resolved_directory = _resolve_public_deliverable(
+            directory,
+            workspace_path=workspace_path,
+            kind="directory",
+        )
+        if (
+            resolved_directory is None
+            or candidate.is_absolute()
+            or candidate.name != filename
+            or filename in {"", ".", ".."}
+            or "." not in filename
+        ):
+            continue
+        joined = str(Path(resolved_directory[0]) / filename)
+        key = os.path.normcase(joined)
+        if key in seen:
+            continue
+        seen.add(key)
+        discovered.append((joined, joined if Path(directory).is_absolute() else filename))
+        if len(discovered) >= _MAX_PUBLIC_DELIVERABLES:
+            break
     # Some task contracts name one output directory and list the required
     # filenames beneath it, for example ``Write these two artifacts under
     # `/logs/artifacts/`:`` followed by numbered ``document.md`` and
@@ -1607,7 +1934,7 @@ def _publish_public_deliverable_contract(
         }
     else:
         context.context_info.pop("public_capability_hints", None)
-    obligations = infer_public_obligation_hints(
+    obligations, completion_obligation_ids = _infer_public_obligation_hints_with_roles(
         request,
         workspace_path=workspace_path,
     )
@@ -1617,6 +1944,7 @@ def _publish_public_deliverable_contract(
             "authority": PUBLIC_DELIVERABLE_AUTHORITY,
             "source": "public_task_text",
             "request_fingerprint": _public_fingerprint(str(request or "")),
+            "completion_obligation_ids": list(completion_obligation_ids),
             "obligations": [asdict(item) for item in obligations],
         }
     else:

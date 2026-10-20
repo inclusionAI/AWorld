@@ -2308,7 +2308,11 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         context.context_info[f"public_contract_evidence:{self.id()}"] = status
         if status.get("closure_complete") is True:
             return None
-        unresolved_ids = status.get("unresolved_obligation_ids")
+        unresolved_ids = status.get("completion_unresolved_obligation_ids")
+        if unresolved_ids is None:
+            # Compatibility with public-contract evidence written before the
+            # completion/reviewer role split.
+            unresolved_ids = status.get("unresolved_obligation_ids")
         if not isinstance(unresolved_ids, list) or not unresolved_ids:
             return None
         candidate_hash = str(status.get("candidate_hash") or "")
@@ -2472,6 +2476,31 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 }
             )
         return tuple(validated)
+
+    def _public_task_completion_obligation_ids(
+        self,
+        context: Context,
+        obligations: Sequence[Mapping[str, Any]],
+    ) -> frozenset[str]:
+        """Project completion debt while treating malformed role data safely."""
+
+        all_ids = frozenset(
+            row.get("obligation_id")
+            for row in obligations
+            if isinstance(row.get("obligation_id"), str)
+        )
+        value = context.context_info.get("public_task_contract")
+        if not isinstance(value, dict) or "completion_obligation_ids" not in value:
+            return all_ids
+        raw_ids = value.get("completion_obligation_ids")
+        if (
+            not isinstance(raw_ids, list)
+            or len(raw_ids) > len(all_ids)
+            or any(not isinstance(item, str) or item not in all_ids for item in raw_ids)
+            or len(set(raw_ids)) != len(raw_ids)
+        ):
+            return all_ids
+        return frozenset(raw_ids)
 
     def _record_llm_call_request(
         self,
@@ -6824,6 +6853,37 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                         PROMPT_STABILITY_HINT_KEY: "dynamic",
                     }
                 )
+            if (
+                pending_decision_boundary is None
+                and not independent_acceptance_review
+                and not model_owned_review
+                and getattr(self, "lazy_verifier_factory", None) is not None
+            ):
+                from aworld.runners.execution_protocol import (
+                    reviewer_value_lease_guidance,
+                    reviewer_value_lease_requires_continuation,
+                )
+
+                reviewer_guidance = reviewer_value_lease_guidance(
+                    message.context, self.id()
+                )
+                if (
+                    reviewer_guidance
+                    and reviewer_value_lease_requires_continuation(
+                        message.context, self.id()
+                    )
+                ):
+                    raw_messages = list(raw_messages)
+                    raw_messages.append(
+                        {
+                            "role": "user",
+                            "content": reviewer_guidance,
+                            PROMPT_SECTION_NAME_HINT_KEY: (
+                                "reviewer_value_lease_guidance"
+                            ),
+                            PROMPT_STABILITY_HINT_KEY: "dynamic",
+                        }
+                    )
         if transient_model_recovery_turn and not tool_free_finalization:
             raw_messages = list(raw_messages)
             raw_messages.append(
@@ -6839,6 +6899,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                     ),
                 }
             )
+        reviewer_tool_overlay: list[dict[str, Any]] = []
         if loop_budget_finalization:
             raw_messages = list(raw_messages)
             raw_messages.append(
@@ -6901,6 +6962,12 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             tools = None
         else:
             tools = await self._filter_tools(message.context)
+            lazy_verifier_factory = getattr(self, "lazy_verifier_factory", None)
+            partition_tool_surface = getattr(
+                lazy_verifier_factory, "partition_tool_surface", None
+            )
+            if callable(partition_tool_surface):
+                tools, reviewer_tool_overlay = partition_tool_surface(tools)
             from aworld.runners.execution_protocol import (
                 constrain_candidate_convergence_tool_catalog,
             )
@@ -7202,6 +7269,23 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                     "Task Tool Catalog tracking failed; "
                     f"error_type={type(exc).__name__}"
                 )
+        if (
+            not tool_free_finalization
+            and execution_control_offer.decision_boundary is None
+            and not independent_acceptance_review
+            and not model_owned_review
+            and reviewer_tool_overlay
+        ):
+            lazy_verifier_factory = getattr(self, "lazy_verifier_factory", None)
+            project_reviewer_tool_surface = getattr(
+                lazy_verifier_factory, "project_reviewer_tool_surface", None
+            )
+            if callable(project_reviewer_tool_surface):
+                projected = project_reviewer_tool_surface(
+                    message.context, reviewer_tool_overlay
+                )
+                if projected:
+                    tools = [*(tools or ()), *projected]
         reasoning_phase = self._reasoning_phase_for_turn(
             decision_boundary=execution_control_offer.decision_boundary,
             independent_acceptance_review=independent_acceptance_review,
@@ -8118,34 +8202,53 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                             )
                         )
                     if tool_free_finalization and validation_feedback:
-                        final_text = (llm_response.content or "").strip()
-                        final_text = (
-                            f"{final_text}\n\n"
-                            "The completion contract remains unsatisfied, so I "
-                            "cannot confirm that the task is complete."
-                        ).strip()
-                        llm_response.content = final_text
-                        if isinstance(llm_response.message, dict):
-                            llm_response.message = dict(llm_response.message)
-                            llm_response.message["content"] = final_text
-                            llm_response.message["aworld_incomplete_reason"] = (
-                                "delivery_validation_unsatisfied"
-                            )
-                            llm_response.message["aworld_recoverable"] = False
-                        agent_result = AgentResult(
-                            actions=[
-                                ActionModel(
-                                    agent_name=self.id(),
-                                    policy_info=final_text,
-                                )
-                            ],
-                            current_state=agent_result.current_state,
-                            is_call_tool=False,
+                        (
+                            public_contract_advisory,
+                            explicit_completion_enforcement,
+                        ) = self._public_contract_feedback_policy(
+                            message.context, validation_feedback
                         )
-                        message.context.context_info[
-                            f"agent_loop_budget_validation_blocked:{self.id()}"
-                        ] = True
-                        validation_feedback = None
+                        if (
+                            public_contract_advisory
+                            and not explicit_completion_enforcement
+                        ):
+                            message.context.context_info.pop(
+                                f"public_contract_validation_feedback:{self.id()}",
+                                None,
+                            )
+                            message.context.context_info[
+                                f"public_contract_advisory_tool_free_submit:{self.id()}"
+                            ] = True
+                            validation_feedback = None
+                        else:
+                            final_text = (llm_response.content or "").strip()
+                            final_text = (
+                                f"{final_text}\n\n"
+                                "The completion contract remains unsatisfied, so I "
+                                "cannot confirm that the task is complete."
+                            ).strip()
+                            llm_response.content = final_text
+                            if isinstance(llm_response.message, dict):
+                                llm_response.message = dict(llm_response.message)
+                                llm_response.message["content"] = final_text
+                                llm_response.message[
+                                    "aworld_incomplete_reason"
+                                ] = "delivery_validation_unsatisfied"
+                                llm_response.message["aworld_recoverable"] = False
+                            agent_result = AgentResult(
+                                actions=[
+                                    ActionModel(
+                                        agent_name=self.id(),
+                                        policy_info=final_text,
+                                    )
+                                ],
+                                current_state=agent_result.current_state,
+                                is_call_tool=False,
+                            )
+                            message.context.context_info[
+                                f"agent_loop_budget_validation_blocked:{self.id()}"
+                            ] = True
+                            validation_feedback = None
                     # skip summary on final round
                     if execution_control_offer.decision_boundary is None:
                         await self._add_message_to_memory(
@@ -8660,6 +8763,29 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
     def _result_validation_retry_key(agent_id: str) -> str:
         return f"result_validation_retry_count:{agent_id}"
 
+    def _public_contract_feedback_policy(
+        self,
+        context: Context,
+        validation_feedback: str,
+    ) -> tuple[bool, bool]:
+        """Classify advisory feedback and explicit caller enforcement."""
+
+        advisory_feedback_key = f"public_contract_validation_feedback:{self.id()}"
+        public_contract_advisory = (
+            context.context_info.get(advisory_feedback_key)
+            == canonical_json_hash({"feedback": validation_feedback})
+        )
+        contract = getattr(context, "completion_contract", None)
+        from aworld.core.context.compiler import CompletionMode
+
+        explicit_completion_enforcement = bool(
+            contract is not None
+            and getattr(context, "completion_mode", None) is CompletionMode.ENFORCE
+            and context.context_info.get("completion_enforcement_explicit", True)
+            is not False
+        )
+        return public_contract_advisory, explicit_completion_enforcement
+
     @staticmethod
     def _should_degrade_result_validation_retry_error(exc: Exception) -> bool:
         message = str(exc).lower()
@@ -8679,12 +8805,12 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         iterative: bool = False,
         candidate_actions: Sequence[ActionModel] | None = None,
     ) -> List[ActionModel]:
-        advisory_feedback_key = (
-            f"public_contract_validation_feedback:{self.id()}"
-        )
-        public_contract_advisory = (
-            message.context.context_info.get(advisory_feedback_key)
-            == canonical_json_hash({"feedback": validation_feedback})
+        advisory_feedback_key = f"public_contract_validation_feedback:{self.id()}"
+        (
+            public_contract_advisory,
+            explicit_completion_enforcement,
+        ) = self._public_contract_feedback_policy(
+            message.context, validation_feedback
         )
         retry_key = (
             f"public_contract_validation_retry_count:{self.id()}"
@@ -8706,17 +8832,6 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             )
 
         contract = getattr(message.context, "completion_contract", None)
-        from aworld.core.context.compiler import CompletionMode
-
-        explicit_completion_enforcement = bool(
-            contract is not None
-            and getattr(message.context, "completion_mode", None)
-            is CompletionMode.ENFORCE
-            and message.context.context_info.get(
-                "completion_enforcement_explicit", True
-            )
-            is not False
-        )
         maximum_repairs = (
             1
             if public_contract_advisory
@@ -9101,6 +9216,19 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         artifacts = self._public_deliverable_artifacts(context)
         executables = self._public_executable_hints(context)
         obligations = self._public_task_obligations(context)
+        completion_obligation_ids = self._public_task_completion_obligation_ids(
+            context, obligations
+        )
+        completion_obligations = tuple(
+            row
+            for row in obligations
+            if row.get("obligation_id") in completion_obligation_ids
+        )
+        reviewer_obligations = tuple(
+            row
+            for row in obligations
+            if row.get("obligation_id") not in completion_obligation_ids
+        )
         if not artifacts and not executables and not obligations:
             return messages
         if artifacts:
@@ -9135,8 +9263,8 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             if executables
             else ""
         )
-        obligation_guidance = (
-            "The public-task-only contract ledger contains these explicit "
+        completion_guidance = (
+            "The public-task-only completion checklist contains these explicit "
             "obligations:\n"
             + "\n".join(
                 "- "
@@ -9146,21 +9274,40 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                     sort_keys=True,
                     separators=(",", ":"),
                 )
-                for row in obligations
+                for row in completion_obligations
             )
             + "\nBefore claiming completion, bind each applicable obligation "
             "to a fresh Agent-visible observation or state the remaining "
-            "uncertainty. This ledger is a final evidence checklist, not a "
+            "uncertainty. This checklist is not a "
             "Tool-admission allowlist; do not treat mentioned inputs, examples, "
             "or prohibited changes as output files. "
-            if obligations
+            if completion_obligations
+            else ""
+        )
+        reviewer_guidance = (
+            "The same public ledger also contains "
+            f"{len(reviewer_obligations)} reviewer-only risk target(s) across "
+            + ", ".join(
+                sorted(
+                    {
+                        str(row.get("kind"))
+                        for row in reviewer_obligations
+                        if row.get("kind")
+                    }
+                )
+            )
+            + ". AWorld will surface one exact target when a reviewer lease is "
+            "offered. These are advisory risk targets and do not all "
+            "need to be closed before submitting the best current candidate. "
+            if reviewer_obligations
             else ""
         )
         guidance = {
             "role": "system",
             "content": (
                 f"{_PUBLIC_DELIVERABLE_PROMPT_MARKER}: "
-                f"{deliverable_guidance}{capability_guidance}{obligation_guidance}"
+                f"{deliverable_guidance}{capability_guidance}"
+                f"{completion_guidance}{reviewer_guidance}"
                 "These hints are advisory task grounding only; they do not "
                 "validate file contents, authorize arbitrary commands, expose "
                 "hidden verifier material, or replace a canonical verifier."

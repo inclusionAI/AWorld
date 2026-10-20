@@ -70,6 +70,8 @@ _REVIEW_OUTPUT_TOKEN_BUDGET = (
 )
 _REVIEW_WALL_CLOCK_SECONDS = 120.0
 _REVIEW_MIN_START_SECONDS = 30.0
+_GUIDED_REVIEW_WALL_CLOCK_SECONDS = 60.0
+_GUIDED_REVIEW_IDLE_SECONDS = 30.0
 _DECLARED_SNAPSHOT_SCHEMA = "aworld.declared-artifact-snapshot/v1"
 _DECLARED_SNAPSHOT_TOTAL_BYTES = 12 * 1024
 _DECLARED_SNAPSHOT_FILE_BYTES = 8 * 1024
@@ -88,8 +90,11 @@ _EXECUTABLE_OBLIGATION_KINDS = frozenset(
 )
 _TASK_DERIVED_VALIDATION_SCOPE_KINDS = frozenset(
     {
+        "answer_constraint",
+        "answer_set_constraint",
         "deliverable_file",
         "enumerated_set",
+        "format_constraint",
         "function_signature",
         "import_contract",
         "negative_constraint",
@@ -101,6 +106,7 @@ _TASK_DERIVED_VALIDATION_SCOPE_KINDS = frozenset(
         "range_constraint",
         "service_port",
         "structured_field",
+        "structural_constraint",
     }
 )
 _CANONICAL_SHA256 = re.compile(r"sha256:[0-9a-f]{64}")
@@ -479,17 +485,21 @@ def _fallback_counterexample(
     priority = {
         "range_constraint": 0,
         "numeric_threshold": 1,
-        "quantity_constraint": 2,
-        "negative_constraint": 3,
-        "quality_constraint": 4,
+        "answer_set_constraint": 2,
+        "answer_constraint": 3,
+        "structural_constraint": 4,
         "structured_field": 5,
-        "enumerated_set": 6,
-        "function_signature": 7,
-        "import_contract": 8,
-        "process_liveness": 9,
-        "service_port": 10,
-        "public_command": 11,
-        "deliverable_file": 12,
+        "negative_constraint": 6,
+        "quantity_constraint": 7,
+        "quality_constraint": 8,
+        "format_constraint": 9,
+        "enumerated_set": 10,
+        "function_signature": 11,
+        "import_contract": 12,
+        "process_liveness": 13,
+        "service_port": 14,
+        "public_command": 15,
+        "deliverable_file": 16,
     }
     selected = min(
         (
@@ -545,17 +555,21 @@ def _task_derived_validation_scope(
     priority = {
         "range_constraint": 0,
         "numeric_threshold": 1,
-        "quantity_constraint": 2,
-        "negative_constraint": 3,
-        "quality_constraint": 4,
+        "answer_set_constraint": 2,
+        "answer_constraint": 3,
+        "structural_constraint": 4,
         "structured_field": 5,
-        "enumerated_set": 6,
-        "function_signature": 7,
-        "import_contract": 8,
-        "process_liveness": 9,
-        "service_port": 10,
-        "public_command": 11,
-        "deliverable_file": 12,
+        "negative_constraint": 6,
+        "quantity_constraint": 7,
+        "quality_constraint": 8,
+        "format_constraint": 9,
+        "enumerated_set": 10,
+        "function_signature": 11,
+        "import_contract": 12,
+        "process_liveness": 13,
+        "service_port": 14,
+        "public_command": 15,
+        "deliverable_file": 16,
     }
     eligible = [
         row
@@ -655,16 +669,98 @@ class LazyVerifierFactory:
         return self._parent_agent
 
     @staticmethod
+    def partition_tool_surface(
+        tools: Sequence[Mapping[str, Any]] | None,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """Separate the reviewer control Tool from ordinary task Tools."""
+
+        ordinary: list[dict[str, Any]] = []
+        reviewer: list[dict[str, Any]] = []
+        for schema in tools or ():
+            projected = dict(schema)
+            function = schema.get("function") if isinstance(schema, Mapping) else None
+            name = function.get("name") if isinstance(function, Mapping) else None
+            if (
+                isinstance(name, str)
+                and name.casefold()
+                == f"{ADVISORY_VERIFIER_TOOL}__review_candidate".casefold()
+            ):
+                reviewer.append(projected)
+            else:
+                ordinary.append(projected)
+        return ordinary, reviewer
+
+    def project_reviewer_tool_surface(
+        self,
+        context: Any,
+        reviewer_tools: Sequence[Mapping[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Expose review only for compatibility mode or a claimable GUIDE lease."""
+
+        if not reviewer_tools:
+            return []
+        try:
+            from aworld.core.execution_protocol import ProtocolMode
+            from aworld.runners.execution_protocol import (
+                claimable_reviewer_value_lease,
+                execution_protocol_policy,
+            )
+
+            mode = execution_protocol_policy(
+                context, self._parent_agent.id()
+            ).mode
+            if mode in {ProtocolMode.OFF, ProtocolMode.OBSERVE}:
+                return [dict(schema) for schema in reviewer_tools]
+            if mode is ProtocolMode.GUIDE and claimable_reviewer_value_lease(
+                context, self._parent_agent.id()
+            ) is not None:
+                return [dict(schema) for schema in reviewer_tools]
+        except Exception:
+            # Dynamic review is an optional control-plane capability.  Fail
+            # closed in GUIDE-like modes rather than advertising a Tool whose
+            # lease cannot be authenticated.
+            return []
+        return []
+
+    @staticmethod
     def _load_builder() -> Callable[..., Any]:
         module = import_module(_VERIFIER_MODULE)
         return getattr(module, "build_verifier_swarm")
 
-    def _construct_verifier(self) -> BaseAgent:
+    def _construct_verifier(self, *, guided_review: bool = False) -> BaseAgent:
         builder = self._builder_loader()
+        generation_budget_policy = self._generation_budget_policy
+        if guided_review:
+            base = generation_budget_policy or GenerationBudgetPolicy()
+
+            def tighter(value: float | None, cap: float) -> float:
+                return min(float(value), cap) if value is not None else cap
+
+            generation_budget_policy = GenerationBudgetPolicy(
+                total_timeout_seconds=tighter(
+                    base.total_timeout_seconds,
+                    _GUIDED_REVIEW_WALL_CLOCK_SECONDS,
+                ),
+                stream_idle_timeout_seconds=tighter(
+                    base.stream_idle_timeout_seconds,
+                    _GUIDED_REVIEW_IDLE_SECONDS,
+                ),
+                active_tool_free_timeout_seconds=tighter(
+                    base.active_tool_free_timeout_seconds,
+                    _GUIDED_REVIEW_WALL_CLOCK_SECONDS,
+                ),
+                action_repair_timeout_seconds=base.action_repair_timeout_seconds,
+                action_repair_max_output_tokens=base.action_repair_max_output_tokens,
+                response_recovery_max_output_tokens=(
+                    base.response_recovery_max_output_tokens
+                ),
+                partial_response_context_chars=base.partial_response_context_chars,
+                action_repair_enabled=False,
+            )
         swarm = builder(
             sandbox=self._sandbox,
             agent_config=self._agent_config,
-            generation_budget_policy=self._generation_budget_policy,
+            generation_budget_policy=generation_budget_policy,
             generation_budget_explicit_fields=(
                 self._generation_budget_explicit_fields
             ),
@@ -714,6 +810,7 @@ class LazyVerifierFactory:
             request,
             context=context,
             authoritative_obligation=authoritative_obligation,
+            guided_review=lease_id is not None,
         )
         elapsed_ms = min(
             1_000_000,
@@ -738,6 +835,7 @@ class LazyVerifierFactory:
         *,
         context: Any,
         authoritative_obligation: Mapping[str, Any] | None,
+        guided_review: bool = False,
     ) -> AdvisoryReviewResult:
         """Execute a review already admitted by the owning caller."""
 
@@ -827,7 +925,7 @@ class LazyVerifierFactory:
                         for path in authoritative_deliverables
                     ],
                 }
-            verifier = self._construct_verifier()
+            verifier = self._construct_verifier(guided_review=guided_review)
             authoritative_validation_receipts = _authoritative_validation_receipts(
                 context,
                 agent_id=self._parent_agent.id(),
@@ -855,7 +953,19 @@ class LazyVerifierFactory:
                 review_timeout = None
             review_deadline = self._review_deadline(
                 context,
-                cap_seconds=review_timeout,
+                cap_seconds=(
+                    min(
+                        float(review_timeout),
+                        _GUIDED_REVIEW_WALL_CLOCK_SECONDS,
+                    )
+                    if guided_review
+                    and isinstance(review_timeout, (int, float))
+                    and not isinstance(review_timeout, bool)
+                    and review_timeout > 0
+                    else _GUIDED_REVIEW_WALL_CLOCK_SECONDS
+                    if guided_review
+                    else review_timeout
+                ),
             )
             result = await self._invoke_review_runner(
                 verifier=verifier,
@@ -1274,8 +1384,8 @@ class AdvisoryVerifierTool(AsyncTool):
                 from aworld.core.execution_protocol import ReviewerDirectiveSource
                 from aworld.runners.execution_protocol import (
                     claim_reviewer_value_lease_for_review,
+                    claimable_reviewer_value_lease,
                     close_reviewer_value_lease_for_liveness,
-                    ensure_reviewer_value_lease_offer,
                     record_reviewer_value_directive,
                     reviewer_value_lease_id,
                     reviewer_value_lease_obligation,
@@ -1283,7 +1393,7 @@ class AdvisoryVerifierTool(AsyncTool):
 
                 agent_id = factory.parent_agent.id()
                 try:
-                    offered = ensure_reviewer_value_lease_offer(context, agent_id)
+                    offered = claimable_reviewer_value_lease(context, agent_id)
                 except Exception as exc:
                     logger.warning(
                         "Reviewer value lease offer unavailable; error_type=%s",
@@ -1453,8 +1563,13 @@ class AdvisoryVerifierTool(AsyncTool):
                     "requirements": [
                         "use an input, boundary, or independent recomputation "
                         "not present in the claimed evidence",
+                        "prefer the smallest self-contained in-process assertion; "
+                        "avoid auxiliary files or subprocesses when an equivalent "
+                        "probe is available",
                         "execute an assertion that exits nonzero when the "
                         "counterexample is observed",
+                        "treat an unhandled probe-harness exception as unavailable "
+                        "evidence, not as a candidate contradiction",
                         "bind the Tool call to the listed public obligation ids "
                         "with __aworld_public_probe metadata",
                     ],

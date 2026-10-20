@@ -163,7 +163,7 @@ def _install_claimed_lease(
     calls = captured if captured is not None else {}
     monkeypatch.setattr(
         protocol_module,
-        "ensure_reviewer_value_lease_offer",
+        "claimable_reviewer_value_lease",
         lambda _context, _agent_id: lease,
     )
     monkeypatch.setattr(
@@ -277,6 +277,76 @@ def test_default_root_tool_and_prompt_advertise_lazy_advisory_boundary(
     assert "public_task" not in (
         AdvisoryVerifierAction.REVIEW_CANDIDATE.value.input_params
     )
+
+
+def test_reviewer_tool_surface_is_a_claimable_guide_overlay(monkeypatch) -> None:
+    from aworld.runners import execution_protocol as protocol_module
+
+    factory = _factory()
+    ordinary_schema = {
+        "type": "function",
+        "function": {"name": "terminal__run_code", "parameters": {}},
+    }
+    reviewer_schema = {
+        "type": "function",
+        "function": {
+            "name": f"{ADVISORY_VERIFIER_TOOL}__review_candidate",
+            "parameters": {},
+        },
+    }
+    ordinary, reviewer = factory.partition_tool_surface(
+        [ordinary_schema, reviewer_schema]
+    )
+    assert ordinary == [ordinary_schema]
+    assert reviewer == [reviewer_schema]
+
+    monkeypatch.setattr(
+        protocol_module,
+        "execution_protocol_policy",
+        lambda *_args: ExecutionProtocolPolicy(mode="guide"),
+    )
+    monkeypatch.setattr(
+        protocol_module,
+        "claimable_reviewer_value_lease",
+        lambda *_args: None,
+    )
+    assert factory.project_reviewer_tool_surface(object(), reviewer) == []
+
+    monkeypatch.setattr(
+        protocol_module,
+        "claimable_reviewer_value_lease",
+        lambda *_args: object(),
+    )
+    assert factory.project_reviewer_tool_surface(object(), reviewer) == [
+        reviewer_schema
+    ]
+
+    monkeypatch.setattr(
+        protocol_module,
+        "execution_protocol_policy",
+        lambda *_args: ExecutionProtocolPolicy(mode="observe"),
+    )
+    monkeypatch.setattr(
+        protocol_module,
+        "claimable_reviewer_value_lease",
+        lambda *_args: pytest.fail("compatibility mode does not require a lease"),
+    )
+    assert factory.project_reviewer_tool_surface(object(), reviewer) == [
+        reviewer_schema
+    ]
+
+
+def test_guided_reviewer_uses_progress_sensitive_sixty_second_budget() -> None:
+    captured = {}
+    factory = _factory(captured=captured)
+
+    factory._construct_verifier(guided_review=True)
+
+    policy = captured["builder_kwargs"]["generation_budget_policy"]
+    assert policy.total_timeout_seconds == 60
+    assert policy.stream_idle_timeout_seconds == 30
+    assert policy.active_tool_free_timeout_seconds == 60
+    assert policy.action_repair_enabled is False
 
 
 @pytest.mark.asyncio
@@ -943,7 +1013,7 @@ async def test_tool_without_lease_does_not_construct_reviewer(monkeypatch) -> No
     factory = _factory(captured=captured)
     monkeypatch.setattr(
         protocol_module,
-        "ensure_reviewer_value_lease_offer",
+        "claimable_reviewer_value_lease",
         lambda _context, _agent_id: None,
     )
     monkeypatch.setattr(
@@ -1036,7 +1106,7 @@ async def test_runner_claim_survives_factory_rebuild_and_prevents_retry(
     persistent = {"consumed": False}
     monkeypatch.setattr(
         protocol_module,
-        "ensure_reviewer_value_lease_offer",
+        "claimable_reviewer_value_lease",
         lambda _context, _agent_id: lease,
     )
 

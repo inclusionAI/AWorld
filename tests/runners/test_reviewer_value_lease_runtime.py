@@ -190,6 +190,7 @@ def _validate(
     call_id: str,
     success: bool,
     return_code: int,
+    content: str | None = None,
 ) -> int:
     validation = ActionModel(
         tool_name="terminal",
@@ -212,17 +213,18 @@ def _validate(
             "obligation_ids": ["public-obligation-2"],
         },
     )
+    result = {
+        "tool_call_id": call_id,
+        "success": success,
+        "return_code": return_code,
+    }
+    if content is not None:
+        result["content"] = content
     return protocol.record_public_probe_observations(
         context,
         "agent",
         actions=[validation],
-        result_projections=[
-            {
-                "tool_call_id": call_id,
-                "success": success,
-                "return_code": return_code,
-            }
-        ],
+        result_projections=[result],
     )
 
 
@@ -275,6 +277,47 @@ def test_offer_requires_armed_candidate_contract_and_closure_reserve(tmp_path):
         protocol.ensure_reviewer_value_lease_offer(boundary_high, "agent")
         is not None
     )
+
+
+def test_reviewer_only_obligation_does_not_create_completion_debt(tmp_path):
+    context = _context(tmp_path)
+    context.context_info["public_task_contract"]["completion_obligation_ids"] = [
+        "public-obligation-1"
+    ]
+
+    status = protocol.public_contract_evidence_status(context, "agent")
+
+    assert status["closure_complete"] is True
+    assert status["completion_unresolved_obligation_ids"] == []
+    assert status["unresolved_obligation_ids"] == ["public-obligation-2"]
+    offered = protocol.ensure_reviewer_value_lease_offer(context, "agent")
+    assert offered is not None
+    assert offered.obligation_id == "public-obligation-2"
+
+
+@pytest.mark.parametrize(
+    "completion_ids",
+    (
+        ["unknown-obligation"],
+        ["public-obligation-1", "public-obligation-1"],
+        "public-obligation-1",
+    ),
+)
+def test_malformed_completion_roles_fail_safe_to_legacy_debt(
+    tmp_path, completion_ids
+):
+    context = _context(tmp_path)
+    context.context_info["public_task_contract"][
+        "completion_obligation_ids"
+    ] = completion_ids
+
+    status = protocol.public_contract_evidence_status(context, "agent")
+
+    assert status["completion_obligation_count"] == 2
+    assert status["completion_unresolved_obligation_ids"] == [
+        "public-obligation-2"
+    ]
+    assert status["closure_complete"] is False
 
 
 def test_no_contract_skips_reviewer_and_submits_to_external_evaluation(tmp_path):
@@ -331,6 +374,7 @@ def test_claim_is_checkpointed_and_cannot_repeat_after_factory_rebuild(tmp_path)
     assert first.status is ReviewerLeaseStatus.DIRECTIVE_PENDING
     assert second is None
     assert protocol.load_reviewer_value_lease(context, "agent") == first
+    assert protocol.claimable_reviewer_value_lease(context, "agent") is None
 
 
 def test_concurrent_claim_has_exactly_one_winner(tmp_path):
@@ -663,6 +707,43 @@ def test_contradiction_allows_one_changed_repair_and_revalidation(
     )
 
 
+def test_unhandled_probe_harness_exception_is_unavailable_not_contradiction(
+    tmp_path,
+):
+    context = _context(tmp_path)
+    _lease, lease_id = _claim_and_direct(context)
+    _arm_validation(context, lease_id)
+    content = json.dumps(
+        {
+            "success": False,
+            "message": {
+                "stdout": "",
+                "stderr": (
+                    "Traceback (most recent call last):\n"
+                    "  File '/tmp/probe.py', line 8, in <module>\n"
+                    "TypeError: 'NoneType' object is not callable\n"
+                ),
+            },
+        }
+    )
+
+    assert _validate(
+        context,
+        call_id="broken-probe-harness",
+        success=False,
+        return_code=1,
+        content=content,
+    ) == 1
+
+    closed = protocol.load_reviewer_value_lease(context, "agent")
+    assert closed is not None
+    assert closed.status is ReviewerLeaseStatus.CLOSED
+    assert closed.closure_reason is (
+        ReviewerLeaseClosureReason.VALIDATION_UNAVAILABLE
+    )
+    assert closed.repair_attempt_count == 0
+
+
 def test_ambiguous_validation_batch_closes_without_repair(tmp_path):
     context = _context(tmp_path)
     _lease, lease_id = _claim_and_direct(context)
@@ -836,3 +917,71 @@ def test_timeout_is_unavailable_not_a_counterexample(tmp_path):
         ReviewerLeaseClosureReason.VALIDATION_UNAVAILABLE
     )
     assert closed.repair_attempt_count == 0
+
+
+def test_exact_reviewer_binding_accepts_exit_code_assertion_script(tmp_path):
+    context = _context(tmp_path)
+    _lease, lease_id = _claim_and_direct(context)
+    _arm_validation(context, lease_id)
+    validation = ActionModel(
+        tool_name="terminal",
+        action_name="execute",
+        tool_call_id="exit-code-validation",
+        params={
+            "command": (
+                "python - <<'PY'\n"
+                "import sys\n"
+                "bad = False\n"
+                "if bad:\n"
+                "    sys.exit(1)\n"
+                "print('PASS')\n"
+                "PY"
+            )
+        },
+    )
+    assert protocol.framework_observable_validation_kind(
+        context, "agent", validation
+    ) is None
+    assert protocol.record_public_probe_plan(
+        context,
+        "agent",
+        tool_call_id=validation.tool_call_id,
+        tool_identity="terminal:execute",
+        arguments_projection=validation.params,
+        value={
+            "hypothesis_id": "reviewer-value-boundary",
+            "highest_risk_counterexample": (
+                "assert the exact lower boundary independently"
+            ),
+            "probe_kind": "counterexample",
+            "obligation_ids": ["public-obligation-2"],
+        },
+    )
+
+    assert protocol.record_public_probe_observations(
+        context,
+        "agent",
+        actions=[validation],
+        result_projections=[
+            {
+                "tool_call_id": validation.tool_call_id,
+                "success": True,
+                "return_code": 0,
+                "metadata": {
+                    "terminal_execution_receipt": {
+                        "schema_version": "aworld.terminal-execution-receipt/v2",
+                        "executed": True,
+                        "timed_out": False,
+                        "exit_code": 0,
+                    }
+                },
+            }
+        ],
+    ) == 1
+
+    closed = protocol.load_reviewer_value_lease(context, "agent")
+    assert closed is not None
+    assert closed.closure_reason is ReviewerLeaseClosureReason.VALIDATION_PASSED
+    receipts = protocol.load_public_probe_receipts(context, "agent")
+    assert receipts[-1]["validation_kind"] == "reviewer-bound:counterexample"
+    assert receipts[-1]["probe_assessment"] == "assertion_executed"

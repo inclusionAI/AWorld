@@ -140,6 +140,19 @@ def test_explicit_public_output_filename_becomes_advisory_deliverable(
     assert hints[0].authority == "public_task_advisory"
 
 
+def test_named_output_file_is_joined_to_explicit_output_directory(
+    tmp_path: Path,
+) -> None:
+    hints = infer_public_deliverable_hints(
+        "Format the answer in a JSON file called `answers.json` in `/root` folder.",
+        workspace_path=tmp_path,
+    )
+
+    assert [(item.path, item.display_path) for item in hints] == [
+        ("/root/answers.json", "/root/answers.json")
+    ]
+
+
 @pytest.mark.parametrize(
     ("request_text", "expected_display_path"),
     (
@@ -366,6 +379,133 @@ def test_default_completion_publishes_advisory_deliverable_without_authority(
     assert ledger["source"] == "public_task_text"
     assert ledger["request_fingerprint"].startswith("sha256:")
     assert ledger["obligations"][0]["kind"] == "deliverable_file"
+    assert ledger["completion_obligation_ids"] == ["public-obligation-1"]
+
+
+def test_new_public_grammar_is_reviewer_only_in_published_contract(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.delenv("AWORLD_COMPLETION_MODE", raising=False)
+    context = Context(task_id="public-contract-roles")
+    request = """Create `report.json` with required field `value`.
+The score must be at least 95.
+Required output sections:
+- summary
+- diagnostics
+"""
+
+    assert configure_runtime_completion(
+        context,
+        request=request,
+        workspace_path=tmp_path,
+    ) is None
+
+    ledger = context.context_info["public_task_contract"]
+    by_id = {row["obligation_id"]: row for row in ledger["obligations"]}
+    completion_kinds = {
+        by_id[obligation_id]["kind"]
+        for obligation_id in ledger["completion_obligation_ids"]
+    }
+    reviewer_only_kinds = {
+        row["kind"]
+        for obligation_id, row in by_id.items()
+        if obligation_id not in ledger["completion_obligation_ids"]
+    }
+
+    assert {"deliverable_file", "structured_field"} <= completion_kinds
+    assert {"range_constraint", "enumerated_set"} <= reviewer_only_kinds
+
+
+def test_required_typed_json_structure_is_completion_observable(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.delenv("AWORLD_COMPLETION_MODE", raising=False)
+    context = Context(task_id="required-json-structure")
+    request = '''Save `report.json`.
+Required JSON structure:
+```json
+[{"invoice_page_number": 1, "reason": "Unknown Vendor"}]
+```
+'''
+
+    configure_runtime_completion(
+        context,
+        request=request,
+        workspace_path=tmp_path,
+    )
+
+    ledger = context.context_info["public_task_contract"]
+    by_id = {row["obligation_id"]: row for row in ledger["obligations"]}
+    completion_fields = {
+        by_id[item]["subject"]
+        for item in ledger["completion_obligation_ids"]
+        if by_id[item]["kind"] == "structured_field"
+    }
+    assert completion_fields == {"invoice_page_number", "reason"}
+
+
+def test_structural_and_format_constraints_remain_reviewer_only(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.delenv("AWORLD_COMPLETION_MODE", raising=False)
+    context = Context(task_id="reviewer-structure")
+    request = '''Create `dialogue.json`.
+Find the highest-risk record and compute its score.
+1. What is the final score?
+2. How many records remain?
+All nodes must be reachable and all edge targets must exist.
+The CSV should have columns called "frame_id", "coins", and "enemies".
+Write the CSV with the following columns as `Package,Version,CVE_ID`.
+Append a new column "TotalKg" using an Excel formula to compute each total.
+For the answer, only write the number.
+In dev_ppdev.txt, add:
+- include <linux/ppdev.h>
+- resource fd_ppdev[fd]
+- ioctl descriptions for all commands
+'''
+
+    configure_runtime_completion(
+        context,
+        request=request,
+        workspace_path=tmp_path,
+    )
+
+    ledger = context.context_info["public_task_contract"]
+    completion_ids = set(ledger["completion_obligation_ids"])
+    reviewer_rows = [
+        row
+        for row in ledger["obligations"]
+        if row["obligation_id"] not in completion_ids
+    ]
+    assert any(row["kind"] == "structural_constraint" for row in reviewer_rows)
+    assert any(row["kind"] == "answer_constraint" for row in reviewer_rows)
+    assert any(
+        row["kind"] == "answer_set_constraint"
+        and len(row["expectation"]["items"]) == 2
+        for row in reviewer_rows
+    )
+    assert any(row["kind"] == "format_constraint" for row in reviewer_rows)
+    assert {
+        row["subject"]
+        for row in reviewer_rows
+        if row["kind"] == "structured_field"
+    } >= {
+        "frame_id",
+        "coins",
+        "enemies",
+        "Package",
+        "Version",
+        "CVE_ID",
+        "TotalKg",
+    }
+    assert any(
+        row["kind"] == "enumerated_set"
+        and "resource fd_ppdev[fd]" in row["expectation"]["items"]
+        for row in reviewer_rows
+    )
 
 
 def test_public_contract_extracts_only_explicit_task_requirements(

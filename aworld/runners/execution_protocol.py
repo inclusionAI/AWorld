@@ -1290,6 +1290,37 @@ def _public_obligation_ids(context) -> frozenset[str]:
     return frozenset(row["obligation_id"] for row in _public_obligation_rows(context))
 
 
+def _public_completion_obligation_ids(
+    context, rows: Sequence[Mapping[str, Any]]
+) -> frozenset[str]:
+    """Return authenticated completion debt, preserving legacy ledgers safely."""
+
+    all_ids = frozenset(
+        row.get("obligation_id")
+        for row in rows
+        if isinstance(row.get("obligation_id"), str)
+    )
+    value = None
+    for candidate in _public_context_candidates(context):
+        candidate_value = getattr(candidate, "context_info", {}).get(
+            "public_task_contract"
+        )
+        if isinstance(candidate_value, Mapping):
+            value = candidate_value
+            break
+    if not isinstance(value, Mapping) or "completion_obligation_ids" not in value:
+        return all_ids
+    raw_ids = value.get("completion_obligation_ids")
+    if not isinstance(raw_ids, list) or len(raw_ids) > len(all_ids):
+        return all_ids
+    if (
+        any(not isinstance(item, str) or item not in all_ids for item in raw_ids)
+        or len(set(raw_ids)) != len(raw_ids)
+    ):
+        return all_ids
+    return frozenset(raw_ids)
+
+
 def _public_candidate_structured_fields(context) -> frozenset[str]:
     """Read bounded JSON/CSV candidates and return their public field names."""
 
@@ -1345,6 +1376,7 @@ def public_contract_evidence_status(context, agent_id: str) -> dict[str, Any]:
 
     rows = _public_obligation_rows(context)
     obligation_ids = {row["obligation_id"] for row in rows}
+    completion_obligation_ids = _public_completion_obligation_ids(context, rows)
     covered: dict[str, str] = {}
     delivery = _public_delivery_status(context)
     structured_fields = _public_candidate_structured_fields(context)
@@ -1383,6 +1415,11 @@ def public_contract_evidence_status(context, agent_id: str) -> dict[str, Any]:
     unresolved = [
         row["obligation_id"] for row in rows if row["obligation_id"] not in covered
     ]
+    completion_unresolved = [
+        obligation_id
+        for obligation_id in unresolved
+        if obligation_id in completion_obligation_ids
+    ]
     return {
         "schema_version": "aworld.public-contract-evidence/v1",
         "request_hash": _public_request_hash(context),
@@ -1392,10 +1429,14 @@ def public_contract_evidence_status(context, agent_id: str) -> dict[str, Any]:
         "unresolved_count": len(unresolved),
         "covered": covered,
         "unresolved_obligation_ids": unresolved,
+        "completion_obligation_count": len(completion_obligation_ids),
+        "completion_unresolved_count": len(completion_unresolved),
+        "completion_obligation_ids": sorted(completion_obligation_ids),
+        "completion_unresolved_obligation_ids": completion_unresolved,
         "current_probe_receipt_ids": [value for value in current_receipts if value][
             -8:
         ],
-        "closure_complete": bool(rows and not unresolved),
+        "closure_complete": bool(rows and not completion_unresolved),
     }
 
 
@@ -1433,6 +1474,12 @@ def record_public_contract_evidence(context, agent_id: str) -> dict[str, Any]:
         metrics["public_contract_obligation_count"] = status["obligation_count"]
         metrics["public_contract_covered_count"] = status["covered_count"]
         metrics["public_contract_unresolved_count"] = status["unresolved_count"]
+        metrics["public_contract_completion_obligation_count"] = status[
+            "completion_obligation_count"
+        ]
+        metrics["public_contract_completion_unresolved_count"] = status[
+            "completion_unresolved_count"
+        ]
         metrics["public_contract_closure_complete"] = status["closure_complete"]
         metrics["public_contract_checkpoint_count"] = checkpoint_count
     return value
@@ -1610,17 +1657,21 @@ def _select_reviewer_obligation(
     priority = {
         "range_constraint": 0,
         "numeric_threshold": 1,
-        "quantity_constraint": 2,
-        "negative_constraint": 3,
-        "quality_constraint": 4,
+        "answer_set_constraint": 2,
+        "answer_constraint": 3,
+        "structural_constraint": 4,
         "structured_field": 5,
-        "enumerated_set": 6,
-        "function_signature": 7,
-        "import_contract": 8,
-        "process_liveness": 9,
-        "service_port": 10,
-        "public_command": 11,
-        "deliverable_file": 12,
+        "negative_constraint": 6,
+        "quantity_constraint": 7,
+        "quality_constraint": 8,
+        "format_constraint": 9,
+        "enumerated_set": 10,
+        "function_signature": 11,
+        "import_contract": 12,
+        "process_liveness": 13,
+        "service_port": 14,
+        "public_command": 15,
+        "deliverable_file": 16,
     }
     eligible = [
         row
@@ -1763,6 +1814,26 @@ def ensure_reviewer_value_lease_offer(
         return ReviewerValueLease.from_dict(normalized["lease"])
     except (TypeError, ValueError, KeyError):
         return None
+
+
+def claimable_reviewer_value_lease(
+    context, agent_id: str
+) -> ReviewerValueLease | None:
+    """Return only a current OFFERED lease that may spend reviewer cost."""
+
+    lease = ensure_reviewer_value_lease_offer(context, agent_id)
+    if lease is None:
+        return None
+    state = _reviewer_value_state(context, agent_id)
+    candidate_hash, _ = _public_candidate_binding(context, agent_id)
+    if (
+        state.get("review_consumed") is not True
+        and lease.status is ReviewerLeaseStatus.OFFERED
+        and lease.request_hash == _public_request_hash(context)
+        and lease.candidate_hash == candidate_hash
+    ):
+        return lease
+    return None
 
 
 def claim_reviewer_value_lease_for_review(
@@ -2533,8 +2604,6 @@ def record_public_probe_observations(
         }:
             return ReviewerValidationOutcome.REPEATED
         tool_execution_succeeded = result.get("success") is True
-        if tool_execution_succeeded and validation_kind is not None:
-            return ReviewerValidationOutcome.PASSED
         raw_return_code = result.get("return_code")
         if raw_return_code is None and isinstance(result.get("metadata"), Mapping):
             raw_return_code = result["metadata"].get(
@@ -2560,6 +2629,17 @@ def record_public_probe_observations(
             else {}
         )
         terminal_receipt = metadata.get("terminal_execution_receipt")
+        if raw_return_code is None and isinstance(terminal_receipt, Mapping):
+            raw_return_code = terminal_receipt.get("exit_code")
+            return_code = (
+                int(raw_return_code)
+                if isinstance(raw_return_code, str)
+                and raw_return_code.strip().lstrip("-").isdigit()
+                else raw_return_code
+                if isinstance(raw_return_code, int)
+                and not isinstance(raw_return_code, bool)
+                else None
+            )
         infrastructure_text = " ".join(
             str(value or "").casefold()
             for value in (
@@ -2594,12 +2674,52 @@ def record_public_probe_observations(
             or return_code in {-1, 126, 127}
             or (isinstance(return_code, int) and return_code >= 128)
         )
+        if infrastructure_failure:
+            return ReviewerValidationOutcome.UNAVAILABLE
+        if (
+            tool_execution_succeeded
+            and validation_kind is not None
+            and return_code in {None, 0}
+        ):
+            return ReviewerValidationOutcome.PASSED
         if (
             validation_kind is not None
             and return_code == 1
             and failure_code is None
             and not infrastructure_failure
         ):
+            diagnostic_parts: list[str] = []
+            raw_content = result.get("content")
+            parsed_content: Any = raw_content
+            if isinstance(raw_content, str) and len(raw_content) <= 128_000:
+                try:
+                    parsed_content = json.loads(raw_content)
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    parsed_content = raw_content
+            if isinstance(parsed_content, Mapping):
+                message = parsed_content.get("message")
+                if isinstance(message, Mapping):
+                    diagnostic_parts.extend(
+                        str(message.get(key) or "")[:32_768]
+                        for key in ("stdout", "stderr")
+                    )
+                diagnostic_parts.extend(
+                    str(parsed_content.get(key) or "")[:32_768]
+                    for key in ("error", "stderr")
+                )
+            elif isinstance(parsed_content, str):
+                diagnostic_parts.append(parsed_content[:32_768])
+            diagnostic_text = "\n".join(diagnostic_parts)
+            if (
+                "Traceback (most recent call last):" in diagnostic_text
+                and "AssertionError" not in diagnostic_text
+                and "SystemExit" not in diagnostic_text
+            ):
+                # An unhandled probe-program exception is unavailable evidence,
+                # not a demonstrated candidate counterexample.  A deliberate
+                # assertion may still use AssertionError or an explicit
+                # nonzero SystemExit.
+                return ReviewerValidationOutcome.UNAVAILABLE
             return ReviewerValidationOutcome.CONTRADICTED
         return ReviewerValidationOutcome.UNAVAILABLE
 
@@ -2735,7 +2855,36 @@ def record_public_probe_observations(
             ):
                 continue
             artifact_after_hash = semantic_fingerprint(artifact_after)
+            derived_for_plan = state.get("task_derived_validation")
+            active_reviewer_lease = load_reviewer_value_lease(context, agent_id)
+            reviewer_bound = bool(
+                isinstance(derived_for_plan, Mapping)
+                and isinstance(derived_for_plan.get("lease_id"), str)
+                and active_reviewer_lease is not None
+                and active_reviewer_lease.status
+                in {
+                    ReviewerLeaseStatus.VALIDATION_PENDING,
+                    ReviewerLeaseStatus.REVALIDATION_PENDING,
+                }
+                and reviewer_value_lease_id(active_reviewer_lease)
+                == derived_for_plan.get("lease_id")
+                and active_reviewer_lease.directive_hash
+                == semantic_fingerprint(
+                    str(plan.get("highest_risk_counterexample") or "")
+                )
+                and list(plan.get("obligation_ids") or ())
+                == list(derived_for_plan.get("obligation_ids") or ())
+                and plan.get("request_hash") == derived_for_plan.get("request_hash")
+                and plan.get("candidate_hash")
+                == derived_for_plan.get("candidate_hash")
+            )
             validation_kind = validation_kind_for(action)
+            if reviewer_bound and validation_kind is None:
+                # The exact reviewer binding is stronger than generic command
+                # syntax heuristics.  It safely admits assertion scripts that
+                # signal counterexamples with ``sys.exit(1)`` instead of a
+                # literal Python ``assert``.
+                validation_kind = "reviewer-bound:counterexample"
             tool_execution_succeeded = result.get("success") is True
             receipt_core = {
                 "schema_version": "aworld.public-probe-receipt/v1",
@@ -2770,21 +2919,7 @@ def record_public_probe_observations(
             receipts.append(receipt_core)
             plans.pop(tool_call_id, None)
             observed_ids.add(tool_call_id)
-            derived_for_plan = state.get("task_derived_validation")
-            active_reviewer_lease = load_reviewer_value_lease(context, agent_id)
-            if (
-                isinstance(derived_for_plan, Mapping)
-                and isinstance(derived_for_plan.get("lease_id"), str)
-                and active_reviewer_lease is not None
-                and active_reviewer_lease.directive_hash
-                == semantic_fingerprint(
-                    str(plan.get("highest_risk_counterexample") or "")
-                )
-                and list(plan.get("obligation_ids") or ())
-                == list(derived_for_plan.get("obligation_ids") or ())
-                and plan.get("candidate_hash")
-                == derived_for_plan.get("candidate_hash")
-            ):
+            if reviewer_bound:
                 receipt_core["reviewer_lease_id"] = derived_for_plan.get(
                     "lease_id"
                 )
@@ -4262,6 +4397,8 @@ def project_execution_protocol_telemetry(value: Any) -> dict[str, Any] | None:
         "public_contract_obligation_count",
         "public_contract_covered_count",
         "public_contract_unresolved_count",
+        "public_contract_completion_obligation_count",
+        "public_contract_completion_unresolved_count",
         "public_contract_checkpoint_count",
         "evidence_progress_gate_blocked_call_count",
         "reviewer_admission_count",
@@ -4318,6 +4455,8 @@ def project_execution_protocol_telemetry(value: Any) -> dict[str, Any] | None:
         *numbers,
     }
     v3_fields = {
+        "public_contract_completion_obligation_count",
+        "public_contract_completion_unresolved_count",
         "reviewer_lease_status",
         "reviewer_admission_reason",
         "reviewer_directive_source",
@@ -4557,6 +4696,16 @@ def build_execution_protocol_telemetry(context, agent_id: str) -> dict[str, Any]
         ),
         "public_contract_unresolved_count": (
             _bounded_counter(public_contract.get("unresolved_count"))
+            if public_contract
+            else None
+        ),
+        "public_contract_completion_obligation_count": (
+            _bounded_counter(public_contract.get("completion_obligation_count"))
+            if public_contract
+            else None
+        ),
+        "public_contract_completion_unresolved_count": (
+            _bounded_counter(public_contract.get("completion_unresolved_count"))
             if public_contract
             else None
         ),
@@ -9098,6 +9247,7 @@ __all__ = [
     "record_public_contract_evidence",
     "public_contract_evidence_status",
     "ensure_reviewer_value_lease_offer",
+    "claimable_reviewer_value_lease",
     "claim_reviewer_value_lease_for_review",
     "close_reviewer_value_lease_for_liveness",
     "load_reviewer_value_lease",

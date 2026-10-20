@@ -1317,6 +1317,7 @@ def test_public_task_contract_is_injected_as_advisory_evidence_ledger() -> None:
         "source": "public_task_text",
         "request_fingerprint": "sha256:"
         + hashlib.sha256(b"build the public service").hexdigest(),
+        "completion_obligation_ids": ["public-obligation-1"],
         "obligations": [
             {
                 "obligation_id": "public-obligation-1",
@@ -1327,7 +1328,17 @@ def test_public_task_contract_is_injected_as_advisory_evidence_ledger() -> None:
                 "source_fingerprint": "sha256:" + "b" * 64,
                 "authority": "public_task_advisory",
                 "source": "public_task_text",
-            }
+            },
+            {
+                "obligation_id": "public-obligation-2",
+                "kind": "range_constraint",
+                "subject": "accuracy",
+                "expectation": {"operator": "at_least", "value": 0.95},
+                "source_excerpt": "Accuracy must be at least 0.95.",
+                "source_fingerprint": "sha256:" + "c" * 64,
+                "authority": "public_task_advisory",
+                "source": "public_task_text",
+            },
         ],
     }
     agent = Agent(
@@ -1348,6 +1359,11 @@ def test_public_task_contract_is_injected_as_advisory_evidence_ledger() -> None:
     assert projected[0]["role"] == "system"
     assert '"obligation_id":"public-obligation-1"' in projected[0]["content"]
     assert '"subject":"value"' in projected[0]["content"]
+    assert '"obligation_id":"public-obligation-2"' not in projected[0]["content"]
+    assert '"subject":"accuracy"' not in projected[0]["content"]
+    assert "completion checklist" in projected[0]["content"]
+    assert "reviewer-only risk target" in projected[0]["content"]
+    assert "do not all need to be closed" in projected[0]["content"]
     assert "hidden verifier material" in projected[0]["content"]
 
 

@@ -564,9 +564,11 @@ def render_aworld_system_prompt(
         )
     if ADVISORY_VERIFIER_TOOL in available_tool_set:
         role_guidance.append(
-            "   A lazy advisory verifier is available through "
-            f"`{ADVISORY_VERIFIER_TOOL}`. No verifier Agent exists until you "
-            "explicitly invoke `review_candidate`. Use it only when a fresh, "
+            "   A lazy advisory verifier may be exposed through "
+            f"`{ADVISORY_VERIFIER_TOOL}` only while AWorld presents an actionable "
+            "reviewer lease. No verifier Agent exists until you explicitly invoke "
+            "`review_candidate`. Use it only when both its Tool schema and lease "
+            "guidance are present and a fresh, "
             "read-only cross-check could materially change repair or submission. "
             "Invoke it promptly after the first evidence-backed candidate and "
             "before the delivery-only deadline checkpoint; do not spend the "
