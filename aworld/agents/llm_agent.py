@@ -1809,6 +1809,43 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             injected_parameters=frozenset(injected),
         )
 
+    def _constrain_reviewer_validation_tool_catalog(
+        self,
+        tools: List[Dict[str, Any]] | None,
+        context: Context,
+        *,
+        offer: _LongHorizonControlOffer,
+    ) -> tuple[List[Dict[str, Any]] | None, bool]:
+        """Project one exact Tool for an active reviewer-bound validation.
+
+        The reviewer lease authorizes one validation transaction.  Leaving the
+        full ordinary catalog visible lets providers emit a parallel batch,
+        which the receipt ledger must classify as ambiguous even when one call
+        contains the intended assertion.  The selected carrier is already the
+        normal permission-filtered Tool and already contains the exact hidden
+        public-probe binding; this projection only makes that one-turn contract
+        executable and does not grant a new Tool capability.
+        """
+
+        if not tools or not offer.carrier_function_name:
+            return tools, False
+        from aworld.runners.execution_protocol import (
+            reviewer_validation_probe_binding,
+        )
+
+        if reviewer_validation_probe_binding(context, self.id()) is None:
+            return tools, False
+        selected = [
+            schema
+            for schema in tools
+            if isinstance(schema, dict)
+            and schema.get("function", {}).get("name")
+            == offer.carrier_function_name
+        ]
+        if len(selected) != 1:
+            return tools, False
+        return selected, True
+
     def _consume_long_horizon_execution_profile(
         self,
         result: AgentResult,
@@ -6968,6 +7005,17 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             )
             if callable(partition_tool_surface):
                 tools, reviewer_tool_overlay = partition_tool_surface(tools)
+                if not reviewer_tool_overlay:
+                    # A sticky/progressive task catalog may legitimately omit
+                    # the dormant reviewer from its ordinary projection.  Its
+                    # schema still belongs to this Agent's reconciled live Tool
+                    # surface; recover only that already-authorized schema so a
+                    # later claimable lease can project it as a control-plane
+                    # overlay. ``project_reviewer_tool_surface`` remains the
+                    # authority gate and fails closed in GUIDE without a lease.
+                    _ordinary, reviewer_tool_overlay = partition_tool_surface(
+                        getattr(self, "tools", None)
+                    )
             from aworld.runners.execution_protocol import (
                 constrain_candidate_convergence_tool_catalog,
             )
@@ -6993,6 +7041,22 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 )
             tools = self._with_model_review_control(tools, message.context)
             tools = self._with_acceptance_probe_control(tools, message.context)
+            tools, reviewer_validation_turn = (
+                self._constrain_reviewer_validation_tool_catalog(
+                    tools,
+                    message.context,
+                    offer=execution_control_offer,
+                )
+            )
+            if reviewer_validation_turn:
+                kwargs = self._model_response_action_projection_kwargs(
+                    dict(kwargs),
+                    max_output_tokens=1024,
+                    context=message.context,
+                )
+                kwargs["tool_choice"] = "required"
+                kwargs["parallel_tool_calls"] = False
+                kwargs["_long_horizon_decision_turn"] = True
             if independent_acceptance_review:
                 from aworld.runners.execution_protocol import (
                     load_acceptance_critic_state,
@@ -7285,7 +7349,30 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                     message.context, reviewer_tool_overlay
                 )
                 if projected:
-                    tools = [*(tools or ()), *projected]
+                    reviewer_turn_mandatory = getattr(
+                        lazy_verifier_factory,
+                        "reviewer_tool_surface_is_mandatory",
+                        None,
+                    )
+                    if callable(reviewer_turn_mandatory) and reviewer_turn_mandatory(
+                        message.context
+                    ):
+                        # A GUIDE lease is already candidate-, request-, and
+                        # obligation-bound and can be claimed once.  Give it one
+                        # deterministic control turn instead of asking the model
+                        # to choose it from a large ordinary Tool catalog.  The
+                        # reviewer remains advisory; its output still requires
+                        # an independent root Tool assertion before repair.
+                        tools = list(projected)
+                        kwargs = self._model_response_action_projection_kwargs(
+                            dict(kwargs),
+                            max_output_tokens=1024,
+                            context=message.context,
+                        )
+                        kwargs["tool_choice"] = "required"
+                        kwargs["_long_horizon_decision_turn"] = True
+                    else:
+                        tools = [*(tools or ()), *projected]
         reasoning_phase = self._reasoning_phase_for_turn(
             decision_boundary=execution_control_offer.decision_boundary,
             independent_acceptance_review=independent_acceptance_review,
@@ -9250,7 +9337,11 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             "The public task text explicitly names the following output file(s):\n"
             f"{paths}\n"
             "Treat creation of these files as early, inspectable delivery "
-            "milestones. Verify that each exists before claiming completion. "
+            "milestones. After one bounded inspection of the inputs and required "
+            "shape, create the earliest honest valid-shape provisional candidate "
+            "and improve it in place; do not defer the first public candidate "
+            "until every uncertainty is resolved. Verify that each exists before "
+            "claiming completion. "
             if artifacts
             else ""
         )

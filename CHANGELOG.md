@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+### Reviewer value and delivery convergence
+
+- Made one authenticated GUIDE reviewer lease a bounded control turn, while
+  preserving manual OFF/OBSERVE compatibility and the short-task fast path.
+- Kept an admitted reviewer lease claimable across the model call that emits
+  it, recovered its schema from the Agent's authenticated Tool surface when a
+  sticky catalog omitted the dormant Tool, and constrained reviewer-bound
+  validation to one non-parallel carrier Tool call.
+- Prioritized semantic answer and completeness obligations over residual shape
+  checks, including obligations already covered by solver-authored self-checks.
+- Added kind-aware, candidate-wide counterexample guidance for finite sets,
+  behavioral boundaries, objectives, and independently recomputed metrics.
+- Added advisory 16/40-observation candidate checkpoints for long tasks with a
+  named public output, without revoking ordinary Tool access or converting
+  public-contract guidance into completion authority.
+- Expanded public objective extraction while excluding input-only format
+  descriptions; reviewer-only additions do not increase completion debt.
+
 ### FileX runtime synchronization
 
 - Synchronized the latest FileX document and media runtime into AWorld while

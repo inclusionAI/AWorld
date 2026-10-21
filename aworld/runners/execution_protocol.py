@@ -90,6 +90,9 @@ EXECUTION_PROTOCOL_CONVERGENCE_GUIDANCE_KEY = (
     "execution_protocol_convergence_guidance"
 )
 EXECUTION_PROTOCOL_INLINE_GUIDANCE_KEY = "execution_protocol_inline_guidance"
+EXECUTION_PROTOCOL_WORK_BUDGET_GUIDANCE_KEY = (
+    "execution_protocol_work_budget_guidance"
+)
 MUTATION_GATE_SCHEMA = "aworld.mutation-gate/v4"
 _LEGACY_MUTATION_GATE_SCHEMAS = frozenset(
     {
@@ -119,6 +122,8 @@ _TERMINAL_CHECKPOINT_PROCESS_IDENTITY = (
 )
 _MAX_CONSECUTIVE_UNAPPLIED_REPLANS = 2
 _INLINE_GUIDANCE_OBSERVATION_LIMIT = 4
+_PROVISIONAL_CANDIDATE_OBSERVATION_THRESHOLD = 16
+_PROVISIONAL_CANDIDATE_CONVERGENCE_THRESHOLD = 40
 _MUTATION_GATE_READ_ONLY_THRESHOLD = 8
 _MUTATION_GATE_DEADLINE_MIN_READS = 3
 _MUTATION_GATE_DEADLINE_FRACTION = 0.20
@@ -1613,6 +1618,18 @@ def reviewer_value_lease_id(lease: ReviewerValueLease) -> str:
 
 
 def _reviewer_candidate_present(context, agent_id: str) -> bool:
+    # ``LLMAgent`` persists a candidate fallback immediately before asking for
+    # terminal reviewer guidance.  That framework-owned checkpoint is a valid
+    # immutable review basis even when a task has no explicitly named output
+    # path (for example, an in-place code repair or an answer-only task).  The
+    # previous projection ignored it and therefore skipped review for exactly
+    # the tasks that most need a final behavioral challenge.
+    fallback = load_candidate_fallback(context, agent_id) or ()
+    if any(
+        bool(str(getattr(action, "policy_info", "") or "").strip())
+        for action in fallback
+    ):
+        return True
     try:
         from aworld.runners.post_tool_progress import semantic_progress_for_agent
 
@@ -1620,10 +1637,14 @@ def _reviewer_candidate_present(context, agent_id: str) -> bool:
         candidate_fingerprint = (
             semantic_state.get("public_delivery_fingerprint")
             or semantic_state.get("stateful_candidate_fingerprint")
+            or semantic_state.get("stateful_mutation_fingerprint")
         )
         return bool(
-            semantic_state.get("candidate_present") is True
-            and _is_canonical_semantic_fingerprint(candidate_fingerprint)
+            _is_canonical_semantic_fingerprint(candidate_fingerprint)
+            and (
+                semantic_state.get("candidate_present") is True
+                or semantic_state.get("workspace_mutation_observed") is True
+            )
         )
     except Exception:
         return False
@@ -1652,38 +1673,67 @@ def _reviewer_value_reserve_available(
 def _select_reviewer_obligation(
     context, agent_id: str
 ) -> Mapping[str, Any] | None:
+    """Select the highest-value independent challenge, not leftover debt.
+
+    Public self-check receipts are solver-authored evidence.  Treating them as
+    sufficient to remove an obligation from reviewer consideration made a weak
+    spot check hide the central correctness claim and pushed the independent
+    reviewer toward incidental format or input-description rows.  Coverage is
+    retained as telemetry and a tie-breaker, but never as reviewer authority.
+    """
+
     status = public_contract_evidence_status(context, agent_id)
-    unresolved = set(status.get("unresolved_obligation_ids") or ())
+    covered = set((status.get("covered") or {}).keys())
     priority = {
-        "range_constraint": 0,
-        "numeric_threshold": 1,
-        "answer_set_constraint": 2,
-        "answer_constraint": 3,
-        "structural_constraint": 4,
-        "structured_field": 5,
-        "negative_constraint": 6,
-        "quantity_constraint": 7,
-        "quality_constraint": 8,
-        "format_constraint": 9,
-        "enumerated_set": 10,
-        "function_signature": 11,
-        "import_contract": 12,
-        "process_liveness": 13,
-        "service_port": 14,
-        "public_command": 15,
+        "answer_set_constraint": 0,
+        "answer_constraint": 1,
+        "range_constraint": 2,
+        "numeric_threshold": 3,
+        "function_signature": 4,
+        "import_contract": 5,
+        "public_command": 6,
+        "service_port": 7,
+        "process_liveness": 8,
+        "negative_constraint": 9,
+        "quantity_constraint": 10,
+        "enumerated_set": 11,
+        "quality_constraint": 12,
+        "structural_constraint": 13,
+        "structured_field": 14,
+        "format_constraint": 15,
         "deliverable_file": 16,
     }
+
+    def semantic_specificity(row: Mapping[str, Any]) -> int:
+        expectation = row.get("expectation")
+        statement = (
+            str(expectation.get("statement") or "")
+            if isinstance(expectation, Mapping)
+            else ""
+        )
+        text = f"{row.get('subject', '')} {statement}"
+        return 0 if re.search(
+            r"(?i)\b(?:all|each|every|correct|complete|valid|solve|determine|"
+            r"identify|detect|calculate|compute|recover|compare|classify|"
+            r"analy[sz]e|optimi[sz]e|maximi[sz]e|minimi[sz]e|implement)\b",
+            text,
+        ) else 1
+
     eligible = [
         row
         for row in _public_obligation_rows(context)
-        if row.get("obligation_id") in unresolved
-        and isinstance(row.get("source_fingerprint"), str)
+        if isinstance(row.get("source_fingerprint"), str)
         and row.get("kind") in priority
     ]
     return min(
         eligible,
         key=lambda row: (
             priority.get(str(row.get("kind")), 99),
+            semantic_specificity(row),
+            # Prefer independently challenging a solver-covered assertion over
+            # spending the only review on an untouched row of equal semantic
+            # value.  This is precisely where false-positive self-checks hide.
+            0 if row.get("obligation_id") in covered else 1,
             str(row.get("obligation_id")),
         ),
         default=None,
@@ -1821,19 +1871,35 @@ def claimable_reviewer_value_lease(
 ) -> ReviewerValueLease | None:
     """Return only a current OFFERED lease that may spend reviewer cost."""
 
-    lease = ensure_reviewer_value_lease_offer(context, agent_id)
-    if lease is None:
-        return None
-    state = _reviewer_value_state(context, agent_id)
     candidate_hash, _ = _public_candidate_binding(context, agent_id)
+    state = _reviewer_value_state(context, agent_id)
+    lease = load_reviewer_value_lease(context, agent_id)
+    # Admission already reserved reviewer, validation, repair, revalidation,
+    # and finalization time.  A slow model call that formulates the mandated
+    # reviewer action may cross the *new-offer* threshold; do not revoke the
+    # persisted offer retroactively when its candidate/request binding is still
+    # current.  Candidate changes still invalidate it below.
     if (
-        state.get("review_consumed") is not True
+        lease is not None
+        and state.get("review_consumed") is not True
         and lease.status is ReviewerLeaseStatus.OFFERED
         and lease.request_hash == _public_request_hash(context)
         and lease.candidate_hash == candidate_hash
     ):
         return lease
-    return None
+    lease = ensure_reviewer_value_lease_offer(context, agent_id)
+    if lease is None:
+        return None
+    state = _reviewer_value_state(context, agent_id)
+    candidate_hash, _ = _public_candidate_binding(context, agent_id)
+    return (
+        lease
+        if state.get("review_consumed") is not True
+        and lease.status is ReviewerLeaseStatus.OFFERED
+        and lease.request_hash == _public_request_hash(context)
+        and lease.candidate_hash == candidate_hash
+        else None
+    )
 
 
 def claim_reviewer_value_lease_for_review(
@@ -2120,18 +2186,21 @@ def reviewer_value_lease_guidance(
     guidance_by_status = {
         ReviewerLeaseStatus.OFFERED: (
             "AWorld reviewer value lease: an inspectable long-horizon candidate "
-            "and one unresolved public obligation are ready for an actionable "
+            "and one high-value public obligation are ready for an actionable "
             "cross-check. Invoke AWORLD_ADVISORY_VERIFIER.review_candidate now "
             f"for {lease.obligation_id}; do not spend this candidate epoch on "
             "additional broad exploration. The reviewer is advisory and the "
             "lease still requires one independent Tool-backed assertion."
         ),
         ReviewerLeaseStatus.VALIDATION_PENDING: (
-            "AWorld reviewer value lease: execute exactly one independent, "
-            f"assertive validation for {lease.obligation_id} now. Use a boundary, "
-            "negative case, or recomputation not present in prior evidence; run "
-            "one Tool call in the batch and make the assertion exit nonzero when "
-            "the selected counterexample is observed."
+            "AWorld reviewer value lease: execute exactly one independent "
+            f"validation transaction for {lease.obligation_id} now. Use one Tool "
+            "call, but make that call exhaustively check every finite item covered "
+            "by the selected obligation (including cardinality, missing/extra "
+            "items, and values), or independently recompute its objective and "
+            "boundary behavior. Do not substitute an existence/schema check or "
+            "one illustrative sample for semantic coverage. The assertion must "
+            "exit nonzero when the selected counterexample is observed."
         ),
         ReviewerLeaseStatus.REPAIR_PENDING: (
             "AWorld reviewer value lease: the independent assertion contradicted "
@@ -8302,6 +8371,76 @@ def consume_execution_protocol_guidance(context, agent_id: str) -> str | None:
             "provably read-only calls are gated until a mutation or candidate "
             "is observed; do not restart broad exploration."
         )
+    # Caller deadlines in benchmark harnesses are intentionally generous.  A
+    # pure wall-clock checkpoint therefore never fires for fast model/tool
+    # loops that can spend hundreds of calls and millions of prompt tokens in
+    # minutes.  Add two advisory, observation-count checkpoints only when the
+    # public task names a concrete output and no candidate exists.  This does
+    # not activate Tool admission, shorten the caller deadline, or stop complex
+    # work; it asks the model to make uncertainty inspectable early enough for
+    # the existing reviewer/repair path to add value.
+    if (
+        state.long_horizon_armed
+        and state.public_deliverable_declared
+        and state.candidate_present is not True
+        and state.phase is ProtocolPhase.EXECUTE
+    ):
+        threshold = (
+            _PROVISIONAL_CANDIDATE_CONVERGENCE_THRESHOLD
+            if state.tool_observation_count
+            >= _PROVISIONAL_CANDIDATE_CONVERGENCE_THRESHOLD
+            else _PROVISIONAL_CANDIDATE_OBSERVATION_THRESHOLD
+            if state.tool_observation_count
+            >= _PROVISIONAL_CANDIDATE_OBSERVATION_THRESHOLD
+            else None
+        )
+        if threshold is not None:
+            scope = _model_decision_scope(context, agent_id)
+            previous_work_budget = _read_runtime_value(
+                context,
+                agent_id,
+                EXECUTION_PROTOCOL_WORK_BUDGET_GUIDANCE_KEY,
+            )
+            emitted = (
+                set(previous_work_budget.get("emitted_thresholds") or ())
+                if isinstance(previous_work_budget, Mapping)
+                and previous_work_budget.get("scope") == scope
+                else set()
+            )
+            if threshold not in emitted:
+                emitted.add(threshold)
+                _write_runtime_value(
+                    context,
+                    agent_id,
+                    EXECUTION_PROTOCOL_WORK_BUDGET_GUIDANCE_KEY,
+                    {
+                        "schema_version": "aworld.work-budget-guidance/v1",
+                        "scope": scope,
+                        "emitted_thresholds": sorted(emitted),
+                    },
+                )
+                if threshold == _PROVISIONAL_CANDIDATE_OBSERVATION_THRESHOLD:
+                    return (
+                        "AWorld work-budget checkpoint: the public task names a "
+                        "concrete output, but no inspectable candidate exists "
+                        f"after {state.tool_observation_count} Tool observations. "
+                        "Preserve useful analysis by creating the earliest honest "
+                        "valid-shape provisional candidate now, then validate and "
+                        "improve it in place. If one material fact is still "
+                        "required before a safe write, make exactly that bounded "
+                        "observation next and materialize the candidate immediately "
+                        "afterward. Ordinary Tools remain available."
+                    )
+                return (
+                    "AWorld work-budget convergence checkpoint: a named public "
+                    "output is still absent after "
+                    f"{state.tool_observation_count} Tool observations. Stop "
+                    "broad exploration. Materialize the best honest candidate "
+                    "supported by current evidence, preserve uncertainty in its "
+                    "contents or final explanation, and spend subsequent work only "
+                    "on independent validation or evidence-driven repair. This is "
+                    "advisory and does not revoke Tools."
+                )
     deadline = _read_runtime_value(
         context, agent_id, EXECUTION_PROTOCOL_DEADLINE_GUIDANCE_KEY
     )

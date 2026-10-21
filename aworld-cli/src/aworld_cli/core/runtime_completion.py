@@ -201,6 +201,21 @@ _PUBLIC_INPUT_CONTEXT = re.compile(
     r"(?i)^\s*(?:the\s+)?input\s+(?:files?|schema|data|fields?|columns?|items?|"
     r"tables?|workbooks?|sheets?|notes?)\b"
 )
+_PUBLIC_DESCRIBED_INPUT_CONTEXT = re.compile(
+    r"(?i)^\s*(?:"
+    r"(?:the\s+)?(?:source|provided)\s+(?:data|files?|documents?|workbooks?|"
+    r"sheets?|records?)\b|"
+    r"(?:the\s+)?(?:data|file|document|workbook)\s+"
+    r"(?:`[^`\r\n]+`|'[^'\r\n]+'|\"[^\"\r\n]+\"|"
+    r"[A-Za-z0-9_.-]*[./][A-Za-z0-9_./-]+)\s+"
+    r"(?:contains?|provides?|describes?|uses?|is\s+(?:located|stored|provided|"
+    r"formatted))\b|"
+    r"each\s+(?:line|row|record|sheet|page)\s+(?:of|in)\s+"
+    r"(?:`[^`\r\n]+`|'[^'\r\n]+'|\"[^\"\r\n]+\"|"
+    r"[A-Za-z0-9_.-]*[./][A-Za-z0-9_./-]+)\s+"
+    r"(?:is|contains?|has)\b"
+    r")"
+)
 _PUBLIC_CONDITIONAL_PREFIX = re.compile(
     r"(?i)^\s*(?:if|only\s+if|unless|provided\s+that|in\s+case|"
     r"when\s+(?:the\s+)?optional)\b"
@@ -333,7 +348,9 @@ _QUOTED_PUBLIC_TOKEN = re.compile(
 _PUBLIC_OBJECTIVE_PREDICATE = re.compile(
     r"(?i)\b(?:find|calculate|compute|determine|identify|recover|analy[sz]e|"
     r"compare|count|classify|harmonize|optimi[sz]e|parse|detect|audit|"
-    r"edit|update|convert|design|solve|serve)\b"
+    r"edit|update|convert|design|solve|serve|replay|simulate|implement|"
+    r"generate|produce|create|fill|fix|migrate|extract|schedule|plan|render|"
+    r"translate|write|build|perform)\b"
 )
 _PUBLIC_QUESTION = re.compile(
     r"(?i)(?:\b(?:what(?:['’]s|\s+is|\s+are)|which|how\s+many)\b"
@@ -430,6 +447,7 @@ def _is_non_authoritative_public_text(value: str) -> bool:
     if (
         _PUBLIC_NON_AUTHORITATIVE_CONTEXT.search(normalized)
         or _PUBLIC_INPUT_CONTEXT.search(normalized)
+        or _PUBLIC_DESCRIBED_INPUT_CONTEXT.search(normalized)
         or _PUBLIC_CONDITIONAL_CLAUSE.search(normalized)
         or re.search(
             r"(?i)\b(?:the\s+)?(?:verifier|grader|scorer)\s+"
@@ -1474,7 +1492,9 @@ def _infer_public_obligation_hints_with_roles(
                         r"(?i)^\s*(?:find|calculate|compute|determine|identify|"
                         r"recover|analy[sz]e|compare|count|classify|harmonize|"
                         r"optimi[sz]e|parse|detect|audit|edit|update|convert|"
-                        r"design|solve)\b",
+                        r"design|solve|serve|replay|simulate|implement|generate|"
+                        r"produce|create|fill|fix|migrate|extract|schedule|plan|"
+                        r"render|translate|write|build|perform)\b",
                         excerpt,
                     )
                 )

@@ -614,6 +614,66 @@ def test_public_contract_does_not_treat_input_filename_as_structured_field(
     )
 
 
+def test_public_contract_rejects_described_input_format_and_record_shape(
+    tmp_path: Path,
+) -> None:
+    obligations = infer_public_obligation_hints(
+        """The data `network.json` contains a network snapshot in MATPOWER format.
+Each line of `trace.jsonl` is one inference request with an input_length field.
+Analyze both inputs and write the complete result to `report.json`.
+""",
+        workspace_path=tmp_path,
+    )
+
+    assert any(
+        item.kind == "deliverable_file" and item.subject == "report.json"
+        for item in obligations
+    )
+    assert not any(
+        item.kind == "format_constraint" and "MATPOWER" in item.source_excerpt
+        for item in obligations
+    )
+    assert not any(
+        item.kind == "structured_field" and item.subject == "trace.jsonl"
+        for item in obligations
+    )
+
+
+@pytest.mark.parametrize(
+    ("public_text", "subject"),
+    (
+        (
+            "Replay the request trace at `trace.jsonl` and write complete hit "
+            "statistics to `report.json`.",
+            "replay",
+        ),
+        (
+            "Perform an analysis. Finally, create `report.json` with the exact "
+            "market-clearing result.",
+            "perform",
+        ),
+        (
+            "Write your answer of all questions to `answer.json` in a dict format.",
+            "write",
+        ),
+    ),
+)
+def test_public_contract_captures_imperative_objective_verbs(
+    tmp_path: Path,
+    public_text: str,
+    subject: str,
+) -> None:
+    obligations = infer_public_obligation_hints(
+        public_text,
+        workspace_path=tmp_path,
+    )
+
+    assert any(
+        item.kind == "answer_constraint" and item.subject == subject
+        for item in obligations
+    )
+
+
 def test_public_contract_does_not_treat_config_description_as_threshold(
     tmp_path: Path,
 ) -> None:

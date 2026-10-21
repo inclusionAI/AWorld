@@ -350,7 +350,7 @@ def test_public_probe_plan_is_strict_bounded_and_never_accepts_reward_claims():
         tool_call_id="call-9",
         tool_identity="terminal:execute",
         arguments_projection={"command": "true"},
-        value=_probe_value(highest_risk_counterexample="x" * 1025),
+        value=_probe_value(highest_risk_counterexample="x" * 2049),
     )
     assert load_public_probe_receipts(context, "agent") == []
 

@@ -279,6 +279,22 @@ def test_offer_requires_armed_candidate_contract_and_closure_reserve(tmp_path):
     )
 
 
+def test_persisted_offer_remains_claimable_after_offer_reserve_crossing(tmp_path):
+    context = _context(tmp_path)
+    context.get_task().remaining_seconds = lambda: 241
+    offered = protocol.ensure_reviewer_value_lease_offer(context, "agent")
+    assert offered is not None
+
+    # The model call that emits review_candidate may be slow. The already
+    # reserved offer remains valid while its candidate binding is unchanged.
+    context.get_task().remaining_seconds = lambda: 1
+
+    assert protocol.claimable_reviewer_value_lease(context, "agent") == offered
+    claimed = protocol.claim_reviewer_value_lease_for_review(context, "agent")
+    assert claimed is not None
+    assert claimed.status is ReviewerLeaseStatus.DIRECTIVE_PENDING
+
+
 def test_reviewer_only_obligation_does_not_create_completion_debt(tmp_path):
     context = _context(tmp_path)
     context.context_info["public_task_contract"]["completion_obligation_ids"] = [
@@ -361,6 +377,71 @@ def test_offer_selects_one_unresolved_assertion_and_guides_once(tmp_path):
         protocol.reviewer_value_lease_guidance(context, "agent") or ""
     )
     assert protocol.reviewer_value_lease_guidance(context, "agent") is None
+
+
+def test_terminal_fallback_is_a_reviewable_candidate_without_artifact_signal(
+    tmp_path,
+):
+    context = _context(tmp_path)
+    context.context_info.pop("context_semantic_progress")
+    protocol.store_candidate_fallback(
+        context,
+        "agent",
+        [ActionModel(agent_name="agent", policy_info="best persisted candidate")],
+    )
+
+    offered = protocol.ensure_reviewer_value_lease_offer(context, "agent")
+
+    assert offered is not None
+    assert offered.obligation_id == "public-obligation-2"
+
+
+def test_reviewer_prioritizes_core_answer_over_leftover_numeric_debt(tmp_path):
+    context = _context(tmp_path)
+    answer_excerpt = "Compute the complete and correct result for every record."
+    context.context_info["public_task_contract"]["obligations"].append(
+        {
+            "obligation_id": "public-obligation-3",
+            "kind": "answer_constraint",
+            "subject": "compute",
+            "expectation": {"statement": answer_excerpt},
+            "source_fingerprint": _fingerprint(answer_excerpt),
+            "authority": "public_task_advisory",
+            "source": "public_task_text",
+        }
+    )
+
+    selected = protocol._select_reviewer_obligation(context, "agent")
+
+    assert selected is not None
+    assert selected["obligation_id"] == "public-obligation-3"
+
+
+def test_named_output_gets_action_budget_candidate_guidance_without_tool_gate(
+    tmp_path,
+):
+    context = _context(tmp_path, candidate=False)
+    for index in range(16):
+        protocol.record_tool_protocol_event(
+            context,
+            "agent",
+            {
+                "current_agent_step": index + 1,
+                "operation_hash": _fingerprint(f"budget-operation-{index}"),
+                "result_hash": _fingerprint(f"budget-result-{index}"),
+                "candidate_present": False,
+                "public_deliverable_declared": True,
+            },
+        )
+
+    guidance = protocol.consume_execution_protocol_guidance(context, "agent")
+
+    assert guidance is not None
+    assert "work-budget checkpoint" in guidance
+    assert "Ordinary Tools remain available" in guidance
+    assert protocol.build_execution_protocol_telemetry(context, "agent")[
+        "convergence_constraint_active"
+    ] is False
 
 
 def test_claim_is_checkpointed_and_cannot_repeat_after_factory_rebuild(tmp_path):

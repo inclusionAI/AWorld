@@ -311,6 +311,7 @@ def test_reviewer_tool_surface_is_a_claimable_guide_overlay(monkeypatch) -> None
         lambda *_args: None,
     )
     assert factory.project_reviewer_tool_surface(object(), reviewer) == []
+    assert factory.reviewer_tool_surface_is_mandatory(object()) is False
 
     monkeypatch.setattr(
         protocol_module,
@@ -320,6 +321,7 @@ def test_reviewer_tool_surface_is_a_claimable_guide_overlay(monkeypatch) -> None
     assert factory.project_reviewer_tool_surface(object(), reviewer) == [
         reviewer_schema
     ]
+    assert factory.reviewer_tool_surface_is_mandatory(object()) is True
 
     monkeypatch.setattr(
         protocol_module,
@@ -333,6 +335,44 @@ def test_reviewer_tool_surface_is_a_claimable_guide_overlay(monkeypatch) -> None
     )
     assert factory.project_reviewer_tool_surface(object(), reviewer) == [
         reviewer_schema
+    ]
+    assert factory.reviewer_tool_surface_is_mandatory(object()) is False
+
+
+def test_reviewer_validation_projects_exactly_one_bound_carrier(monkeypatch) -> None:
+    from aworld.runners import execution_protocol as protocol_module
+
+    monkeypatch.setattr(
+        protocol_module,
+        "reviewer_validation_probe_binding",
+        lambda *_args: {
+            "hypothesis_id": "reviewer-value-validation",
+            "highest_risk_counterexample": "exercise the interrupt boundary",
+            "probe_kind": "counterexample",
+            "obligation_ids": ["public-obligation-1"],
+        },
+    )
+    agent = Agent(name="root", conf=AgentConfig(llm_config=ModelConfig()))
+    tools = [
+        {
+            "type": "function",
+            "function": {"name": "terminal__run_code", "parameters": {}},
+        },
+        {
+            "type": "function",
+            "function": {"name": "filesystem__read", "parameters": {}},
+        },
+    ]
+
+    projected, active = agent._constrain_reviewer_validation_tool_catalog(
+        tools,
+        _context(),
+        offer=SimpleNamespace(carrier_function_name="terminal__run_code"),
+    )
+
+    assert active is True
+    assert [item["function"]["name"] for item in projected] == [
+        "terminal__run_code"
     ]
 
 
@@ -1641,9 +1681,13 @@ async def test_uncertain_review_projects_only_public_validation_scope(
     context = _context(
         "Write result.json. The resulting file must be at most 2500 bytes."
     )
-    selected = lazy_verifier_module._derive_public_obligations(
-        context.origin_user_input
-    )[-1]
+    selected = next(
+        item
+        for item in lazy_verifier_module._derive_public_obligations(
+            context.origin_user_input
+        )
+        if item["kind"] == "range_constraint"
+    )
     _install_claimed_lease(monkeypatch, obligation=selected)
     action = ActionModel(
         tool_name=ADVISORY_VERIFIER_TOOL,
@@ -1671,6 +1715,9 @@ async def test_uncertain_review_projects_only_public_validation_scope(
         item["obligation_id"] for item in scope
     ]
     assert "exits nonzero" in " ".join(counterexample["requirements"])
+    assert "recompute the reported answer, objective, or metric" in " ".join(
+        counterexample["requirements"]
+    )
 
 
 @pytest.mark.asyncio

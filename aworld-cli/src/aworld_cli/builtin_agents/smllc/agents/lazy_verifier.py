@@ -360,9 +360,14 @@ class AdvisoryReviewRequest:
             else "none available"
         )
         review_focus = (
-            "Focus on exactly the single selected public obligation below. "
-            "The counterexample and recommended action must test that assertion; "
-            "do not broaden the review to other task requirements. "
+            "Focus primarily on the single selected public obligation below. "
+            "Use the rest of the public task only to expose completeness, "
+            "objective, boundary, or negative-case failures of that obligation. "
+            "Recommend one executable validation transaction; it may contain a "
+            "bounded suite of assertions over every finite item covered by the "
+            "obligation, but do not emit unrelated audits. A mere file-exists, "
+            "schema-only, or illustrative-sample check is insufficient for a "
+            "semantic correctness or completeness claim. "
             if len(authoritative_obligations) == 1
             else ""
         )
@@ -617,6 +622,62 @@ def _selected_validation_scope(
     return [{key: obligation[key] for key in required}]
 
 
+def _counterexample_probe_requirements(
+    obligation: Mapping[str, Any] | None,
+) -> list[str]:
+    """Return kind-aware requirements for one bounded validation transaction."""
+
+    requirements = [
+        "use an input, boundary, or independent recomputation not present in "
+        "the claimed evidence",
+        "prefer one self-contained read-only Tool call; a bounded suite of "
+        "assertions inside that call is one validation transaction",
+        "execute assertions whose probe exits nonzero when the counterexample is "
+        "observed",
+        "treat an unhandled probe-harness exception as unavailable evidence, not "
+        "as a candidate contradiction",
+        "bind the Tool call to the listed public obligation ids with "
+        "__aworld_public_probe metadata",
+    ]
+    kind = str(obligation.get("kind") or "") if isinstance(obligation, Mapping) else ""
+    if kind in {
+        "answer_constraint",
+        "answer_set_constraint",
+        "enumerated_set",
+        "quantity_constraint",
+        "structured_field",
+        "structural_constraint",
+    }:
+        requirements.append(
+            "when the candidate or public inputs form a finite set, validate the "
+            "entire set: cardinality, uniqueness, missing and extra members, and "
+            "every emitted value; do not pass from one illustrative sample"
+        )
+    if kind in {
+        "answer_constraint",
+        "range_constraint",
+        "numeric_threshold",
+        "quality_constraint",
+    }:
+        requirements.append(
+            "recompute the reported answer, objective, or metric from the emitted "
+            "candidate and authoritative public inputs through an independent path"
+        )
+    if kind in {
+        "function_signature",
+        "import_contract",
+        "public_command",
+        "service_port",
+        "process_liveness",
+        "negative_constraint",
+    }:
+        requirements.append(
+            "exercise behavioral and boundary or negative cases; compilation, "
+            "existence, and happy-path shape alone do not establish correctness"
+        )
+    return requirements
+
+
 BuilderLoader = Callable[[], Callable[..., Any]]
 ReviewRunner = Callable[[BaseAgent, BaseAgent, str, Any], Awaitable[Any] | Any]
 
@@ -721,6 +782,31 @@ class LazyVerifierFactory:
             # lease cannot be authenticated.
             return []
         return []
+
+    def reviewer_tool_surface_is_mandatory(self, context: Any) -> bool:
+        """Return whether GUIDE owns one authenticated reviewer control turn."""
+
+        try:
+            from aworld.core.execution_protocol import ProtocolMode
+            from aworld.runners.execution_protocol import (
+                claimable_reviewer_value_lease,
+                execution_protocol_policy,
+            )
+
+            return bool(
+                execution_protocol_policy(
+                    context,
+                    self._parent_agent.id(),
+                ).mode
+                is ProtocolMode.GUIDE
+                and claimable_reviewer_value_lease(
+                    context,
+                    self._parent_agent.id(),
+                )
+                is not None
+            )
+        except Exception:
+            return False
 
     @staticmethod
     def _load_builder() -> Callable[..., Any]:
@@ -1560,19 +1646,9 @@ class AdvisoryVerifierTool(AsyncTool):
                     "obligation_ids": [
                         item["obligation_id"] for item in validation_scope
                     ],
-                    "requirements": [
-                        "use an input, boundary, or independent recomputation "
-                        "not present in the claimed evidence",
-                        "prefer the smallest self-contained in-process assertion; "
-                        "avoid auxiliary files or subprocesses when an equivalent "
-                        "probe is available",
-                        "execute an assertion that exits nonzero when the "
-                        "counterexample is observed",
-                        "treat an unhandled probe-harness exception as unavailable "
-                        "evidence, not as a candidate contradiction",
-                        "bind the Tool call to the listed public obligation ids "
-                        "with __aworld_public_probe metadata",
-                    ],
+                    "requirements": _counterexample_probe_requirements(
+                        selected_obligation
+                    ),
                 }
         elif legacy_review and not result.conclusive:
             validation_scope = _task_derived_validation_scope(
