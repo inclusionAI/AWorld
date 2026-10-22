@@ -367,14 +367,7 @@ class AdvisoryReviewRequest:
             "bounded suite of assertions over every finite item covered by the "
             "obligation, but do not emit unrelated audits. A mere file-exists, "
             "schema-only, or illustrative-sample check is insufficient for a "
-            "semantic correctness or completeness claim. Compare every emitted "
-            "field to its exact authoritative public-source value rather than "
-            "accepting a non-empty or plausible substitute. When the candidate "
-            "groups, keys, or deduplicates entities, include a collision case in "
-            "which distinct source entities can share the chosen key. Do not "
-            "invent example entities or consult an alternate live data source; "
-            "the counterexample must be grounded in the task-provided public "
-            "inputs or the current artifact snapshot. "
+            "semantic correctness or completeness claim. "
             if len(authoritative_obligations) == 1
             else ""
         )
@@ -477,14 +470,7 @@ class AdvisoryReviewResult:
             payload["reported_input_tokens"] = self.reported_input_tokens
         if self.reported_output_tokens is not None:
             payload["reported_output_tokens"] = self.reported_output_tokens
-        if self.reason_code in {
-            "reviewer_lease_not_offered",
-            "reviewer_lease_claim_rejected",
-            "review_attempt_limit",
-        }:
-            payload["recommended_framework_action"] = "finalize_current_candidate"
-            payload["review_retry_allowed"] = False
-        elif (
+        if (
             self.lease_id is not None
             or self.status != "completed"
             or self.decision == "uncertain"
@@ -652,12 +638,6 @@ def _counterexample_probe_requirements(
         "as a candidate contradiction",
         "bind the Tool call to the listed public obligation ids with "
         "__aworld_public_probe metadata",
-        "use only the current candidate and task-provided or already-local public "
-        "inputs; do not query external services, substitute a live database, or "
-        "broaden the task while seeking independent evidence",
-        "after this one validation transaction, either apply one bounded repair "
-        "and revalidate once when the assertion fails, or preserve the candidate "
-        "and finalize; do not start another exploratory validation loop",
     ]
     kind = str(obligation.get("kind") or "") if isinstance(obligation, Mapping) else ""
     if kind in {
@@ -672,16 +652,6 @@ def _counterexample_probe_requirements(
             "when the candidate or public inputs form a finite set, validate the "
             "entire set: cardinality, uniqueness, missing and extra members, and "
             "every emitted value; do not pass from one illustrative sample"
-        )
-        requirements.append(
-            "compare every emitted field to the exact value and provenance in the "
-            "authoritative public input; non-empty, format-valid, or plausible "
-            "substitutes are not equality evidence"
-        )
-        requirements.append(
-            "when the candidate groups, keys, or deduplicates entities, exercise "
-            "a collision case where distinct source entities share that key and "
-            "assert that required cardinality and members are preserved"
         )
     if kind in {
         "answer_constraint",
@@ -997,26 +967,6 @@ class LazyVerifierFactory:
                 context,
                 authoritative_obligations=authoritative_obligations,
             )
-            if not authoritative_deliverables:
-                # Transport Context copies can lose the published delivery
-                # contract while retaining the authoritative public request.
-                # Rebuild only explicit public paths from that request so the
-                # Tool-free reviewer sees the current candidate bytes instead
-                # of spending its one call on an empty snapshot.
-                try:
-                    from aworld_cli.core.runtime_completion import (
-                        infer_public_deliverable_hints,
-                    )
-
-                    authoritative_deliverables = tuple(
-                        item.path
-                        for item in infer_public_deliverable_hints(
-                            public_task,
-                            workspace_path=os.getcwd(),
-                        )[:_MAX_DELIVERABLES]
-                    )
-                except Exception:
-                    authoritative_deliverables = ()
             artifact_snapshot_authentication = (
                 _declared_snapshot_authentication_status(
                     context,
@@ -1460,15 +1410,13 @@ class AdvisoryVerifierTool(AsyncTool):
         return True
 
     async def do_step(self, action: list[ActionModel], **kwargs):
-        if not action:
-            return self._invalid("review_candidate requires one action")
-        if any(item.action_name != "review_candidate" for item in action):
-            return self._invalid("review_candidate received an unknown action")
-        # Some OpenAI-compatible reasoning routes emit duplicate parallel calls
-        # when the reviewer is the only required Tool.  The lease is single-use;
-        # deterministically consume only the first call instead of rejecting the
-        # whole turn and paying for another root-model retry.
+        if len(action or ()) != 1:
+            return self._invalid("review_candidate requires exactly one action")
         action_model = action[0]
+        if action_model.action_name != "review_candidate":
+            return self._invalid(
+                f"unknown advisory verifier action: {action_model.action_name}"
+            )
         try:
             request = AdvisoryReviewRequest.from_params(action_model.params or {})
         except ValueError as exc:

@@ -103,8 +103,7 @@ _PUBLIC_DELIVERABLE_PATTERNS = (
 _PUBLIC_DELIVERABLE_IMPERATIVE_TO_PATTERNS = (
     re.compile(
         r"(?i)\b(?:save|write|create|generate|export|store|produce)\b"
-        r"[^\r\n.!?]{0,80}?\b(?:to|as|at|named|called|titled)"
-        r"\s*[:=]?\s*"
+        r"[^\r\n.!?]{0,80}?\b(?:to|as|at|named|called|titled)\s+"
         + _DELIVERABLE_TOKEN
     ),
 )

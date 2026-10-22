@@ -1624,28 +1624,16 @@ def _reviewer_candidate_present(context, agent_id: str) -> bool:
     # path (for example, an in-place code repair or an answer-only task).  The
     # previous projection ignored it and therefore skipped review for exactly
     # the tasks that most need a final behavioral challenge.
+    fallback = load_candidate_fallback(context, agent_id) or ()
+    if any(
+        bool(str(getattr(action, "policy_info", "") or "").strip())
+        for action in fallback
+    ):
+        return True
     try:
         from aworld.runners.post_tool_progress import semantic_progress_for_agent
 
-        delivery_status = _public_delivery_status(state_context(context))
         semantic_state = semantic_progress_for_agent(context, agent_id=agent_id)
-        if delivery_status.get("public_deliverable_declared") is True:
-            # For a named output, filesystem eligibility is the minimum review
-            # boundary. Intermediate prose cannot substitute for the file, and
-            # a preexisting task input cannot admit review without either a
-            # current semantic delivery signal or a terminal fallback.
-            fallback = load_candidate_fallback(context, agent_id) or ()
-            terminal_fallback_present = any(
-                bool(str(getattr(action, "policy_info", "") or "").strip())
-                for action in fallback
-            )
-            return bool(
-                delivery_status.get("candidate_present") is True
-                and (
-                    semantic_state.get("candidate_present") is True
-                    or terminal_fallback_present
-                )
-            )
         candidate_fingerprint = (
             semantic_state.get("public_delivery_fingerprint")
             or semantic_state.get("stateful_candidate_fingerprint")
@@ -1659,12 +1647,7 @@ def _reviewer_candidate_present(context, agent_id: str) -> bool:
             )
         )
     except Exception:
-        pass
-    fallback = load_candidate_fallback(context, agent_id) or ()
-    return any(
-        bool(str(getattr(action, "policy_info", "") or "").strip())
-        for action in fallback
-    )
+        return False
 
 
 def _reviewer_value_reserve_available(
@@ -1736,67 +1719,6 @@ def _select_reviewer_obligation(
             text,
         ) else 1
 
-    def reviewer_actionability(row: Mapping[str, Any]) -> int:
-        """Prefer concrete semantic contracts over generic task verbs."""
-
-        kind = str(row.get("kind") or "")
-        subject = str(row.get("subject") or "").strip().casefold()
-        expectation = row.get("expectation")
-        statement = (
-            str(expectation.get("statement") or "")
-            if isinstance(expectation, Mapping)
-            else ""
-        )
-        concrete_answer = bool(
-            re.search(
-                r"(?i)\b(?:all|each|every|correct|complete|exact|only|must|"
-                r"if|when|null|missing|invalid|mismatch|multiplicity|"
-                r"coordinate)\b",
-                statement,
-            )
-        )
-        if kind in {
-            "answer_set_constraint",
-            "enumerated_set",
-            "structural_constraint",
-            "range_constraint",
-            "numeric_threshold",
-            "quantity_constraint",
-            "quality_constraint",
-            "function_signature",
-            "import_contract",
-            "public_command",
-            "service_port",
-            "process_liveness",
-        }:
-            return 0
-        if kind == "answer_constraint" and (
-            concrete_answer
-            or subject not in {
-                "analyze",
-                "build",
-                "calculate",
-                "classify",
-                "compare",
-                "compute",
-                "create",
-                "detect",
-                "determine",
-                "generate",
-                "identify",
-                "implement",
-                "perform",
-                "solve",
-                "write",
-            }
-        ):
-            return 0
-        if kind in {"negative_constraint", "structured_field", "format_constraint"}:
-            return 1
-        if kind == "answer_constraint":
-            return 2
-        return 3
-
     eligible = [
         row
         for row in _public_obligation_rows(context)
@@ -1806,7 +1728,6 @@ def _select_reviewer_obligation(
     return min(
         eligible,
         key=lambda row: (
-            reviewer_actionability(row),
             priority.get(str(row.get("kind")), 99),
             semantic_specificity(row),
             # Prefer independently challenging a solver-covered assertion over
@@ -1875,7 +1796,7 @@ def ensure_reviewer_value_lease_offer(
         reason = "terminal_review_gate_disabled"
     elif not protocol_state.long_horizon_armed:
         reason = "short_or_unarmed"
-    elif protocol_state.phase is ProtocolPhase.COMPLETE:
+    elif protocol_state.phase in {ProtocolPhase.FINALIZE, ProtocolPhase.COMPLETE}:
         reason = "phase_not_actionable"
     elif not _reviewer_candidate_present(context, agent_id):
         reason = "no_current_candidate"
@@ -2276,12 +2197,10 @@ def reviewer_value_lease_guidance(
             f"validation transaction for {lease.obligation_id} now. Use one Tool "
             "call, but make that call exhaustively check every finite item covered "
             "by the selected obligation (including cardinality, missing/extra "
-            "items, exact source-provenance values, grouping-key collisions, and "
-            "negative cases), or independently recompute its objective and boundary "
-            "behavior. Do not substitute an existence/schema check, plausible "
-            "secondary value, or one illustrative sample for semantic coverage. "
-            "The assertion must exit nonzero when the selected counterexample is "
-            "observed."
+            "items, and values), or independently recompute its objective and "
+            "boundary behavior. Do not substitute an existence/schema check or "
+            "one illustrative sample for semantic coverage. The assertion must "
+            "exit nonzero when the selected counterexample is observed."
         ),
         ReviewerLeaseStatus.REPAIR_PENDING: (
             "AWorld reviewer value lease: the independent assertion contradicted "

@@ -417,48 +417,6 @@ def test_reviewer_prioritizes_core_answer_over_leftover_numeric_debt(tmp_path):
     assert selected["obligation_id"] == "public-obligation-3"
 
 
-@pytest.mark.parametrize(
-    ("concrete_kind", "generic_subject"),
-    (
-        ("structural_constraint", "analyze"),
-        ("enumerated_set", "perform"),
-    ),
-)
-def test_reviewer_prefers_concrete_contract_over_generic_task_verb(
-    tmp_path,
-    concrete_kind,
-    generic_subject,
-):
-    context = _context(tmp_path)
-    context.context_info["public_task_contract"]["obligations"] = [
-        {
-            "obligation_id": "public-obligation-generic",
-            "kind": "answer_constraint",
-            "subject": generic_subject,
-            "expectation": {"statement": f"You need to {generic_subject} the inputs."},
-            "source_fingerprint": _fingerprint("generic"),
-            "authority": "public_task_advisory",
-            "source": "public_task_text",
-        },
-        {
-            "obligation_id": "public-obligation-concrete",
-            "kind": concrete_kind,
-            "subject": "output contract",
-            "expectation": {
-                "statement": "Preserve every exact member and required null value."
-            },
-            "source_fingerprint": _fingerprint("concrete"),
-            "authority": "public_task_advisory",
-            "source": "public_task_text",
-        },
-    ]
-
-    selected = protocol._select_reviewer_obligation(context, "agent")
-
-    assert selected is not None
-    assert selected["obligation_id"] == "public-obligation-concrete"
-
-
 def test_named_output_gets_action_budget_candidate_guidance_without_tool_gate(
     tmp_path,
 ):
@@ -484,26 +442,6 @@ def test_named_output_gets_action_budget_candidate_guidance_without_tool_gate(
     assert protocol.build_execution_protocol_telemetry(context, "agent")[
         "convergence_constraint_active"
     ] is False
-
-
-def test_named_output_does_not_review_intermediate_text_fallback(tmp_path):
-    context = _context(tmp_path, candidate=False)
-    protocol.store_candidate_fallback(
-        context,
-        "agent",
-        [
-            ActionModel(
-                agent_name="agent",
-                policy_info="The report is still being built.",
-            )
-        ],
-    )
-
-    offered = protocol.ensure_reviewer_value_lease_offer(context, "agent")
-    telemetry = protocol.build_execution_protocol_telemetry(context, "agent")
-
-    assert offered is None
-    assert telemetry["reviewer_admission_reason"] == "no_current_candidate"
 
 
 def test_claim_is_checkpointed_and_cannot_repeat_after_factory_rebuild(tmp_path):

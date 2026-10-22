@@ -1085,39 +1085,8 @@ async def test_tool_without_lease_does_not_construct_reviewer(monkeypatch) -> No
     payload = json.loads(observation.content)
     assert reward == 0.0
     assert payload["reason_code"] == "reviewer_lease_not_offered"
-    assert payload["recommended_framework_action"] == "finalize_current_candidate"
     assert factory.construction_count == 0
     assert captured == {}
-
-
-@pytest.mark.asyncio
-async def test_duplicate_required_reviewer_calls_consume_only_first_lease(
-    monkeypatch,
-) -> None:
-    captured = {}
-    _install_claimed_lease(monkeypatch)
-    factory = _factory(captured=captured)
-    tool = AdvisoryVerifierTool(factory=factory)
-    first = ActionModel(
-        tool_name=ADVISORY_VERIFIER_TOOL,
-        action_name="review_candidate",
-        params={"candidate_claim": "the current report is ready"},
-    )
-    duplicate = ActionModel(
-        tool_name=ADVISORY_VERIFIER_TOOL,
-        action_name="review_candidate",
-        params={"candidate_claim": "placeholder"},
-    )
-
-    observation, reward, *_ = await tool.do_step(
-        [first, duplicate], context=_context()
-    )
-
-    assert reward == 0.0
-    assert json.loads(observation.content)["status"] == "completed"
-    assert captured["builder_loads"] == 1
-    assert "the current report is ready" in captured["runner"]["directive"]
-    assert "placeholder" not in captured["runner"]["directive"]
 
 
 @pytest.mark.asyncio
@@ -1751,20 +1720,6 @@ async def test_uncertain_review_projects_only_public_validation_scope(
     )
 
 
-def test_structured_counterexample_requires_exact_provenance_and_collisions() -> None:
-    requirements = lazy_verifier_module._counterexample_probe_requirements(
-        {"kind": "structured_field"}
-    )
-    rendered = " ".join(requirements)
-
-    assert "exact value and provenance" in rendered
-    assert "plausible substitutes are not equality evidence" in rendered
-    assert "collision case" in rendered
-    assert "cardinality and members are preserved" in rendered
-    assert "do not query external services" in rendered
-    assert "do not start another exploratory validation loop" in rendered
-
-
 @pytest.mark.asyncio
 async def test_review_receives_authoritative_public_delivery_paths() -> None:
     captured = {}
@@ -1832,29 +1787,6 @@ async def test_review_receives_authoritative_public_delivery_paths() -> None:
     assert "public-smoke-test" in directive
     assert "solver-claim" not in directive
     assert "old-task-check" not in directive
-
-
-@pytest.mark.asyncio
-async def test_review_rebuilds_missing_delivery_contract_from_public_task(
-    monkeypatch,
-    tmp_path,
-) -> None:
-    monkeypatch.chdir(tmp_path)
-    (tmp_path / "result.json").write_text('{"value": 12}', encoding="utf-8")
-    captured = {}
-    factory = _factory(captured=captured)
-    context = _context("Write the final report to result.json.")
-
-    result = await factory.review(
-        AdvisoryReviewRequest(candidate_claim="result.json is ready"),
-        context=context,
-    )
-
-    assert result.status == "completed"
-    directive = captured["runner"]["directive"]
-    assert str((tmp_path / "result.json").resolve()) in directive
-    assert '\"status\":\"captured\"' in directive
-    assert '{\\"value\\": 12}' in directive
 
 
 @pytest.mark.asyncio
