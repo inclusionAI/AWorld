@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### Complete public delivery contracts
+
+- Recognize explicit destination, typed-output, and bounded Markdown output
+  list forms without promoting inputs, examples, negated paths, or component
+  side effects into delivery obligations.
+- Keep multi-file delivery debt active until every named output has an
+  inspectable current candidate, while preserving single-file, answer-only,
+  and in-place task behavior.
+- Defer the bounded reviewer lease for partial multi-file candidates so review
+  cost is spent only when the public contract can be closed.
+
 ### Reviewer value and delivery convergence
 
 - Made one authenticated GUIDE reviewer lease a bounded control turn, while

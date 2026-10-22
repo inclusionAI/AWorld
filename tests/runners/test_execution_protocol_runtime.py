@@ -2457,6 +2457,83 @@ def test_named_deliverable_gate_reopens_reads_after_candidate_changes(
     ] == 0
 
 
+def test_partial_multi_file_candidate_keeps_delivery_gate_latched(tmp_path) -> None:
+    first = tmp_path / "first.json"
+    second = tmp_path / "second.json"
+    context = _context("partial-multi-file-delivery")
+    context.context_info["public_deliverable_contract"] = {
+        "schema_version": "aworld.public-deliverables/v1",
+        "authority": "public_task_advisory",
+        "source": "public_task_text",
+        "artifacts": [
+            {
+                "deliverable_id": f"public-output-{index}",
+                "path": str(path),
+                "display_path": path.name,
+                "kind": "file",
+                "authority": "public_task_advisory",
+            }
+            for index, path in enumerate((first, second), start=1)
+        ],
+    }
+    configure_execution_protocol(
+        context,
+        "agent",
+        ExecutionProtocolPolicy(
+            mode=ProtocolMode.GUIDE,
+            repetition_threshold=99,
+            low_information_gain_threshold=99,
+            no_goal_progress_threshold=99,
+            stagnation_event_threshold=99,
+        ),
+    )
+    _declare_long_horizon(context)
+    first.write_text("{}", encoding="utf-8")
+    record_tool_protocol_event(
+        context,
+        "agent",
+        _semantic_state(
+            consecutive_read_only_observations=8,
+            public_candidate_mutated=True,
+            candidate_present=True,
+        ),
+    )
+    read = ActionModel(
+        tool_name="terminal",
+        action_name="run_code",
+        params={"code": "cat source.json"},
+        tool_call_id="partial-contract-read",
+        agent_name="agent",
+    )
+
+    receipt = mutation_gate_interception(context, [read])
+
+    assert receipt is not None
+    assert receipt["kind"] == "candidate_mutation_required"
+    assert receipt["tool_call_ids"] == ["partial-contract-read"]
+
+    missing_write = ActionModel(
+        tool_name="terminal",
+        action_name="run_code",
+        params={"code": f"printf '{{}}' > {second}"},
+        tool_call_id="complete-partial-contract",
+        agent_name="agent",
+    )
+    assert mutation_gate_interception(context, [missing_write]) is None
+
+    second.write_text("{}", encoding="utf-8")
+    record_tool_protocol_event(
+        context,
+        "agent",
+        _semantic_state(
+            consecutive_read_only_observations=0,
+            public_candidate_mutated=True,
+            candidate_present=True,
+        ),
+    )
+    assert mutation_gate_interception(context, [read]) is None
+
+
 def test_present_unmutated_candidate_uses_existing_convergence_threshold(
     tmp_path,
 ) -> None:

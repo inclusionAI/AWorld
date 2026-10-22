@@ -51,12 +51,17 @@ _DELIVERABLE_TOKEN = r"(?:`([^`\r\n]+)`|'([^'\r\n]+)'|\"([^\"\r\n]+)\"|([^\s,;:!
 _PUBLIC_DELIVERABLE_PATTERNS = (
     re.compile(
         r"(?i)\b(?:return|provide|submit)\b[^\r\n.!?]{0,160}?"
+        r"\b(?:final\s+)?output\b[^\r\n.!?]{0,120}?\b(?:at|to)\s+"
+        + _DELIVERABLE_TOKEN
+    ),
+    re.compile(
+        r"(?i)\b(?:return|provide|submit)\b[^\r\n.!?]{0,160}?"
         r"\b(?:final\s+)?output(?:\s+(?:file|document|artifact))?\s+"
         r"(?:at|to|as)\s+" + _DELIVERABLE_TOKEN
     ),
     re.compile(
         r"(?i)\bin\s+" + _DELIVERABLE_TOKEN
-        + r"[\s\S]{0,512}?\b(?:edit|modify|update|complete|finalize|fix|repair)\b"
+        + r"[^\r\n.!?]{0,160}?\b(?:edit|modify|update|complete|finalize|fix|repair)\b"
     ),
     re.compile(
         r"(?i)\b(?:edit|modify|update|complete|finalize|fix|repair)\b"
@@ -99,13 +104,68 @@ _PUBLIC_DELIVERABLE_PATTERNS = (
         r"(?:file\s+)?(?:(?:named|called|titled)\s+)?"
         + _DELIVERABLE_TOKEN
     ),
+    re.compile(
+        r"(?i)\b(?:final\s+)?(?:output|report|schedule|result|solution|"
+        r"artifact|deliverable|graph|visualization)"
+        r"(?:\s+[a-z0-9_-]+){0,5}\s+"
+        r"(?:written|saved|exported|stored|generated|created)\s+"
+        r"(?:to|at|as)\s+" + _DELIVERABLE_TOKEN
+    ),
+    re.compile(
+        r"(?i)\b(?:output|produce|provide|create|generate)\b"
+        r"\s+(?:an?\s+|the\s+)?(?:validated\s+)?"
+        r"(?:json\s+|csv\s+|dot\s+|html\s+|pdf\s+)?"
+        r"(?:file|graph|visualization|report|document|artifact|data|solution)\s+"
+        + _DELIVERABLE_TOKEN
+    ),
+    re.compile(
+        r"(?i)\b(?:and|,)\s+(?:an?\s+|the\s+)?(?:companion\s+)?"
+        r"visualization\s+"
+        + _DELIVERABLE_TOKEN
+    ),
 )
 _PUBLIC_DELIVERABLE_IMPERATIVE_TO_PATTERNS = (
     re.compile(
-        r"(?i)\b(?:save|write|create|generate|export|store|produce)\b"
-        r"[^\r\n.!?]{0,80}?\b(?:to|as|at|named|called|titled)\s+"
+        r"(?i)\b(?:save|write|create|generate|export|store|produce|output)\b"
+        r"[^\r\n.!?]{0,80}?\b(?:to|as|at|named|called|titled)\s*"
+        r"(?:the\s+)?(?:dir(?:ectory)?|file)?\s*:?\s*"
         + _DELIVERABLE_TOKEN
     ),
+)
+_PUBLIC_EXPLICIT_PATH_TOKEN = re.compile(
+    r"`(?P<backtick>[^`\r\n]+)`|"
+    r"'(?P<single>[^'\r\n]+)'|"
+    r'\"(?P<double>[^\"\r\n]+)\"|'
+    r"(?P<plain>(?:/|\.{1,2}/)[A-Za-z0-9_./+\\-]+|"
+    r"[A-Za-z0-9_-][A-Za-z0-9_.-]*\.[A-Za-z0-9]{1,16})"
+)
+_PUBLIC_OUTPUT_LIST_HEADER = re.compile(
+    r"(?im)^\s*(?:#{1,6}\s*)?"
+    r"(?:(?:please|also|finally)\s+)?(?:make\s+sure\s+to\s+)?"
+    r"(?:after\s+finishing(?:\s+the\s+job)?\s*,?\s*)?"
+    r"(?:save|write|output|generate|create|produce|return|submit)\b"
+    r"(?=[^\r\n]{0,200}\b(?:outputs?|deliverables?|solutions?|artifacts?|"
+    r"files?|results?|paths?)\b)[^\r\n]*:\s*$"
+)
+_PUBLIC_OUTPUT_LIST_ITEM = re.compile(
+    r"^\s*(?:[-*+]|\d+[.)])\s+(?P<item>\S(?:.*\S)?)\s*$"
+)
+_PUBLIC_COMPONENT_OUTPUT_LIST_HEADER = re.compile(
+    r"(?i)^\s*(?:(?:the|this|a|an)\s+)?"
+    r"(?:program|script|renderer|tool|application|component|tests?|workflow|"
+    r"installation\s+process)\b[^\r\n]{0,160}?\b"
+    r"(?:(?:will|would|can|could|may|might|should|must)\s+|"
+    r"(?:is|are|was|were)\s+(?:expected|required|going)\s+to\s+)"
+    r"(?:create|generate|write|output|produce)\b"
+)
+_PUBLIC_INPUT_OR_REFERENCE_FILE = re.compile(
+    r"(?i)(?:"
+    r"\b(?:using|from|reading|read|inspect|based\s+on)\b[^\r\n]{0,80}?"
+    r"\b(?:(?:input|source|reference|provided|supplied)\s+)?(?:data\s+)?"
+    r"(?:file|document|artifact)\s+|"
+    r"\b(?:input|reference|provided|supplied)\s+(?:data\s+)?"
+    r"(?:file|document|artifact)\s+"
+    r")$"
 )
 _PUBLIC_DELIVERABLE_DIRECTORY_PATTERN = re.compile(
     r"(?i)\b(?:save|write|create|generate|export|store|produce)\b"
@@ -1644,8 +1704,10 @@ def _is_described_runtime_side_effect(request: str, match: re.Match[str]) -> boo
     # A modal directed at the Agent/user is still an explicit task imperative;
     # a modal whose subject is a supplied component describes runtime behavior.
     if re.search(
-        r"(?i)\b(?:you|the\s+agent)\s+"
-        r"(?:will|would|can|could|may|might|should|must)\s+$",
+        r"(?i)\b(?:you|the\s+agent)\s+(?:"
+        r"(?:will|would|can|could|may|might|should|must)\s+|"
+        r"(?:are|were)\s+(?:required|expected|going)\s+to\s+|"
+        r"need(?:s)?\s+to\s+)$",
         prefix,
     ):
         return False
@@ -1717,6 +1779,85 @@ def _immediate_directory_list_filenames(value: str) -> tuple[str, ...]:
     return tuple(filenames)
 
 
+def _immediate_output_list_paths(value: str) -> tuple[str, ...]:
+    """Return exact path-like tokens from one contiguous public output list."""
+
+    paths: list[str] = []
+    started = False
+    blank_lines = 0
+    preamble_lines = 0
+    for line in value.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            if started:
+                blank_lines += 1
+                if blank_lines > 2:
+                    break
+            else:
+                preamble_lines += 1
+                if preamble_lines > 4:
+                    break
+            continue
+        match = _PUBLIC_OUTPUT_LIST_ITEM.match(line)
+        if match is None:
+            break
+        started = True
+        blank_lines = 0
+        token_match = _PUBLIC_EXPLICIT_PATH_TOKEN.search(match.group("item"))
+        if token_match is None:
+            continue
+        token = next(
+            (
+                candidate.strip()
+                for candidate in token_match.groupdict().values()
+                if isinstance(candidate, str) and candidate.strip()
+            ),
+            "",
+        )
+        if token:
+            paths.append(token)
+        if len(paths) >= _MAX_PUBLIC_DELIVERABLES:
+            break
+    return tuple(paths)
+
+
+def _is_public_output_list_header(value: str) -> bool:
+    """Reject input, negated, and component-side-effect list headers."""
+
+    normalized = value.strip()
+    if not normalized:
+        return False
+    if _NEGATIVE_CONSTRAINT.search(normalized):
+        return False
+    if re.search(r"(?i)\b(?:input|source|reference)\s+files?\b", normalized):
+        return False
+    if re.search(
+        r"(?i)(?:\bfrom\s+(?:the\s+following\s+)?(?:input\s+|source\s+)?"
+        r"files?\b|\b(?:using|based\s+on)\s*:?)",
+        normalized,
+    ):
+        return False
+    if re.search(r"(?i)\bread\s*:\s*$", normalized):
+        return False
+    if _PUBLIC_COMPONENT_OUTPUT_LIST_HEADER.search(normalized):
+        return False
+    return True
+
+
+def _matched_token_is_input_or_reference(match: re.Match[str]) -> bool:
+    """Return whether a captured file token is locally described as input."""
+
+    token = _matched_deliverable_token(match).strip("`'\"")
+    if not token:
+        return False
+    matched_text = match.group(0)
+    position = matched_text.rfind(token)
+    if position < 0:
+        return False
+    prefix = matched_text[max(0, position - 128) : position]
+    return _PUBLIC_INPUT_OR_REFERENCE_FILE.search(prefix) is not None
+
+
 def infer_public_deliverable_hints(
     request: str | None, *, workspace_path: str | os.PathLike[str]
 ) -> tuple[PublicDeliverableHint, ...]:
@@ -1733,6 +1874,52 @@ def infer_public_deliverable_hints(
     blocked_fenced_ranges = _non_authoritative_fenced_ranges(bounded_request)
     discovered: list[tuple[str, str]] = []
     seen: set[str] = set()
+    # Some contracts put exact output paths in a Markdown list after a public
+    # delivery header without naming a containing directory. Parse only that
+    # immediate contiguous list; paths elsewhere remain inputs or examples
+    # unless one of the stricter grammars below declares them.
+    for header_match in _PUBLIC_OUTPUT_LIST_HEADER.finditer(bounded_request):
+        if not _is_public_output_list_header(header_match.group(0)):
+            continue
+        directory_header = _PUBLIC_DELIVERABLE_DIRECTORY_PATTERN.search(
+            header_match.group(0)
+        )
+        if directory_header is not None:
+            directory_token = _matched_deliverable_token(directory_header)
+            if "/" in directory_token or "\\" in directory_token:
+                continue
+        if (
+            _position_in_ranges(header_match.start(), blocked_fenced_ranges)
+            or _is_non_authoritative_public_text(
+                _public_clause(
+                    bounded_request,
+                    header_match.start(),
+                    header_match.end(),
+                )
+            )
+            or _is_described_runtime_side_effect(request, header_match)
+        ):
+            continue
+        list_region = bounded_request[
+            header_match.end() : header_match.end() + 4096
+        ]
+        for token in _immediate_output_list_paths(list_region):
+            resolved = _resolve_public_deliverable(
+                token,
+                workspace_path=workspace_path,
+            )
+            if resolved is None:
+                continue
+            path, display = resolved
+            key = os.path.normcase(path)
+            if key in seen:
+                continue
+            seen.add(key)
+            discovered.append((path, display))
+            if len(discovered) >= _MAX_PUBLIC_DELIVERABLES:
+                break
+        if len(discovered) >= _MAX_PUBLIC_DELIVERABLES:
+            break
     for pattern in _PUBLIC_DELIVERABLE_PATTERNS:
         for match in pattern.finditer(bounded_request):
             if (
@@ -1741,6 +1928,7 @@ def infer_public_deliverable_hints(
                     _public_clause(bounded_request, match.start(), match.end())
                 )
                 or _is_described_runtime_side_effect(request, match)
+                or _matched_token_is_input_or_reference(match)
             ):
                 continue
             resolved = _resolve_public_deliverable(

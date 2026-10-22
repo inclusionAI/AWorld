@@ -191,6 +191,198 @@ def test_common_imperative_output_forms_become_advisory_deliverables(
     assert [item.display_path for item in hints] == [expected_display_path]
 
 
+@pytest.mark.parametrize(
+    ("request_text", "expected_display_paths"),
+    (
+        (
+            "Each operating range must be respected in the final schedule "
+            "written to `/root/report.json`.",
+            ["/root/report.json"],
+        ),
+        (
+            "You should output a CSV file to `/root/output/flood_results.csv`.",
+            ["/root/output/flood_results.csv"],
+        ),
+        (
+            "Please save the harmonized data to the dir: "
+            "`/root/ckd_lab_data_harmonized.csv`.",
+            ["/root/ckd_lab_data_harmonized.csv"],
+        ),
+        (
+            "## Output\nWrite your solution to:\n- `/output/scenario_3.json`",
+            ["/output/scenario_3.json"],
+        ),
+        (
+            "Given `/app/script.txt`, output a validated JSON graph "
+            "`/app/dialogue.json` and visualization `/app/dialogue.dot`.",
+            ["/app/dialogue.json", "/app/dialogue.dot"],
+        ),
+    ),
+)
+def test_output_action_clauses_capture_exact_public_paths(
+    request_text: str,
+    expected_display_paths: list[str],
+    tmp_path: Path,
+) -> None:
+    hints = infer_public_deliverable_hints(request_text, workspace_path=tmp_path)
+
+    assert [item.display_path for item in hints] == expected_display_paths
+
+
+def test_explicit_output_directory_wins_over_bare_contextual_basename(
+    tmp_path: Path,
+) -> None:
+    hints = infer_public_deliverable_hints(
+        "For `layout.json`, report the room geometry.\n"
+        "Write these files to `output/`:\n- `layout.json`\n- `changes.json`",
+        workspace_path=tmp_path,
+    )
+
+    assert [(item.path, item.display_path) for item in hints] == [
+        (str(tmp_path / "output" / "layout.json"), "layout.json"),
+        (str(tmp_path / "output" / "changes.json"), "changes.json"),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("request_text", "expected_display_paths"),
+    (
+        (
+            "Create a report using inputs alpha.csv, beta.csv, gamma.csv, "
+            "delta.csv, epsilon.csv and save it to report.md.",
+            ["report.md"],
+        ),
+        (
+            "Create a summary with the sentence 'release is version 1.2' and "
+            "save it to report.md.",
+            ["report.md"],
+        ),
+        (
+            "Create an API that returns config.json at /config; save "
+            "implementation in app.py.",
+            [],
+        ),
+        ("Create report.md. Do not create secret.json.", ["report.md"]),
+        ("Create report.md; do not modify source.csv.", ["report.md"]),
+        (
+            "Create report.md, excluding source.csv and template.json.",
+            ["report.md"],
+        ),
+    ),
+)
+def test_output_parsing_does_not_promote_inputs_examples_or_exclusions(
+    request_text: str,
+    expected_display_paths: list[str],
+    tmp_path: Path,
+) -> None:
+    hints = infer_public_deliverable_hints(request_text, workspace_path=tmp_path)
+
+    assert [item.display_path for item in hints] == expected_display_paths
+
+
+def test_distinct_output_directories_may_share_a_basename(tmp_path: Path) -> None:
+    hints = infer_public_deliverable_hints(
+        "Write output file to `/root/a/result.json` and submit final output "
+        "at `/root/a/nested/result.json`.",
+        workspace_path=tmp_path,
+    )
+
+    assert {item.path for item in hints} == {
+        "/root/a/result.json",
+        "/root/a/nested/result.json",
+    }
+
+
+def test_output_path_list_keeps_every_absolute_path_intact(tmp_path: Path) -> None:
+    hints = infer_public_deliverable_hints(
+        "Write your solutions to:\n"
+        "- `/output/a.json`\n"
+        "- `/output/b.json`\n"
+        "- `/output/c.json`",
+        workspace_path=tmp_path,
+    )
+
+    assert [item.path for item in hints] == [
+        "/output/a.json",
+        "/output/b.json",
+        "/output/c.json",
+    ]
+
+
+@pytest.mark.parametrize(
+    "request_text",
+    (
+        "Use the following input files to create the report:\n"
+        "- `input.csv`\n- `config.json`\nSave it to `report.md`.",
+        "To create the report, read:\n"
+        "- `/data/input.csv`\n- `/data/config.json`\n"
+        "Output to `/output/report.md`.",
+        "The program will create these files:\n"
+        "- `/tmp/cache.json`\n- `/tmp/state.json`",
+        "The program is expected to create these files:\n"
+        "- `/tmp/cache.json`\n- `/tmp/state.json`",
+        "Do not create these files:\n- `secret.json`\n- `token.json`",
+        "Create the report from the following files:\n"
+        "- `sales.csv`\n- `regions.json`\nSave to `report.md`.",
+        "Create the report using:\n"
+        "- `sales.csv`\n- `regions.json`\nWrite output to `report.md`.",
+        "Generate the output based on:\n"
+        "- `source.csv`\n- `config.json`\nSave to `result.json`.",
+        "Use these files to generate the report:\n"
+        "- `sales.csv`\n- `config.json`\nSave to `report.md`.",
+        "Files used to create the output:\n"
+        "- `sales.csv`\n- `config.json`\nSave to `report.md`.",
+        "With these files, create the report:\n"
+        "- `sales.csv`\n- `config.json`\nSave to `report.md`.",
+        "The scripts will create these files:\n"
+        "- `/tmp/cache.json`\n- `/tmp/state.json`",
+        "The supplied script will create these files:\n"
+        "- `/tmp/cache.json`\n- `/tmp/state.json`",
+        "The provided program is expected to create these files:\n"
+        "- `/tmp/cache.json`\n- `/tmp/state.json`",
+        "These tools may generate output files:\n"
+        "- `/tmp/cache.json`\n- `/tmp/state.json`",
+        "Our application will output these files:\n"
+        "- `/tmp/cache.json`\n- `/tmp/state.json`",
+    ),
+)
+def test_input_negated_and_component_lists_are_not_output_contracts(
+    request_text: str,
+    tmp_path: Path,
+) -> None:
+    hints = infer_public_deliverable_hints(request_text, workspace_path=tmp_path)
+
+    assert all(
+        item.display_path
+        not in {
+            "input.csv",
+            "config.json",
+            "/data/input.csv",
+            "/data/config.json",
+            "/tmp/cache.json",
+            "/tmp/state.json",
+            "secret.json",
+            "token.json",
+            "sales.csv",
+            "regions.json",
+            "source.csv",
+            "config.json",
+        }
+        for item in hints
+    )
+
+
+def test_long_reference_filename_is_not_promoted_to_output(tmp_path: Path) -> None:
+    hints = infer_public_deliverable_hints(
+        "Create a report using the reference file "
+        "very_long_descriptive_input_filename_for_the_benchmark.csv and save "
+        "it to report.md.",
+        workspace_path=tmp_path,
+    )
+
+    assert [item.display_path for item in hints] == ["report.md"]
+
+
 def test_described_runtime_side_effect_is_not_a_primary_deliverable(
     tmp_path: Path,
 ) -> None:

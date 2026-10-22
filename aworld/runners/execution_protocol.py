@@ -865,6 +865,7 @@ def _public_delivery_status(context) -> dict[str, Any]:
     ):
         return {
             "public_deliverable_declared": False,
+            "declared_public_deliverable_count": 0,
             "missing_public_deliverable_count": 0,
             "candidate_present": None,
         }
@@ -872,6 +873,7 @@ def _public_delivery_status(context) -> dict[str, Any]:
     if not isinstance(artifacts, list) or not artifacts or len(artifacts) > 16:
         return {
             "public_deliverable_declared": False,
+            "declared_public_deliverable_count": 0,
             "missing_public_deliverable_count": 0,
             "candidate_present": None,
         }
@@ -885,6 +887,7 @@ def _public_delivery_status(context) -> dict[str, Any]:
         ):
             return {
                 "public_deliverable_declared": False,
+                "declared_public_deliverable_count": 0,
                 "missing_public_deliverable_count": 0,
                 "candidate_present": None,
             }
@@ -893,6 +896,7 @@ def _public_delivery_status(context) -> dict[str, Any]:
         )
     return {
         "public_deliverable_declared": True,
+        "declared_public_deliverable_count": len(artifacts),
         "missing_public_deliverable_count": len(artifacts) - existing,
         # One real named output is sufficient to establish an inspectable
         # candidate. It is not evidence that every deliverable is complete.
@@ -1624,6 +1628,18 @@ def _reviewer_candidate_present(context, agent_id: str) -> bool:
     # path (for example, an in-place code repair or an answer-only task).  The
     # previous projection ignored it and therefore skipped review for exactly
     # the tasks that most need a final behavioral challenge.
+    delivery = _public_delivery_status(state_context(context))
+    if (
+        delivery.get("public_deliverable_declared") is True
+        and int(delivery.get("declared_public_deliverable_count", 0) or 0) > 1
+        and int(delivery.get("missing_public_deliverable_count", 0) or 0) > 0
+    ):
+        # A partial multi-file delivery is useful progress, but reviewing it
+        # spends model budget before the reviewer can possibly close the public
+        # contract.  Wait until every explicitly named output has at least an
+        # inspectable candidate; answer-only and in-place tasks retain the
+        # fallback behavior below.
+        return False
     fallback = load_candidate_fallback(context, agent_id) or ()
     if any(
         bool(str(getattr(action, "policy_info", "") or "").strip())
@@ -5139,11 +5155,25 @@ def _update_mutation_gate_locked(
     # must not discharge delivery debt. For mutation-required tasks without a
     # named artifact, the first observed mutation is the strongest generic
     # candidate signal available to the controller.
-    resolved = (
-        public_candidate_mutated
-        if public_deliverable_declared
-        else candidate_present or mutation_observed
+    # For an explicit multi-file contract, one early candidate must not erase
+    # delivery debt for every remaining file.  Keep candidate presence useful
+    # for validation/review telemetry, but release the production gate only
+    # when all declared files contain inspectable candidates.
+    declared_count = _bounded_counter(
+        delivery_status.get("declared_public_deliverable_count")
     )
+    if public_deliverable_declared and declared_count > 1:
+        resolved = bool(
+            public_candidate_mutated
+            and int(
+                delivery_status.get("missing_public_deliverable_count", 0) or 0
+            )
+            == 0
+        )
+    elif public_deliverable_declared:
+        resolved = public_candidate_mutated
+    else:
+        resolved = candidate_present or mutation_observed
     activation_count = _bounded_counter(
         previous.get("activation_count") if isinstance(previous, Mapping) else 0
     )
@@ -5445,6 +5475,12 @@ def _update_mutation_gate_locked(
         "reason": reason,
         "workspace_mutation_required": mutation_required,
         "public_deliverable_declared": public_deliverable_declared,
+        "declared_public_deliverable_count": _bounded_counter(
+            delivery_status.get("declared_public_deliverable_count")
+        ),
+        "missing_public_deliverable_count": _bounded_counter(
+            delivery_status.get("missing_public_deliverable_count")
+        ),
         "candidate_present": candidate_present,
         "public_candidate_mutated": public_candidate_mutated,
         "workspace_mutation_observed": mutation_observed,
@@ -6026,17 +6062,30 @@ def _mutation_gate_interception_locked(
             gate,
             actions,
         )
+    partial_contract_latched = bool(
+        isinstance(gate, Mapping)
+        and gate.get("pre_candidate_latched") is True
+        and gate.get("public_deliverable_declared") is True
+        and gate.get("candidate_present") is True
+        and _bounded_counter(gate.get("declared_public_deliverable_count")) > 1
+        and _bounded_counter(gate.get("missing_public_deliverable_count")) > 0
+    )
     if (
         not isinstance(gate, Mapping)
         or gate.get("schema_version")
         not in {MUTATION_GATE_SCHEMA, *_LEGACY_MUTATION_GATE_SCHEMAS}
-        or gate.get("active") is not True
+        or not (gate.get("active") is True or partial_contract_latched)
         or not _gate_matches_current_scope(context, agent_id, gate)
     ):
         return None
     stage_value = gate.get("convergence_stage")
     try:
-        stage = ConvergenceStage(stage_value)
+        stage = (
+            ConvergenceStage.PRODUCE_CANDIDATE
+            if stage_value is None
+            and partial_contract_latched
+            else ConvergenceStage(stage_value)
+        )
     except (TypeError, ValueError):
         # A legacy active read gate has no typed convergence boundary and must
         # retain the pre-convergence fail-open guarantee.

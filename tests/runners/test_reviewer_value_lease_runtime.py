@@ -279,6 +279,36 @@ def test_offer_requires_armed_candidate_contract_and_closure_reserve(tmp_path):
     )
 
 
+def test_offer_waits_for_complete_explicit_multi_file_candidate(tmp_path):
+    context = _context(tmp_path)
+    missing = tmp_path / "supporting.json"
+    context.context_info["public_deliverable_contract"]["artifacts"].append(
+        {
+            "deliverable_id": "public-deliverable-2",
+            "path": str(missing),
+            "display_path": "supporting.json",
+            "kind": "file",
+            "authority": "public_task_advisory",
+        }
+    )
+
+    assert protocol.ensure_reviewer_value_lease_offer(context, "agent") is None
+
+    missing.write_text('{"ready": true}', encoding="utf-8")
+    assert protocol.ensure_reviewer_value_lease_offer(context, "agent") is not None
+
+
+def test_single_missing_file_retains_terminal_fallback_review(tmp_path):
+    context = _context(tmp_path, candidate=False)
+    protocol.store_candidate_fallback(
+        context,
+        "agent",
+        [ActionModel(agent_name="agent", policy_info="best bounded answer")],
+    )
+
+    assert protocol.ensure_reviewer_value_lease_offer(context, "agent") is not None
+
+
 def test_persisted_offer_remains_claimable_after_offer_reserve_crossing(tmp_path):
     context = _context(tmp_path)
     context.get_task().remaining_seconds = lambda: 241
