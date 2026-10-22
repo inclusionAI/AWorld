@@ -376,16 +376,16 @@ def test_reviewer_validation_projects_exactly_one_bound_carrier(monkeypatch) -> 
     ]
 
 
-def test_guided_reviewer_uses_progress_sensitive_sixty_second_budget() -> None:
+def test_guided_reviewer_uses_progress_sensitive_ninety_second_budget() -> None:
     captured = {}
     factory = _factory(captured=captured)
 
     factory._construct_verifier(guided_review=True)
 
     policy = captured["builder_kwargs"]["generation_budget_policy"]
-    assert policy.total_timeout_seconds == 60
-    assert policy.stream_idle_timeout_seconds == 30
-    assert policy.active_tool_free_timeout_seconds == 60
+    assert policy.total_timeout_seconds == 90
+    assert policy.stream_idle_timeout_seconds == 45
+    assert policy.active_tool_free_timeout_seconds == 90
     assert policy.action_repair_enabled is False
 
 
@@ -1718,6 +1718,18 @@ async def test_uncertain_review_projects_only_public_validation_scope(
     assert "recompute the reported answer, objective, or metric" in " ".join(
         counterexample["requirements"]
     )
+
+
+def test_structured_counterexample_requires_exact_provenance_and_collisions() -> None:
+    requirements = lazy_verifier_module._counterexample_probe_requirements(
+        {"kind": "structured_field"}
+    )
+    rendered = " ".join(requirements)
+
+    assert "exact value and provenance" in rendered
+    assert "plausible substitutes are not equality evidence" in rendered
+    assert "collision case" in rendered
+    assert "cardinality and members are preserved" in rendered
 
 
 @pytest.mark.asyncio

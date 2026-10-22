@@ -70,8 +70,8 @@ _REVIEW_OUTPUT_TOKEN_BUDGET = (
 )
 _REVIEW_WALL_CLOCK_SECONDS = 120.0
 _REVIEW_MIN_START_SECONDS = 30.0
-_GUIDED_REVIEW_WALL_CLOCK_SECONDS = 60.0
-_GUIDED_REVIEW_IDLE_SECONDS = 30.0
+_GUIDED_REVIEW_WALL_CLOCK_SECONDS = 90.0
+_GUIDED_REVIEW_IDLE_SECONDS = 45.0
 _DECLARED_SNAPSHOT_SCHEMA = "aworld.declared-artifact-snapshot/v1"
 _DECLARED_SNAPSHOT_TOTAL_BYTES = 12 * 1024
 _DECLARED_SNAPSHOT_FILE_BYTES = 8 * 1024
@@ -367,7 +367,11 @@ class AdvisoryReviewRequest:
             "bounded suite of assertions over every finite item covered by the "
             "obligation, but do not emit unrelated audits. A mere file-exists, "
             "schema-only, or illustrative-sample check is insufficient for a "
-            "semantic correctness or completeness claim. "
+            "semantic correctness or completeness claim. Compare every emitted "
+            "field to its exact authoritative public-source value rather than "
+            "accepting a non-empty or plausible substitute. When the candidate "
+            "groups, keys, or deduplicates entities, include a collision case in "
+            "which distinct source entities can share the chosen key. "
             if len(authoritative_obligations) == 1
             else ""
         )
@@ -652,6 +656,16 @@ def _counterexample_probe_requirements(
             "when the candidate or public inputs form a finite set, validate the "
             "entire set: cardinality, uniqueness, missing and extra members, and "
             "every emitted value; do not pass from one illustrative sample"
+        )
+        requirements.append(
+            "compare every emitted field to the exact value and provenance in the "
+            "authoritative public input; non-empty, format-valid, or plausible "
+            "substitutes are not equality evidence"
+        )
+        requirements.append(
+            "when the candidate groups, keys, or deduplicates entities, exercise "
+            "a collision case where distinct source entities share that key and "
+            "assert that required cardinality and members are preserved"
         )
     if kind in {
         "answer_constraint",

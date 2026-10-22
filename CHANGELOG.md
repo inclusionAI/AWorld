@@ -4,6 +4,15 @@
 
 ### Reviewer value and delivery convergence
 
+- Let a claimable reviewer lease preempt a simultaneous generic long-horizon
+  decision boundary, so the bounded review happens while its candidate and
+  public obligation are still current.
+- Expanded the guided DSV4 review window from 60 to 90 seconds, retaining a
+  single provider attempt and a 45-second stream-idle bound so admitted reviews
+  can return value instead of timing out at the previous hard edge.
+- Strengthened task-derived counterexample validation to compare every emitted
+  field with its exact authoritative source value and exercise grouping-key
+  collisions, cardinality preservation, and negative cases.
 - Made one authenticated GUIDE reviewer lease a bounded control turn, while
   preserving manual OFF/OBSERVE compatibility and the short-task fast path.
 - Kept an admitted reviewer lease claimable across the model call that emits

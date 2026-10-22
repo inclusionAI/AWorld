@@ -6891,8 +6891,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                     }
                 )
             if (
-                pending_decision_boundary is None
-                and not independent_acceptance_review
+                not independent_acceptance_review
                 and not model_owned_review
                 and getattr(self, "lazy_verifier_factory", None) is not None
             ):
@@ -7333,9 +7332,24 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                     "Task Tool Catalog tracking failed; "
                     f"error_type={type(exc).__name__}"
                 )
+        reviewer_turn_mandatory = False
+        if reviewer_tool_overlay:
+            lazy_verifier_factory = getattr(self, "lazy_verifier_factory", None)
+            reviewer_turn_mandatory_fn = getattr(
+                lazy_verifier_factory,
+                "reviewer_tool_surface_is_mandatory",
+                None,
+            )
+            if callable(reviewer_turn_mandatory_fn):
+                reviewer_turn_mandatory = bool(
+                    reviewer_turn_mandatory_fn(message.context)
+                )
         if (
             not tool_free_finalization
-            and execution_control_offer.decision_boundary is None
+            and (
+                execution_control_offer.decision_boundary is None
+                or reviewer_turn_mandatory
+            )
             and not independent_acceptance_review
             and not model_owned_review
             and reviewer_tool_overlay
@@ -7349,14 +7363,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                     message.context, reviewer_tool_overlay
                 )
                 if projected:
-                    reviewer_turn_mandatory = getattr(
-                        lazy_verifier_factory,
-                        "reviewer_tool_surface_is_mandatory",
-                        None,
-                    )
-                    if callable(reviewer_turn_mandatory) and reviewer_turn_mandatory(
-                        message.context
-                    ):
+                    if reviewer_turn_mandatory:
                         # A GUIDE lease is already candidate-, request-, and
                         # obligation-bound and can be claimed once.  Give it one
                         # deterministic control turn instead of asking the model

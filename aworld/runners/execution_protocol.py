@@ -2197,10 +2197,12 @@ def reviewer_value_lease_guidance(
             f"validation transaction for {lease.obligation_id} now. Use one Tool "
             "call, but make that call exhaustively check every finite item covered "
             "by the selected obligation (including cardinality, missing/extra "
-            "items, and values), or independently recompute its objective and "
-            "boundary behavior. Do not substitute an existence/schema check or "
-            "one illustrative sample for semantic coverage. The assertion must "
-            "exit nonzero when the selected counterexample is observed."
+            "items, exact source-provenance values, grouping-key collisions, and "
+            "negative cases), or independently recompute its objective and boundary "
+            "behavior. Do not substitute an existence/schema check, plausible "
+            "secondary value, or one illustrative sample for semantic coverage. "
+            "The assertion must exit nonzero when the selected counterexample is "
+            "observed."
         ),
         ReviewerLeaseStatus.REPAIR_PENDING: (
             "AWorld reviewer value lease: the independent assertion contradicted "
