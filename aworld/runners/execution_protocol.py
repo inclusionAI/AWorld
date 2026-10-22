@@ -1736,6 +1736,67 @@ def _select_reviewer_obligation(
             text,
         ) else 1
 
+    def reviewer_actionability(row: Mapping[str, Any]) -> int:
+        """Prefer concrete semantic contracts over generic task verbs."""
+
+        kind = str(row.get("kind") or "")
+        subject = str(row.get("subject") or "").strip().casefold()
+        expectation = row.get("expectation")
+        statement = (
+            str(expectation.get("statement") or "")
+            if isinstance(expectation, Mapping)
+            else ""
+        )
+        concrete_answer = bool(
+            re.search(
+                r"(?i)\b(?:all|each|every|correct|complete|exact|only|must|"
+                r"if|when|null|missing|invalid|mismatch|multiplicity|"
+                r"coordinate)\b",
+                statement,
+            )
+        )
+        if kind in {
+            "answer_set_constraint",
+            "enumerated_set",
+            "structural_constraint",
+            "range_constraint",
+            "numeric_threshold",
+            "quantity_constraint",
+            "quality_constraint",
+            "function_signature",
+            "import_contract",
+            "public_command",
+            "service_port",
+            "process_liveness",
+        }:
+            return 0
+        if kind == "answer_constraint" and (
+            concrete_answer
+            or subject not in {
+                "analyze",
+                "build",
+                "calculate",
+                "classify",
+                "compare",
+                "compute",
+                "create",
+                "detect",
+                "determine",
+                "generate",
+                "identify",
+                "implement",
+                "perform",
+                "solve",
+                "write",
+            }
+        ):
+            return 0
+        if kind in {"negative_constraint", "structured_field", "format_constraint"}:
+            return 1
+        if kind == "answer_constraint":
+            return 2
+        return 3
+
     eligible = [
         row
         for row in _public_obligation_rows(context)
@@ -1745,6 +1806,7 @@ def _select_reviewer_obligation(
     return min(
         eligible,
         key=lambda row: (
+            reviewer_actionability(row),
             priority.get(str(row.get("kind")), 99),
             semantic_specificity(row),
             # Prefer independently challenging a solver-covered assertion over
@@ -1813,7 +1875,7 @@ def ensure_reviewer_value_lease_offer(
         reason = "terminal_review_gate_disabled"
     elif not protocol_state.long_horizon_armed:
         reason = "short_or_unarmed"
-    elif protocol_state.phase in {ProtocolPhase.FINALIZE, ProtocolPhase.COMPLETE}:
+    elif protocol_state.phase is ProtocolPhase.COMPLETE:
         reason = "phase_not_actionable"
     elif not _reviewer_candidate_present(context, agent_id):
         reason = "no_current_candidate"

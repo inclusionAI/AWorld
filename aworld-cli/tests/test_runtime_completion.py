@@ -176,6 +176,10 @@ def test_named_output_file_is_joined_to_explicit_output_directory(
             "Create the file /app/pipeline_parallel.py and implement train_step.",
             "/app/pipeline_parallel.py",
         ),
+        (
+            "Write your script at: /root/workspace/solution.py",
+            "/root/workspace/solution.py",
+        ),
     ),
 )
 def test_common_imperative_output_forms_become_advisory_deliverables(

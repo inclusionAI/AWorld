@@ -1835,6 +1835,29 @@ async def test_review_receives_authoritative_public_delivery_paths() -> None:
 
 
 @pytest.mark.asyncio
+async def test_review_rebuilds_missing_delivery_contract_from_public_task(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "result.json").write_text('{"value": 12}', encoding="utf-8")
+    captured = {}
+    factory = _factory(captured=captured)
+    context = _context("Write the final report to result.json.")
+
+    result = await factory.review(
+        AdvisoryReviewRequest(candidate_claim="result.json is ready"),
+        context=context,
+    )
+
+    assert result.status == "completed"
+    directive = captured["runner"]["directive"]
+    assert str((tmp_path / "result.json").resolve()) in directive
+    assert '\"status\":\"captured\"' in directive
+    assert '{\\"value\\": 12}' in directive
+
+
+@pytest.mark.asyncio
 async def test_in_progress_public_candidate_and_contract_can_be_reviewed_without_gate(
     monkeypatch, tmp_path
 ) -> None:

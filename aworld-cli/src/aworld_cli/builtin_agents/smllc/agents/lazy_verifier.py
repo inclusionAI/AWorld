@@ -997,6 +997,26 @@ class LazyVerifierFactory:
                 context,
                 authoritative_obligations=authoritative_obligations,
             )
+            if not authoritative_deliverables:
+                # Transport Context copies can lose the published delivery
+                # contract while retaining the authoritative public request.
+                # Rebuild only explicit public paths from that request so the
+                # Tool-free reviewer sees the current candidate bytes instead
+                # of spending its one call on an empty snapshot.
+                try:
+                    from aworld_cli.core.runtime_completion import (
+                        infer_public_deliverable_hints,
+                    )
+
+                    authoritative_deliverables = tuple(
+                        item.path
+                        for item in infer_public_deliverable_hints(
+                            public_task,
+                            workspace_path=os.getcwd(),
+                        )[:_MAX_DELIVERABLES]
+                    )
+                except Exception:
+                    authoritative_deliverables = ()
             artifact_snapshot_authentication = (
                 _declared_snapshot_authentication_status(
                     context,

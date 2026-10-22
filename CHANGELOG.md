@@ -17,6 +17,14 @@
   field with its exact authoritative source value and exercise grouping-key
   collisions, cardinality preservation, and negative cases, while forbidding
   external-source expansion and repeated exploratory validation loops.
+- Rebuild explicit public output paths from the authoritative task when a
+  transport Context loses its delivery contract, allowing the Tool-free
+  reviewer to inspect bounded current candidate bytes instead of an empty
+  snapshot.
+- Recognize imperative output clauses with punctuation such as `Write your
+  script at: /path/file.py`, keep an unused lease actionable through FINALIZE,
+  and prefer concrete structural/enumerated contracts over generic verbs such
+  as `analyze` or `perform`.
 - Made one authenticated GUIDE reviewer lease a bounded control turn, while
   preserving manual OFF/OBSERVE compatibility and the short-task fast path.
 - Kept an admitted reviewer lease claimable across the model call that emits

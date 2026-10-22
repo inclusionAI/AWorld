@@ -417,6 +417,48 @@ def test_reviewer_prioritizes_core_answer_over_leftover_numeric_debt(tmp_path):
     assert selected["obligation_id"] == "public-obligation-3"
 
 
+@pytest.mark.parametrize(
+    ("concrete_kind", "generic_subject"),
+    (
+        ("structural_constraint", "analyze"),
+        ("enumerated_set", "perform"),
+    ),
+)
+def test_reviewer_prefers_concrete_contract_over_generic_task_verb(
+    tmp_path,
+    concrete_kind,
+    generic_subject,
+):
+    context = _context(tmp_path)
+    context.context_info["public_task_contract"]["obligations"] = [
+        {
+            "obligation_id": "public-obligation-generic",
+            "kind": "answer_constraint",
+            "subject": generic_subject,
+            "expectation": {"statement": f"You need to {generic_subject} the inputs."},
+            "source_fingerprint": _fingerprint("generic"),
+            "authority": "public_task_advisory",
+            "source": "public_task_text",
+        },
+        {
+            "obligation_id": "public-obligation-concrete",
+            "kind": concrete_kind,
+            "subject": "output contract",
+            "expectation": {
+                "statement": "Preserve every exact member and required null value."
+            },
+            "source_fingerprint": _fingerprint("concrete"),
+            "authority": "public_task_advisory",
+            "source": "public_task_text",
+        },
+    ]
+
+    selected = protocol._select_reviewer_obligation(context, "agent")
+
+    assert selected is not None
+    assert selected["obligation_id"] == "public-obligation-concrete"
+
+
 def test_named_output_gets_action_budget_candidate_guidance_without_tool_gate(
     tmp_path,
 ):
