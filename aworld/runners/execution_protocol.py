@@ -1624,16 +1624,28 @@ def _reviewer_candidate_present(context, agent_id: str) -> bool:
     # path (for example, an in-place code repair or an answer-only task).  The
     # previous projection ignored it and therefore skipped review for exactly
     # the tasks that most need a final behavioral challenge.
-    fallback = load_candidate_fallback(context, agent_id) or ()
-    if any(
-        bool(str(getattr(action, "policy_info", "") or "").strip())
-        for action in fallback
-    ):
-        return True
     try:
         from aworld.runners.post_tool_progress import semantic_progress_for_agent
 
+        delivery_status = _public_delivery_status(state_context(context))
         semantic_state = semantic_progress_for_agent(context, agent_id=agent_id)
+        if delivery_status.get("public_deliverable_declared") is True:
+            # For a named output, filesystem eligibility is the minimum review
+            # boundary. Intermediate prose cannot substitute for the file, and
+            # a preexisting task input cannot admit review without either a
+            # current semantic delivery signal or a terminal fallback.
+            fallback = load_candidate_fallback(context, agent_id) or ()
+            terminal_fallback_present = any(
+                bool(str(getattr(action, "policy_info", "") or "").strip())
+                for action in fallback
+            )
+            return bool(
+                delivery_status.get("candidate_present") is True
+                and (
+                    semantic_state.get("candidate_present") is True
+                    or terminal_fallback_present
+                )
+            )
         candidate_fingerprint = (
             semantic_state.get("public_delivery_fingerprint")
             or semantic_state.get("stateful_candidate_fingerprint")
@@ -1647,7 +1659,12 @@ def _reviewer_candidate_present(context, agent_id: str) -> bool:
             )
         )
     except Exception:
-        return False
+        pass
+    fallback = load_candidate_fallback(context, agent_id) or ()
+    return any(
+        bool(str(getattr(action, "policy_info", "") or "").strip())
+        for action in fallback
+    )
 
 
 def _reviewer_value_reserve_available(

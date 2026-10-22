@@ -444,6 +444,26 @@ def test_named_output_gets_action_budget_candidate_guidance_without_tool_gate(
     ] is False
 
 
+def test_named_output_does_not_review_intermediate_text_fallback(tmp_path):
+    context = _context(tmp_path, candidate=False)
+    protocol.store_candidate_fallback(
+        context,
+        "agent",
+        [
+            ActionModel(
+                agent_name="agent",
+                policy_info="The report is still being built.",
+            )
+        ],
+    )
+
+    offered = protocol.ensure_reviewer_value_lease_offer(context, "agent")
+    telemetry = protocol.build_execution_protocol_telemetry(context, "agent")
+
+    assert offered is None
+    assert telemetry["reviewer_admission_reason"] == "no_current_candidate"
+
+
 def test_claim_is_checkpointed_and_cannot_repeat_after_factory_rebuild(tmp_path):
     context = _context(tmp_path)
     assert protocol.ensure_reviewer_value_lease_offer(context, "agent") is not None

@@ -70,8 +70,8 @@ _REVIEW_OUTPUT_TOKEN_BUDGET = (
 )
 _REVIEW_WALL_CLOCK_SECONDS = 120.0
 _REVIEW_MIN_START_SECONDS = 30.0
-_GUIDED_REVIEW_WALL_CLOCK_SECONDS = 90.0
-_GUIDED_REVIEW_IDLE_SECONDS = 45.0
+_GUIDED_REVIEW_WALL_CLOCK_SECONDS = 60.0
+_GUIDED_REVIEW_IDLE_SECONDS = 30.0
 _DECLARED_SNAPSHOT_SCHEMA = "aworld.declared-artifact-snapshot/v1"
 _DECLARED_SNAPSHOT_TOTAL_BYTES = 12 * 1024
 _DECLARED_SNAPSHOT_FILE_BYTES = 8 * 1024
@@ -371,7 +371,10 @@ class AdvisoryReviewRequest:
             "field to its exact authoritative public-source value rather than "
             "accepting a non-empty or plausible substitute. When the candidate "
             "groups, keys, or deduplicates entities, include a collision case in "
-            "which distinct source entities can share the chosen key. "
+            "which distinct source entities can share the chosen key. Do not "
+            "invent example entities or consult an alternate live data source; "
+            "the counterexample must be grounded in the task-provided public "
+            "inputs or the current artifact snapshot. "
             if len(authoritative_obligations) == 1
             else ""
         )
@@ -474,7 +477,14 @@ class AdvisoryReviewResult:
             payload["reported_input_tokens"] = self.reported_input_tokens
         if self.reported_output_tokens is not None:
             payload["reported_output_tokens"] = self.reported_output_tokens
-        if (
+        if self.reason_code in {
+            "reviewer_lease_not_offered",
+            "reviewer_lease_claim_rejected",
+            "review_attempt_limit",
+        }:
+            payload["recommended_framework_action"] = "finalize_current_candidate"
+            payload["review_retry_allowed"] = False
+        elif (
             self.lease_id is not None
             or self.status != "completed"
             or self.decision == "uncertain"
@@ -642,6 +652,12 @@ def _counterexample_probe_requirements(
         "as a candidate contradiction",
         "bind the Tool call to the listed public obligation ids with "
         "__aworld_public_probe metadata",
+        "use only the current candidate and task-provided or already-local public "
+        "inputs; do not query external services, substitute a live database, or "
+        "broaden the task while seeking independent evidence",
+        "after this one validation transaction, either apply one bounded repair "
+        "and revalidate once when the assertion fails, or preserve the candidate "
+        "and finalize; do not start another exploratory validation loop",
     ]
     kind = str(obligation.get("kind") or "") if isinstance(obligation, Mapping) else ""
     if kind in {
@@ -1424,13 +1440,15 @@ class AdvisoryVerifierTool(AsyncTool):
         return True
 
     async def do_step(self, action: list[ActionModel], **kwargs):
-        if len(action or ()) != 1:
-            return self._invalid("review_candidate requires exactly one action")
+        if not action:
+            return self._invalid("review_candidate requires one action")
+        if any(item.action_name != "review_candidate" for item in action):
+            return self._invalid("review_candidate received an unknown action")
+        # Some OpenAI-compatible reasoning routes emit duplicate parallel calls
+        # when the reviewer is the only required Tool.  The lease is single-use;
+        # deterministically consume only the first call instead of rejecting the
+        # whole turn and paying for another root-model retry.
         action_model = action[0]
-        if action_model.action_name != "review_candidate":
-            return self._invalid(
-                f"unknown advisory verifier action: {action_model.action_name}"
-            )
         try:
             request = AdvisoryReviewRequest.from_params(action_model.params or {})
         except ValueError as exc:

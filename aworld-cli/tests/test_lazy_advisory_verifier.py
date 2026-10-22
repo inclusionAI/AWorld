@@ -376,16 +376,16 @@ def test_reviewer_validation_projects_exactly_one_bound_carrier(monkeypatch) -> 
     ]
 
 
-def test_guided_reviewer_uses_progress_sensitive_ninety_second_budget() -> None:
+def test_guided_reviewer_uses_progress_sensitive_sixty_second_budget() -> None:
     captured = {}
     factory = _factory(captured=captured)
 
     factory._construct_verifier(guided_review=True)
 
     policy = captured["builder_kwargs"]["generation_budget_policy"]
-    assert policy.total_timeout_seconds == 90
-    assert policy.stream_idle_timeout_seconds == 45
-    assert policy.active_tool_free_timeout_seconds == 90
+    assert policy.total_timeout_seconds == 60
+    assert policy.stream_idle_timeout_seconds == 30
+    assert policy.active_tool_free_timeout_seconds == 60
     assert policy.action_repair_enabled is False
 
 
@@ -1085,8 +1085,39 @@ async def test_tool_without_lease_does_not_construct_reviewer(monkeypatch) -> No
     payload = json.loads(observation.content)
     assert reward == 0.0
     assert payload["reason_code"] == "reviewer_lease_not_offered"
+    assert payload["recommended_framework_action"] == "finalize_current_candidate"
     assert factory.construction_count == 0
     assert captured == {}
+
+
+@pytest.mark.asyncio
+async def test_duplicate_required_reviewer_calls_consume_only_first_lease(
+    monkeypatch,
+) -> None:
+    captured = {}
+    _install_claimed_lease(monkeypatch)
+    factory = _factory(captured=captured)
+    tool = AdvisoryVerifierTool(factory=factory)
+    first = ActionModel(
+        tool_name=ADVISORY_VERIFIER_TOOL,
+        action_name="review_candidate",
+        params={"candidate_claim": "the current report is ready"},
+    )
+    duplicate = ActionModel(
+        tool_name=ADVISORY_VERIFIER_TOOL,
+        action_name="review_candidate",
+        params={"candidate_claim": "placeholder"},
+    )
+
+    observation, reward, *_ = await tool.do_step(
+        [first, duplicate], context=_context()
+    )
+
+    assert reward == 0.0
+    assert json.loads(observation.content)["status"] == "completed"
+    assert captured["builder_loads"] == 1
+    assert "the current report is ready" in captured["runner"]["directive"]
+    assert "placeholder" not in captured["runner"]["directive"]
 
 
 @pytest.mark.asyncio
@@ -1730,6 +1761,8 @@ def test_structured_counterexample_requires_exact_provenance_and_collisions() ->
     assert "plausible substitutes are not equality evidence" in rendered
     assert "collision case" in rendered
     assert "cardinality and members are preserved" in rendered
+    assert "do not query external services" in rendered
+    assert "do not start another exploratory validation loop" in rendered
 
 
 @pytest.mark.asyncio

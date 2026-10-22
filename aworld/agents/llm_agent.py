@@ -7373,7 +7373,10 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                         tools = list(projected)
                         kwargs = self._model_response_action_projection_kwargs(
                             dict(kwargs),
-                            max_output_tokens=1024,
+                            # A 1k cap repeatedly truncates DSV4 reasoning before
+                            # it emits the required Tool call. One 4k control turn
+                            # is cheaper than the resulting recovery retries.
+                            max_output_tokens=4096,
                             context=message.context,
                         )
                         kwargs["tool_choice"] = "required"
