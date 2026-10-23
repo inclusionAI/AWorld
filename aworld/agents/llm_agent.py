@@ -1946,6 +1946,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         context: Context,
         *,
         offer: _LongHorizonControlOffer,
+        reviewer_validation_turn: bool = False,
     ) -> int:
         """Strip and bind optional public self-check metadata before dispatch."""
         from aworld.runners.execution_protocol import (
@@ -1973,6 +1974,37 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         reviewer_binding = reviewer_validation_probe_binding(
             context, self.id()
         )
+        if (
+            not controlled_actions
+            and reviewer_validation_turn
+            and reviewer_binding is not None
+            and len(result.actions or ()) == 1
+        ):
+            # This turn exposes exactly one permission-filtered Tool, forces
+            # tool_choice, disables parallel calls, and binds an exact reviewer
+            # obligation/counterexample in its schema. Some compatible providers
+            # omit required extension properties while preserving that sole call.
+            # Retain the established binding only in this constrained turn;
+            # ordinary unbound calls still cannot inherit reviewer authority.
+            action = result.actions[0]
+            params = getattr(action, "params", None)
+            if (
+                isinstance(params, dict)
+                and isinstance(action.tool_call_id, str)
+                and bool(action.tool_call_id)
+                and record_public_probe_plan(
+                    context,
+                    self.id(),
+                    tool_call_id=action.tool_call_id,
+                    tool_identity=(
+                        f"{action.tool_name or ''}:{action.action_name or ''}"
+                    ),
+                    arguments_projection=params,
+                    value=reviewer_binding,
+                )
+            ):
+                recorded += 1
+            return recorded
         for action in controlled_actions:
             params = getattr(action, "params", None)
             value = params.pop(_PUBLIC_PROBE_PARAM, None)
@@ -7803,6 +7835,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                                 agent_result,
                                 message.context,
                                 offer=execution_control_offer,
+                                reviewer_validation_turn=reviewer_validation_turn,
                             )
                     if independent_acceptance_review and agent_result.is_call_tool:
                         critic_probe_planned = self._consume_acceptance_probe_control(

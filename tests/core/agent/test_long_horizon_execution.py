@@ -2324,6 +2324,37 @@ def test_reviewer_validation_requires_exact_public_probe_metadata(
     assert agent._consume_public_probe_controls(result, context, offer=offer) == 1
     assert action.params == {"code": "assert_value.py"}
 
+    provider_omitted_control = ActionModel(
+        tool_name="terminal",
+        action_name="run_code",
+        tool_call_id="required-reviewer-probe-compat-call",
+        params={"code": "assert_value_compat.py"},
+    )
+    provider_omitted_result = AgentResult(
+        current_state=None,
+        actions=[provider_omitted_control],
+        is_call_tool=True,
+    )
+    assert (
+        agent._consume_public_probe_controls(
+            provider_omitted_result,
+            context,
+            offer=offer,
+            reviewer_validation_turn=False,
+        )
+        == 0
+    )
+    assert (
+        agent._consume_public_probe_controls(
+            provider_omitted_result,
+            context,
+            offer=offer,
+            reviewer_validation_turn=True,
+        )
+        == 1
+    )
+    assert provider_omitted_control.params == {"code": "assert_value_compat.py"}
+
 
 def test_agent_consumes_explicit_decision_without_forwarding_internal_tool() -> None:
     context = Context(task_id="profile-consume")
