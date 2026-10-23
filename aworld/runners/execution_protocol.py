@@ -1631,14 +1631,14 @@ def _reviewer_candidate_present(context, agent_id: str) -> bool:
     delivery = _public_delivery_status(state_context(context))
     if (
         delivery.get("public_deliverable_declared") is True
-        and int(delivery.get("declared_public_deliverable_count", 0) or 0) > 1
+        and int(delivery.get("declared_public_deliverable_count", 0) or 0) > 0
         and int(delivery.get("missing_public_deliverable_count", 0) or 0) > 0
     ):
-        # A partial multi-file delivery is useful progress, but reviewing it
-        # spends model budget before the reviewer can possibly close the public
-        # contract.  Wait until every explicitly named output has at least an
-        # inspectable candidate; answer-only and in-place tasks retain the
-        # fallback behavior below.
+        # A partial or prose-only checkpoint is useful progress, but reviewing
+        # it spends the single lease before the reviewer can inspect the named
+        # output or close its public contract.  Wait until every explicitly
+        # named output has at least an inspectable candidate; answer-only and
+        # in-place tasks with no declared deliverable retain the fallback below.
         return False
     fallback = load_candidate_fallback(context, agent_id) or ()
     if any(

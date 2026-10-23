@@ -298,8 +298,26 @@ def test_offer_waits_for_complete_explicit_multi_file_candidate(tmp_path):
     assert protocol.ensure_reviewer_value_lease_offer(context, "agent") is not None
 
 
-def test_single_missing_file_retains_terminal_fallback_review(tmp_path):
+def test_offer_waits_for_single_explicit_file_candidate(tmp_path):
     context = _context(tmp_path, candidate=False)
+    protocol.store_candidate_fallback(
+        context,
+        "agent",
+        [ActionModel(agent_name="agent", policy_info="best bounded answer")],
+    )
+
+    assert protocol.ensure_reviewer_value_lease_offer(context, "agent") is None
+
+    output = tmp_path / "report.json"
+    output.write_text('{"value": 12}', encoding="utf-8")
+    assert protocol.ensure_reviewer_value_lease_offer(context, "agent") is not None
+
+
+def test_answer_only_fallback_review_remains_available_without_declared_file(
+    tmp_path,
+):
+    context = _context(tmp_path, candidate=False)
+    context.context_info.pop("public_deliverable_contract")
     protocol.store_candidate_fallback(
         context,
         "agent",
