@@ -447,6 +447,106 @@ def test_reviewer_prioritizes_core_answer_over_leftover_numeric_debt(tmp_path):
     assert selected["obligation_id"] == "public-obligation-3"
 
 
+def test_reviewer_prioritizes_semantic_structure_over_interface_scaffolding(
+    tmp_path,
+):
+    context = _context(tmp_path)
+    contract = context.context_info["public_task_contract"]
+    contract["obligations"] = [
+        {
+            "obligation_id": "public-obligation-interface",
+            "kind": "function_signature",
+            "subject": "parse_script(text: str)",
+            "expectation": {"statement": "Expose parse_script(text: str)."},
+            "source_fingerprint": _fingerprint("parse_script(text: str)"),
+            "authority": "public_task_advisory",
+            "source": "public_task_text",
+        },
+        {
+            "obligation_id": "public-obligation-structure",
+            "kind": "structural_constraint",
+            "subject": "complete reachable graph",
+            "expectation": {
+                "statement": "Every node must be reachable in the complete graph."
+            },
+            "source_fingerprint": _fingerprint("complete reachable graph"),
+            "authority": "public_task_advisory",
+            "source": "public_task_text",
+        },
+    ]
+
+    selected = protocol._select_reviewer_obligation(context, "agent")
+
+    assert selected is not None
+    assert selected["obligation_id"] == "public-obligation-structure"
+
+
+def test_reviewer_defers_generic_output_objective_to_explicit_semantics(tmp_path):
+    context = _context(tmp_path)
+    contract = context.context_info["public_task_contract"]
+    contract["obligations"] = [
+        {
+            "obligation_id": "public-obligation-generic",
+            "kind": "answer_constraint",
+            "subject": "implement",
+            "expectation": {
+                "statement": "Implement a parser and write the requested outputs."
+            },
+            "source_fingerprint": _fingerprint("implement parser"),
+            "authority": "public_task_advisory",
+            "source": "public_task_text",
+        },
+        {
+            "obligation_id": "public-obligation-explicit",
+            "kind": "structural_constraint",
+            "subject": "nodes",
+            "expectation": {
+                "statement": "All nodes must be reachable from the first node."
+            },
+            "source_fingerprint": _fingerprint("all nodes reachable"),
+            "authority": "public_task_advisory",
+            "source": "public_task_text",
+        },
+    ]
+
+    selected = protocol._select_reviewer_obligation(context, "agent")
+
+    assert selected is not None
+    assert selected["obligation_id"] == "public-obligation-explicit"
+
+
+def test_reviewer_prefers_explicit_answer_constraint_over_broad_answer(tmp_path):
+    context = _context(tmp_path)
+    contract = context.context_info["public_task_contract"]
+    contract["obligations"] = [
+        {
+            "obligation_id": "public-obligation-broad",
+            "kind": "answer_constraint",
+            "subject": "convert",
+            "expectation": {"statement": "Convert the supplied data."},
+            "source_fingerprint": _fingerprint("convert supplied data"),
+            "authority": "public_task_advisory",
+            "source": "public_task_text",
+        },
+        {
+            "obligation_id": "public-obligation-key",
+            "kind": "answer_constraint",
+            "subject": "harmonize",
+            "expectation": {
+                "statement": "The key issue is mixed units; every value must be harmonized."
+            },
+            "source_fingerprint": _fingerprint("key mixed units"),
+            "authority": "public_task_advisory",
+            "source": "public_task_text",
+        },
+    ]
+
+    selected = protocol._select_reviewer_obligation(context, "agent")
+
+    assert selected is not None
+    assert selected["obligation_id"] == "public-obligation-key"
+
+
 def test_named_output_gets_action_budget_candidate_guidance_without_tool_gate(
     tmp_path,
 ):

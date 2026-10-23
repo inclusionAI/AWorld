@@ -1705,20 +1705,47 @@ def _select_reviewer_obligation(
         "answer_constraint": 1,
         "range_constraint": 2,
         "numeric_threshold": 3,
-        "function_signature": 4,
-        "import_contract": 5,
-        "public_command": 6,
-        "service_port": 7,
-        "process_liveness": 8,
-        "negative_constraint": 9,
-        "quantity_constraint": 10,
-        "enumerated_set": 11,
-        "quality_constraint": 12,
-        "structural_constraint": 13,
-        "structured_field": 14,
+        "negative_constraint": 4,
+        "quantity_constraint": 5,
+        "enumerated_set": 6,
+        "quality_constraint": 7,
+        "structural_constraint": 8,
+        "structured_field": 9,
+        "function_signature": 10,
+        "import_contract": 11,
+        "public_command": 12,
+        "service_port": 13,
+        "process_liveness": 14,
         "format_constraint": 15,
         "deliverable_file": 16,
     }
+
+    generic_output_objective = re.compile(
+        r"(?i)^(?:build|create|generate|implement|produce|render|write)$"
+    )
+    explicit_requirement = re.compile(
+        r"(?i)\b(?:constraints?\s+are|key\s+issue|must|required|"
+        r"all|each|every)\b"
+    )
+
+    def obligation_priority(row: Mapping[str, Any]) -> int:
+        """Keep broad output verbs behind independently testable semantics.
+
+        The public-contract extractor intentionally emits a coarse objective
+        row alongside narrower constraints from the same request.  Treating a
+        row such as ``implement`` or ``write`` as the highest-value assertion
+        spends the only reviewer lease on artifact scaffolding.  Analytical
+        objectives (for example ``find`` or ``solve``) retain answer priority,
+        while generic production verbs defer to explicit semantic contracts.
+        """
+
+        kind = str(row.get("kind") or "")
+        subject = str(row.get("subject") or "").strip()
+        if kind == "answer_constraint" and generic_output_objective.fullmatch(
+            subject
+        ):
+            return priority["public_command"]
+        return priority.get(kind, 99)
 
     def semantic_specificity(row: Mapping[str, Any]) -> int:
         expectation = row.get("expectation")
@@ -1728,12 +1755,14 @@ def _select_reviewer_obligation(
             else ""
         )
         text = f"{row.get('subject', '')} {statement}"
-        return 0 if re.search(
+        if explicit_requirement.search(statement):
+            return 0
+        return 1 if re.search(
             r"(?i)\b(?:all|each|every|correct|complete|valid|solve|determine|"
             r"identify|detect|calculate|compute|recover|compare|classify|"
             r"analy[sz]e|optimi[sz]e|maximi[sz]e|minimi[sz]e|implement)\b",
             text,
-        ) else 1
+        ) else 2
 
     eligible = [
         row
@@ -1744,7 +1773,7 @@ def _select_reviewer_obligation(
     return min(
         eligible,
         key=lambda row: (
-            priority.get(str(row.get("kind")), 99),
+            obligation_priority(row),
             semantic_specificity(row),
             # Prefer independently challenging a solver-covered assertion over
             # spending the only review on an untouched row of equal semantic
