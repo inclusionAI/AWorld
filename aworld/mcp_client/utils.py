@@ -1,4 +1,5 @@
 import asyncio
+import copy
 from functools import lru_cache
 import json
 import os
@@ -487,6 +488,38 @@ def mcp_tool_retry_safe(
     )
 
 
+def _normalize_legacy_type_names(value: Any) -> Any:
+    """Recursively normalize legacy ``"str"`` type hints to ``"string"``."""
+    if isinstance(value, dict):
+        return {
+            key: (
+                "string"
+                if key == "type" and item == "str"
+                else _normalize_legacy_type_names(item)
+            )
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_normalize_legacy_type_names(item) for item in value]
+    return value
+
+
+def _build_tool_parameters(input_schema: Dict[str, Any] | None) -> Dict[str, Any]:
+    """Return a lossless copy of an MCP tool's JSON Schema.
+
+    MCP servers advertise tool arguments as JSON Schema. Rebuilding that schema
+    field by field used to discard ``enum``, ``$ref``/``$defs``, ``anyOf`` and
+    nested ``properties``. Keep the server's schema intact and only apply the
+    legacy ``"str"`` -> ``"string"`` normalization.
+    """
+    parameters = copy.deepcopy(input_schema) if isinstance(input_schema, dict) else {}
+    parameters = _normalize_legacy_type_names(parameters)
+    parameters.setdefault("type", "object")
+    parameters.setdefault("properties", {})
+    parameters.setdefault("required", [])
+    return parameters
+
+
 def get_function_tool(sever_name: str) -> List[Dict[str, Any]]:
     openai_tools = []
     try:
@@ -499,92 +532,11 @@ def get_function_tool(sever_name: str) -> List[Dict[str, Any]]:
         if not tools:
             return []
         for tool in tools:
-            required = []
-            properties = {}
-            if tool.inputSchema and tool.inputSchema.get("properties"):
-                required = tool.inputSchema.get("required", [])
-                _properties = tool.inputSchema["properties"]
-                for param_name, param_info in _properties.items():
-                    param_type = (
-                        param_info.get("type")
-                        if param_info.get("type") != "str"
-                        and param_info.get("type") is not None
-                        else "string"
-                    )
-                    param_desc = param_info.get("description", "")
-                    if param_type == "array":
-                        # Handle array type parameters
-                        items_info = param_info.get("items", {})
-                        item_type = items_info.get("type", "string")
-
-                        # Process nested array type parameters
-                        if item_type == "array":
-                            nested_items = items_info.get("items", {})
-                            nested_type = nested_items.get("type", "string")
-
-                            # If the nested type is an object
-                            if nested_type == "object":
-                                properties[param_name] = {
-                                    "description": param_desc,
-                                    "type": param_type,
-                                    "items": {
-                                        "type": item_type,
-                                        "items": {
-                                            "type": nested_type,
-                                            "properties": nested_items.get(
-                                                "properties", {}
-                                            ),
-                                            "required": nested_items.get(
-                                                "required", []
-                                            ),
-                                        },
-                                    },
-                                }
-                            else:
-                                properties[param_name] = {
-                                    "description": param_desc,
-                                    "type": param_type,
-                                    "items": {
-                                        "type": item_type,
-                                        "items": {"type": nested_type},
-                                    },
-                                }
-                        # Process object type cases
-                        elif item_type == "object":
-                            properties[param_name] = {
-                                "description": param_desc,
-                                "type": param_type,
-                                "items": {
-                                    "type": item_type,
-                                    "properties": items_info.get("properties", {}),
-                                    "required": items_info.get("required", []),
-                                },
-                            }
-                        # Process basic type cases
-                        else:
-                            if item_type == "str":
-                                item_type = "string"
-                            properties[param_name] = {
-                                "description": param_desc,
-                                "type": param_type,
-                                "items": {"type": item_type},
-                            }
-                    else:
-                        # Handle non-array type parameters
-                        properties[param_name] = {
-                            "description": param_desc,
-                            "type": param_type,
-                        }
-
             openai_function_schema = {
                 # "name": f"mcp__{sever_name}__{tool.name}",
                 "name": f"{sever_name}__{tool.name}",
                 "description": _augment_tool_description(sever_name, tool.name, tool.description),
-                "parameters": {
-                    "type": "object",
-                    "properties": properties,
-                    "required": required,
-                },
+                "parameters": _build_tool_parameters(tool.inputSchema),
             }
             openai_tools.append(
                 {
@@ -628,93 +580,10 @@ async def run(mcp_servers: list[MCPServer], black_tool_actions: Dict[str, List[s
                 if tool_actions_set is not None:
                     if tool.name not in tool_actions_set:
                         continue
-                required = []
-                properties = {}
-                if tool.inputSchema and tool.inputSchema.get("properties"):
-                    required = tool.inputSchema.get("required", [])
-                    _properties = tool.inputSchema["properties"]
-                    for param_name, param_info in _properties.items():
-                        param_type = (
-                            param_info.get("type")
-                            if param_info.get("type") != "str"
-                            and param_info.get("type") is not None
-                            else "string"
-                        )
-                        param_desc = param_info.get("description", "")
-                        if param_type == "array":
-                            # Handle array type parameters
-                            items_info = param_info.get("items", {})
-                            item_type = items_info.get("type", "string")
-
-                            # Process nested array type parameters
-                            if item_type == "array":
-                                nested_items = items_info.get("items", {})
-                                nested_type = nested_items.get("type", "string")
-
-                                # If the nested type is an object
-                                if nested_type == "object":
-                                    properties[param_name] = {
-                                        "description": param_desc,
-                                        "type": param_type,
-                                        "items": {
-                                            "type": item_type,
-                                            "items": {
-                                                "type": nested_type,
-                                                "properties": nested_items.get(
-                                                    "properties", {}
-                                                ),
-                                                "required": nested_items.get(
-                                                    "required", []
-                                                ),
-                                            },
-                                        },
-                                    }
-                                else:
-                                    properties[param_name] = {
-                                        "description": param_desc,
-                                        "type": param_type,
-                                        "items": {
-                                            "type": item_type,
-                                            "items": {"type": nested_type},
-                                        },
-                                    }
-                            # Process object type cases
-                            elif item_type == "object":
-                                properties[param_name] = {
-                                    "description": param_desc,
-                                    "type": param_type,
-                                    "items": {
-                                        "type": item_type,
-                                        "properties": items_info.get("properties", {}),
-                                        "required": items_info.get("required", []),
-                                    },
-                                }
-                            # Process basic type cases
-                            else:
-                                if item_type == "str":
-                                    item_type = "string"
-                                properties[param_name] = {
-                                    "description": param_desc,
-                                    "type": param_type,
-                                    "items": {"type": item_type},
-                                }
-                        else:
-                            # Handle non-array type parameters
-                            properties[param_name] = {
-                                "description": param_desc,
-                                "type": param_type,
-                            }
-                        if "default" in param_info:
-                            properties[param_name]["default"] = param_info["default"]
-
                 openai_function_schema = {
                     "name": f"{server.name}__{tool.name}",
                     "description": _augment_tool_description(server.name, tool.name, tool.description),
-                    "parameters": {
-                        "type": "object",
-                        "properties": properties,
-                        "required": required,
-                    },
+                    "parameters": _build_tool_parameters(tool.inputSchema),
                 }
                 openai_tools.append(
                     {
