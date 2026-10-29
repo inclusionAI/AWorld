@@ -1072,9 +1072,9 @@ class OpenAIProvider(LLMProviderBase):
 
                 for tool_call in tool_calls:
                     index = (
-                        tool_call.index
-                        if hasattr(tool_call, "index")
-                        else tool_call["index"]
+                        tool_call.get("index")
+                        if isinstance(tool_call, dict)
+                        else getattr(tool_call, "index", None)
                     )
                     func = (
                         tool_call.function
@@ -1097,6 +1097,20 @@ class OpenAIProvider(LLMProviderBase):
                             else None
                         )
                     func_args = func_args or ""  # API may send None in early chunks
+                    if index is None:
+                        # Some OpenAI-compatible endpoints (e.g. Gemini) omit
+                        # `index`: a delta with an id or name starts a new
+                        # call, otherwise it continues the last one.
+                        call_id = (
+                            tool_call.get("id")
+                            if isinstance(tool_call, dict)
+                            else getattr(tool_call, "id", None)
+                        )
+                        index = (
+                            len(tool_buffer)
+                            if call_id or func_name or not tool_buffer
+                            else len(tool_buffer) - 1
+                        )
                     if index >= len(tool_buffer):
                         tool_buffer.append(
                             {

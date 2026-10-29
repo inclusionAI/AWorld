@@ -1,3 +1,6 @@
+from copy import deepcopy
+
+from openai.types.chat import ChatCompletionChunk
 from openai.types.chat.chat_completion import ChatCompletion
 
 from aworld.models.model_response import ModelResponse
@@ -213,3 +216,90 @@ def test_postprocess_stream_response_preserves_raw_usage_and_request_id_for_buff
     }
     assert buffered_response.raw_usage["cache_hit_tokens"] == 80
     assert buffered_response.provider_request_id == "req_provider_stream_buffered"
+
+
+def _indexless_stream_chunks():
+    # Gemini's OpenAI-compatible endpoint streams each tool call whole and
+    # omits `index` from the tool_call deltas.
+    def chunk(tool_calls=None, finish_reason=None):
+        delta = {"role": "assistant", "content": None}
+        if tool_calls:
+            delta["tool_calls"] = tool_calls
+        return {
+            "id": "chatcmpl_indexless",
+            "model": "gemini-2.5-flash",
+            "object": "chat.completion.chunk",
+            "created": 0,
+            "choices": [
+                {"index": 0, "finish_reason": finish_reason, "delta": delta}
+            ],
+        }
+
+    calls = [
+        {
+            "id": "call_weather",
+            "type": "function",
+            "function": {"name": "get_weather", "arguments": "{\"city\":\"Paris\"}"},
+        },
+        {
+            "id": "",
+            "type": "function",
+            "function": {"name": "get_time", "arguments": "{\"tz\":\"CET\"}"},
+        },
+    ]
+    return chunk(calls), chunk(finish_reason="tool_calls")
+
+
+def _collect_buffered_tool_calls(provider, chunks):
+    tool_buffer = []
+    final = None
+    for chunk in chunks:
+        response, finish_reason = provider.postprocess_stream_response(
+            chunk, tool_buffer=tool_buffer
+        )
+        if finish_reason:
+            final = response
+    return [
+        (tool_call.function.name, tool_call.function.arguments)
+        for tool_call in final.tool_calls
+    ]
+
+
+def test_postprocess_stream_response_accepts_dict_tool_call_deltas_without_index():
+    provider = OpenAIProvider(model_name="gemini-2.5-flash", sync_enabled=False, async_enabled=False)
+
+    assert _collect_buffered_tool_calls(provider, _indexless_stream_chunks()) == [
+        ("get_weather", "{\"city\":\"Paris\"}"),
+        ("get_time", "{\"tz\":\"CET\"}"),
+    ]
+
+
+def test_postprocess_stream_response_accepts_sdk_tool_call_deltas_without_index():
+    provider = OpenAIProvider(model_name="gemini-2.5-flash", sync_enabled=False, async_enabled=False)
+    tool_chunk, finish_chunk = _indexless_stream_chunks()
+    for tool_call in tool_chunk["choices"][0]["delta"]["tool_calls"]:
+        tool_call["index"] = 0
+    tool_chunk = ChatCompletionChunk.model_validate(tool_chunk)
+    # The SDK parses responses without validation, so a missing index is None.
+    for tool_call in tool_chunk.choices[0].delta.tool_calls:
+        tool_call.index = None
+    finish_chunk = ChatCompletionChunk.model_validate(finish_chunk)
+
+    assert _collect_buffered_tool_calls(provider, [tool_chunk, finish_chunk]) == [
+        ("get_weather", "{\"city\":\"Paris\"}"),
+        ("get_time", "{\"tz\":\"CET\"}"),
+    ]
+
+
+def test_postprocess_stream_response_appends_indexless_argument_fragments_to_last_call():
+    provider = OpenAIProvider(model_name="gemini-2.5-flash", sync_enabled=False, async_enabled=False)
+    first, finish_chunk = _indexless_stream_chunks()
+    first["choices"][0]["delta"]["tool_calls"] = [
+        {"id": "call_weather", "type": "function", "function": {"name": "get_weather", "arguments": "{\"city\":"}}
+    ]
+    fragment = deepcopy(first)
+    fragment["choices"][0]["delta"]["tool_calls"] = [{"function": {"arguments": "\"Paris\"}"}}]
+
+    assert _collect_buffered_tool_calls(provider, [first, fragment, finish_chunk]) == [
+        ("get_weather", "{\"city\":\"Paris\"}"),
+    ]
