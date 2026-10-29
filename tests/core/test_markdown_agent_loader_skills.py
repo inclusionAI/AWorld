@@ -71,3 +71,21 @@ async def test_markdown_loader_resolves_model_profile_front_matter(
     assert loaded_agent.conf.llm_config.llm_provider == "anthropic"
     assert loaded_agent.conf.llm_config.llm_model_name == "judge-model"
     assert loaded_agent.conf.llm_config.llm_api_key == "profile-key"
+
+
+@pytest.mark.asyncio
+async def test_markdown_loader_default_model_is_not_retired(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    # gpt-4 was shut down on 2026-10-23.
+    monkeypatch.delenv("LLM_MODEL_NAME", raising=False)
+    agent_md = tmp_path / "plain.md"
+    agent_md.write_text("---\nname: PlainAgent\n---\n\n# Plain\n", encoding="utf-8")
+
+    agent = parse_markdown_agent(agent_md)
+
+    assert agent is not None
+    swarm = await agent.get_swarm()
+    loaded_agent = swarm.ordered_agents[0]
+    assert loaded_agent.conf.llm_config.llm_model_name not in {"gpt-4", "gpt-3.5-turbo"}

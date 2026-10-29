@@ -484,7 +484,7 @@ def parse_markdown_agent(md_file_path: Path) -> Optional[LocalAgent]:
             else:
                 # Fallback to environment variables
                 llm_config = ModelConfig(
-                    llm_model_name=os.environ.get("LLM_MODEL_NAME", "gpt-4"),
+                    llm_model_name=os.environ.get("LLM_MODEL_NAME", "gpt-5.6-sol"),
                     llm_provider=os.environ.get("LLM_PROVIDER", "openai"),
                     llm_api_key=os.environ.get("LLM_API_KEY"),
                     llm_base_url=os.environ.get("LLM_BASE_URL", "https://api.openai.com/v1"),
