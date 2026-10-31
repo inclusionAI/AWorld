@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Task skill authority and auditability
+
+- Preserve explicit task-skill selection order across Rich and minimal CLIs,
+  reject escaping or symlinked packages before the first model call, and emit
+  bounded package-fingerprint evidence in terminal results and trajectories.
+- Correct the model-visible Skill activation contract while keeping optional
+  Runtime capabilities and verifier-blind policy authoritative.
+
 ### Complete public delivery contracts
 
 - Recognize explicit destination, typed-output, and bounded Markdown output
