@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Bounded public deliverable enumeration
+
+- Expand one positive numeric brace range in a final filename segment into at
+  most sixteen stable public deliverables, while rejecting ambiguous ranges,
+  traversal, nested patterns, and input/reference paths.
+
 ### Task skill authority and auditability
 
 - Preserve explicit task-skill selection order across Rich and minimal CLIs,
