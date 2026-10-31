@@ -21,6 +21,27 @@ def _lexical_absolute(path: str | Path) -> Path:
     return Path(os.path.abspath(Path(path).expanduser()))
 
 
+def canonical_explicit_skill_root(path: str | Path) -> tuple[Path, Path]:
+    """Return lexical/canonical identities, rejecting any symlink component."""
+
+    lexical = _lexical_absolute(path)
+    try:
+        canonical = lexical.resolve(strict=True)
+    except OSError as exc:
+        raise SkillPackageValidationError(
+            "explicit skill root must exist"
+        ) from exc
+    if lexical != canonical:
+        raise SkillPackageValidationError(
+            "explicit skill root must be a canonical path without symlinks"
+        )
+    if not canonical.is_dir():
+        raise SkillPackageValidationError(
+            "explicit skill root must be a directory"
+        )
+    return lexical, canonical
+
+
 def _contained_relative_path(root: Path, value: str | Path) -> Path:
     candidate = Path(value)
     if candidate.is_absolute() or any(part in {"", ".", ".."} for part in candidate.parts):
@@ -41,9 +62,7 @@ def validate_skill_package(
 ) -> tuple[Path, Path]:
     """Validate one explicit package without following symlinks or escapes."""
 
-    root = _lexical_absolute(skill_root)
-    if root.is_symlink() or not root.is_dir():
-        raise SkillPackageValidationError("skill root must be a real directory")
+    root, _ = canonical_explicit_skill_root(skill_root)
     if skill_file is None:
         default_manifest = root / "SKILL.md"
         if not default_manifest.exists():
@@ -181,9 +200,10 @@ def load_skills(*directories: str | Path) -> tuple[Skill, ...]:
     """Discover one directory level under explicit roots, without global scanning."""
     skills = []
     for directory in directories:
-        root = _lexical_absolute(directory)
-        if root.is_symlink() or not root.is_dir():
-            raise NotADirectoryError(str(root))
+        try:
+            root, _ = canonical_explicit_skill_root(directory)
+        except SkillPackageValidationError as exc:
+            raise NotADirectoryError(str(_lexical_absolute(directory))) from exc
         direct = root / "SKILL.md"
         if direct.is_symlink():
             raise SkillPackageValidationError("SKILL.md cannot be a symlink")

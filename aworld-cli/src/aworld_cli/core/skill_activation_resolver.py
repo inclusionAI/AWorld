@@ -6,7 +6,7 @@ from typing import Any
 
 from aworld.plugins.discovery import discover_plugins
 from aworld.skills.compat_provider import build_compat_provider
-from aworld.core.agent.skill import SkillPackageValidationError
+from aworld.core.agent.skill import canonical_explicit_skill_root
 from aworld.skills.package_fingerprint import (
     SkillPackageFingerprintError,
     fingerprint_skill_package,
@@ -104,10 +104,7 @@ class SkillActivationResolver:
             isolated_candidate_provider_ids.add(provider_id)
 
         for root in request.plugin_roots:
-            if root.is_symlink() or not root.is_dir():
-                raise SkillPackageValidationError(
-                    "plugin Skill root must be a real directory"
-                )
+            canonical_explicit_skill_root(root)
         for plugin in discover_plugins(request.plugin_roots):
             provider = PluginSkillProvider(plugin)
             provider_id = provider.provider_id()

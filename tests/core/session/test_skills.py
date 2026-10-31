@@ -44,23 +44,24 @@ class SkillTests(unittest.IsolatedAsyncioTestCase):
     @unittest.skipUnless(importlib.util.find_spec("yaml"), "Explicit SKILL.md loader requires optional PyYAML")
     async def test_explicit_skill_roots_frontmatter_and_collision(self):
         with tempfile.TemporaryDirectory() as directory:
-            first = Path(directory) / "first"
-            second = Path(directory) / "second"
+            root = Path(directory).resolve()
+            first = root / "first"
+            second = root / "second"
             first.mkdir()
             second.mkdir()
             (first / "SKILL.md").write_text("---\nname: first\ndescription: |\n  Workflow instructions\n---\nBODY\n")
-            skills = load_skills(directory)
+            skills = load_skills(root)
             self.assertEqual(skills[0].name, "first")
             self.assertEqual(skills[0].instructions, "")
             self.assertEqual(skills[0].location, str((first / "SKILL.md").resolve()))
             (second / "SKILL.md").write_text("---\nname: first\ndescription: Duplicate\n---\n")
             with self.assertRaises(ValueError):
-                load_skills(directory)
+                load_skills(root)
 
     @unittest.skipUnless(importlib.util.find_spec("yaml"), "Explicit SKILL.md loader requires optional PyYAML")
     async def test_explicit_skill_roots_reject_symlinks_and_escaping_entrypoints(self):
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
+            root = Path(directory).resolve()
             outside = root / "outside"
             outside.mkdir()
             (outside / "SKILL.md").write_text(
@@ -82,3 +83,20 @@ class SkillTests(unittest.IsolatedAsyncioTestCase):
             (root / "run.py").write_text("print('escape')\n", encoding="utf-8")
             with self.assertRaises(SkillPackageValidationError):
                 load_skills(root)
+
+    @unittest.skipUnless(importlib.util.find_spec("yaml"), "Explicit SKILL.md loader requires optional PyYAML")
+    async def test_explicit_skill_root_rejects_symlinked_parent(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            real_parent = root / "real"
+            skills = real_parent / "skills"
+            skills.mkdir(parents=True)
+            (skills / "SKILL.md").write_text(
+                "---\nname: safe\ndescription: Safe\n---\n",
+                encoding="utf-8",
+            )
+            linked_parent = root / "linked"
+            linked_parent.symlink_to(real_parent, target_is_directory=True)
+
+            with self.assertRaises(NotADirectoryError):
+                load_skills(linked_parent / "skills")

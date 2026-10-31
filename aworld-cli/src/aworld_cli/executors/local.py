@@ -212,7 +212,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
         self._hooks = self._load_hooks()
         self.runtime_skill_paths = tuple(
             dict.fromkeys(
-                str(Path(item).expanduser().resolve())
+                str(Path(item).expanduser().absolute())
                 for item in runtime_skill_paths or ()
                 if str(item).strip()
             )

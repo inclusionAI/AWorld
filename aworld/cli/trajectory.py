@@ -9,6 +9,23 @@ from aworld import __version__
 from aworld.core.agent.usage import summarize_usage
 
 
+def minimal_skill_activation_evidence(agent):
+    """Project selected minimal-CLI Skills without instruction content."""
+
+    return [
+        {
+            "skill_name": skill.name,
+            "canonical_skill_file": skill.location,
+            "canonical_skill_root": str(Path(skill.location).parent),
+            "package_fingerprint": skill.package_fingerprint,
+            "source": "aworld_minimal_skill_selection",
+            "agent_name": "aworld",
+        }
+        for skill in agent.skills
+        if skill.location and skill.package_fingerprint
+    ]
+
+
 def write_json(path, value, *, default=None):
     target = Path(path).expanduser().resolve()
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -93,18 +110,7 @@ def build_trajectory(history, *, result, agent, model_name=None, events=()):
             {key: value for key, value in run_durations.items() if key == result.run_id}))
     context_budget = next((entry.data["context"] for entry in reversed(history)
                            if entry.kind == "system" and entry.run_id == result.run_id and "context" in entry.data), None)
-    skill_activation_evidence = [
-        {
-            "skill_name": skill.name,
-            "canonical_skill_file": skill.location,
-            "canonical_skill_root": str(Path(skill.location).parent),
-            "package_fingerprint": skill.package_fingerprint,
-            "source": "aworld_minimal_skill_selection",
-            "agent_name": "aworld",
-        }
-        for skill in agent.skills
-        if skill.location and skill.package_fingerprint
-    ]
+    skill_activation_evidence = minimal_skill_activation_evidence(agent)
     return {"schema_version": "ATIF-v1.7", "session_id": result.session_id,
             "trajectory_id": result.run_id,
             "agent": {"name": "aworld", "version": __version__, "model_name": model_name,

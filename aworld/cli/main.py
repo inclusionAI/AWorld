@@ -162,7 +162,11 @@ async def _write_live_evidence_checkpoint(session, run, args, agent, events):
         ),
     )
     if args.result_output:
-        write_json(args.result_output, checkpoint, default=_serialize)
+        write_json(
+            args.result_output,
+            _result_output_projection(checkpoint, agent),
+            default=_serialize,
+        )
     if args.trajectory_output:
         history = await session.history()
         write_json(
@@ -233,7 +237,11 @@ async def _execute(session, input, args, agent):
         if args.trajectory_output or args.result_output:
             from aworld.cli.trajectory import build_trajectory, write_json
             if args.result_output:
-                write_json(args.result_output, result, default=_serialize)
+                write_json(
+                    args.result_output,
+                    _result_output_projection(result, agent),
+                    default=_serialize,
+                )
             if args.trajectory_output:
                 history = await session.history()
                 events = []
@@ -249,6 +257,18 @@ async def _execute(session, input, args, agent):
     else:
         print(f"{result.status.value}: {result.error.message if result.error else result.stop_reason.value}", file=sys.stderr)
     return 0 if result.status == RunStatus.COMPLETED else 1
+
+
+def _result_output_projection(result, agent):
+    """Add optional Skill attestation without changing RunResult fields."""
+
+    from aworld.cli.trajectory import minimal_skill_activation_evidence
+
+    payload = _serialize(result)
+    evidence = minimal_skill_activation_evidence(agent)
+    if evidence:
+        payload["skill_activation_evidence"] = evidence
+    return payload
 
 
 async def _host(args, command):

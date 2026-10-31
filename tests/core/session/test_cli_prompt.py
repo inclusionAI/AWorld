@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 import pytest
 
-from aworld.cli.main import _host, parser
+from aworld.cli.main import _host, _result_output_projection, parser
 from aworld.cli.prompt import discover_skills, workspace_prompt
 from aworld.cli.trajectory import build_trajectory
 from aworld.core.agent.messages import AssistantMessage, ToolCall
@@ -59,6 +59,7 @@ def test_minimal_cli_explicitly_selects_multiple_skills_in_requested_order(tmp_p
         '--skill-path', str(skills), '--skill', 'second-skill',
         '--skill', 'first-skill',
         '--trajectory-output', str(tmp_path / 'trajectory.json'),
+        '--result-output', str(tmp_path / 'result.json'),
     ])
     with patch('aworld.cli.main.DemoModel', Model):
         assert asyncio.run(_host(args, 'run')) == 0
@@ -67,6 +68,7 @@ def test_minimal_cli_explicitly_selects_multiple_skills_in_requested_order(tmp_p
     assert prompt.index(str(second)) < prompt.index(str(first))
     assert str(unused) not in prompt
     trajectory = json.loads((tmp_path / 'trajectory.json').read_text())
+    result = json.loads((tmp_path / 'result.json').read_text())
     assert trajectory['agent']['extra']['skills'] == [
         {'name': 'second-skill', 'location': str(second)},
         {'name': 'first-skill', 'location': str(first)},
@@ -78,6 +80,9 @@ def test_minimal_cli_explicitly_selects_multiple_skills_in_requested_order(tmp_p
     assert all(
         item['package_fingerprint'].startswith('sha256:')
         for item in trajectory['agent']['extra']['skill_activation_evidence']
+    )
+    assert result['skill_activation_evidence'] == (
+        trajectory['agent']['extra']['skill_activation_evidence']
     )
 
 
@@ -122,9 +127,16 @@ def test_minimal_atif_keeps_skill_attestation_for_every_terminal_status(
     )
 
     evidence = trajectory['agent']['extra']['skill_activation_evidence']
+    result_projection = _result_output_projection(
+        result,
+        SimpleNamespace(skills=selected),
+    )
     assert len(evidence) == 1
     assert evidence[0]['skill_name'] == 'task-skill'
     assert evidence[0]['package_fingerprint'].startswith('sha256:')
+    assert result_projection['skill_activation_evidence'] == evidence
+    assert result_projection['status'] == status
+    assert result_projection['stop_reason'] == reason
 
 
 def test_workspace_rules_bounded_and_scoped(tmp_path):

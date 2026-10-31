@@ -259,11 +259,39 @@ def test_resolver_rejects_symlinked_plugin_root(tmp_path: Path) -> None:
     linked = tmp_path / "linked-plugin"
     linked.symlink_to(plugin_root, target_is_directory=True)
 
-    with pytest.raises(ValueError, match="plugin Skill root must be a real directory"):
+    with pytest.raises(ValueError, match="canonical path without symlinks"):
         SkillActivationResolver().resolve(
             SkillResolverRequest(
                 plugin_roots=(linked,),
                 runtime_scope="workspace",
+                requested_skill_names=("task-skill",),
+            )
+        )
+
+
+def test_resolver_rejects_compat_root_beneath_symlinked_parent(
+    tmp_path: Path,
+) -> None:
+    real_parent = tmp_path / "real"
+    skills = real_parent / "skills"
+    skill_root = skills / "task-skill"
+    skill_root.mkdir(parents=True)
+    (skill_root / "SKILL.md").write_text(
+        "---\nname: task-skill\ndescription: Task skill\n---\n",
+        encoding="utf-8",
+    )
+    linked_parent = tmp_path / "linked"
+    linked_parent.symlink_to(real_parent, target_is_directory=True)
+
+    with pytest.raises(
+        ValueError,
+        match="canonical path without symlinks",
+    ):
+        SkillActivationResolver().resolve(
+            SkillResolverRequest(
+                plugin_roots=(),
+                runtime_scope="workspace",
+                compatibility_sources=(str(linked_parent / "skills"),),
                 requested_skill_names=("task-skill",),
             )
         )

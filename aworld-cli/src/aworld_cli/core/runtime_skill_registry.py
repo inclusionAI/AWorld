@@ -58,7 +58,7 @@ def build_runtime_skill_registry_view(
         (
             str(source).strip()
             if "github.com" in str(source) or str(source).startswith("git@")
-            else str(Path(source).expanduser().resolve())
+            else str(Path(source).expanduser().absolute())
         )
         for source in skill_paths or ()
     }
@@ -95,7 +95,7 @@ def _iter_runtime_compat_sources(
         if not normalized or normalized in seen:
             return
         if "github.com" not in normalized and not normalized.startswith("git@"):
-            path = Path(normalized).expanduser().resolve()
+            path = Path(normalized).expanduser().absolute()
             if not path.exists() or not path.is_dir():
                 return
             normalized = str(path)
