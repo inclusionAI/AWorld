@@ -185,6 +185,9 @@ _PUBLIC_NAMED_FILE_IN_DIRECTORY = re.compile(
 _PUBLIC_DELIVERABLE_LIST_ITEM = re.compile(
     r"(?im)^\s*(?:\d+[.)]|[-*])\s+`([^`\r\n]+)`"
 )
+_PUBLIC_NUMERIC_BRACE_RANGE = re.compile(
+    r"\{(?P<start>[1-9][0-9]{0,8})-(?P<end>[1-9][0-9]{0,8})\}"
+)
 _PUBLIC_EXECUTABLE_PATTERN = re.compile(
     r"(?i)\b([a-z0-9][a-z0-9._+-]{0,63})\s+(?:command[- ]line\s+)?tool\b"
 )
@@ -1727,7 +1730,14 @@ def _resolve_public_deliverable(
     kind: str = "file",
 ) -> tuple[str, str] | None:
     display = value.strip().strip("`'\"").rstrip(").]}")
-    if not display or len(display) > 512 or "://" in display or "\x00" in display:
+    if (
+        not display
+        or len(display) > 512
+        or "://" in display
+        or "\x00" in display
+        or "{" in display
+        or "}" in display
+    ):
         return None
     if kind == "file" and display.endswith(("/", "\\")):
         return None
@@ -1752,6 +1762,57 @@ def _resolve_public_deliverable(
         except ValueError:
             return None
     return str(resolved), display
+
+
+def _expand_public_numeric_brace_range(value: str) -> tuple[str, ...]:
+    """Expand one bounded positive numeric range in the final path segment."""
+
+    token = value.strip().strip("`'\"")
+    if "{" not in token and "}" not in token:
+        return (token,)
+    if len(token) > 512 or token.count("{") != 1 or token.count("}") != 1:
+        return ()
+    normalized = token.replace("\\", "/")
+    if any(part in {".", ".."} for part in Path(normalized).parts):
+        return ()
+    final_segment = normalized.rsplit("/", 1)[-1]
+    if "{" not in final_segment or "}" not in final_segment:
+        return ()
+    match = _PUBLIC_NUMERIC_BRACE_RANGE.search(final_segment)
+    if match is None:
+        return ()
+    remainder = final_segment[: match.start()] + final_segment[match.end() :]
+    if "{" in remainder or "}" in remainder:
+        return ()
+    start = int(match.group("start"))
+    end = int(match.group("end"))
+    count = end - start + 1
+    if end < start or count > _MAX_PUBLIC_DELIVERABLES:
+        return ()
+    segment_start = len(token) - len(final_segment)
+    absolute_start = segment_start + match.start()
+    absolute_end = segment_start + match.end()
+    return tuple(
+        token[:absolute_start] + str(index) + token[absolute_end:]
+        for index in range(start, end + 1)
+    )
+
+
+def _resolve_public_deliverable_values(
+    value: str,
+    *,
+    workspace_path: str | os.PathLike[str],
+) -> tuple[tuple[str, str], ...]:
+    resolved_values: list[tuple[str, str]] = []
+    for expanded in _expand_public_numeric_brace_range(value):
+        resolved = _resolve_public_deliverable(
+            expanded,
+            workspace_path=workspace_path,
+        )
+        if resolved is None:
+            return ()
+        resolved_values.append(resolved)
+    return tuple(resolved_values)
 
 
 def _immediate_directory_list_filenames(value: str) -> tuple[str, ...]:
@@ -1874,6 +1935,27 @@ def infer_public_deliverable_hints(
     blocked_fenced_ranges = _non_authoritative_fenced_ranges(bounded_request)
     discovered: list[tuple[str, str]] = []
     seen: set[str] = set()
+
+    def record_token(token: str) -> None:
+        resolved_values = _resolve_public_deliverable_values(
+            token,
+            workspace_path=workspace_path,
+        )
+        if not resolved_values:
+            return
+        pending = [
+            value
+            for value in resolved_values
+            if os.path.normcase(value[0]) not in seen
+        ]
+        if len(pending) > (_MAX_PUBLIC_DELIVERABLES - len(discovered)):
+            return
+        for path, display in pending:
+            key = os.path.normcase(path)
+            if key in seen:
+                continue
+            seen.add(key)
+            discovered.append((path, display))
     # Some contracts put exact output paths in a Markdown list after a public
     # delivery header without naming a containing directory. Parse only that
     # immediate contiguous list; paths elsewhere remain inputs or examples
@@ -1904,18 +1986,7 @@ def infer_public_deliverable_hints(
             header_match.end() : header_match.end() + 4096
         ]
         for token in _immediate_output_list_paths(list_region):
-            resolved = _resolve_public_deliverable(
-                token,
-                workspace_path=workspace_path,
-            )
-            if resolved is None:
-                continue
-            path, display = resolved
-            key = os.path.normcase(path)
-            if key in seen:
-                continue
-            seen.add(key)
-            discovered.append((path, display))
+            record_token(token)
             if len(discovered) >= _MAX_PUBLIC_DELIVERABLES:
                 break
         if len(discovered) >= _MAX_PUBLIC_DELIVERABLES:
@@ -1931,18 +2002,7 @@ def infer_public_deliverable_hints(
                 or _matched_token_is_input_or_reference(match)
             ):
                 continue
-            resolved = _resolve_public_deliverable(
-                _matched_deliverable_token(match),
-                workspace_path=workspace_path,
-            )
-            if resolved is None:
-                continue
-            path, display = resolved
-            key = os.path.normcase(path)
-            if key in seen:
-                continue
-            seen.add(key)
-            discovered.append((path, display))
+            record_token(_matched_deliverable_token(match))
             if len(discovered) >= _MAX_PUBLIC_DELIVERABLES:
                 break
         if len(discovered) >= _MAX_PUBLIC_DELIVERABLES:
@@ -1957,18 +2017,7 @@ def infer_public_deliverable_hints(
                 or _is_described_runtime_side_effect(request, match)
             ):
                 continue
-            resolved = _resolve_public_deliverable(
-                _matched_deliverable_token(match),
-                workspace_path=workspace_path,
-            )
-            if resolved is None:
-                continue
-            path, display = resolved
-            key = os.path.normcase(path)
-            if key in seen:
-                continue
-            seen.add(key)
-            discovered.append((path, display))
+            record_token(_matched_deliverable_token(match))
             if len(discovered) >= _MAX_PUBLIC_DELIVERABLES:
                 break
         if len(discovered) >= _MAX_PUBLIC_DELIVERABLES:
@@ -2020,6 +2069,8 @@ def infer_public_deliverable_hints(
             or candidate.name != filename
             or filename in {"", ".", ".."}
             or "." not in filename
+            or "{" in filename
+            or "}" in filename
         ):
             continue
         joined = str(Path(resolved_directory[0]) / filename)
@@ -2070,6 +2121,8 @@ def infer_public_deliverable_hints(
                 or candidate.name != filename
                 or filename in {".", ".."}
                 or "." not in filename
+                or "{" in filename
+                or "}" in filename
             ):
                 continue
             joined = str(Path(directory_path) / filename)

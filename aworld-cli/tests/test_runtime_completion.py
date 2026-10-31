@@ -16,6 +16,7 @@ from aworld_cli.core.runtime_completion import (
 )
 
 from aworld.core.context.base import Context
+from aworld.core.context.session import Session
 from aworld.core.context.compiler import CompletionMode, CompletionStatus
 
 
@@ -151,6 +152,121 @@ def test_named_output_file_is_joined_to_explicit_output_directory(
     assert [(item.path, item.display_path) for item in hints] == [
         ("/root/answers.json", "/root/answers.json")
     ]
+
+
+def test_bounded_numeric_brace_output_expands_to_stable_deliverables(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    request = (
+        "Anonymize the papers and save the final outputs as "
+        "`/root/redacted/paper{1-3}.pdf`."
+    )
+    hints = infer_public_deliverable_hints(request, workspace_path=tmp_path)
+
+    assert [item.deliverable_id for item in hints] == [
+        "public-output-1",
+        "public-output-2",
+        "public-output-3",
+    ]
+    assert [item.path for item in hints] == [
+        "/root/redacted/paper1.pdf",
+        "/root/redacted/paper2.pdf",
+        "/root/redacted/paper3.pdf",
+    ]
+    assert [item.display_path for item in hints] == [
+        "/root/redacted/paper1.pdf",
+        "/root/redacted/paper2.pdf",
+        "/root/redacted/paper3.pdf",
+    ]
+    assert infer_public_deliverable_hints(
+        request,
+        workspace_path=tmp_path,
+    ) == hints
+    assert infer_public_deliverable_hints(
+        "Save the redacted outputs to /root/redacted/paper{1-3}.pdf",
+        workspace_path=tmp_path,
+    ) == hints
+
+    monkeypatch.delenv("AWORLD_COMPLETION_MODE", raising=False)
+    context = Context(
+        task_id="brace-public-contract",
+        session=Session(session_id="brace-session"),
+        workspace_path=str(tmp_path),
+    )
+    context.agent_info.current_agent_id = "agent"
+    assert configure_runtime_completion(
+        context,
+        request=request,
+        workspace_path=tmp_path,
+    ) is None
+    artifacts = context.context_info["public_deliverable_contract"]["artifacts"]
+    assert [item["deliverable_id"] for item in artifacts] == [
+        "public-output-1",
+        "public-output-2",
+        "public-output-3",
+    ]
+    obligations = context.context_info["public_task_contract"]["obligations"]
+    assert [item["kind"] for item in obligations[:3]] == [
+        "deliverable_file",
+        "deliverable_file",
+        "deliverable_file",
+    ]
+    from aworld.sandbox.declared_write import build_declared_public_write_contract
+    from aworld_cli.builtin_agents.smllc.agents.lazy_verifier import (
+        _authoritative_delivery_paths,
+    )
+
+    declared = build_declared_public_write_contract(context)
+    assert declared is not None
+    assert [item["deliverable_id"] for item in declared["targets"]] == [
+        "public-output-1",
+        "public-output-2",
+        "public-output-3",
+    ]
+    assert _authoritative_delivery_paths(
+        context,
+        authoritative_obligations=obligations,
+    ) == (
+        "/root/redacted/paper1.pdf",
+        "/root/redacted/paper2.pdf",
+        "/root/redacted/paper3.pdf",
+    )
+
+
+@pytest.mark.parametrize(
+    "pattern",
+    (
+        "/root/redacted/paper{3-1}.pdf",
+        "/root/redacted/paper{-1-3}.pdf",
+        "/root/redacted/paper{0-3}.pdf",
+        "/root/redacted/paper{01-3}.pdf",
+        "/root/redacted/paper{{1-3}}.pdf",
+        "/root/redacted/paper{1-2}{3-4}.pdf",
+        "/root/redacted/paper{1,2}.pdf",
+        "/root/redacted/{1-3}/paper.pdf",
+        "/root/redacted/../paper{1-3}.pdf",
+        "/root/redacted/paper{1-17}.pdf",
+        "/root/redacted/paper{1-9999999999}.pdf",
+    ),
+)
+def test_bounded_numeric_brace_output_rejects_unsafe_or_over_limit_patterns(
+    pattern: str,
+    tmp_path: Path,
+) -> None:
+    assert infer_public_deliverable_hints(
+        f"Save the final output to `{pattern}`.",
+        workspace_path=tmp_path,
+    ) == ()
+
+
+def test_bounded_numeric_brace_input_or_reference_is_not_a_deliverable(
+    tmp_path: Path,
+) -> None:
+    assert infer_public_deliverable_hints(
+        "Read the input files `/root/source/paper{1-3}.pdf` for background.",
+        workspace_path=tmp_path,
+    ) == ()
 
 
 @pytest.mark.parametrize(

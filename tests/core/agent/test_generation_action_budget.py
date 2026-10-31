@@ -729,6 +729,47 @@ def test_public_deliverable_feedback_rejects_whole_file_placeholder(
     assert agent._public_deliverable_feedback_if_unsatisfied(context) is None
 
 
+def test_brace_expanded_public_deliverables_report_only_missing_member(
+    tmp_path,
+) -> None:
+    from aworld_cli.core.runtime_completion import configure_runtime_completion
+
+    agent = _long_running_generation_agent(armed=False)
+    context = agent.context
+    output_dir = tmp_path / "redacted"
+    output_dir.mkdir()
+    request = (
+        "Save the anonymized outputs as `"
+        + str(output_dir / "paper{1-3}.pdf")
+        + "`."
+    )
+    assert configure_runtime_completion(
+        context,
+        request=request,
+        workspace_path=tmp_path,
+    ) is None
+    (output_dir / "paper1.pdf").write_bytes(b"paper one")
+    (output_dir / "paper3.pdf").write_bytes(b"paper three")
+
+    feedback = agent._public_deliverable_feedback_if_unsatisfied(context)
+
+    assert feedback is not None
+    assert "paper2.pdf" in feedback
+    assert "paper1.pdf" not in feedback
+    assert "paper3.pdf" not in feedback
+    observations = context.context_info["public_deliverable_observations"][
+        "artifacts"
+    ]
+    assert [item["candidate_eligible"] for item in observations] == [
+        True,
+        False,
+        True,
+    ]
+
+    (output_dir / "paper2.pdf").write_bytes(b"paper two")
+    assert agent._public_deliverable_feedback_if_unsatisfied(context) is None
+
+
 def test_explicit_generation_compiler_configuration_wins_after_arming() -> None:
     policy = _long_running_generation_agent(
         armed=True,
