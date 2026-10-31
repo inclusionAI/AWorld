@@ -2,7 +2,6 @@
 import asyncio
 from hashlib import sha256
 import json
-from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -37,6 +36,51 @@ def test_discovery_precedence_and_explicit_isolation(tmp_path):
     assert discover_skills(nested, disabled=True, home=home) == ()
     with pytest.raises(NotADirectoryError):
         discover_skills(nested, paths=[tmp_path / 'missing'])
+
+
+def test_minimal_cli_explicitly_selects_multiple_skills_in_requested_order(tmp_path):
+    pytest.importorskip('yaml')
+    skills = tmp_path / 'skills'
+    first = skill(skills, 'first-skill')
+    second = skill(skills, 'second-skill')
+    unused = skill(skills, 'unused-skill')
+    requests = []
+
+    class Model:
+        async def complete(self, request):
+            requests.append(request)
+            return AssistantMessage('done')
+
+    args = parser().parse_args([
+        '--demo', '--cwd', str(tmp_path), '--task', 'test',
+        '--skill-path', str(skills), '--skill', 'second-skill',
+        '--skill', 'first-skill',
+        '--trajectory-output', str(tmp_path / 'trajectory.json'),
+    ])
+    with patch('aworld.cli.main.DemoModel', Model):
+        assert asyncio.run(_host(args, 'run')) == 0
+
+    prompt = requests[0].system_prompt
+    assert prompt.index(str(second)) < prompt.index(str(first))
+    assert str(unused) not in prompt
+    trajectory = json.loads((tmp_path / 'trajectory.json').read_text())
+    assert trajectory['agent']['extra']['skills'] == [
+        {'name': 'second-skill', 'location': str(second)},
+        {'name': 'first-skill', 'location': str(first)},
+    ]
+
+
+def test_minimal_cli_rejects_unavailable_explicit_skill(tmp_path):
+    pytest.importorskip('yaml')
+    skills = tmp_path / 'skills'
+    skill(skills, 'available-skill')
+    args = parser().parse_args([
+        '--demo', '--cwd', str(tmp_path), '--task', 'test',
+        '--skill-path', str(skills), '--skill', 'missing-skill',
+    ])
+
+    with pytest.raises(ValueError, match='Requested skill is not available'):
+        asyncio.run(_host(args, 'run'))
 
 
 def test_workspace_rules_bounded_and_scoped(tmp_path):

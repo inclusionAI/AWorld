@@ -409,11 +409,17 @@ def _trajectory_payload_from_direct_run_summary(
             if llm_calls:
                 payload["llm_calls"] = llm_calls
             if skill_activation_evidence:
-                unique_activation_evidence: list[dict] = []
-                for item in skill_activation_evidence:
-                    if item not in unique_activation_evidence:
-                        unique_activation_evidence.append(item)
-                payload["skill_activation_evidence"] = unique_activation_evidence
+                from aworld_cli.run_outcome import (
+                    normalize_skill_activation_evidence,
+                )
+
+                normalized_skill_evidence = normalize_skill_activation_evidence(
+                    skill_activation_evidence
+                )
+                if normalized_skill_evidence:
+                    payload["skill_activation_evidence"] = [
+                        dict(item) for item in normalized_skill_evidence
+                    ]
             if execution_protocol is not None:
                 payload["execution_protocol"] = execution_protocol
             return payload

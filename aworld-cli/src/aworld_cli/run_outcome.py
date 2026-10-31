@@ -17,6 +17,17 @@ from typing import Any
 
 
 _CONTROL_IDENTIFIER = re.compile(r"^[A-Za-z][A-Za-z0-9_.:-]{0,127}$")
+_SKILL_PACKAGE_FINGERPRINT = re.compile(r"^sha256:[0-9a-f]{64}$")
+_MAX_SKILL_ACTIVATION_EVIDENCE = 64
+_MAX_SKILL_PATH_CHARS = 4096
+_SKILL_EVIDENCE_FIELDS = (
+    "skill_name",
+    "canonical_skill_file",
+    "canonical_skill_root",
+    "package_fingerprint",
+    "source",
+    "agent_name",
+)
 
 
 class DirectRunStatus(str, Enum):
@@ -142,6 +153,70 @@ def _serialize_control_record(value: Any) -> dict[str, Any]:
             return {}
         return payload if isinstance(payload, dict) else {}
     return {}
+
+
+def normalize_skill_activation_evidence(value: Any) -> tuple[dict[str, str], ...]:
+    """Return bounded, content-free task skill activation attestations."""
+
+    if not isinstance(value, (list, tuple)):
+        return ()
+    normalized: list[dict[str, str]] = []
+    seen: set[tuple[str, ...]] = set()
+    for raw in value[:_MAX_SKILL_ACTIVATION_EVIDENCE]:
+        if not isinstance(raw, Mapping):
+            continue
+        item: dict[str, str] = {}
+        valid = True
+        for field in _SKILL_EVIDENCE_FIELDS:
+            candidate = raw.get(field)
+            if not isinstance(candidate, str) or not candidate:
+                valid = False
+                break
+            maximum = (
+                _MAX_SKILL_PATH_CHARS
+                if field in {"canonical_skill_file", "canonical_skill_root"}
+                else 256
+            )
+            if len(candidate) > maximum or any(
+                ord(character) < 32 or ord(character) == 127
+                for character in candidate
+            ):
+                valid = False
+                break
+            item[field] = candidate
+        if not valid or _SKILL_PACKAGE_FINGERPRINT.fullmatch(
+            item["package_fingerprint"]
+        ) is None:
+            continue
+        identity = tuple(item[field] for field in _SKILL_EVIDENCE_FIELDS)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        normalized.append(item)
+    return tuple(normalized)
+
+
+def _summary_skill_activation_evidence(
+    summary: Mapping[str, Any] | None,
+) -> tuple[dict[str, str], ...]:
+    if not isinstance(summary, Mapping):
+        return ()
+    raw_items: list[Any] = []
+    top_level = summary.get("skill_activation_evidence")
+    if isinstance(top_level, (list, tuple)):
+        raw_items.extend(top_level[:_MAX_SKILL_ACTIVATION_EVIDENCE])
+    results = summary.get("results")
+    if isinstance(results, (list, tuple)):
+        for result in results:
+            if not isinstance(result, Mapping):
+                continue
+            evidence = result.get("skill_activation_evidence")
+            if isinstance(evidence, (list, tuple)):
+                remaining = _MAX_SKILL_ACTIVATION_EVIDENCE - len(raw_items)
+                if remaining <= 0:
+                    break
+                raw_items.extend(evidence[:remaining])
+    return normalize_skill_activation_evidence(raw_items)
 
 
 def _native_trajectory(result: Mapping[str, Any]) -> list[dict[str, Any]]:
@@ -349,6 +424,7 @@ def _summary_metrics(summary: dict[str, Any] | None) -> dict[str, Any]:
         "llm_diagnostics": (
             llm_diagnostics if llm_diagnostics.get("call_count") else None
         ),
+        "skill_activation_evidence": _summary_skill_activation_evidence(summary),
     }
 
 
@@ -395,6 +471,7 @@ class DirectRunOutcome(Mapping[str, Any]):
     execution_protocol: dict[str, Any] | None = None
     llm_diagnostics: dict[str, Any] | None = None
     completion_reason: str | None = None
+    skill_activation_evidence: tuple[dict[str, str], ...] = ()
 
     SCHEMA_VERSION = "aworld.run.outcome.v1"
 
@@ -410,6 +487,11 @@ class DirectRunOutcome(Mapping[str, Any]):
             self.completion_reason
         ):
             raise ValueError("completion_reason must be a bounded control identifier")
+        object.__setattr__(
+            self,
+            "skill_activation_evidence",
+            normalize_skill_activation_evidence(self.skill_activation_evidence),
+        )
 
     @property
     def succeeded(self) -> bool:
@@ -469,6 +551,7 @@ class DirectRunOutcome(Mapping[str, Any]):
             ),
             last_successful_checkpoint=metrics["last_successful_checkpoint"],
             failure_record=dict(failure_record) if failure_record is not None else None,
+            skill_activation_evidence=metrics["skill_activation_evidence"],
         )
 
     def to_dict(
@@ -503,6 +586,10 @@ class DirectRunOutcome(Mapping[str, Any]):
             payload["execution_protocol"] = dict(self.execution_protocol)
         if self.llm_diagnostics is not None:
             payload["llm_diagnostics"] = dict(self.llm_diagnostics)
+        if self.skill_activation_evidence:
+            payload["skill_activation_evidence"] = [
+                dict(item) for item in self.skill_activation_evidence
+            ]
         if atif_export is not None:
             payload["atif_export"] = dict(atif_export)
         return payload

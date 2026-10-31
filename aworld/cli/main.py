@@ -101,6 +101,12 @@ def parser():
     skill_args = value.add_mutually_exclusive_group()
     skill_args.add_argument("--skill-path", action="append", default=[], help="Explicit Skill roots, replacing auto-discovery (requires aworld[skills])")
     skill_args.add_argument("--no-skills", action="store_true", help="Disable Skill discovery")
+    value.add_argument(
+        "--skill",
+        action="append",
+        default=[],
+        help="Explicitly select a discovered Skill by name; may be repeated",
+    )
     value.add_argument("--work-root", type=Path, help="Session notes root (default: cwd/.aworld/sessions)")
     value.add_argument("--network-policy", choices=["allowed", "disabled", "unknown"], default=os.getenv("AWORLD_NETWORK_POLICY", "unknown"))
     value.add_argument("--system-prompt", default=None, help="Replace the default base prompt; workspace, Skill and runtime context still apply")
@@ -272,6 +278,21 @@ async def _host(args, command):
     skills = discover_skills(
         args.cwd, paths=args.skill_path, disabled=args.no_skills or args.no_tools
     )
+    if args.skill:
+        if args.no_skills or args.no_tools:
+            raise ValueError("--skill cannot be combined with disabled skills or tools")
+        requested_skills = tuple(
+            dict.fromkeys(name.strip() for name in args.skill if name.strip())
+        )
+        skills_by_name = {skill.name: skill for skill in skills}
+        missing = [name for name in requested_skills if name not in skills_by_name]
+        if missing:
+            raise ValueError(
+                "Requested skill is not available: " + ", ".join(missing)
+            )
+        skills = tuple(
+            skills_by_name[name] for name in requested_skills
+        )
     workspace, sources = workspace_prompt(args.cwd)
     system_prompt = "\n\n".join(part for part in (BASE_PROMPT if args.system_prompt is None else args.system_prompt, workspace) if part)
     sources = [{"kind": "base", "version": PROMPT_VERSION, "custom": args.system_prompt is not None}, *sources,

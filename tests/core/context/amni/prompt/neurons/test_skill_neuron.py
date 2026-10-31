@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+import xml.etree.ElementTree as ET
 
 import pytest
 
@@ -41,5 +42,31 @@ async def test_skills_neuron_includes_forced_skill_contract() -> None:
 
     assert "The user explicitly requested these skill(s) for this task: writing-plans." in rendered
     assert '<skill id="writing-plans" active_status="True">' in rendered
-    assert "<skill_usage>Use the planning workflow</skill_usage>" in rendered
+    assert (
+        "<skill_usage><![CDATA[Use the planning workflow]]></skill_usage>"
+        in rendered
+    )
+
+
+@pytest.mark.asyncio
+async def test_skills_neuron_names_model_visible_tools_and_emits_well_formed_xml() -> None:
+    neuron = SkillsNeuron()
+    context = _FakeContext()
+
+    items = await neuron.format_items(context, namespace="Aworld")
+    rendered = await neuron.format(context, items=items, namespace="Aworld")
+
+    assert "SKILL__active_skill" in rendered
+    assert "SKILL__offload_skill" in rendered
+    assert "use the 'context' tool" not in rendered
+    root = ET.fromstring(rendered)
+    assert root.tag == "skills_guide"
+    active = root.find("./skills_info/skill[@id='writing-plans']")
+    inactive = root.find("./skills_info/skill[@id='browser-use']")
+    assert active is not None
+    assert inactive is not None
+    assert active.findtext("./skill_file_content/skill_usage") == (
+        "Use the planning workflow"
+    )
+    assert inactive.find("./skill_file_content/skill_usage") is None
 

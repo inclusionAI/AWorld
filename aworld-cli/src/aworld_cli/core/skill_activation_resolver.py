@@ -331,8 +331,12 @@ class SkillActivationResolver:
             for candidate in ordered_candidates
         }
         activation_evidence: list[dict[str, str]] = []
-        for candidate in ordered_candidates:
-            if candidate.skill_name not in active_names:
+        candidate_by_name = {
+            candidate.skill_name: candidate for candidate in ordered_candidates
+        }
+        for skill_name in active_skill_names:
+            candidate = candidate_by_name.get(skill_name)
+            if candidate is None:
                 continue
             skill_file = Path(candidate.skill_path).expanduser().resolve()
             try:

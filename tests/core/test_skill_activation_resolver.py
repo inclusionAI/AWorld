@@ -180,6 +180,39 @@ def test_resolver_explicit_request_beats_auto_match(tmp_path: Path) -> None:
     )
 
 
+def test_resolver_explicitly_activates_multiple_task_skills_without_ambient_filex(
+    tmp_path: Path,
+) -> None:
+    plugin_root = _write_manifest_skill_plugin(
+        tmp_path,
+        plugin_id="task-skills",
+        skill_id="spreadsheet-recovery",
+    )
+    _append_manifest_skill(plugin_root, "formula-validation")
+
+    result = SkillActivationResolver().resolve(
+        SkillResolverRequest(
+            plugin_roots=(plugin_root,),
+            runtime_scope="workspace",
+            agent_name="Aworld",
+            task_text="recover the supplied spreadsheet",
+            requested_skill_names=(
+                "spreadsheet-recovery",
+                "formula-validation",
+            ),
+        )
+    )
+
+    assert result.active_skill_names == (
+        "spreadsheet-recovery",
+        "formula-validation",
+    )
+    assert "filex" not in result.available_skill_names
+    assert tuple(
+        item["skill_name"] for item in result.activation_evidence
+    ) == result.active_skill_names
+
+
 def test_resolver_activation_attestation_does_not_import_self_evolve(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

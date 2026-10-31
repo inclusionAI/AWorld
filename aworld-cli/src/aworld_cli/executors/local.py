@@ -1947,6 +1947,10 @@ class LocalAgentExecutor(BaseAgentExecutor):
                 if isinstance(raw_skill_activation_evidence, (list, tuple))
                 else ()
             )
+            # Resolution happens before task execution. Preserve its bounded
+            # attestation immediately so an incomplete or failed task cannot
+            # erase the skills that were actually activated for this run.
+            self.last_skill_activation_evidence = task_skill_activation_evidence
             try:
                 from aworld_cli.core.session_store import CliSessionStore
 
@@ -3045,9 +3049,6 @@ class LocalAgentExecutor(BaseAgentExecutor):
                     )
                 if direct_continuation is not None:
                     return direct_continuation
-                self.last_skill_activation_evidence = (
-                    task_skill_activation_evidence
-                )
                 return answer
                 
             except Exception as err:

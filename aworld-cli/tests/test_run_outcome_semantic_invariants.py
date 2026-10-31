@@ -3,6 +3,7 @@ from aworld_cli.run_outcome import (
     DirectRunStatus,
     coerce_direct_run_outcome,
 )
+import pytest
 
 
 def _runtime_exception_summary(*, status_key: str = "semantic_status") -> dict:
@@ -34,6 +35,72 @@ def test_runtime_exception_summary_cannot_be_promoted_to_success() -> None:
     assert outcome.trajectory_fidelity == "partial"
     assert outcome.completion_reason == "runtime_exception"
     assert outcome.to_dict()["completion_reason"] == "runtime_exception"
+
+
+@pytest.mark.parametrize(
+    "status",
+    [
+        DirectRunStatus.SUCCEEDED,
+        DirectRunStatus.INCOMPLETE,
+        DirectRunStatus.TASK_FAILED,
+    ],
+)
+def test_outcome_preserves_bounded_skill_activation_evidence(
+    status: DirectRunStatus,
+) -> None:
+    summary = {
+        "results": [
+            {
+                "success": status is DirectRunStatus.SUCCEEDED,
+                "skill_activation_evidence": [
+                    {
+                        "skill_name": "spreadsheet-recovery",
+                        "canonical_skill_file": "/skills/spreadsheet-recovery/SKILL.md",
+                        "canonical_skill_root": "/skills/spreadsheet-recovery",
+                        "package_fingerprint": "sha256:" + "a" * 64,
+                        "source": "aworld_cli_skill_activation_resolver",
+                        "agent_name": "Aworld",
+                    }
+                ],
+            }
+        ]
+    }
+
+    outcome = DirectRunOutcome.from_summary(summary, status=status)
+
+    assert outcome.to_dict()["skill_activation_evidence"] == [
+        {
+            "skill_name": "spreadsheet-recovery",
+            "canonical_skill_file": "/skills/spreadsheet-recovery/SKILL.md",
+            "canonical_skill_root": "/skills/spreadsheet-recovery",
+            "package_fingerprint": "sha256:" + "a" * 64,
+            "source": "aworld_cli_skill_activation_resolver",
+            "agent_name": "Aworld",
+        }
+    ]
+
+
+def test_outcome_rejects_unbounded_or_noncanonical_skill_activation_evidence() -> None:
+    summary = {
+        "skill_activation_evidence": [
+            {
+                "skill_name": "unsafe-skill",
+                "canonical_skill_file": "/skills/unsafe-skill/SKILL.md",
+                "canonical_skill_root": "/skills/unsafe-skill",
+                "package_fingerprint": "not-a-fingerprint",
+                "source": "aworld_cli_skill_activation_resolver",
+                "agent_name": "Aworld",
+                "usage": "must never enter control-plane evidence",
+            }
+        ]
+    }
+
+    outcome = DirectRunOutcome.from_summary(
+        summary,
+        status=DirectRunStatus.TASK_FAILED,
+    )
+
+    assert "skill_activation_evidence" not in outcome.to_dict()
 
 
 def test_legacy_task_status_is_preserved_by_outcome_coercion() -> None:
