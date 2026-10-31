@@ -1,6 +1,9 @@
 import json
 from pathlib import Path
 
+import pytest
+
+from aworld.core.agent.skill import SkillPackageValidationError
 from aworld.plugins.discovery import discover_plugins
 from aworld.skills.plugin_provider import PluginSkillProvider
 
@@ -38,6 +41,66 @@ def test_plugin_provider_preserves_plugin_identity(tmp_path: Path):
     assert len(descriptors) == 1
     assert descriptors[0].skill_id == "plugin-skill:brainstorming"
     assert descriptors[0].metadata["default_enabled"] is False
+
+
+def test_plugin_provider_rejects_manifest_target_escape(tmp_path: Path) -> None:
+    plugin_root = tmp_path / "plugin-skill"
+    (plugin_root / ".aworld-plugin").mkdir(parents=True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "SKILL.md").write_text(
+        "---\ndescription: Outside\n---\n",
+        encoding="utf-8",
+    )
+    (plugin_root / ".aworld-plugin" / "plugin.json").write_text(
+        json.dumps(
+            {
+                "id": "plugin-skill",
+                "version": "0.1.0",
+                "entrypoints": {
+                    "skills": [
+                        {"id": "unsafe", "target": "../outside/SKILL.md"}
+                    ]
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    plugin = discover_plugins([plugin_root])[0]
+    with pytest.raises(SkillPackageValidationError):
+        PluginSkillProvider(plugin).list_descriptors()
+
+
+def test_plugin_provider_rejects_symlinked_manifest(tmp_path: Path) -> None:
+    plugin_root = tmp_path / "plugin-skill"
+    (plugin_root / ".aworld-plugin").mkdir(parents=True)
+    skill_dir = plugin_root / "skills" / "unsafe"
+    skill_dir.mkdir(parents=True)
+    outside = tmp_path / "outside.md"
+    outside.write_text("---\ndescription: Outside\n---\n", encoding="utf-8")
+    (skill_dir / "SKILL.md").symlink_to(outside)
+    (plugin_root / ".aworld-plugin" / "plugin.json").write_text(
+        json.dumps(
+            {
+                "id": "plugin-skill",
+                "version": "0.1.0",
+                "entrypoints": {
+                    "skills": [
+                        {
+                            "id": "unsafe",
+                            "target": "skills/unsafe/SKILL.md",
+                        }
+                    ]
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    plugin = discover_plugins([plugin_root])[0]
+    with pytest.raises(SkillPackageValidationError):
+        PluginSkillProvider(plugin).list_descriptors()
 
 
 def test_plugin_provider_lists_descriptor_without_decoding_invalid_body(

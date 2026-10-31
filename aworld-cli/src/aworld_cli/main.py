@@ -2400,10 +2400,31 @@ def _prefer_captured_summary(
 ) -> dict | None:
     recovered = _partial_summary_from_agent_executor(agent_executor)
     if recovered is None:
-        return summary
+        return _attach_skill_activation_evidence(summary, agent_executor)
     if summary is None or not _direct_run_has_provider_evidence(summary):
-        return recovered
-    return summary
+        return _attach_skill_activation_evidence(recovered, agent_executor)
+    return _attach_skill_activation_evidence(summary, agent_executor)
+
+
+def _attach_skill_activation_evidence(
+    summary: dict | None,
+    agent_executor: object,
+) -> dict | None:
+    """Bind resolver attestation to every post-resolution return path."""
+
+    activation_evidence = getattr(
+        agent_executor,
+        "last_skill_activation_evidence",
+        (),
+    )
+    if not isinstance(activation_evidence, (list, tuple)) or not activation_evidence:
+        return summary
+    bound = dict(summary or {})
+    bound.setdefault("results", [])
+    bound["skill_activation_evidence"] = [
+        dict(item) for item in activation_evidence if isinstance(item, dict)
+    ]
+    return bound
 
 
 async def _run_direct_mode(
@@ -2663,6 +2684,7 @@ async def _run_direct_mode(
                 )
                 await asyncio.sleep(0)
         else:
+            summary = _attach_skill_activation_evidence(summary, agent_executor)
             return _direct_run_failure_outcome(
                 stage=DirectRunStage.PROVIDER_START,
                 error_code=DirectRunErrorCode.PROVIDER_CALL_NOT_CAPTURED,
@@ -2707,6 +2729,7 @@ async def _run_direct_mode(
             summary=summary,
         )
     if _direct_run_cancelled(summary):
+        summary = _attach_skill_activation_evidence(summary, agent_executor)
         return _direct_run_failure_outcome(
             stage=DirectRunStage.AGENT_EXECUTION,
             error_code=DirectRunErrorCode.DIRECT_RUN_CANCELLED,
@@ -2717,6 +2740,7 @@ async def _run_direct_mode(
         )
     infrastructure_failure = _direct_run_infrastructure_failure(summary)
     if infrastructure_failure is not None:
+        summary = _attach_skill_activation_evidence(summary, agent_executor)
         return _direct_run_failure_outcome(
             stage=DirectRunStage.AGENT_EXECUTION,
             error_code=DirectRunErrorCode.AGENT_EXECUTION_INFRASTRUCTURE_FAILED,
@@ -2729,6 +2753,7 @@ async def _run_direct_mode(
         if isinstance(result, dict) and result.get("semantic_status", result.get("task_status"))
         in {"incomplete", "budget_exhausted"}
     ]
+    summary = _attach_skill_activation_evidence(summary, agent_executor)
     if incomplete_results:
         unfinished = incomplete_results[-1]
         semantic = unfinished.get("semantic_status", unfinished.get("task_status"))
@@ -2782,20 +2807,6 @@ async def _run_direct_mode(
             summary,
             status=DirectRunStatus.SUCCEEDED,
         )
-    activation_evidence = getattr(
-        agent_executor,
-        "last_skill_activation_evidence",
-        (),
-    )
-    if activation_evidence:
-        # Preserve a task-bound copy at the direct-run boundary.  The sidecar
-        # builder also reads per-iteration evidence, but a runtime wrapper must
-        # not be able to drop an otherwise valid resolver attestation.
-        summary["skill_activation_evidence"] = [
-            dict(item)
-            for item in activation_evidence
-            if isinstance(item, dict)
-        ]
     drain_pending_self_evolve_jobs = getattr(
         runtime,
         "_drain_pending_self_evolve_jobs",

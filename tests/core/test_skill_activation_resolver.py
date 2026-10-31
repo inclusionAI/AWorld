@@ -213,6 +213,62 @@ def test_resolver_explicitly_activates_multiple_task_skills_without_ambient_file
     ) == result.active_skill_names
 
 
+def test_resolver_fails_closed_when_active_skill_cannot_be_attested(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plugin_root = _write_manifest_skill_plugin(
+        tmp_path,
+        plugin_id="task-skills",
+        skill_id="unsafe",
+    )
+    monkeypatch.setattr(
+        "aworld_cli.core.skill_activation_resolver.fingerprint_skill_package",
+        lambda _path: (_ for _ in ()).throw(ValueError("unreadable")),
+    )
+
+    with pytest.raises(RuntimeError, match="Active skill attestation failed: unsafe"):
+        SkillActivationResolver().resolve(
+            SkillResolverRequest(
+                plugin_roots=(plugin_root,),
+                runtime_scope="workspace",
+                requested_skill_names=("unsafe",),
+            )
+        )
+
+
+def test_resolver_bounds_explicit_skill_count() -> None:
+    with pytest.raises(ValueError, match="At most 64 skills"):
+        SkillActivationResolver().resolve(
+            SkillResolverRequest(
+                plugin_roots=(),
+                runtime_scope="workspace",
+                requested_skill_names=tuple(
+                    f"skill-{index}" for index in range(65)
+                ),
+            )
+        )
+
+
+def test_resolver_rejects_symlinked_plugin_root(tmp_path: Path) -> None:
+    plugin_root = _write_manifest_skill_plugin(
+        tmp_path,
+        plugin_id="real-plugin",
+        skill_id="task-skill",
+    )
+    linked = tmp_path / "linked-plugin"
+    linked.symlink_to(plugin_root, target_is_directory=True)
+
+    with pytest.raises(ValueError, match="plugin Skill root must be a real directory"):
+        SkillActivationResolver().resolve(
+            SkillResolverRequest(
+                plugin_roots=(linked,),
+                runtime_scope="workspace",
+                requested_skill_names=("task-skill",),
+            )
+        )
+
+
 def test_resolver_activation_attestation_does_not_import_self_evolve(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

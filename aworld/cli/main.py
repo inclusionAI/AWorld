@@ -135,6 +135,7 @@ def parser():
 
 
 _EVIDENCE_CHECKPOINT_INTERVAL_SECONDS = 30.0
+_MAX_EXPLICIT_SKILLS = 64
 
 
 async def _write_live_evidence_checkpoint(session, run, args, agent, events):
@@ -284,6 +285,10 @@ async def _host(args, command):
         requested_skills = tuple(
             dict.fromkeys(name.strip() for name in args.skill if name.strip())
         )
+        if len(requested_skills) > _MAX_EXPLICIT_SKILLS:
+            raise ValueError(
+                f"At most {_MAX_EXPLICIT_SKILLS} skills may be requested"
+            )
         skills_by_name = {skill.name: skill for skill in skills}
         missing = [name for name in requested_skills if name not in skills_by_name]
         if missing:

@@ -797,7 +797,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
         from aworld_cli.core.skill_state_manager import SkillStateManager
 
         runtime_plugin_roots = tuple(
-            Path(item).resolve()
+            Path(item).expanduser().absolute()
             for item in plugin_manager.get_runtime_plugin_roots()
         )
         requested = self._extract_requested_skill_names(task_input)
@@ -851,7 +851,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
             )
 
             plugin_roots = tuple(
-                Path(item).resolve()
+                Path(item).expanduser().absolute()
                 for item in resolver_inputs.get("plugin_roots", [])
             )
             skill_package_roots = self._skill_package_roots_for_agent(
@@ -3064,10 +3064,13 @@ class LocalAgentExecutor(BaseAgentExecutor):
                     # Don't let hook errors mask the original error
                     if self.console:
                         self.console.print(f"[yellow]⚠️ Hook error: {hook_err}[/yellow]")
+                failure_code = str(
+                    getattr(err, "failure_code", "execution_error")
+                )
                 self.last_task_response = TaskResponse(
                     success=False, answer="", status="failed",
-                    failure_origin="infrastructure", failure_code="execution_error",
-                    semantic_status="incomplete", completion_reason=type(err).__name__,
+                    failure_origin="infrastructure", failure_code=failure_code,
+                    semantic_status="incomplete", completion_reason=failure_code,
                     recoverable=True,
                 )
                 task_error_results = await self._run_plugin_task_hook(

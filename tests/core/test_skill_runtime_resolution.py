@@ -14,6 +14,7 @@ from aworld.core.context.amni import ApplicationContext
 from aworld.core.context.amni.config import AgentContextConfig
 from aworld.core.context.amni.processor.op.system_prompt_augment_op import SystemPromptAugmentOp
 from aworld.core.context.amni.tool.context_skill_tool import CONTEXT_SKILL
+from aworld.core.context.amni.prompt.neurons.skill_neuron import SkillsNeuron
 from aworld.sandbox import Sandbox
 from aworld_cli.core.skill_activation_resolver import SkillActivationResolver, SkillResolverRequest
 from aworld_cli.core.skill_activation_resolver import ResolvedSkillSet
@@ -277,6 +278,128 @@ async def test_resolved_filex_reaches_prompt_tools_and_sandbox(
     # provider-backed LLM while the context-budget recovery hook probes mode.
     agent._llm = SimpleNamespace(context_compiler_mode="off")
     assert await agent._filter_tools(context) == [shell_tool]
+
+
+@pytest.mark.asyncio
+async def test_explicit_multi_skill_prompt_keeps_requested_order_before_inactive(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    skills = tmp_path / "skills"
+    for name, usage in (
+        ("first", "FIRST_USAGE"),
+        ("second", "SECOND_USAGE"),
+        ("inactive", "INACTIVE_SECRET"),
+    ):
+        root = skills / name
+        root.mkdir(parents=True)
+        (root / "SKILL.md").write_text(
+            f"---\nname: {name}\ndescription: {name} description\n---\n{usage}\n",
+            encoding="utf-8",
+        )
+    monkeypatch.setattr(
+        "aworld_cli.executors.local.PluginManager",
+        lambda: SimpleNamespace(
+            get_runtime_plugin_roots=lambda: [],
+            list_skill_packages=lambda **kwargs: [],
+        ),
+    )
+    monkeypatch.setattr(
+        "aworld_cli.core.skill_state_manager.SkillStateManager",
+        lambda: SimpleNamespace(
+            disabled_skill_names=lambda: (),
+            enabled_skill_names=lambda: (),
+        ),
+    )
+    agent = Agent(
+        name="Aworld",
+        conf=AgentConfig(
+            skill_configs={},
+            ext={
+                "skill_resolver_inputs": {
+                    "compatibility_sources": [str(skills)]
+                }
+            },
+        ),
+    )
+    context = ApplicationContext.create(
+        session_id="multi-skill-session",
+        task_id="multi-skill-task",
+        task_content="Use the requested task methods",
+    )
+    context.task_input_object.metadata["requested_skill_names"] = [
+        "second",
+        "first",
+    ]
+    executor = LocalAgentExecutor(Swarm(agent))
+    executor._resolve_swarm_skills(context.task_input_object)
+    await context.build_agent_state(agent)
+
+    assert tuple(agent.skill_configs)[:2] == ("second", "first")
+    assert await context.get_active_skills(agent.id()) == ["second", "first"]
+    neuron = SkillsNeuron()
+    items = await neuron.format_items(context, namespace=agent.id())
+    rendered = await neuron.format(context, items=items, namespace=agent.id())
+    assert rendered.index("SECOND_USAGE") < rendered.index("FIRST_USAGE")
+    assert rendered.index("FIRST_USAGE") < rendered.index("inactive description")
+    assert "INACTIVE_SECRET" not in rendered
+
+
+@pytest.mark.asyncio
+async def test_active_skill_attestation_fails_before_context_and_provider(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    skill_root = tmp_path / "skills" / "unsafe"
+    skill_root.mkdir(parents=True)
+    (skill_root / "SKILL.md").write_text(
+        "---\nname: unsafe\ndescription: Unsafe\n---\nUse unsafe.\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "aworld_cli.executors.local.PluginManager",
+        lambda: SimpleNamespace(
+            get_runtime_plugin_roots=lambda: [],
+            list_skill_packages=lambda **kwargs: [],
+        ),
+    )
+    monkeypatch.setattr(
+        "aworld_cli.core.skill_state_manager.SkillStateManager",
+        lambda: SimpleNamespace(
+            disabled_skill_names=lambda: (),
+            enabled_skill_names=lambda: (),
+        ),
+    )
+    monkeypatch.setattr(
+        "aworld_cli.core.skill_activation_resolver.fingerprint_skill_package",
+        lambda _path: (_ for _ in ()).throw(ValueError("unattested")),
+    )
+
+    async def context_must_not_be_built(*args, **kwargs):
+        raise AssertionError("context/provider boundary reached before attestation")
+
+    monkeypatch.setattr(
+        "aworld_cli.executors.local.ApplicationContext.from_input",
+        context_must_not_be_built,
+    )
+    agent = Agent(
+        name="Aworld",
+        conf=AgentConfig(
+            skill_configs={},
+            ext={
+                "skill_resolver_inputs": {
+                    "compatibility_sources": [str(tmp_path / "skills")]
+                }
+            },
+        ),
+    )
+    executor = LocalAgentExecutor(Swarm(agent))
+
+    with pytest.raises(RuntimeError, match="Active skill attestation failed: unsafe"):
+        await executor._build_task(
+            "Use the requested task method",
+            requested_skill_names=["unsafe"],
+        )
 
 
 @pytest.mark.parametrize("shared_sandbox", [True, False], ids=["shared", "separate"])

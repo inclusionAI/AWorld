@@ -2,13 +2,16 @@
 import asyncio
 from hashlib import sha256
 import json
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 
 from aworld.cli.main import _host, parser
 from aworld.cli.prompt import discover_skills, workspace_prompt
+from aworld.cli.trajectory import build_trajectory
 from aworld.core.agent.messages import AssistantMessage, ToolCall
+from aworld.core.session import RunError, RunResult, RunStatus, RunStopReason
 
 
 def skill(root, name, description='metadata', body='BODY_ONLY_WHEN_READ'):
@@ -68,6 +71,14 @@ def test_minimal_cli_explicitly_selects_multiple_skills_in_requested_order(tmp_p
         {'name': 'second-skill', 'location': str(second)},
         {'name': 'first-skill', 'location': str(first)},
     ]
+    assert [
+        item['skill_name']
+        for item in trajectory['agent']['extra']['skill_activation_evidence']
+    ] == ['second-skill', 'first-skill']
+    assert all(
+        item['package_fingerprint'].startswith('sha256:')
+        for item in trajectory['agent']['extra']['skill_activation_evidence']
+    )
 
 
 def test_minimal_cli_rejects_unavailable_explicit_skill(tmp_path):
@@ -81,6 +92,39 @@ def test_minimal_cli_rejects_unavailable_explicit_skill(tmp_path):
 
     with pytest.raises(ValueError, match='Requested skill is not available'):
         asyncio.run(_host(args, 'run'))
+
+
+@pytest.mark.parametrize(
+    ('status', 'reason', 'error'),
+    [
+        (RunStatus.COMPLETED, RunStopReason.END_TURN, None),
+        (
+            RunStatus.FAILED,
+            RunStopReason.DEADLINE_EXCEEDED,
+            RunError('deadline', 'expired'),
+        ),
+        (RunStatus.CANCELLED, RunStopReason.CANCELLED, None),
+    ],
+)
+def test_minimal_atif_keeps_skill_attestation_for_every_terminal_status(
+    tmp_path, status, reason, error
+):
+    pytest.importorskip('yaml')
+    root = tmp_path / 'skills'
+    skill(root, 'task-skill')
+    selected = discover_skills(tmp_path, paths=[root])
+    result = RunResult('run', 'session', status, reason, None, error)
+
+    trajectory = build_trajectory(
+        (),
+        result=result,
+        agent=SimpleNamespace(skills=selected, tools=()),
+    )
+
+    evidence = trajectory['agent']['extra']['skill_activation_evidence']
+    assert len(evidence) == 1
+    assert evidence[0]['skill_name'] == 'task-skill'
+    assert evidence[0]['package_fingerprint'].startswith('sha256:')
 
 
 def test_workspace_rules_bounded_and_scoped(tmp_path):

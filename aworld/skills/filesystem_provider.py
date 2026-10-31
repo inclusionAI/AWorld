@@ -5,6 +5,10 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from aworld.core.agent.skill import (
+    SkillPackageValidationError,
+    validate_skill_package,
+)
 from aworld.skills.execution_assets import build_execution_assets_config
 from aworld.skills.models import SkillContent, SkillDescriptor
 from aworld.skills.providers import SkillProvider, read_front_matter_lines
@@ -17,9 +21,16 @@ from aworld.utils.skill_loader import (
 
 
 class FilesystemSkillProvider(SkillProvider):
-    def __init__(self, provider_id: str, root: Path) -> None:
+    def __init__(
+        self,
+        provider_id: str,
+        root: Path,
+        *,
+        strict_paths: bool = True,
+    ) -> None:
         self._provider_id = provider_id
         self._root = Path(root)
+        self._strict_paths = strict_paths
         self._skill_files: dict[str, Path] = {}
 
     def provider_id(self) -> str:
@@ -27,15 +38,36 @@ class FilesystemSkillProvider(SkillProvider):
 
     def _iter_skill_files(self):
         seen: set[Path] = set()
-        if not self._root.exists():
+        if self._root.is_symlink() or not self._root.is_dir():
             return
 
-        for current_root, _, filenames in os.walk(self._root, followlinks=True):
+        for current_root, directories, filenames in os.walk(
+            self._root, followlinks=False
+        ):
+            for directory in tuple(directories):
+                if (Path(current_root) / directory).is_symlink():
+                    if self._strict_paths:
+                        raise SkillPackageValidationError(
+                            "skill directory cannot be a symlink"
+                        )
+                    directories.remove(directory)
             for candidate_name in ("skill.md", "SKILL.md"):
                 if candidate_name not in filenames:
                     continue
                 skill_file = Path(current_root) / candidate_name
+                if skill_file.is_symlink():
+                    if self._strict_paths:
+                        raise SkillPackageValidationError(
+                            "SKILL.md cannot be a symlink"
+                        )
+                    continue
                 resolved = skill_file.resolve()
+                try:
+                    resolved.relative_to(self._root.absolute())
+                except ValueError as exc:
+                    raise SkillPackageValidationError(
+                        "SKILL.md escapes explicit skill root"
+                    ) from exc
                 if resolved in seen or not resolved.is_file():
                     continue
                 if is_self_evolve_draft_path(resolved):
@@ -58,6 +90,17 @@ class FilesystemSkillProvider(SkillProvider):
         descriptors: list[SkillDescriptor] = []
         for skill_file in self._iter_skill_files():
             front_matter = self._read_front_matter(skill_file)
+            declared_entrypoint = front_matter.get("entrypoint")
+            declared_metadata = front_matter.get("metadata")
+            if not declared_entrypoint and isinstance(declared_metadata, Mapping):
+                declared_entrypoint = declared_metadata.get("entrypoint")
+            validate_skill_package(
+                skill_file.parent,
+                skill_file=skill_file,
+                declared_paths=(str(declared_entrypoint),)
+                if declared_entrypoint
+                else (),
+            )
             tool_list = front_matter.get("tool_list", {})
             if isinstance(tool_list, str):
                 tool_list = {}
@@ -80,7 +123,6 @@ class FilesystemSkillProvider(SkillProvider):
                     "install_options": aworld_meta["install"],
                 }
 
-            declared_metadata = front_matter.get("metadata")
             metadata = (
                 dict(declared_metadata)
                 if isinstance(declared_metadata, Mapping)

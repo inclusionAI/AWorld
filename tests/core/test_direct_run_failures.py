@@ -10,6 +10,25 @@ from aworld_cli.main import DirectRunOutcome, DirectRunStatus
 from aworld_cli.top_level_commands.run_cmd import RunTopLevelCommand
 
 
+def test_skill_attestation_helper_binds_evidence_without_existing_summary() -> None:
+    evidence = {
+        "skill_name": "task-skill",
+        "canonical_skill_file": "/skills/task-skill/SKILL.md",
+        "canonical_skill_root": "/skills/task-skill",
+        "package_fingerprint": "sha256:" + "c" * 64,
+        "source": "aworld_cli_skill_activation_resolver",
+        "agent_name": "Aworld",
+    }
+    executor = SimpleNamespace(last_skill_activation_evidence=(evidence,))
+
+    summary = main_module._attach_skill_activation_evidence(None, executor)
+
+    assert summary == {
+        "results": [],
+        "skill_activation_evidence": [evidence],
+    }
+
+
 def _failure_payload(stderr: str) -> dict:
     marker = "AWORLD_RUN_FAILURE="
     line = next(line for line in stderr.splitlines() if line.startswith(marker))

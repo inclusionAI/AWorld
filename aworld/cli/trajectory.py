@@ -93,10 +93,23 @@ def build_trajectory(history, *, result, agent, model_name=None, events=()):
             {key: value for key, value in run_durations.items() if key == result.run_id}))
     context_budget = next((entry.data["context"] for entry in reversed(history)
                            if entry.kind == "system" and entry.run_id == result.run_id and "context" in entry.data), None)
+    skill_activation_evidence = [
+        {
+            "skill_name": skill.name,
+            "canonical_skill_file": skill.location,
+            "canonical_skill_root": str(Path(skill.location).parent),
+            "package_fingerprint": skill.package_fingerprint,
+            "source": "aworld_minimal_skill_selection",
+            "agent_name": "aworld",
+        }
+        for skill in agent.skills
+        if skill.location and skill.package_fingerprint
+    ]
     return {"schema_version": "ATIF-v1.7", "session_id": result.session_id,
             "trajectory_id": result.run_id,
             "agent": {"name": "aworld", "version": __version__, "model_name": model_name,
                       "extra": {"skills": [{"name": skill.name, "location": skill.location} for skill in agent.skills],
+                                "skill_activation_evidence": skill_activation_evidence,
                                 "tools": [tool.name for tool in agent.tools]}},
             "steps": steps,
             "final_metrics": {"total_prompt_tokens": session_usage["input_tokens"],

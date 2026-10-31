@@ -13,7 +13,6 @@ from aworld_cli.core.builtin_skills import (
     build_builtin_skill_providers,
     get_builtin_skills_path,
 )
-from aworld_cli.core.installed_skill_manager import InstalledSkillManager
 from aworld_cli.core.plugin_manager import PluginManager
 from aworld_cli.core.skill_registry import get_user_skills_paths
 
@@ -55,8 +54,21 @@ def build_runtime_skill_registry_view(
             providers.append(provider)
             source_paths.append(str(Path(plugin.manifest.plugin_root).resolve()))
 
+    explicit_sources = {
+        (
+            str(source).strip()
+            if "github.com" in str(source) or str(source).startswith("git@")
+            else str(Path(source).expanduser().resolve())
+        )
+        for source in skill_paths or ()
+    }
     for source in _iter_runtime_compat_sources(skill_paths=skill_paths, cwd=cwd):
-        providers.append(build_compat_provider(source))
+        providers.append(
+            build_compat_provider(
+                source,
+                strict_paths=source in explicit_sources,
+            )
+        )
         source_paths.append(source)
 
     providers.extend(build_builtin_skill_providers())

@@ -6,6 +6,7 @@ from typing import Any
 
 from aworld.plugins.discovery import discover_plugins
 from aworld.skills.compat_provider import build_compat_provider
+from aworld.core.agent.skill import SkillPackageValidationError
 from aworld.skills.package_fingerprint import (
     SkillPackageFingerprintError,
     fingerprint_skill_package,
@@ -22,6 +23,11 @@ _SCOPE_ORDER = {
     "workspace": 1,
     "global": 2,
 }
+_MAX_EXPLICIT_SKILLS = 64
+
+
+class SkillActivationAttestationError(RuntimeError):
+    failure_code = "skill_activation_attestation_failed"
 
 
 @dataclass(frozen=True)
@@ -66,6 +72,11 @@ class ResolvedSkillCandidate:
 
 class SkillActivationResolver:
     def resolve(self, request: SkillResolverRequest) -> ResolvedSkillSet:
+        requested = tuple(dict.fromkeys(request.requested_skill_names))
+        if len(requested) > _MAX_EXPLICIT_SKILLS:
+            raise ValueError(
+                f"At most {_MAX_EXPLICIT_SKILLS} skills may be requested"
+            )
         candidates = self._load_candidates(request)
         filtered = self._filter_candidates(candidates, request)
         selected = self._select_active_skills(filtered, request)
@@ -92,6 +103,11 @@ class SkillActivationResolver:
             compatibility_provider_ids.add(provider_id)
             isolated_candidate_provider_ids.add(provider_id)
 
+        for root in request.plugin_roots:
+            if root.is_symlink() or not root.is_dir():
+                raise SkillPackageValidationError(
+                    "plugin Skill root must be a real directory"
+                )
         for plugin in discover_plugins(request.plugin_roots):
             provider = PluginSkillProvider(plugin)
             provider_id = provider.provider_id()
@@ -325,15 +341,22 @@ class SkillActivationResolver:
         active_skill_names: tuple[str, ...],
     ) -> ResolvedSkillSet:
         active_names = set(active_skill_names)
-        ordered_candidates = sorted(candidates, key=lambda item: item.skill_name)
+        candidate_by_name = {candidate.skill_name: candidate for candidate in candidates}
+        ordered_candidates = [
+            candidate_by_name[name]
+            for name in active_skill_names
+            if name in candidate_by_name
+        ]
+        ordered_candidates.extend(
+            candidate
+            for candidate in sorted(candidates, key=lambda item: item.skill_name)
+            if candidate.skill_name not in active_names
+        )
         skill_configs = {
             candidate.skill_name: self._candidate_to_skill_config(candidate, active_names)
             for candidate in ordered_candidates
         }
         activation_evidence: list[dict[str, str]] = []
-        candidate_by_name = {
-            candidate.skill_name: candidate for candidate in ordered_candidates
-        }
         for skill_name in active_skill_names:
             candidate = candidate_by_name.get(skill_name)
             if candidate is None:
@@ -343,10 +366,10 @@ class SkillActivationResolver:
                 package_fingerprint = fingerprint_skill_package(
                     skill_file.parent
                 )
-            except (OSError, SkillPackageFingerprintError, ValueError):
-                # Missing/unreadable packages deliberately produce no activation
-                # evidence.  A caller that requires an attestation must fail closed.
-                continue
+            except (OSError, SkillPackageFingerprintError, ValueError) as exc:
+                raise SkillActivationAttestationError(
+                    f"Active skill attestation failed: {candidate.skill_name}"
+                ) from exc
             activation_evidence.append(
                 {
                     "skill_name": candidate.skill_name,
@@ -355,6 +378,10 @@ class SkillActivationResolver:
                     "package_fingerprint": package_fingerprint,
                     "source": "aworld_cli_skill_activation_resolver",
                 }
+            )
+        if len(activation_evidence) != len(active_skill_names):
+            raise SkillActivationAttestationError(
+                "Every active skill requires activation evidence"
             )
         return ResolvedSkillSet(
             skill_configs=skill_configs,

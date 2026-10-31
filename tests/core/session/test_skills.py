@@ -9,6 +9,7 @@ from aworld.core.agent import Agent, Skill, load_skills
 from aworld.core.agent.messages import AssistantMessage, ToolCall
 from aworld.core.session import create_session
 from aworld.core.tool import default_tools
+from aworld.core.agent.skill import SkillPackageValidationError
 
 
 class SkillTests(unittest.IsolatedAsyncioTestCase):
@@ -55,3 +56,29 @@ class SkillTests(unittest.IsolatedAsyncioTestCase):
             (second / "SKILL.md").write_text("---\nname: first\ndescription: Duplicate\n---\n")
             with self.assertRaises(ValueError):
                 load_skills(directory)
+
+    @unittest.skipUnless(importlib.util.find_spec("yaml"), "Explicit SKILL.md loader requires optional PyYAML")
+    async def test_explicit_skill_roots_reject_symlinks_and_escaping_entrypoints(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            outside = root / "outside"
+            outside.mkdir()
+            (outside / "SKILL.md").write_text(
+                "---\nname: outside\ndescription: Outside\n---\n",
+                encoding="utf-8",
+            )
+            linked = root / "linked"
+            linked.symlink_to(outside, target_is_directory=True)
+            with self.assertRaises(SkillPackageValidationError):
+                load_skills(root)
+
+            linked.unlink()
+            skill_root = root / "unsafe"
+            skill_root.mkdir()
+            (skill_root / "SKILL.md").write_text(
+                "---\nname: unsafe\ndescription: Unsafe\nentrypoint: ../run.py\n---\n",
+                encoding="utf-8",
+            )
+            (root / "run.py").write_text("print('escape')\n", encoding="utf-8")
+            with self.assertRaises(SkillPackageValidationError):
+                load_skills(root)
