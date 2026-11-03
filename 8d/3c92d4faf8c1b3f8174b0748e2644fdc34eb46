@@ -1,0 +1,39 @@
+CHANGELOG.md
+  s_9e030844e031dc::t_91f9a95ce13399 5-13
+tests/core/agent/test_long_horizon_execution.py
+  s_9e030844e031dc::t_5028b2a78c4fff 3903
+  s_9e030844e031dc::t_0aefd914bd118e 3814-3816,3820-3844,3853-3902,3908-3918
+  s_9e030844e031dc::t_62a00ff597c631 3817-3819,3845-3852,3904-3907
+tests/packaging/test_runtime_compatibility_versions.py
+  s_9e030844e031dc::t_91f9a95ce13399 46-47,77,86
+aworld/agents/llm_agent.py
+  s_9e030844e031dc::t_bb4343888b8198 7834-7844,8494-8495
+  s_9e030844e031dc::t_28647976c507b4 1905-1915
+  s_9e030844e031dc::t_c5b1fe5642b684 6792-6794,7115-7130
+  s_9e030844e031dc::t_88793c38b3606e 1896-1904
+packaging/runtime/aworld-cli.pyproject.toml
+  s_9e030844e031dc::t_91f9a95ce13399 7,25
+aworld-cli/tests/test_version.py
+  s_9e030844e031dc::t_91f9a95ce13399 34,43
+aworld/runners/execution_protocol.py
+  s_9e030844e031dc::t_c1cf19933742be 7856
+  s_9e030844e031dc::t_c9a06a15a6843a 4330,4337
+aworld/version_gen.py
+  s_9e030844e031dc::t_91f9a95ce13399 8
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "8d3c92d4faf8c1b3f8174b0748e2644fdc34eb46",
+  "prompts": {},
+  "sessions": {
+    "s_9e030844e031dc": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a191c3-38b4-7152-83c4-1c77366abf46",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "wuman.wyf <wuman.wyf@antgroup.com>"
+    }
+  }
+}
