@@ -130,7 +130,7 @@ from aworld.models.llm import (
     bind_llm_context_call_id,
     get_llm_model,
 )
-from aworld.models.model_response import ModelResponse
+from aworld.models.model_response import Function, ModelResponse, ToolCall
 from aworld.models.prompt_cache import (
     resolve_provider_prompt_cache_key,
     supports_provider_native_prompt_cache,
@@ -428,6 +428,92 @@ class ToolCallBatchParseError(AWorldRuntimeException):
 
 
 class LlmOutputParser(ModelOutputParser[ModelResponse, AgentResult]):
+    _DSML_TOOL_CALLS = re.compile(
+        r"<｜DSML｜tool_calls>(?P<body>.*?)</｜DSML｜tool_calls>",
+        re.DOTALL,
+    )
+    _DSML_INVOKE = re.compile(
+        r'<｜DSML｜invoke\s+name="(?P<name>[^"\r\n]{1,256})">'
+        r"(?P<body>.*?)</｜DSML｜invoke>",
+        re.DOTALL,
+    )
+    _DSML_PARAMETER = re.compile(
+        r'<｜DSML｜parameter\s+name="(?P<name>[^"\r\n]{1,256})"'
+        r'\s+string="true">(?P<value>.*?)</｜DSML｜parameter>',
+        re.DOTALL,
+    )
+
+    @classmethod
+    def _recover_textual_dsml_tool_calls(
+        cls,
+        content: str,
+        *,
+        tool_call_surface: ModelToolCallSurface | None,
+    ) -> tuple[list[ToolCall], str] | None:
+        """Recover one exact DSML batch only against the live Tool surface."""
+
+        matches = list(cls._DSML_TOOL_CALLS.finditer(content))
+        if len(matches) != 1:
+            return None
+        block = matches[0]
+        body = block.group("body")
+        invokes = list(cls._DSML_INVOKE.finditer(body))
+        if not invokes:
+            return None
+        cursor = 0
+        calls: list[ToolCall] = []
+        for index, invoke in enumerate(invokes):
+            if body[cursor : invoke.start()].strip():
+                return None
+            cursor = invoke.end()
+            raw_name = invoke.group("name").strip()
+            if not raw_name:
+                return None
+            name = raw_name
+            if (
+                isinstance(tool_call_surface, ModelToolCallSurface)
+                and tool_call_surface.rejection_code(name) is not None
+            ):
+                suffix_matches = [
+                    candidate
+                    for candidate in tool_call_surface.tool_names
+                    if candidate.rsplit("__", 1)[-1] == name
+                ]
+                if len(suffix_matches) != 1:
+                    return None
+                name = suffix_matches[0]
+
+            invoke_body = invoke.group("body")
+            parameters = list(cls._DSML_PARAMETER.finditer(invoke_body))
+            parameter_cursor = 0
+            values: dict[str, str] = {}
+            for parameter in parameters:
+                if invoke_body[parameter_cursor : parameter.start()].strip():
+                    return None
+                parameter_cursor = parameter.end()
+                parameter_name = parameter.group("name").strip()
+                if not parameter_name or parameter_name in values:
+                    return None
+                values[parameter_name] = parameter.group("value")
+            if invoke_body[parameter_cursor:].strip():
+                return None
+            call_fingerprint = hashlib.sha256(
+                f"{block.group(0)}\0{index}".encode("utf-8")
+            ).hexdigest()[:24]
+            calls.append(
+                ToolCall(
+                    id=f"call_dsml_{call_fingerprint}",
+                    function=Function(
+                        name=name,
+                        arguments=json.dumps(values, ensure_ascii=False),
+                    ),
+                )
+            )
+        if body[cursor:].strip():
+            return None
+        remaining = (content[: block.start()] + content[block.end() :]).strip()
+        return calls, remaining
+
     async def parse(self, resp: ModelResponse, **kwargs) -> AgentResult:
         """Parse agent result based ModelResponse."""
 
@@ -443,20 +529,33 @@ class LlmOutputParser(ModelOutputParser[ModelResponse, AgentResult]):
         results = []
         is_call_tool = False
         content = "" if resp.content is None else resp.content
+        declared_tool_calls = list(resp.tool_calls or ())
+        if not declared_tool_calls and content:
+            recovered = self._recover_textual_dsml_tool_calls(
+                content,
+                tool_call_surface=kwargs.get("tool_call_surface"),
+            )
+            if recovered is not None:
+                declared_tool_calls, content = recovered
+                logger.info(
+                    f"🛠️ [Agent:{agent_id}] Recovered "
+                    f"{len(declared_tool_calls)} textual DSML tool call(s) "
+                    "against the live Tool surface"
+                )
 
         # Log parsing start
         logger.debug(
-            f"🔍 [Agent:{agent_id}] Starting to parse model response, has_tool_calls={bool(resp.tool_calls)}, content_length={len(content)}"
+            f"🔍 [Agent:{agent_id}] Starting to parse model response, has_tool_calls={bool(declared_tool_calls)}, content_length={len(content)}"
         )
 
-        if resp.tool_calls:
+        if declared_tool_calls:
             logger.info(
-                f"🛠️ [Agent:{agent_id}] Processing {len(resp.tool_calls)} tool call(s)"
+                f"🛠️ [Agent:{agent_id}] Processing {len(declared_tool_calls)} tool call(s)"
             )
             parsed_tool_calls = []
             parse_issues = []
             seen_call_ids = set()
-            for idx, tool_call in enumerate(resp.tool_calls):
+            for idx, tool_call in enumerate(declared_tool_calls):
                 call_id = getattr(tool_call, "id", None)
                 function = getattr(tool_call, "function", None)
                 if not isinstance(call_id, str) or not call_id.strip():

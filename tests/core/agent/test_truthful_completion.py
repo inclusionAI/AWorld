@@ -5,7 +5,7 @@ import json
 import pytest
 
 import aworld.agents.llm_agent as module
-from aworld.agents.llm_agent import LlmOutputParser
+from aworld.agents.llm_agent import LlmOutputParser, ModelToolCallSurface
 from aworld.core.context.execution_state import get_execution_state
 from aworld.core.context.generation_budget import GenerationBudgetPolicy
 from aworld.models.model_response import Function, ModelResponse, ToolCall
@@ -21,6 +21,104 @@ def silence_events(monkeypatch):
 
 def tool(arguments, call_id="call-1"):
     return ToolCall(id=call_id, function=Function(name="workspace__write", arguments=arguments))
+
+
+@pytest.mark.asyncio
+async def test_textual_dsml_tool_call_is_recovered_against_live_surface():
+    response = ModelResponse(
+        id="dsml-terminal",
+        model="fake",
+        content=(
+            '<｜DSML｜tool_calls><｜DSML｜invoke name="terminal">'
+            '<｜DSML｜parameter name="command" string="true">'
+            "ls -la /workspace/"
+            "</｜DSML｜parameter>"
+            '<｜DSML｜parameter name="description" string="true">'
+            "Inspect workspace"
+            "</｜DSML｜parameter>"
+            "</｜DSML｜invoke></｜DSML｜tool_calls>"
+            "Work remains in progress."
+        ),
+    )
+    surface = ModelToolCallSurface(
+        agent_id="Aworld",
+        task_id="task-1",
+        task_epoch=0,
+        tool_names=frozenset({"terminal"}),
+    )
+
+    parsed = await LlmOutputParser().parse(
+        response,
+        agent_id="Aworld",
+        tool_call_surface=surface,
+    )
+
+    assert parsed.is_call_tool is True
+    assert len(parsed.actions) == 1
+    assert parsed.actions[0].tool_name == "terminal"
+    assert parsed.actions[0].params == {
+        "command": "ls -la /workspace/",
+        "description": "Inspect workspace",
+    }
+    assert parsed.actions[0].policy_info == "Work remains in progress."
+
+
+@pytest.mark.asyncio
+async def test_textual_dsml_uses_unique_live_surface_suffix_alias():
+    response = ModelResponse(
+        id="dsml-decision",
+        model="fake",
+        content=(
+            '<｜DSML｜tool_calls><｜DSML｜invoke name="execution_decision">'
+            '<｜DSML｜parameter name="payload" string="true">continue'
+            "</｜DSML｜parameter>"
+            "</｜DSML｜invoke></｜DSML｜tool_calls>"
+        ),
+    )
+    surface = ModelToolCallSurface(
+        agent_id="Aworld",
+        task_id="task-1",
+        task_epoch=0,
+        tool_names=frozenset({"aworld__execution_decision"}),
+    )
+
+    parsed = await LlmOutputParser().parse(
+        response,
+        agent_id="Aworld",
+        tool_call_surface=surface,
+    )
+
+    assert parsed.is_call_tool is True
+    assert parsed.actions[0].tool_name == "aworld"
+    assert parsed.actions[0].action_name == "execution_decision"
+    assert parsed.actions[0].params == {"payload": "continue"}
+
+
+@pytest.mark.asyncio
+async def test_textual_dsml_unknown_tool_stays_non_executable_text():
+    raw = (
+        '<｜DSML｜tool_calls><｜DSML｜invoke name="forbidden">'
+        '<｜DSML｜parameter name="command" string="true">id'
+        "</｜DSML｜parameter>"
+        "</｜DSML｜invoke></｜DSML｜tool_calls>"
+    )
+    response = ModelResponse(id="dsml-forbidden", model="fake", content=raw)
+    surface = ModelToolCallSurface(
+        agent_id="Aworld",
+        task_id="task-1",
+        task_epoch=0,
+        tool_names=frozenset({"terminal"}),
+    )
+
+    parsed = await LlmOutputParser().parse(
+        response,
+        agent_id="Aworld",
+        tool_call_surface=surface,
+    )
+
+    assert parsed.is_call_tool is False
+    assert parsed.actions[0].tool_name is None
+    assert parsed.actions[0].policy_info == raw
 
 
 @pytest.mark.parametrize(

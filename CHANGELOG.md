@@ -10,6 +10,9 @@
 - Preserve typed telemetry for this provider-compatibility boundary without
   consuming the malformed-decision retry loop or treating control text as task
   completion.
+- Recover exact textual DSML Tool batches only when every call resolves against
+  the current live Tool surface; reject unknown, ambiguous, duplicate, or
+  partially parsed markup without executing it.
 
 ### Bounded public deliverable enumeration
 
