@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Structured Tool checkpoint recovery
+
+- Fail open immediately when a provider renders the internal execution
+  checkpoint as text instead of a structured Tool call, then expose the normal
+  task Tool catalog and require one bounded material action.
+- Preserve typed telemetry for this provider-compatibility boundary without
+  consuming the malformed-decision retry loop or treating control text as task
+  completion.
+
 ### Bounded public deliverable enumeration
 
 - Expand one positive numeric brace range in a final filename segment into at

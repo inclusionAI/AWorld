@@ -4327,12 +4327,14 @@ def project_execution_protocol_telemetry(value: Any) -> dict[str, Any] | None:
         "initial_decision_fail_open_reason": {
             "provider_unavailable",
             "model_response_incomplete",
+            "structured_tool_call_unavailable",
             "decision_schema_overflow",
             "checkpoint_deadline_exceeded",
         },
         "replan_decision_fail_open_reason": {
             "provider_unavailable",
             "model_response_incomplete",
+            "structured_tool_call_unavailable",
             "decision_schema_overflow",
             "checkpoint_deadline_exceeded",
         },
@@ -7851,6 +7853,7 @@ def record_model_decision_unavailable(
     if reason not in {
         "provider_unavailable",
         "model_response_incomplete",
+        "structured_tool_call_unavailable",
         "decision_schema_overflow",
         "checkpoint_deadline_exceeded",
     }:

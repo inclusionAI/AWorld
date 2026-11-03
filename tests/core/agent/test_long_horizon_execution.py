@@ -3811,6 +3811,111 @@ async def test_malformed_decision_cannot_loop_past_one_retry() -> None:
     assert not any(isinstance(write["payload"], ActionResult) for write in memory_writes)
 
 
+@pytest.mark.asyncio
+async def test_textual_checkpoint_fails_open_to_required_ordinary_tool() -> None:
+    requests = []
+    request_tool_names = []
+    request_tool_choices = []
+    request_parallel_tool_calls = []
+
+    class TextualCheckpointAgent(Agent):
+        async def _add_message_to_memory(self, *args, **kwargs):
+            return None
+
+        async def build_llm_input(self, observation, info=None, message=None, **kwargs):
+            return [{"role": "user", "content": str(observation.content or "")}]
+
+        async def _filter_tools(self, context=None):
+            return [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "terminal__execute",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {"command": {"type": "string"}},
+                            "required": ["command"],
+                        },
+                    },
+                }
+            ]
+
+        async def invoke_model(self, messages=None, message=None, **kwargs):
+            requests.append(kwargs)
+            request_tool_names.append(
+                [
+                    tool["function"]["name"]
+                    for tool in (kwargs.get("prepared_tools") or ())
+                ]
+            )
+            request_tool_choices.append(kwargs.get("tool_choice"))
+            request_parallel_tool_calls.append(kwargs.get("parallel_tool_calls"))
+            if len(requests) == 1:
+                return ModelResponse(
+                    id="textual-checkpoint",
+                    model="offline",
+                    content=(
+                        '<｜DSML｜tool_calls><｜DSML｜invoke name="execution_decision">'
+                        "checkpoint rendered as text"
+                        "</｜DSML｜invoke></｜DSML｜tool_calls>"
+                    ),
+                    finish_reason="stop",
+                    usage={"prompt_tokens": 1, "completion_tokens": 1},
+                )
+            return ModelResponse(
+                id="ordinary-tool",
+                model="offline",
+                content="",
+                tool_calls=[
+                    ToolCall(
+                        id="call-terminal",
+                        function=Function(
+                            name="terminal__execute",
+                            arguments='{"command":"pwd"}',
+                        ),
+                    )
+                ],
+                finish_reason="tool_calls",
+                usage={"prompt_tokens": 1, "completion_tokens": 1},
+            )
+
+    context = Context(task_id="textual-checkpoint-fail-open")
+    context.set_task(Task(id="textual-checkpoint-fail-open", timeout=600))
+    policy = ExecutionProtocolPolicy(mode=ProtocolMode.GUIDE)
+    agent = TextualCheckpointAgent(
+        name="Aworld",
+        conf=AgentConfig(
+            llm_provider="openai",
+            llm_model_name="offline",
+            llm_api_key="offline",
+        ),
+        execution_protocol_policy=policy,
+        max_loop_steps=0,
+    )
+    agent.skill_configs = {"long-running-agent": {"active": True}}
+    message = Message(category=Constants.AGENT, headers={"context": context})
+
+    result = await agent.async_policy(
+        Observation(content="create the requested artifact"),
+        message=message,
+    )
+
+    assert len(requests) >= 2
+    assert request_tool_names[0] == ["aworld__execution_decision"]
+    assert request_tool_names[1] == ["terminal__execute"]
+    assert request_tool_choices[1] == "required"
+    assert request_parallel_tool_calls[1] is False
+    assert result[0].tool_name == "terminal"
+    assert result[0].action_name == "execute"
+    assert result[0].params == {"command": "pwd"}
+    telemetry = build_execution_protocol_telemetry(context, agent.id())
+    assert telemetry["initial_decision_status"] == "fail_open_unknown"
+    assert telemetry["initial_decision_unavailable_count"] == 1
+    assert telemetry["initial_decision_fail_open_reason"] == (
+        "structured_tool_call_unavailable"
+    )
+
+
 @pytest.mark.parametrize(
     ("total,external,expected"),
     [

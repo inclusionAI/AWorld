@@ -1893,6 +1893,26 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             record_tool_hypotheses(context, self.id(), hypotheses)
         if offer.decision_boundary is None:
             return "not_offered"
+        textual_checkpoint = bool(
+            not result.is_call_tool
+            and any(
+                isinstance(getattr(action, "policy_info", None), str)
+                and bool(action.policy_info.strip())
+                for action in (result.actions or ())
+            )
+        )
+        if textual_checkpoint:
+            from aworld.runners.execution_protocol import (
+                record_model_decision_unavailable,
+            )
+
+            record_model_decision_unavailable(
+                context,
+                self.id(),
+                boundary=offer.decision_boundary,
+                reason="structured_tool_call_unavailable",
+            )
+            return "fail_open_no_structured_tool"
         if (
             len(matched_actions) != 1
             or len(result.actions or ()) != 1
@@ -6769,6 +6789,9 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         transient_model_recovery_reason = str(
             kwargs.pop("_transient_model_recovery_reason", "") or ""
         )
+        force_ordinary_tool_turn = bool(
+            kwargs.pop("_force_ordinary_tool_turn", False)
+        )
         # temporary state context
         self.context = message.context
         self._install_runtime_completion_contract(message.context)
@@ -7089,6 +7112,22 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 kwargs["tool_choice"] = "required"
                 kwargs["parallel_tool_calls"] = False
                 kwargs["_long_horizon_decision_turn"] = True
+            if (
+                force_ordinary_tool_turn
+                and execution_control_offer.decision_boundary is None
+                and tools
+                and not independent_acceptance_review
+                and not model_owned_review
+            ):
+                kwargs = self._model_response_action_projection_kwargs(
+                    dict(kwargs),
+                    max_output_tokens=self._model_response_action_projection_output_cap(
+                        self._resolve_generation_budget_policy(message.context)
+                    ),
+                    context=message.context,
+                )
+                kwargs["tool_choice"] = "required"
+                kwargs["parallel_tool_calls"] = False
             if independent_acceptance_review:
                 from aworld.runners.execution_protocol import (
                     load_acceptance_critic_state,
@@ -7792,6 +7831,17 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                                 "emit exactly one structured checkpoint decision and "
                                 "choose horizon=unknown when classification is uncertain."
                             )
+                        elif (
+                            execution_decision_outcome
+                            == "fail_open_no_structured_tool"
+                        ):
+                            execution_decision_feedback = (
+                                "The model provider did not return the internal "
+                                "checkpoint as a structured Tool call. AWorld failed "
+                                "that control-only checkpoint open. Resume with the "
+                                "ordinary task Tools now; one Tool call is required so "
+                                "material work cannot be mistaken for a final answer."
+                            )
                         else:
                             from aworld.runners.execution_protocol import (
                                 load_execution_protocol_state,
@@ -8441,6 +8491,8 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                     "tool_choice",
                 }
             }
+            if execution_decision_outcome == "fail_open_no_structured_tool":
+                recursive_kwargs["_force_ordinary_tool_turn"] = True
             return _ExecutionDecisionContinuation(
                 observation=Observation(
                     observer=self.id(),
