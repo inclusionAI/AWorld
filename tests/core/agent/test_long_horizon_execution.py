@@ -3854,11 +3854,7 @@ async def test_textual_checkpoint_fails_open_to_required_ordinary_tool() -> None
                 return ModelResponse(
                     id="textual-checkpoint",
                     model="offline",
-                    content=(
-                        '<｜DSML｜tool_calls><｜DSML｜invoke name="execution_decision">'
-                        "checkpoint rendered as text"
-                        "</｜DSML｜invoke></｜DSML｜tool_calls>"
-                    ),
+                    content="checkpoint rendered as unstructured text",
                     finish_reason="stop",
                     usage={"prompt_tokens": 1, "completion_tokens": 1},
                 )

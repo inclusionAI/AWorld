@@ -191,6 +191,8 @@ SEMANTIC_PROGRESS_LEDGER_ENV = "AWORLD_SEMANTIC_PROGRESS_LEDGER"
 _PREPARED_TOOLS_UNSET = object()
 _ADAPTIVE_MEMORY_OCCURRENCE_KEY = "__aworld_internal_memory_occurrence_id"
 _ADAPTIVE_MEMORY_PROJECTION_LIMIT = 128
+_ACTIVE_SKILL_PROMPT_MARKER = "<aworld_active_skill_instructions>"
+_MAX_ACTIVE_SKILL_PROMPT_BYTES = 512 * 1024
 _DEFER_ADAPTIVE_MEMORY_PROJECTION = contextvars.ContextVar(
     "aworld_defer_adaptive_memory_projection",
     default=False,
@@ -382,6 +384,7 @@ class ToolCallParseIssueCode(str, Enum):
     ARGUMENTS_NOT_OBJECT = "arguments_not_object"
     TOOL_NOT_IN_LIVE_SURFACE = "tool_not_in_live_surface"
     MEDIA_CAPABILITY_UNAVAILABLE = "media_capability_unavailable"
+    MALFORMED_TEXTUAL_TOOL_BATCH = "malformed_textual_tool_batch"
 
 
 @dataclass(frozen=True, slots=True)
@@ -439,7 +442,8 @@ class LlmOutputParser(ModelOutputParser[ModelResponse, AgentResult]):
     )
     _DSML_PARAMETER = re.compile(
         r'<｜DSML｜parameter\s+name="(?P<name>[^"\r\n]{1,256})"'
-        r'\s+string="true">(?P<value>.*?)</｜DSML｜parameter>',
+        r'\s+string="(?P<string_mode>[^"\r\n]{1,16})">'
+        r'(?P<value>.*?)</｜DSML｜parameter>',
         re.DOTALL,
     )
 
@@ -530,17 +534,44 @@ class LlmOutputParser(ModelOutputParser[ModelResponse, AgentResult]):
         is_call_tool = False
         content = "" if resp.content is None else resp.content
         declared_tool_calls = list(resp.tool_calls or ())
-        if not declared_tool_calls and content:
-            recovered = self._recover_textual_dsml_tool_calls(
-                content,
-                tool_call_surface=kwargs.get("tool_call_surface"),
-            )
-            if recovered is not None:
-                declared_tool_calls, content = recovered
+        if not declared_tool_calls:
+            textual_sources = [("content", content)]
+            if isinstance(resp.reasoning_content, str):
+                textual_sources.append(("reasoning", resp.reasoning_content))
+            textual_dsml_declared = False
+            for source_kind, source_text in textual_sources:
+                if not source_text:
+                    continue
+                textual_dsml_declared = bool(
+                    textual_dsml_declared
+                    or "<｜DSML｜tool_calls>" in source_text
+                )
+                recovered = self._recover_textual_dsml_tool_calls(
+                    source_text,
+                    tool_call_surface=kwargs.get("tool_call_surface"),
+                )
+                if recovered is None:
+                    continue
+                declared_tool_calls, remaining = recovered
+                if source_kind == "content":
+                    content = remaining
                 logger.info(
                     f"🛠️ [Agent:{agent_id}] Recovered "
                     f"{len(declared_tool_calls)} textual DSML tool call(s) "
-                    "against the live Tool surface"
+                    f"from {source_kind} against the live Tool surface"
+                )
+                break
+            if textual_dsml_declared and not declared_tool_calls:
+                raise ToolCallBatchParseError(
+                    [
+                        ToolCallParseIssue(
+                            call_index=0,
+                            call_id=None,
+                            code=(
+                                ToolCallParseIssueCode.MALFORMED_TEXTUAL_TOOL_BATCH
+                            ),
+                        )
+                    ]
                 )
 
         # Log parsing start
@@ -6855,6 +6886,67 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         self._finished = True
         return [ActionModel(agent_name=self.id(), policy_info=text)]
 
+    def _inject_active_skill_instructions(
+        self,
+        messages: Sequence[Mapping[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Bind active authorized Skill usage to the final model request."""
+
+        projected = [dict(message) for message in messages]
+        if any(
+            _ACTIVE_SKILL_PROMPT_MARKER in str(message.get("content") or "")
+            for message in projected
+        ):
+            return projected
+
+        sections: list[str] = []
+        for skill_name, raw_config in (self.skill_configs or {}).items():
+            if not isinstance(raw_config, Mapping) or not raw_config.get("active"):
+                continue
+            if str(raw_config.get("type") or "").strip().lower() == "agent":
+                continue
+            usage = raw_config.get("usage")
+            if not isinstance(usage, str) or not usage.strip():
+                logger.warning(
+                    "Active Skill has no injectable usage; skill_name=%s",
+                    str(skill_name)[:128],
+                )
+                continue
+            path = str(raw_config.get("skill_path") or "")
+            safe_usage = usage.replace("]]>", "]]]]><![CDATA[>")
+            sections.append(
+                "  <active_skill>\n"
+                f"    <skill_name>{json.dumps(str(skill_name), ensure_ascii=False)}</skill_name>\n"
+                f"    <skill_path>{json.dumps(path, ensure_ascii=False)}</skill_path>\n"
+                f"    <skill_usage><![CDATA[{safe_usage}]]></skill_usage>\n"
+                "  </active_skill>"
+            )
+        if not sections:
+            return projected
+        content = (
+            f"{_ACTIVE_SKILL_PROMPT_MARKER}\n"
+            "The framework has already loaded the complete instructions for "
+            "every active, authorized Skill below. Follow every relevant "
+            "active Skill before generic task execution. Do not spend a Tool "
+            "call re-reading these SKILL.md files; read only additional files "
+            "that their instructions explicitly reference.\n"
+            + "\n".join(sections)
+            + "\n</aworld_active_skill_instructions>"
+        )
+        if len(content.encode("utf-8")) > _MAX_ACTIVE_SKILL_PROMPT_BYTES:
+            raise AWorldRuntimeException(
+                "Active Skill instructions exceed the bounded prompt budget"
+            )
+        return [
+            {
+                "role": "system",
+                "content": content,
+                PROMPT_SECTION_NAME_HINT_KEY: "active_skill_instructions",
+                PROMPT_STABILITY_HINT_KEY: "stable",
+            },
+            *projected,
+        ]
+
     async def _async_policy_once(
         self,
         observation: Observation,
@@ -6999,6 +7091,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         raw_messages = await self.build_llm_input(
             observation, info, message=message, **kwargs
         )
+        raw_messages = self._inject_active_skill_instructions(raw_messages)
         from aworld.core.context.work_progress import (
             retain_work_progress,
             checkpoint_work_progress,
@@ -7856,7 +7949,9 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                             "tool call and continue from observed work. Issue codes: "
                             + ",".join(issue.code.value for issue in exc.issues)
                         )
-                        agent_result = AgentResult(actions=[], is_call_tool=False)
+                        agent_result = AgentResult(
+                            actions=[], current_state=None, is_call_tool=False
+                        )
                     incomplete_decision_state = (
                         self._recoverable_model_response_state(message.context)
                         if execution_control_offer.decision_boundary is not None

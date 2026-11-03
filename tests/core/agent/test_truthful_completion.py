@@ -5,7 +5,12 @@ import json
 import pytest
 
 import aworld.agents.llm_agent as module
-from aworld.agents.llm_agent import LlmOutputParser, ModelToolCallSurface
+from aworld.agents.llm_agent import (
+    LlmOutputParser,
+    ModelToolCallSurface,
+    ToolCallBatchParseError,
+    ToolCallParseIssueCode,
+)
 from aworld.core.context.execution_state import get_execution_state
 from aworld.core.context.generation_budget import GenerationBudgetPolicy
 from aworld.models.model_response import Function, ModelResponse, ToolCall
@@ -21,6 +26,37 @@ def silence_events(monkeypatch):
 
 def tool(arguments, call_id="call-1"):
     return ToolCall(id=call_id, function=Function(name="workspace__write", arguments=arguments))
+
+
+def test_active_skill_usage_is_bound_to_final_model_messages() -> None:
+    agent = _agent(policy=GenerationBudgetPolicy(total_timeout_seconds=5))
+    agent.skill_configs = {
+        "spreadsheet-recovery": {
+            "active": True,
+            "skill_path": "/installed-agent/skills/spreadsheet-recovery/SKILL.md",
+            "usage": "Inspect formulas first, then preserve workbook formatting.",
+        },
+        "unrelated": {
+            "active": False,
+            "skill_path": "/installed-agent/skills/unrelated/SKILL.md",
+            "usage": "Must not be injected.",
+        },
+    }
+
+    projected = agent._inject_active_skill_instructions(
+        [{"role": "user", "content": "repair the workbook"}]
+    )
+
+    assert projected[0]["role"] == "system"
+    assert "<aworld_active_skill_instructions>" in projected[0]["content"]
+    assert "spreadsheet-recovery" in projected[0]["content"]
+    assert "Inspect formulas first" in projected[0]["content"]
+    assert "/installed-agent/skills/spreadsheet-recovery/SKILL.md" in (
+        projected[0]["content"]
+    )
+    assert "Must not be injected" not in projected[0]["content"]
+    assert projected[1] == {"role": "user", "content": "repair the workbook"}
+    assert agent._inject_active_skill_instructions(projected) == projected
 
 
 @pytest.mark.asyncio
@@ -64,6 +100,48 @@ async def test_textual_dsml_tool_call_is_recovered_against_live_surface():
 
 
 @pytest.mark.asyncio
+async def test_reasoning_dsml_false_string_mode_recovers_before_final_text():
+    response = ModelResponse(
+        id="dsml-reasoning-terminal",
+        model="fake",
+        reasoning_content=(
+            '<｜DSML｜tool_calls><｜DSML｜invoke name="terminal">'
+            '<｜DSML｜parameter name="commands" string="false">'
+            "find /installed-agent/aworld-authorized-skills -name SKILL.md"
+            "</｜DSML｜parameter>"
+            '<｜DSML｜parameter name="workdir" string="true">/root'
+            "</｜DSML｜parameter>"
+            "</｜DSML｜invoke></｜DSML｜tool_calls>"
+        ),
+        content="No tool access is available in this recovery turn.",
+    )
+    surface = ModelToolCallSurface(
+        agent_id="Aworld",
+        task_id="task-1",
+        task_epoch=0,
+        tool_names=frozenset({"terminal"}),
+    )
+
+    parsed = await LlmOutputParser().parse(
+        response,
+        agent_id="Aworld",
+        tool_call_surface=surface,
+    )
+
+    assert parsed.is_call_tool is True
+    assert parsed.actions[0].tool_name == "terminal"
+    assert parsed.actions[0].params == {
+        "commands": (
+            "find /installed-agent/aworld-authorized-skills -name SKILL.md"
+        ),
+        "workdir": "/root",
+    }
+    assert parsed.actions[0].policy_info == (
+        "No tool access is available in this recovery turn."
+    )
+
+
+@pytest.mark.asyncio
 async def test_textual_dsml_uses_unique_live_surface_suffix_alias():
     response = ModelResponse(
         id="dsml-decision",
@@ -95,7 +173,7 @@ async def test_textual_dsml_uses_unique_live_surface_suffix_alias():
 
 
 @pytest.mark.asyncio
-async def test_textual_dsml_unknown_tool_stays_non_executable_text():
+async def test_textual_dsml_unknown_tool_is_a_typed_non_executable_error():
     raw = (
         '<｜DSML｜tool_calls><｜DSML｜invoke name="forbidden">'
         '<｜DSML｜parameter name="command" string="true">id'
@@ -110,15 +188,16 @@ async def test_textual_dsml_unknown_tool_stays_non_executable_text():
         tool_names=frozenset({"terminal"}),
     )
 
-    parsed = await LlmOutputParser().parse(
-        response,
-        agent_id="Aworld",
-        tool_call_surface=surface,
-    )
+    with pytest.raises(ToolCallBatchParseError) as raised:
+        await LlmOutputParser().parse(
+            response,
+            agent_id="Aworld",
+            tool_call_surface=surface,
+        )
 
-    assert parsed.is_call_tool is False
-    assert parsed.actions[0].tool_name is None
-    assert parsed.actions[0].policy_info == raw
+    assert raised.value.issues[0].code is (
+        ToolCallParseIssueCode.MALFORMED_TEXTUAL_TOOL_BATCH
+    )
 
 
 @pytest.mark.parametrize(

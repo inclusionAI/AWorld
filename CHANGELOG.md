@@ -13,6 +13,11 @@
 - Recover exact textual DSML Tool batches only when every call resolves against
   the current live Tool surface; reject unknown, ambiguous, duplicate, or
   partially parsed markup without executing it.
+- Bind complete `usage` content for every active authorized Skill into a stable
+  final-request system section, independently of AMNI neuron projection, so
+  task execution never depends on first re-reading `SKILL.md` through a Tool.
+- Recover DSML emitted in reasoning streams, including provider string-mode
+  variants, while routing malformed textual batches into bounded Tool repair.
 
 ### Bounded public deliverable enumeration
 
