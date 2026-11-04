@@ -6,7 +6,8 @@ from aworld.core.context.amni import ApplicationContext
 
 
 @pytest.mark.asyncio
-async def test_filter_tools_disables_tools_for_forced_instruction_only_skill() -> None:
+@pytest.mark.parametrize("tool_free", [False, True])
+async def test_forced_instruction_only_skill_preserves_tools_unless_opted_out(tool_free) -> None:
     context = ApplicationContext.create(
         session_id="session-test",
         task_id="task-test",
@@ -16,6 +17,7 @@ async def test_filter_tools_disables_tools_for_forced_instruction_only_skill() -
     agent = Agent(
         name="Aworld",
         conf=AgentConfig(
+            disable_tools_for_instruction_only_skills=tool_free,
             skill_configs={
                 "writing-plans": {
                     "name": "writing-plans",
@@ -27,6 +29,7 @@ async def test_filter_tools_disables_tools_for_forced_instruction_only_skill() -
             }
         ),
     )
+    agent._llm = object()  # Tool filtering should not instantiate a model client.
     agent.tool_mapping = {}
     context.task_input_object.metadata["requested_skill_names"] = ["writing-plans"]
 
@@ -39,7 +42,7 @@ async def test_filter_tools_disables_tools_for_forced_instruction_only_skill() -
 
     filtered = await agent._filter_tools(context)
 
-    assert filtered == []
+    assert filtered == ([] if tool_free else agent.tools)
 
 
 @pytest.mark.asyncio
@@ -64,6 +67,7 @@ async def test_filter_tools_keeps_tools_without_forced_skill() -> None:
             }
         ),
     )
+    agent._llm = object()
     agent.tool_mapping = {}
     async def _fake_get_active_skills(namespace: str):
         assert namespace == agent.id()

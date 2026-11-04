@@ -12548,16 +12548,16 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         # get current active skills
         skills = await context.get_active_skills(namespace=self.id())
 
-        forced_skill_names = self._requested_skill_names_from_context(context)
-        if forced_skill_names and self._should_disable_tools_for_forced_skills(
-            forced_skill_names=forced_skill_names,
-            active_skills=skills,
-        ):
-            logger.info(
-                "Forced instruction-only skills active for agent %s; disabling runtime tool access",
-                self.id(),
-            )
-            return []
+        if self.conf.disable_tools_for_instruction_only_skills:
+            forced_skill_names = self._requested_skill_names_from_context(context)
+            if self._should_disable_tools_for_forced_skills(
+                forced_skill_names=forced_skill_names,
+                active_skills=skills,
+            ):
+                logger.info(
+                    f"Agent {self.id()} opted into tool-free instruction-only Skills"
+                )
+                return []
 
         selected = await skill_translate_tools(
             skills=skills,

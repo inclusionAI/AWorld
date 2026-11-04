@@ -255,6 +255,7 @@ def test_real_cli_http_model_reads_a_local_file(tmp_path):
         ("terminal", "cmd"), ("bash", "command"), ("terminal", "nested_python"),
         ("run_code", "exam_flat_python"), ("terminal", "r2r_invalid_list"),
         ("bash", "wave_ambiguous"), ("bash", "wave_truncated"),
+        ("terminal", "mars_instruction_only"),
     ],
 )
 def test_rich_cli_executes_reasoning_only_skillbench_tool_call(tmp_path, alias, argument):
@@ -291,6 +292,31 @@ def test_rich_cli_executes_reasoning_only_skillbench_tool_call(tmp_path, alias, 
     )
     python_replay = argument in {"nested_python", "exam_flat_python"}
     expected_result = "skill-reference-result-42"
+    requested_skills = ["replay-skill"]
+    if argument == "mars_instruction_only":
+        # The production package has three SKILL.md files and no extra assets.
+        skill_root = tmp_path / "mars-skills"
+        requested_skills = [
+            "custom-distance-metrics", "parallel-processing", "pareto-optimization",
+        ]
+        for name in requested_skills:
+            skill_dir = skill_root / name
+            skill_dir.mkdir(parents=True)
+            (skill_dir / "SKILL.md").write_text(
+                f"---\nname: {name}\ndescription: Mars fixture instructions.\n---\n"
+                f"Use the terminal to read the dataset. Fixture guidance for {name}.\n"
+            )
+        data_dir = tmp_path / "data"
+        data_dir.mkdir()
+        data_file = data_dir / "citsci_train.csv"
+        expected_result = "mars-csv-result-42"
+        data_file.write_text(f"file_rad,x,y\n{expected_result},1,2\n")
+        reasoning = (
+            '<｜DSML｜tool_calls><｜DSML｜invoke name="terminal">'
+            '<｜DSML｜parameter name="run_code" string="true">'
+            f'head -5 {shlex.quote(str(data_file))}'
+            '</｜DSML｜parameter></｜DSML｜invoke></｜DSML｜tool_calls>'
+        )
     if python_replay:
         # Preserve the nested listdir and flat os.walk forms from the two
         # exam-block-sequencing traces with paths mapped to a local workspace.
@@ -408,7 +434,8 @@ def test_rich_cli_executes_reasoning_only_skillbench_tool_call(tmp_path, alias, 
             [sys.executable, "-m", "aworld_cli", "--no-banner", "run",
              "--agent", "Aworld", "--agent-dir", str(tmp_path / "agents"),
              "--task", "Use the enabled task Skill to read the reference.",
-             "--skill-path", str(skill_root), "--skill", "replay-skill",
+             "--skill-path", str(skill_root),
+             *(value for name in requested_skills for value in ("--skill", name)),
              "--non-interactive", "--env-file", os.devnull, "--max-runs", "1",
              "--trajectory-output", str(trajectory), "--trajectory-format", "atif"],
             cwd=tmp_path, env=env, capture_output=True, text=True, timeout=45,
@@ -422,7 +449,11 @@ def test_rich_cli_executes_reasoning_only_skillbench_tool_call(tmp_path, alias, 
     assert len(requests) == (3 if repair_reason else 2)
     assert requests[0]["stream"] is True
     assert any(t["function"]["name"] == "run_code" for t in requests[0]["tools"])
-    assert "Read reference.txt with the terminal" in str(requests[0]["messages"])
+    if argument == "mars_instruction_only":
+        for name in requested_skills:
+            assert f"Fixture guidance for {name}" in str(requests[0]["messages"])
+    else:
+        assert "Read reference.txt with the terminal" in str(requests[0]["messages"])
     if repair_reason:
         retry = requests[1]
         assert retry["tool_choice"] == "required"
