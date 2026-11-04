@@ -251,7 +251,11 @@ def test_real_cli_http_model_reads_a_local_file(tmp_path):
 
 @pytest.mark.parametrize(
     ("alias", "argument"),
-    [("terminal", "cmd"), ("bash", "command"), ("terminal", "nested_python")],
+    [
+        ("terminal", "cmd"), ("bash", "command"), ("terminal", "nested_python"),
+        ("run_code", "exam_flat_python"), ("terminal", "r2r_invalid_list"),
+        ("bash", "wave_ambiguous"), ("bash", "wave_truncated"),
+    ],
 )
 def test_rich_cli_executes_reasoning_only_skillbench_tool_call(tmp_path, alias, argument):
     # Batch if846259: r-icd32cff… used terminal/cmd to inspect the Skill root,
@@ -285,24 +289,53 @@ def test_rich_cli_executes_reasoning_only_skillbench_tool_call(tmp_path, alias, 
         '<｜DSML｜parameter name="description" string="true">Inspect task Skill</｜DSML｜parameter>\n'
         '</｜DSML｜invoke>\n</｜DSML｜tool_calls>'
     )
-    nested_python = argument == "nested_python"
+    python_replay = argument in {"nested_python", "exam_flat_python"}
     expected_result = "skill-reference-result-42"
-    if nested_python:
-        # exam-block-sequencing: replay the console's DSML shape with only the
-        # two production paths remapped to a safe local workspace.
+    if python_replay:
+        # Preserve the nested listdir and flat os.walk forms from the two
+        # exam-block-sequencing traces with paths mapped to a local workspace.
         data_dir = tmp_path / "data"
         data_dir.mkdir()
         expected_result = "exam-blocks-e2e.json"
         (data_dir / expected_result).write_text("{}")
+        wrapper = '<｜DSML｜invoke name="terminal">\n' if argument == "nested_python" else ""
+        inspect_data = (
+            f'for root, dirs, files in os.walk({str(data_dir)!r}):\n    print(files)\n'
+            if argument == "exam_flat_python"
+            else f'print(os.listdir({str(data_dir)!r}))\n'
+        )
         reasoning = (
             '<｜DSML｜tool_calls>\n'
-            '<｜DSML｜invoke name="terminal">\n'
+            f'{wrapper}'
             '<｜DSML｜invoke name="run_code">\n'
             '<｜DSML｜parameter name="code" string="true">import os\n'
-            f'print(os.listdir({str(data_dir)!r}))\n'
+            f'{inspect_data}'
             f'print(os.listdir({str(tmp_path)!r}))</｜DSML｜parameter>\n'
             '</｜DSML｜invoke>\n</｜DSML｜tool_calls>'
         )
+    repair_reason = {
+        "r2r_invalid_list": "invalid_tool_arguments",
+        "wave_ambiguous": "malformed_tool_call_batch",
+        "wave_truncated": "incomplete_tool_arguments",
+    }.get(argument)
+    if argument == "r2r_invalid_list":
+        reasoning = (
+            '<｜DSML｜tool_calls><｜DSML｜invoke name="terminal">'
+            '<｜DSML｜parameter name="commands" string="false">'
+            f"['find {workspace_path} -name \n\"*.json\" | head -50']"
+            '</｜DSML｜parameter></｜DSML｜invoke></｜DSML｜tool_calls>'
+        )
+        expected_result = "r2r-model.json"
+        (tmp_path / expected_result).write_text("{}")
+        repair_code = f'find {workspace_path} -name "*.json"'
+    elif argument.startswith("wave_"):
+        # Keep the two batch boundaries from the gravitational-wave trace.
+        reasoning += (
+            reasoning if argument == "wave_ambiguous"
+            else '<｜DSML｜tool_calls><｜DSML｜invoke name="bash">'
+        )
+        repair_code = f'find {skills_path} -name SKILL.md'
+        expected_result = "replay-skill/SKILL.md"
     requests = []
 
     class Handler(BaseHTTPRequestHandler):
@@ -312,13 +345,26 @@ def test_rich_cli_executes_reasoning_only_skillbench_tool_call(tmp_path, alias, 
         def do_POST(self):
             request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
             requests.append(request)
-            first = len(requests) == 1
-            delta = {"reasoning_content": reasoning} if first else {"content": "verified"}
-            if first and nested_python:
-                delta["content"] = "I will inspect the exam data."
+            index = len(requests)
+            finish = "stop"
+            if index == 1:
+                delta = {"reasoning_content": reasoning}
+                if python_replay or repair_reason:
+                    delta["content"] = "I will inspect the task data."
+            elif index == 2 and repair_reason:
+                delta = {"tool_calls": [{
+                    "index": 0, "id": "repaired-read", "type": "function",
+                    "function": {
+                        "name": "run_code",
+                        "arguments": json.dumps({"code": repair_code, "language": "shell"}),
+                    },
+                }]}
+                finish = "tool_calls"
+            else:
+                delta = {"content": "verified"}
             chunks = [
                 {"index": 0, "delta": {"role": "assistant", **delta}, "finish_reason": None},
-                {"index": 0, "delta": {}, "finish_reason": "stop"},
+                {"index": 0, "delta": {}, "finish_reason": finish},
             ]
             if request.get("stream"):
                 data = "".join(
@@ -331,7 +377,7 @@ def test_rich_cli_executes_reasoning_only_skillbench_tool_call(tmp_path, alias, 
                 ) + "data: [DONE]\n\n"
                 content_type = "text/event-stream"
             else:
-                data = json.dumps(payload(delta))
+                data = json.dumps(payload(delta, finish))
                 content_type = "application/json"
             self.send_response(200)
             self.send_header("Content-Type", content_type)
@@ -373,15 +419,22 @@ def test_rich_cli_executes_reasoning_only_skillbench_tool_call(tmp_path, alias, 
         thread.join(timeout=2)
 
     assert result.returncode == 0, result.stderr[-5000:]
-    assert len(requests) == 2
+    assert len(requests) == (3 if repair_reason else 2)
     assert requests[0]["stream"] is True
     assert any(t["function"]["name"] == "run_code" for t in requests[0]["tools"])
     assert "Read reference.txt with the terminal" in str(requests[0]["messages"])
-    messages = requests[1]["messages"]
+    if repair_reason:
+        retry = requests[1]
+        assert retry["tool_choice"] == "required"
+        assert retry["tools"] == requests[0]["tools"]
+        assert repair_reason in str(retry["messages"])
+        assert "current tool schema" in str(retry["messages"])
+        assert all(message["role"] != "tool" for message in retry["messages"])
+    messages = requests[-1]["messages"]
     assistant = next(m for m in messages if m.get("tool_calls"))
     tool_result = next(m for m in messages if m["role"] == "tool")
     assert assistant["tool_calls"][0]["id"] == tool_result["tool_call_id"]
-    if nested_python:
+    if python_replay:
         function = assistant["tool_calls"][0]["function"]
         assert function["name"] == "run_code"
         assert json.loads(function["arguments"])["language"] == "python"

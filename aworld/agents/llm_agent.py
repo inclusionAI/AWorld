@@ -516,11 +516,11 @@ class LlmOutputParser(ModelOutputParser[ModelResponse, AgentResult]):
         return None
 
     @staticmethod
-    def _normalize_terminal_commands(value: str) -> str | None:
+    def _normalize_terminal_commands(value: str, *, allow_list: bool) -> str | None:
         stripped = value.strip()
         if not stripped:
             return None
-        if stripped.startswith("[") and stripped.endswith("]"):
+        if allow_list and stripped.startswith("["):
             parsed = None
             for loader in (json.loads, ast.literal_eval):
                 try:
@@ -532,7 +532,26 @@ class LlmOutputParser(ModelOutputParser[ModelResponse, AgentResult]):
                 isinstance(item, str) and item.strip() for item in parsed
             ):
                 return "\n".join(item.strip() for item in parsed)
+            return None
         return value
+
+    @staticmethod
+    def _select_terminal_language(arguments: dict[str, Any]) -> None:
+        if "language" in arguments:
+            return
+        code = arguments["code"].strip()
+        try:
+            parsed = ast.parse(code)
+        except (SyntaxError, ValueError, RecursionError):
+            return
+        # Require positive Python evidence. Keep the Shell default for
+        # ambiguous snippets and ordinary Shell commands.
+        if (
+            parsed.body
+            and isinstance(parsed.body[0], (ast.Import, ast.ImportFrom))
+            and any(isinstance(node, ast.Call) for node in ast.walk(parsed))
+        ):
+            arguments.update(code=code, language="python")
 
     @classmethod
     def _normalize_textual_tool_values(
@@ -550,7 +569,9 @@ class LlmOutputParser(ModelOutputParser[ModelResponse, AgentResult]):
         if len(command_keys) != 1:
             return None
         command_key = command_keys[0]
-        command = cls._normalize_terminal_commands(values[command_key])
+        command = cls._normalize_terminal_commands(
+            values[command_key], allow_list=command_key == "commands",
+        )
         if not command:
             return None
         normalized: dict[str, Any] = {"code": command}
@@ -592,14 +613,30 @@ class LlmOutputParser(ModelOutputParser[ModelResponse, AgentResult]):
             normalized["timeout"] = timeout
 
         for key in ("language", "output_format"):
-            if key in values and values[key].strip():
+            if key in values:
                 normalized[key] = values[key].strip()
+        if normalized.get("language", "shell") not in {"shell", "python"}:
+            return None
+        if normalized.get("output_format", "structured") not in {
+            "structured", "markdown", "json", "text",
+        }:
+            return None
         for key in ("declared_write_paths", "env"):
             if key not in values:
                 continue
             try:
                 parsed_value = json.loads(values[key])
             except (TypeError, ValueError):
+                return None
+            if key == "env" and (
+                not isinstance(parsed_value, dict)
+                or not all(isinstance(value, str) for value in parsed_value.values())
+            ):
+                return None
+            if key == "declared_write_paths" and (
+                not isinstance(parsed_value, list)
+                or not all(isinstance(path, str) for path in parsed_value)
+            ):
                 return None
             normalized[key] = parsed_value
         return normalized
@@ -769,21 +806,6 @@ class LlmOutputParser(ModelOutputParser[ModelResponse, AgentResult]):
             )
             if normalized_values is None:
                 return None
-            if unwrap_terminal and "code" in values and "language" not in values:
-                code = normalized_values["code"].strip()
-                try:
-                    parsed = ast.parse(code)
-                except (SyntaxError, ValueError, RecursionError):
-                    pass
-                else:
-                    # A leading import is positive evidence for Python. Other
-                    # snippets keep the existing Shell default unless explicit.
-                    if (
-                        parsed.body
-                        and isinstance(parsed.body[0], (ast.Import, ast.ImportFrom))
-                        and any(isinstance(node, ast.Call) for node in ast.walk(parsed))
-                    ):
-                        normalized_values.update(code=code, language="python")
             recovered_specs.append((name, normalized_values))
         if body[cursor:].strip():
             nested = cls._recover_nested_terminal_dsml(
@@ -796,6 +818,8 @@ class LlmOutputParser(ModelOutputParser[ModelResponse, AgentResult]):
 
         calls: list[ToolCall] = []
         for index, (name, values) in enumerate(recovered_specs):
+            if name.rsplit("__", 1)[-1] == "run_code":
+                cls._select_terminal_language(values)
             call_fingerprint = hashlib.sha256(
                 f"{block.group(0)}\0{index}".encode("utf-8")
             ).hexdigest()[:24]
@@ -11056,43 +11080,60 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         finally:
             await self._close_generation_stream(resp_stream)
 
-    def _recover_reasoning_only_tool_calls(
+    def _recover_textual_response_tool_calls(
         self,
         response: ModelResponse | None,
         *,
         surface: ModelToolCallSurface,
         tool_choice: Any,
-    ) -> None:
-        """Promote a complete, authorized reasoning batch before response triage."""
+    ) -> str | None:
+        """Promote one authorized text batch, or return a bounded retry reason."""
         if (
             not response
             or response.error
             or response.tool_calls
-            or not isinstance(response.reasoning_content, str)
-            or response.finish_reason not in {"stop", "tool_calls"}
-            or response.message.get("aworld_stream_terminal_observed") is False
-            or not surface.tool_names
         ):
-            return
-        # Prose may accompany the reasoning call. Leave content-channel DSML
-        # to the output parser, which gives that channel precedence.
-        if "<｜DSML｜tool_calls>" in (response.content or ""):
-            return
+            return None
+        opening = "<｜DSML｜tool_calls>"
+        closing = "</｜DSML｜tool_calls>"
+        sources = [
+            (channel, value)
+            for channel, value in (
+                ("content", response.content),
+                ("reasoning", response.reasoning_content),
+            )
+            if isinstance(value, str) and ("<｜DSML｜" in value or "</｜DSML｜" in value)
+        ]
+        if not sources:
+            return None
+        if (
+            response.finish_reason not in {"stop", "tool_calls"}
+            or response.message.get("aworld_stream_terminal_observed") is False
+            or any(value.count(opening) > value.count(closing) for _, value in sources)
+        ):
+            return "incomplete_tool_arguments"
+        if len(sources) != 1 or sources[0][1].count(opening) != 1:
+            return "malformed_tool_call_batch"
+        if not surface.tool_names:
+            return "invalid_tool_arguments"
         if isinstance(tool_choice, dict):
             function = tool_choice.get("function")
             required_name = function.get("name") if isinstance(function, dict) else None
             if not isinstance(required_name, str) or required_name not in surface.tool_names:
-                return
+                return "invalid_tool_arguments"
             surface = replace(surface, tool_names=frozenset({required_name}))
         elif tool_choice not in (None, "auto", "required"):
-            return
+            return "invalid_tool_arguments"
 
+        channel, text = sources[0]
         recovered = LlmOutputParser._recover_textual_dsml_tool_calls(
-            response.reasoning_content, tool_call_surface=surface, require_complete=True
+            text, tool_call_surface=surface, require_complete=True
         )
         if recovered is None:
-            return
-        calls, _ = recovered
+            return "invalid_tool_arguments"
+        calls, remaining = recovered
+        if channel == "content":
+            response.content = remaining
         # Use a turn-local identity, even if the model repeats the same command.
         turn_id = uuid.uuid4().hex
         for index, call in enumerate(calls):
@@ -11101,11 +11142,13 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         # The accepted assistant turn must precede its Tool results on replay.
         response.message = {
             **response.message,
+            "content": response.content,
             "tool_calls": [call.to_dict() for call in calls],
         }
         logger.info(
-            f"Recovered {len(calls)} complete reasoning-channel Tool call(s)"
+            f"Recovered {len(calls)} complete {channel}-channel Tool call(s)"
         )
+        return None
 
     @staticmethod
     def _incomplete_model_response_reason(response: ModelResponse | None) -> str | None:
@@ -11421,12 +11464,12 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         except GenerationBudgetExceeded as exc:
             self._record_generation_budget_exception(message.context, exc)
             raise
-        self._recover_reasoning_only_tool_calls(
+        textual_issue = self._recover_textual_response_tool_calls(
             response,
             surface=self._model_tool_call_surface(tools, message.context),
             tool_choice=repair_kwargs.get("tool_choice"),
         )
-        incomplete_reason = self._incomplete_model_response_reason(response)
+        incomplete_reason = textual_issue or self._incomplete_model_response_reason(response)
         if incomplete_reason:
             content_chars, tool_call_count = self._generation_partial_counts(response)
             exhausted = GenerationBudgetExceeded(
@@ -11665,7 +11708,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                     parser_args = kwargs.get("response_parse_args")
                     if isinstance(parser_args, dict):
                         parser_args["tool_call_surface"] = tool_call_surface
-                    self._recover_reasoning_only_tool_calls(
+                    textual_issue = self._recover_textual_response_tool_calls(
                         llm_response,
                         surface=tool_call_surface,
                         tool_choice=kwargs.get("tool_choice"),
@@ -11697,8 +11740,8 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                     # A non-empty provider response is not necessarily a completed
                     # action. In particular length-stop batches must be discarded
                     # atomically even if an early call happens to be valid JSON.
-                    incomplete_reason = self._incomplete_model_response_reason(
-                        llm_response
+                    incomplete_reason = (
+                        textual_issue or self._incomplete_model_response_reason(llm_response)
                     )
                     if llm_response is None and (
                         artifact_media_projected
@@ -11768,9 +11811,15 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                                 recovery_context=recovery_context,
                                 limit=capsule_limit,
                             )
+                            retry_tools_available = bool(
+                                tools and kwargs.get("tool_choice") != "none"
+                            )
                             recovery_instruction = (
-                                "Return one complete, minimal Tool call that "
-                                "advances the task. If a concrete deliverable "
+                                "Return one complete native tool_calls entry using a "
+                                "tool name and JSON arguments from the current tool schema. "
+                                "Do not emit textual DSML or a code block as the call. "
+                                "For run_code, set language explicitly if using Python. "
+                                "Choose an action that advances the task. If a concrete deliverable "
                                 "and its core format are already known, create "
                                 "or update an inspectable candidate now."
                                 + self._staged_action_recovery_guidance(
@@ -11783,7 +11832,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                                         > 0
                                     ),
                                 )
-                                if tools
+                                if retry_tools_available
                                 else (
                                     "No Tools are available in this recovery "
                                     "turn. Return only the concise, accurate "
@@ -11805,7 +11854,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                                     ),
                                 }
                             )
-                            if tools:
+                            if retry_tools_available:
                                 # This retry is an action projection of reasoning
                                 # the model already performed, not another open-
                                 # ended planning turn. Requiring one declared Tool
@@ -11816,7 +11865,8 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                                 # enabled action-repair policy may apply its
                                 # configured output cap.
                                 kwargs = dict(kwargs)
-                                kwargs["tool_choice"] = "required"
+                                if not isinstance(kwargs.get("tool_choice"), dict):
+                                    kwargs["tool_choice"] = "required"
                                 kwargs = (
                                     self._model_response_action_projection_kwargs(
                                         kwargs,

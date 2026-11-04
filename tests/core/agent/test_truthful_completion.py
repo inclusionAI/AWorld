@@ -67,7 +67,9 @@ def test_reasoning_only_recovery_rejects_incomplete_or_unauthorized_batches(
     )
     agent = _agent(policy=GenerationBudgetPolicy())
     surface = ModelToolCallSurface("Aworld", "test", 0, frozenset(names))
-    agent._recover_reasoning_only_tool_calls(response, surface=surface, tool_choice=choice)
+    assert agent._recover_textual_response_tool_calls(
+        response, surface=surface, tool_choice=choice,
+    )
     assert not response.tool_calls
     assert "tool_calls" not in response.message
 
