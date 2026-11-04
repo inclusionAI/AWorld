@@ -675,7 +675,8 @@ async def test_reasoning_only_recovery_retains_a_bounded_working_tail(monkeypatc
     assert "discarded-prefix" not in retained["content"]
     assert retained["content"].endswith("R" * 128)
     assert len(retained["content"]) < len(reasoning)
-    assert "Return one complete, minimal Tool call" in calls[1][-1]["content"]
+    assert "Return one complete native tool_calls entry" in calls[1][-1]["content"]
+    assert "current tool schema" in calls[1][-1]["content"]
     assert result.finish_reason == "tool_calls"
 
 
