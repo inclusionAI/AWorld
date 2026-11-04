@@ -659,6 +659,7 @@ class LlmOutputParser(ModelOutputParser[ModelResponse, AgentResult]):
         content: str,
         *,
         tool_call_surface: ModelToolCallSurface | None,
+        require_complete: bool = False,
     ) -> tuple[list[ToolCall], str] | None:
         """Recover one exact DSML batch only against the live Tool surface."""
 
@@ -669,6 +670,15 @@ class LlmOutputParser(ModelOutputParser[ModelResponse, AgentResult]):
         body = block.group("body")
         invokes = list(cls._DSML_INVOKE.finditer(body))
         if not invokes:
+            return None
+        remaining = (content[:block.start()] + content[block.end():]).strip()
+        if require_complete and (
+            len(cls._DSML_INVOKE_OPEN.findall(body)) != len(invokes)
+            or len(cls._DSML_INVOKE_CLOSE.findall(body)) != len(invokes)
+            or "<｜DSML｜" in remaining
+            or "</｜DSML｜" in remaining
+            or cls._DSML_INVOKE.sub("", body).strip()
+        ):
             return None
         nested_specs = None
         if len(cls._DSML_INVOKE_OPEN.findall(body)) > len(invokes):
@@ -716,6 +726,11 @@ class LlmOutputParser(ModelOutputParser[ModelResponse, AgentResult]):
                 if not parameter_name or parameter_name in values:
                     return None
                 values[parameter_name] = parameter.group("value")
+                if require_complete and (
+                    "<｜DSML｜" in values[parameter_name]
+                    or "</｜DSML｜" in values[parameter_name]
+                ):
+                    return None
             if invoke_body[parameter_cursor:].strip():
                 nested = cls._recover_nested_terminal_dsml(
                     body,
@@ -756,7 +771,6 @@ class LlmOutputParser(ModelOutputParser[ModelResponse, AgentResult]):
                     ),
                 )
             )
-        remaining = (content[: block.start()] + content[block.end() :]).strip()
         return calls, remaining
 
     async def parse(self, resp: ModelResponse, **kwargs) -> AgentResult:
@@ -11005,6 +11019,54 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         finally:
             await self._close_generation_stream(resp_stream)
 
+    def _recover_reasoning_only_tool_calls(
+        self,
+        response: ModelResponse | None,
+        *,
+        surface: ModelToolCallSurface,
+        tool_choice: Any,
+    ) -> None:
+        """Promote a complete, authorized reasoning batch before response triage."""
+        if (
+            not response
+            or response.error
+            or response.tool_calls
+            or str(response.content or "").strip()
+            or not isinstance(response.reasoning_content, str)
+            or response.finish_reason not in {"stop", "tool_calls"}
+            or response.message.get("aworld_stream_terminal_observed") is False
+            or not surface.tool_names
+        ):
+            return
+        if isinstance(tool_choice, dict):
+            function = tool_choice.get("function")
+            required_name = function.get("name") if isinstance(function, dict) else None
+            if not isinstance(required_name, str) or required_name not in surface.tool_names:
+                return
+            surface = replace(surface, tool_names=frozenset({required_name}))
+        elif tool_choice not in (None, "auto", "required"):
+            return
+
+        recovered = LlmOutputParser._recover_textual_dsml_tool_calls(
+            response.reasoning_content, tool_call_surface=surface, require_complete=True
+        )
+        if recovered is None:
+            return
+        calls, _ = recovered
+        # Use a turn-local identity, even if the model repeats the same command.
+        turn_id = uuid.uuid4().hex
+        for index, call in enumerate(calls):
+            call.id = f"call_dsml_{turn_id}_{index}"
+        response.tool_calls = calls
+        # The accepted assistant turn must precede its Tool results on replay.
+        response.message = {
+            **response.message,
+            "tool_calls": [call.to_dict() for call in calls],
+        }
+        logger.info(
+            f"Recovered {len(calls)} complete reasoning-channel Tool call(s)"
+        )
+
     @staticmethod
     def _incomplete_model_response_reason(response: ModelResponse | None) -> str | None:
         if response is None:
@@ -11319,6 +11381,11 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         except GenerationBudgetExceeded as exc:
             self._record_generation_budget_exception(message.context, exc)
             raise
+        self._recover_reasoning_only_tool_calls(
+            response,
+            surface=self._model_tool_call_surface(tools, message.context),
+            tool_choice=repair_kwargs.get("tool_choice"),
+        )
         incomplete_reason = self._incomplete_model_response_reason(response)
         if incomplete_reason:
             content_chars, tool_call_count = self._generation_partial_counts(response)
@@ -11558,6 +11625,11 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                     parser_args = kwargs.get("response_parse_args")
                     if isinstance(parser_args, dict):
                         parser_args["tool_call_surface"] = tool_call_surface
+                    self._recover_reasoning_only_tool_calls(
+                        llm_response,
+                        surface=tool_call_surface,
+                        tool_choice=kwargs.get("tool_choice"),
+                    )
                     surface_rejection_codes = (
                         self._tool_surface_rejection_codes(
                             llm_response,

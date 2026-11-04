@@ -7,6 +7,7 @@ import threading
 import os
 from pathlib import Path
 import signal
+import shlex
 import socket
 import subprocess
 import sys
@@ -246,6 +247,125 @@ def test_real_cli_http_model_reads_a_local_file(tmp_path):
     metrics = trajectory["extra"]["run_metrics"]
     assert (metrics["input_tokens"], metrics["output_tokens"], metrics["cache_read_tokens"], metrics["total_tokens"]) == (300, 30, 230, 330)
     assert metrics["reported_calls"] == metrics["model_calls"] == 2
+
+
+@pytest.mark.parametrize(
+    ("alias", "argument"),
+    [("terminal", "cmd"), ("bash", "command")],
+)
+def test_rich_cli_executes_reasoning_only_skillbench_tool_call(tmp_path, alias, argument):
+    # Batch if846259: r-icd32cff… used terminal/cmd to inspect the Skill root,
+    # and r-i57c932… used bash/command to find SKILL.md. Use a local Skill tree.
+    tmp_path = tmp_path.resolve()
+    skill_root = tmp_path / "skills"
+    skill = skill_root / "replay-skill"
+    skill.mkdir(parents=True)
+    manifest = skill / "SKILL.md"
+    manifest.write_text(
+        "---\nname: replay-skill\ndescription: Read the task reference.\n---\n"
+        "Read reference.txt with the terminal and use the returned value.\n"
+    )
+    (skill / "reference.txt").write_text("skill-reference-result-42\n")
+    (tmp_path / "agents").mkdir()
+    workspace_path = shlex.quote(str(tmp_path))
+    skills_path = shlex.quote(str(skill_root))
+    # Retain the read-only discovery commands from the traces, with paths
+    # remapped to the test workspace. Also verify the Skill's referenced asset.
+    discovery = (
+        f'ls -la {workspace_path} && echo "---" && ls {skills_path}'
+        if alias == "terminal"
+        else f'ls -la {skills_path} 2>/dev/null && find {skills_path} -name "SKILL.md" | head -50'
+    )
+    reasoning = (
+        '<｜DSML｜tool_calls>\n'
+        f'<｜DSML｜invoke name="{alias}">\n'
+        f'<｜DSML｜parameter name="{argument}" string="true">'
+        f'{discovery} && cat {shlex.quote(str(skill / "reference.txt"))}'
+        '</｜DSML｜parameter>\n'
+        '<｜DSML｜parameter name="description" string="true">Inspect task Skill</｜DSML｜parameter>\n'
+        '</｜DSML｜invoke>\n</｜DSML｜tool_calls>'
+    )
+    requests = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+        def do_POST(self):
+            request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            requests.append(request)
+            first = len(requests) == 1
+            delta = {"reasoning_content": reasoning} if first else {"content": "verified"}
+            chunks = [
+                {"index": 0, "delta": {"role": "assistant", **delta}, "finish_reason": None},
+                {"index": 0, "delta": {}, "finish_reason": "stop"},
+            ]
+            if request.get("stream"):
+                data = "".join(
+                    "data: " + json.dumps({
+                        "id": f"replay-{len(requests)}",
+                        "model": "fixture",
+                        "choices": [chunk],
+                    }) + "\n\n"
+                    for chunk in chunks
+                ) + "data: [DONE]\n\n"
+                content_type = "text/event-stream"
+            else:
+                data = json.dumps(payload(delta))
+                content_type = "application/json"
+            self.send_response(200)
+            self.send_header("Content-Type", content_type)
+            self.end_headers()
+            self.wfile.write(data.encode())
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    root = Path(__file__).resolve().parents[1]
+    trajectory = tmp_path / "trajectory.json"
+    env = {
+        **os.environ,
+        "PYTHONPATH": os.pathsep.join(map(str, (root, root / "aworld-cli/src"))),
+        "LLM_MODEL_NAME": "fixture",
+        "LLM_BASE_URL": f"http://127.0.0.1:{server.server_port}/v1",
+        "LLM_API_KEY": "local-fixture-key",
+        "AWORLD_CONTROL_ROOT": str(tmp_path / "control"),
+        "AWORLD_DISABLE_AUTO_DOTENV": "1",
+        "AWORLD_TOOL_SURFACE_PROFILE": "one_shot",
+        "AWORLD_TOOL_SURFACE_MODE": "enforce",
+        "AWORLD_REQUIRE_STREAM_FINISH_REASON": "true",
+        "AWORLD_SUCCESS_FIRST": "1",
+        "STREAM": "1",
+    }
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "aworld_cli", "--no-banner", "run",
+             "--agent", "Aworld", "--agent-dir", str(tmp_path / "agents"),
+             "--task", "Use the enabled task Skill to read the reference.",
+             "--skill-path", str(skill_root), "--skill", "replay-skill",
+             "--non-interactive", "--env-file", os.devnull, "--max-runs", "1",
+             "--trajectory-output", str(trajectory), "--trajectory-format", "atif"],
+            cwd=tmp_path, env=env, capture_output=True, text=True, timeout=45,
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+    assert result.returncode == 0, result.stderr[-5000:]
+    assert len(requests) == 2
+    assert requests[0]["stream"] is True
+    assert any(t["function"]["name"] == "run_code" for t in requests[0]["tools"])
+    assert "Read reference.txt with the terminal" in str(requests[0]["messages"])
+    messages = requests[1]["messages"]
+    assistant = next(m for m in messages if m.get("tool_calls"))
+    tool_result = next(m for m in messages if m["role"] == "tool")
+    assert assistant["tool_calls"][0]["id"] == tool_result["tool_call_id"]
+    content = tool_result["content"]
+    text = content if isinstance(content, str) else "".join(part["text"] for part in content)
+    assert "skill-reference-result-42" in text
+    trace = json.loads(trajectory.read_text())
+    assert trace["final_metrics"]["extra"]["tool_call_count"] == 1
 
 
 def test_cli_ctrl_c_during_http_request_exits_and_cleans_up():

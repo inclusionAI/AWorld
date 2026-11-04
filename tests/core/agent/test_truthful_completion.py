@@ -28,6 +28,50 @@ def tool(arguments, call_id="call-1"):
     return ToolCall(id=call_id, function=Function(name="workspace__write", arguments=arguments))
 
 
+@pytest.mark.parametrize(
+    ("names", "choice", "finish", "terminal", "markup"),
+    [
+        ({"unrelated"}, None, "stop", True, "complete"),
+        ({"run_code"}, "none", "stop", True, "complete"),
+        ({"run_code", "unrelated"}, {"function": {"name": "unrelated"}}, "stop", True, "complete"),
+        ({"run_code"}, None, "length", True, "complete"),
+        ({"run_code"}, None, "stop", False, "complete"),
+        ({"run_code"}, None, "stop", True, "partial"),
+        ({"run_code"}, None, "stop", True, "extra_open"),
+        ({"run_code"}, None, "stop", True, "nested_open"),
+    ],
+)
+def test_reasoning_only_recovery_rejects_incomplete_or_unauthorized_batches(
+    names, choice, finish, terminal, markup,
+):
+    opening = '<｜DSML｜tool_calls><｜DSML｜invoke name="terminal">'
+    complete = (
+        opening
+        + '<｜DSML｜parameter name="cmd" string="true">pwd</｜DSML｜parameter>'
+        + '</｜DSML｜invoke></｜DSML｜tool_calls>'
+    )
+    reasoning = {
+        "complete": complete,
+        "partial": complete.removesuffix("</｜DSML｜tool_calls>"),
+        "extra_open": complete + opening,
+        "nested_open": complete.replace(
+            opening, opening + '<｜DSML｜invoke name="run_code">'
+        ),
+    }[markup]
+    response = ModelResponse(
+        id="reasoning-batch",
+        model="fixture",
+        reasoning_content=reasoning,
+        finish_reason=finish,
+        message={"aworld_stream_terminal_observed": terminal},
+    )
+    agent = _agent(policy=GenerationBudgetPolicy())
+    surface = ModelToolCallSurface("Aworld", "test", 0, frozenset(names))
+    agent._recover_reasoning_only_tool_calls(response, surface=surface, tool_choice=choice)
+    assert not response.tool_calls
+    assert "tool_calls" not in response.message
+
+
 def test_active_skill_usage_is_bound_to_final_model_messages() -> None:
     agent = _agent(policy=GenerationBudgetPolicy(total_timeout_seconds=5))
     agent.skill_configs = {
