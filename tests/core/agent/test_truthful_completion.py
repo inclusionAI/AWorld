@@ -59,6 +59,40 @@ def test_active_skill_usage_is_bound_to_final_model_messages() -> None:
     assert agent._inject_active_skill_instructions(projected) == projected
 
 
+def test_mounted_task_skill_requires_real_tool_evidence_before_completion() -> None:
+    agent = _agent(policy=GenerationBudgetPolicy(total_timeout_seconds=5))
+    agent.skill_configs = {
+        "spreadsheet-recovery": {
+            "active": True,
+            "skill_path": (
+                "/installed-agent/aworld-authorized-skills/"
+                "spreadsheet-recovery/SKILL.md"
+            ),
+            "usage": "Repair and validate the workbook.",
+        }
+    }
+    context = _message("task-skill-evidence").context
+
+    feedback = agent._task_skill_tool_evidence_feedback_if_unsatisfied(context)
+
+    assert feedback is not None
+    assert "no Tool action has executed" in feedback
+
+
+def test_builtin_skill_does_not_force_task_skill_tool_evidence() -> None:
+    agent = _agent(policy=GenerationBudgetPolicy(total_timeout_seconds=5))
+    agent.skill_configs = {
+        "long-running-agent": {
+            "active": True,
+            "skill_path": "/opt/aworld/builtin/long-running-agent/SKILL.md",
+            "usage": "Continue until complete.",
+        }
+    }
+    context = _message("builtin-skill-evidence").context
+
+    assert agent._task_skill_tool_evidence_feedback_if_unsatisfied(context) is None
+
+
 @pytest.mark.asyncio
 async def test_textual_dsml_tool_call_is_recovered_against_live_surface():
     response = ModelResponse(
@@ -139,6 +173,117 @@ async def test_reasoning_dsml_false_string_mode_recovers_before_final_text():
     assert parsed.actions[0].policy_info == (
         "No tool access is available in this recovery turn."
     )
+
+
+@pytest.mark.asyncio
+async def test_textual_terminal_alias_normalizes_to_live_run_code_contract():
+    response = ModelResponse(
+        id="dsml-terminal-alias",
+        model="fake",
+        reasoning_content=(
+            '<｜DSML｜tool_calls><｜DSML｜invoke name="terminal">'
+            '<｜DSML｜parameter name="cmd" string="true">'
+            "ls -la /installed-agent/aworld-authorized-skills"
+            "</｜DSML｜parameter>"
+            '<｜DSML｜parameter name="timeout" string="false">20000'
+            "</｜DSML｜parameter>"
+            '<｜DSML｜parameter name="description" string="true">'
+            "Inspect active task skills"
+            "</｜DSML｜parameter>"
+            "</｜DSML｜invoke></｜DSML｜tool_calls>"
+        ),
+    )
+    surface = ModelToolCallSurface(
+        agent_id="Aworld",
+        task_id="task-1",
+        task_epoch=0,
+        tool_names=frozenset({"run_code"}),
+    )
+
+    parsed = await LlmOutputParser().parse(
+        response,
+        agent_id="Aworld",
+        tool_call_surface=surface,
+    )
+
+    assert parsed.is_call_tool is True
+    assert parsed.actions[0].tool_name == "run_code"
+    assert parsed.actions[0].params == {
+        "code": "ls -la /installed-agent/aworld-authorized-skills",
+        "timeout": 20.0,
+    }
+
+
+@pytest.mark.asyncio
+async def test_textual_nested_terminal_run_code_wrapper_is_recovered():
+    response = ModelResponse(
+        id="dsml-nested-terminal",
+        model="fake",
+        reasoning_content=(
+            '<｜DSML｜tool_calls><｜DSML｜invoke name="terminal">'
+            '<｜DSML｜invoke name="run_code">'
+            '<｜DSML｜parameter name="code" string="true">'
+            "find /root -maxdepth 2 -type f"
+            "</｜DSML｜parameter>"
+            # This is the exact provider shape observed in production: it opens
+            # a terminal wrapper and an inner run_code call, but emits only one
+            # invoke close. The chain is still singular and unambiguous.
+            "</｜DSML｜invoke></｜DSML｜tool_calls>"
+        ),
+    )
+    surface = ModelToolCallSurface(
+        agent_id="Aworld",
+        task_id="task-1",
+        task_epoch=0,
+        tool_names=frozenset({"run_code"}),
+    )
+
+    parsed = await LlmOutputParser().parse(
+        response,
+        agent_id="Aworld",
+        tool_call_surface=surface,
+    )
+
+    assert parsed.is_call_tool is True
+    assert parsed.actions[0].tool_name == "run_code"
+    assert parsed.actions[0].params == {
+        "code": "find /root -maxdepth 2 -type f"
+    }
+
+
+@pytest.mark.asyncio
+async def test_textual_terminal_commands_list_is_joined_without_evaluation():
+    response = ModelResponse(
+        id="dsml-terminal-commands",
+        model="fake",
+        content=(
+            '<｜DSML｜tool_calls><｜DSML｜invoke name="terminal">'
+            '<｜DSML｜parameter name="commands" string="false">'
+            "['pwd', 'find . -name SKILL.md']"
+            "</｜DSML｜parameter>"
+            '<｜DSML｜parameter name="workdir" string="true">/root'
+            "</｜DSML｜parameter>"
+            "</｜DSML｜invoke></｜DSML｜tool_calls>"
+        ),
+    )
+    surface = ModelToolCallSurface(
+        agent_id="Aworld",
+        task_id="task-1",
+        task_epoch=0,
+        tool_names=frozenset({"run_code"}),
+    )
+
+    parsed = await LlmOutputParser().parse(
+        response,
+        agent_id="Aworld",
+        tool_call_surface=surface,
+    )
+
+    assert parsed.is_call_tool is True
+    assert parsed.actions[0].params == {
+        "code": "pwd\nfind . -name SKILL.md",
+        "cwd": "/root",
+    }
 
 
 @pytest.mark.asyncio

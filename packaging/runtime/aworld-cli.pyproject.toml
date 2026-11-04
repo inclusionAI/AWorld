@@ -22,7 +22,7 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
 ]
 dependencies = [
-    "aworld==0.2.37",
+    "aworld==0.2.38",
     "rich>=14.0.0",
     "prompt-toolkit",
     "python-dotenv>=1.0.1",

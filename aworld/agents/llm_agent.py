@@ -2,6 +2,7 @@
 # Copyright (c) 2025 inclusionAI.
 import time
 
+import ast
 import asyncio
 import contextvars
 import copy
@@ -431,6 +432,27 @@ class ToolCallBatchParseError(AWorldRuntimeException):
 
 
 class LlmOutputParser(ModelOutputParser[ModelResponse, AgentResult]):
+    _TERMINAL_TOOL_ALIASES = frozenset(
+        {
+            "bash",
+            "cmd",
+            "cmd_str",
+            "command",
+            "exec",
+            "executable",
+            "terminal",
+        }
+    )
+    _TERMINAL_COMMAND_ARGUMENTS = (
+        "code",
+        "command",
+        "cmd",
+        "commands",
+        "run_code",
+    )
+    _TERMINAL_IGNORED_ARGUMENTS = frozenset(
+        {"description", "explanation", "reason"}
+    )
     _DSML_TOOL_CALLS = re.compile(
         r"<｜DSML｜tool_calls>(?P<body>.*?)</｜DSML｜tool_calls>",
         re.DOTALL,
@@ -446,6 +468,190 @@ class LlmOutputParser(ModelOutputParser[ModelResponse, AgentResult]):
         r'(?P<value>.*?)</｜DSML｜parameter>',
         re.DOTALL,
     )
+    _DSML_INVOKE_OPEN = re.compile(
+        r'<｜DSML｜invoke\s+name="(?P<name>[^"\r\n]{1,256})">'
+    )
+    _DSML_INVOKE_CLOSE = re.compile(r"</｜DSML｜invoke>")
+
+    @classmethod
+    def _terminal_execution_target(
+        cls,
+        tool_call_surface: ModelToolCallSurface | None,
+    ) -> str | None:
+        if not isinstance(tool_call_surface, ModelToolCallSurface):
+            return None
+        if "run_code" in tool_call_surface.tool_names:
+            return "run_code"
+        candidates = sorted(
+            name
+            for name in tool_call_surface.tool_names
+            if name.rsplit("__", 1)[-1] == "run_code"
+        )
+        return candidates[0] if len(candidates) == 1 else None
+
+    @classmethod
+    def _resolve_textual_tool_name(
+        cls,
+        raw_name: str,
+        *,
+        tool_call_surface: ModelToolCallSurface | None,
+    ) -> str | None:
+        name = raw_name.strip()
+        if not name:
+            return None
+        if not isinstance(tool_call_surface, ModelToolCallSurface):
+            return name
+        if tool_call_surface.rejection_code(name) is None:
+            return name
+        suffix_matches = sorted(
+            candidate
+            for candidate in tool_call_surface.tool_names
+            if candidate.rsplit("__", 1)[-1] == name
+        )
+        if len(suffix_matches) == 1:
+            return suffix_matches[0]
+        if name.casefold() in cls._TERMINAL_TOOL_ALIASES:
+            return cls._terminal_execution_target(tool_call_surface)
+        return None
+
+    @staticmethod
+    def _normalize_terminal_commands(value: str) -> str | None:
+        stripped = value.strip()
+        if not stripped:
+            return None
+        if stripped.startswith("[") and stripped.endswith("]"):
+            parsed = None
+            for loader in (json.loads, ast.literal_eval):
+                try:
+                    parsed = loader(stripped)
+                    break
+                except (TypeError, ValueError, SyntaxError):
+                    continue
+            if isinstance(parsed, (list, tuple)) and parsed and all(
+                isinstance(item, str) and item.strip() for item in parsed
+            ):
+                return "\n".join(item.strip() for item in parsed)
+        return value
+
+    @classmethod
+    def _normalize_textual_tool_values(
+        cls,
+        *,
+        resolved_name: str,
+        values: Mapping[str, str],
+    ) -> dict[str, Any] | None:
+        if resolved_name.rsplit("__", 1)[-1] != "run_code":
+            return dict(values)
+
+        command_keys = [
+            key for key in cls._TERMINAL_COMMAND_ARGUMENTS if key in values
+        ]
+        if len(command_keys) != 1:
+            return None
+        command_key = command_keys[0]
+        command = cls._normalize_terminal_commands(values[command_key])
+        if not command:
+            return None
+        normalized: dict[str, Any] = {"code": command}
+        allowed = set(cls._TERMINAL_COMMAND_ARGUMENTS)
+        allowed.update(
+            {
+                "cwd",
+                "declared_write_paths",
+                "env",
+                "language",
+                "output_format",
+                "timeout",
+                "workdir",
+            }
+        )
+        allowed.update(cls._TERMINAL_IGNORED_ARGUMENTS)
+        if any(key not in allowed for key in values):
+            return None
+
+        cwd_values = [values[key] for key in ("cwd", "workdir") if key in values]
+        if len(cwd_values) > 1 and len(set(cwd_values)) != 1:
+            return None
+        if cwd_values and cwd_values[0].strip():
+            normalized["cwd"] = cwd_values[0].strip()
+
+        if "timeout" in values:
+            try:
+                timeout = float(values["timeout"].strip())
+            except (TypeError, ValueError):
+                return None
+            if not math.isfinite(timeout) or timeout <= 0:
+                return None
+            # DeepSeek's textual terminal dialect commonly emits milliseconds,
+            # while AWorld's run_code contract is seconds with a 3600s ceiling.
+            if timeout > 3600 and timeout <= 3_600_000:
+                timeout /= 1000
+            if timeout > 3600:
+                return None
+            normalized["timeout"] = timeout
+
+        for key in ("language", "output_format"):
+            if key in values and values[key].strip():
+                normalized[key] = values[key].strip()
+        for key in ("declared_write_paths", "env"):
+            if key not in values:
+                continue
+            try:
+                parsed_value = json.loads(values[key])
+            except (TypeError, ValueError):
+                return None
+            normalized[key] = parsed_value
+        return normalized
+
+    @classmethod
+    def _recover_nested_terminal_dsml(
+        cls,
+        body: str,
+        *,
+        tool_call_surface: ModelToolCallSurface | None,
+    ) -> list[tuple[str, dict[str, Any]]] | None:
+        """Recover one unambiguous nested terminal wrapper emitted by DeepSeek."""
+
+        opens = list(cls._DSML_INVOKE_OPEN.finditer(body))
+        if len(opens) < 2:
+            return None
+        raw_names = [match.group("name").strip() for match in opens]
+        if any(
+            name.casefold() not in cls._TERMINAL_TOOL_ALIASES
+            and name.rsplit("__", 1)[-1] != "run_code"
+            for name in raw_names
+        ):
+            return None
+
+        parameters = list(cls._DSML_PARAMETER.finditer(body))
+        stripped = cls._DSML_PARAMETER.sub("", body)
+        stripped = cls._DSML_INVOKE_OPEN.sub("", stripped)
+        stripped = cls._DSML_INVOKE_CLOSE.sub("", stripped).strip()
+        values: dict[str, str] = {}
+        for parameter in parameters:
+            name = parameter.group("name").strip()
+            if not name or name in values:
+                return None
+            values[name] = parameter.group("value")
+        if stripped:
+            if values:
+                return None
+            values["code"] = stripped
+
+        resolved_name = cls._terminal_execution_target(tool_call_surface)
+        if resolved_name is None:
+            resolved_name = cls._resolve_textual_tool_name(
+                raw_names[-1], tool_call_surface=tool_call_surface
+            )
+        if resolved_name is None:
+            return None
+        normalized = cls._normalize_textual_tool_values(
+            resolved_name=resolved_name,
+            values=values,
+        )
+        if normalized is None:
+            return None
+        return [(resolved_name, normalized)]
 
     @classmethod
     def _recover_textual_dsml_tool_calls(
@@ -464,28 +670,39 @@ class LlmOutputParser(ModelOutputParser[ModelResponse, AgentResult]):
         invokes = list(cls._DSML_INVOKE.finditer(body))
         if not invokes:
             return None
-        cursor = 0
-        calls: list[ToolCall] = []
-        for index, invoke in enumerate(invokes):
-            if body[cursor : invoke.start()].strip():
+        nested_specs = None
+        if len(cls._DSML_INVOKE_OPEN.findall(body)) > len(invokes):
+            nested_specs = cls._recover_nested_terminal_dsml(
+                body,
+                tool_call_surface=tool_call_surface,
+            )
+            if nested_specs is None:
                 return None
+        cursor = 0
+        recovered_specs: list[tuple[str, dict[str, Any]]] = list(nested_specs or ())
+        if nested_specs is not None:
+            cursor = len(body)
+        for index, invoke in enumerate(invokes):
+            if nested_specs is not None:
+                break
+            if body[cursor : invoke.start()].strip():
+                nested = cls._recover_nested_terminal_dsml(
+                    body,
+                    tool_call_surface=tool_call_surface,
+                )
+                if nested is None:
+                    return None
+                recovered_specs = nested
+                cursor = len(body)
+                break
             cursor = invoke.end()
             raw_name = invoke.group("name").strip()
-            if not raw_name:
+            name = cls._resolve_textual_tool_name(
+                raw_name,
+                tool_call_surface=tool_call_surface,
+            )
+            if name is None:
                 return None
-            name = raw_name
-            if (
-                isinstance(tool_call_surface, ModelToolCallSurface)
-                and tool_call_surface.rejection_code(name) is not None
-            ):
-                suffix_matches = [
-                    candidate
-                    for candidate in tool_call_surface.tool_names
-                    if candidate.rsplit("__", 1)[-1] == name
-                ]
-                if len(suffix_matches) != 1:
-                    return None
-                name = suffix_matches[0]
 
             invoke_body = invoke.group("body")
             parameters = list(cls._DSML_PARAMETER.finditer(invoke_body))
@@ -500,7 +717,33 @@ class LlmOutputParser(ModelOutputParser[ModelResponse, AgentResult]):
                     return None
                 values[parameter_name] = parameter.group("value")
             if invoke_body[parameter_cursor:].strip():
+                nested = cls._recover_nested_terminal_dsml(
+                    body,
+                    tool_call_surface=tool_call_surface,
+                )
+                if nested is None:
+                    return None
+                recovered_specs = nested
+                cursor = len(body)
+                break
+            normalized_values = cls._normalize_textual_tool_values(
+                resolved_name=name,
+                values=values,
+            )
+            if normalized_values is None:
                 return None
+            recovered_specs.append((name, normalized_values))
+        if body[cursor:].strip():
+            nested = cls._recover_nested_terminal_dsml(
+                body,
+                tool_call_surface=tool_call_surface,
+            )
+            if nested is None:
+                return None
+            recovered_specs = nested
+
+        calls: list[ToolCall] = []
+        for index, (name, values) in enumerate(recovered_specs):
             call_fingerprint = hashlib.sha256(
                 f"{block.group(0)}\0{index}".encode("utf-8")
             ).hexdigest()[:24]
@@ -513,8 +756,6 @@ class LlmOutputParser(ModelOutputParser[ModelResponse, AgentResult]):
                     ),
                 )
             )
-        if body[cursor:].strip():
-            return None
         remaining = (content[: block.start()] + content[block.end() :]).strip()
         return calls, remaining
 
@@ -6947,6 +7188,37 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             *projected,
         ]
 
+    def _task_skill_tool_evidence_feedback_if_unsatisfied(
+        self,
+        context: Context,
+    ) -> str | None:
+        """Require one real action when Runtime mounted task-specific Skills."""
+
+        active_task_skills = [
+            str(skill_name)
+            for skill_name, raw_config in (self.skill_configs or {}).items()
+            if isinstance(raw_config, Mapping)
+            and raw_config.get("active") is True
+            and str(raw_config.get("type") or "").strip().lower() != "agent"
+            and os.path.realpath(str(raw_config.get("skill_path") or "")).startswith(
+                "/installed-agent/aworld-authorized-skills/"
+            )
+        ]
+        if not active_task_skills:
+            return None
+        from aworld.runners.execution_protocol import load_execution_protocol_state
+
+        state = load_execution_protocol_state(context, self.id())
+        if state.tool_observation_count > 0:
+            return None
+        return (
+            "Runtime mounted and enabled task-specific Skills, but no Tool action "
+            "has executed yet. A SkillBench task cannot be completed from a "
+            "reasoning-only response. Continue with one concrete ordinary Tool "
+            "call that applies the active task Skill instructions to the actual "
+            "workspace; do not return a shell snippet as prose."
+        )
+
     async def _async_policy_once(
         self,
         observation: Observation,
@@ -7694,6 +7966,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         critic_decision_handled = False
         critic_protocol_persistence_error = False
         review_repair_requested = False
+        malformed_tool_batch_repair = False
         from aworld.core.context.execution_state import (
             execution_resolution_observation,
         )
@@ -7952,6 +8225,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                         agent_result = AgentResult(
                             actions=[], current_state=None, is_call_tool=False
                         )
+                        malformed_tool_batch_repair = True
                     incomplete_decision_state = (
                         self._recoverable_model_response_state(message.context)
                         if execution_control_offer.decision_boundary is not None
@@ -8298,6 +8572,16 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                             )
                         if not critic_protocol_persistence_error:
                             clear_candidate_fallback(message.context, self.id())
+                    if (
+                        candidate_finished
+                        and not validation_feedback
+                        and not response_incomplete
+                    ):
+                        validation_feedback = (
+                            self._task_skill_tool_evidence_feedback_if_unsatisfied(
+                                message.context
+                            )
+                        )
                     if (
                         candidate_finished
                         and not bounded_terminal_finalization
@@ -8735,12 +9019,28 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 self.id(),
                 validation_feedback,
             )
+            repair_kwargs = dict(continuation_request_kwargs)
+            from aworld.runners.execution_protocol import (
+                load_execution_protocol_state,
+            )
+
+            if (
+                malformed_tool_batch_repair
+                or load_execution_protocol_state(
+                    message.context, self.id()
+                ).tool_observation_count
+                == 0
+            ):
+                # A retry after a reasoning-only or malformed first action must
+                # remain an ordinary Tool turn. Requiring a native call also
+                # steers providers away from returning another fenced command.
+                repair_kwargs["_force_ordinary_tool_turn"] = True
             return await self._retry_for_result_validation(
                 validation_feedback=validation_feedback,
                 observation=observation,
                 info=info,
                 message=message,
-                kwargs=continuation_request_kwargs,
+                kwargs=repair_kwargs,
                 iterative=True,
                 candidate_actions=agent_result.actions,
             )
