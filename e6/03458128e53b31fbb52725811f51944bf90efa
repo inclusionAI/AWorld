@@ -1,0 +1,19 @@
+tests/core/agent/test_truthful_completion.py
+  s_9e030844e031dc::t_2108eab7b92867 678-679
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "e603458128e53b31fbb52725811f51944bf90efa",
+  "prompts": {},
+  "sessions": {
+    "s_9e030844e031dc": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a191c3-38b4-7152-83c4-1c77366abf46",
+        "model": "gpt-6.1-sol"
+      },
+      "human_author": "wuman.wyf <wuman.wyf@antgroup.com>"
+    }
+  }
+}
