@@ -55,7 +55,7 @@ def test_reasoning_only_recovery_rejects_incomplete_or_unauthorized_batches(
         "partial": complete.removesuffix("</｜DSML｜tool_calls>"),
         "extra_open": complete + opening,
         "nested_open": complete.replace(
-            opening, opening + '<｜DSML｜invoke name="run_code">'
+            opening, opening + '<｜DSML｜invoke name="run_code"><｜DSML｜invoke name="run_code">'
         ),
     }[markup]
     response = ModelResponse(

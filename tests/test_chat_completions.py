@@ -251,7 +251,7 @@ def test_real_cli_http_model_reads_a_local_file(tmp_path):
 
 @pytest.mark.parametrize(
     ("alias", "argument"),
-    [("terminal", "cmd"), ("bash", "command")],
+    [("terminal", "cmd"), ("bash", "command"), ("terminal", "nested_python")],
 )
 def test_rich_cli_executes_reasoning_only_skillbench_tool_call(tmp_path, alias, argument):
     # Batch if846259: r-icd32cff… used terminal/cmd to inspect the Skill root,
@@ -285,6 +285,24 @@ def test_rich_cli_executes_reasoning_only_skillbench_tool_call(tmp_path, alias, 
         '<｜DSML｜parameter name="description" string="true">Inspect task Skill</｜DSML｜parameter>\n'
         '</｜DSML｜invoke>\n</｜DSML｜tool_calls>'
     )
+    nested_python = argument == "nested_python"
+    expected_result = "skill-reference-result-42"
+    if nested_python:
+        # exam-block-sequencing: replay the console's DSML shape with only the
+        # two production paths remapped to a safe local workspace.
+        data_dir = tmp_path / "data"
+        data_dir.mkdir()
+        expected_result = "exam-blocks-e2e.json"
+        (data_dir / expected_result).write_text("{}")
+        reasoning = (
+            '<｜DSML｜tool_calls>\n'
+            '<｜DSML｜invoke name="terminal">\n'
+            '<｜DSML｜invoke name="run_code">\n'
+            '<｜DSML｜parameter name="code" string="true">import os\n'
+            f'print(os.listdir({str(data_dir)!r}))\n'
+            f'print(os.listdir({str(tmp_path)!r}))</｜DSML｜parameter>\n'
+            '</｜DSML｜invoke>\n</｜DSML｜tool_calls>'
+        )
     requests = []
 
     class Handler(BaseHTTPRequestHandler):
@@ -296,6 +314,8 @@ def test_rich_cli_executes_reasoning_only_skillbench_tool_call(tmp_path, alias, 
             requests.append(request)
             first = len(requests) == 1
             delta = {"reasoning_content": reasoning} if first else {"content": "verified"}
+            if first and nested_python:
+                delta["content"] = "I will inspect the exam data."
             chunks = [
                 {"index": 0, "delta": {"role": "assistant", **delta}, "finish_reason": None},
                 {"index": 0, "delta": {}, "finish_reason": "stop"},
@@ -361,9 +381,13 @@ def test_rich_cli_executes_reasoning_only_skillbench_tool_call(tmp_path, alias, 
     assistant = next(m for m in messages if m.get("tool_calls"))
     tool_result = next(m for m in messages if m["role"] == "tool")
     assert assistant["tool_calls"][0]["id"] == tool_result["tool_call_id"]
+    if nested_python:
+        function = assistant["tool_calls"][0]["function"]
+        assert function["name"] == "run_code"
+        assert json.loads(function["arguments"])["language"] == "python"
     content = tool_result["content"]
     text = content if isinstance(content, str) else "".join(part["text"] for part in content)
-    assert "skill-reference-result-42" in text
+    assert expected_result in text
     trace = json.loads(trajectory.read_text())
     assert trace["final_metrics"]["extra"]["tool_call_count"] == 1
 

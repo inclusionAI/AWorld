@@ -472,6 +472,7 @@ class LlmOutputParser(ModelOutputParser[ModelResponse, AgentResult]):
         r'<｜DSML｜invoke\s+name="(?P<name>[^"\r\n]{1,256})">'
     )
     _DSML_INVOKE_CLOSE = re.compile(r"</｜DSML｜invoke>")
+    _DSML_TERMINAL_WRAPPER = re.compile(r'<｜DSML｜invoke\s+name="terminal">\s*')
 
     @classmethod
     def _terminal_execution_target(
@@ -667,7 +668,23 @@ class LlmOutputParser(ModelOutputParser[ModelResponse, AgentResult]):
         if len(matches) != 1:
             return None
         block = matches[0]
-        body = block.group("body")
+        body = block.group("body").strip()
+        # This provider dialect omits only the service wrapper's closing tag.
+        # Require one complete inner run_code and parse its arguments normally.
+        terminal_wrapper = cls._DSML_TERMINAL_WRAPPER.match(body)
+        unwrap_terminal = False
+        if terminal_wrapper:
+            inner = body[terminal_wrapper.end():]
+            invoke = cls._DSML_INVOKE.fullmatch(inner)
+            if (
+                invoke
+                and invoke.group("name") == "run_code"
+                and len(cls._DSML_INVOKE_OPEN.findall(inner)) == 1
+                and len(cls._DSML_INVOKE_CLOSE.findall(inner)) == 1
+            ):
+                body = inner
+                unwrap_terminal = True
+                require_complete = True
         invokes = list(cls._DSML_INVOKE.finditer(body))
         if not invokes:
             return None
@@ -707,9 +724,12 @@ class LlmOutputParser(ModelOutputParser[ModelResponse, AgentResult]):
                 break
             cursor = invoke.end()
             raw_name = invoke.group("name").strip()
-            name = cls._resolve_textual_tool_name(
-                raw_name,
-                tool_call_surface=tool_call_surface,
+            name = (
+                cls._terminal_execution_target(tool_call_surface)
+                if unwrap_terminal
+                else cls._resolve_textual_tool_name(
+                    raw_name, tool_call_surface=tool_call_surface,
+                )
             )
             if name is None:
                 return None
@@ -732,6 +752,8 @@ class LlmOutputParser(ModelOutputParser[ModelResponse, AgentResult]):
                 ):
                     return None
             if invoke_body[parameter_cursor:].strip():
+                if require_complete:
+                    return None
                 nested = cls._recover_nested_terminal_dsml(
                     body,
                     tool_call_surface=tool_call_surface,
@@ -747,6 +769,21 @@ class LlmOutputParser(ModelOutputParser[ModelResponse, AgentResult]):
             )
             if normalized_values is None:
                 return None
+            if unwrap_terminal and "code" in values and "language" not in values:
+                code = normalized_values["code"].strip()
+                try:
+                    parsed = ast.parse(code)
+                except (SyntaxError, ValueError, RecursionError):
+                    pass
+                else:
+                    # A leading import is positive evidence for Python. Other
+                    # snippets keep the existing Shell default unless explicit.
+                    if (
+                        parsed.body
+                        and isinstance(parsed.body[0], (ast.Import, ast.ImportFrom))
+                        and any(isinstance(node, ast.Call) for node in ast.walk(parsed))
+                    ):
+                        normalized_values.update(code=code, language="python")
             recovered_specs.append((name, normalized_values))
         if body[cursor:].strip():
             nested = cls._recover_nested_terminal_dsml(
@@ -11031,12 +11068,15 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             not response
             or response.error
             or response.tool_calls
-            or str(response.content or "").strip()
             or not isinstance(response.reasoning_content, str)
             or response.finish_reason not in {"stop", "tool_calls"}
             or response.message.get("aworld_stream_terminal_observed") is False
             or not surface.tool_names
         ):
+            return
+        # Prose may accompany the reasoning call. Leave content-channel DSML
+        # to the output parser, which gives that channel precedence.
+        if "<｜DSML｜tool_calls>" in (response.content or ""):
             return
         if isinstance(tool_choice, dict):
             function = tool_choice.get("function")
