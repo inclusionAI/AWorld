@@ -1,0 +1,32 @@
+tests/core/agent/test_truthful_completion.py
+  s_9e030844e031dc::t_716bf4cd05c437 58
+aworld/version_gen.py
+  s_9e030844e031dc::t_281c6a614a34aa 8
+tests/test_chat_completions.py
+  s_9e030844e031dc::t_7fdbe41f1a1624 317-318
+  s_9e030844e031dc::t_716bf4cd05c437 254,288-305,384-387,390
+aworld/agents/llm_agent.py
+  s_9e030844e031dc::t_eb3645039aad1d 475,671-687,727-732,755-756,772-780,786
+  s_9e030844e031dc::t_7fdbe41f1a1624 781-785,11077-11079
+  s_9e030844e031dc::t_15e54511328119 11080
+packaging/runtime/aworld-cli.pyproject.toml
+  s_9e030844e031dc::t_281c6a614a34aa 7,25
+tests/packaging/test_runtime_compatibility_versions.py
+  s_9e030844e031dc::t_281c6a614a34aa 46-47,77,86
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "ec6ed8d4a62ee199b8ea49a8f52169fe97fe0817",
+  "prompts": {},
+  "sessions": {
+    "s_9e030844e031dc": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a191c3-38b4-7152-83c4-1c77366abf46",
+        "model": "gpt-6.1-sol"
+      },
+      "human_author": "wuman.wyf <wuman.wyf@antgroup.com>"
+    }
+  }
+}
