@@ -54,8 +54,14 @@ def discover_skills(cwd, *, paths=(), disabled=False, home=None):
         for alias in (".agents/skills", ".agent/skills"):
             root = directory / alias
             if root.is_dir():
-                for skill in load_skills(root):
-                    selected.setdefault(skill.name, skill)
+                # Host-discovered aliases select a canonical package before validation.
+                packages = (root,) if (root / "SKILL.md").is_file() else (
+                    child for child in sorted(root.iterdir())
+                    if child.is_dir() and (child / "SKILL.md").is_file()
+                )
+                for package in packages:
+                    for skill in load_skills(package.resolve()):
+                        selected.setdefault(skill.name, skill)
     return tuple(selected[name] for name in sorted(selected))
 
 

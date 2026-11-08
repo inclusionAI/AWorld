@@ -939,6 +939,12 @@ def _record_semantic_tool_progress_locked(
         and receipt["terminal_execution_receipt"].get("exit_code") == 0
         and receipt["terminal_execution_receipt"].get("timed_out") is False
         for receipt in current_sandbox_receipts
+    ) or any(
+        receipt.get("effect") == "mutating"
+        and receipt.get("executed") is True
+        and receipt.get("succeeded") is True
+        and receipt.get("timed_out") is False
+        for receipt in observed_action_semantics
     )
     sandbox_workspace_mutated = any(
         receipt.get("workspace_mutated") is True
@@ -2132,8 +2138,10 @@ def _record_semantic_tool_progress_locked(
                         "receipt_id",
                         "hypothesis_id",
                         "probe_kind",
+                        "obligation_ids",
                         "selected_candidate_id",
                         "tool_execution_succeeded",
+                        "validation_kind",
                         "probe_assessment",
                         "stale",
                     )
@@ -2512,6 +2520,7 @@ def _refresh_public_probe_receipt_projection_locked(
                 "receipt_id",
                 "hypothesis_id",
                 "probe_kind",
+                "obligation_ids",
                 "selected_candidate_id",
                 "tool_execution_succeeded",
                 "probe_assessment",

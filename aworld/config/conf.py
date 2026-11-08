@@ -659,6 +659,9 @@ class AgentConfig(BaseConfig):
     working_dir: Optional[str] = None
     enable_recording: bool = False
     use_tools_in_prompt: bool = False
+    # A request to activate a Skill does not revoke the agent's Tool grants.
+    # Instruction-only agents may opt into the legacy restricted behavior.
+    disable_tools_for_instruction_only_skills: bool = False
     exit_on_failure: bool = False
     human_tools: List[str] = []
     skill_configs: Dict[str, Any] = None

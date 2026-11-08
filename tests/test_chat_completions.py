@@ -7,6 +7,7 @@ import threading
 import os
 from pathlib import Path
 import signal
+import shlex
 import socket
 import subprocess
 import sys
@@ -246,6 +247,233 @@ def test_real_cli_http_model_reads_a_local_file(tmp_path):
     metrics = trajectory["extra"]["run_metrics"]
     assert (metrics["input_tokens"], metrics["output_tokens"], metrics["cache_read_tokens"], metrics["total_tokens"]) == (300, 30, 230, 330)
     assert metrics["reported_calls"] == metrics["model_calls"] == 2
+
+
+@pytest.mark.parametrize(
+    ("alias", "argument"),
+    [
+        ("terminal", "cmd"), ("bash", "command"), ("terminal", "nested_python"),
+        ("run_code", "exam_flat_python"), ("terminal", "r2r_invalid_list"),
+        ("bash", "wave_ambiguous"), ("bash", "wave_truncated"),
+        ("terminal", "mars_instruction_only"),
+    ],
+)
+def test_rich_cli_executes_reasoning_only_skillbench_tool_call(tmp_path, alias, argument):
+    # Batch if846259: r-icd32cff… used terminal/cmd to inspect the Skill root,
+    # and r-i57c932… used bash/command to find SKILL.md. Use a local Skill tree.
+    tmp_path = tmp_path.resolve()
+    skill_root = tmp_path / "skills"
+    skill = skill_root / "replay-skill"
+    skill.mkdir(parents=True)
+    manifest = skill / "SKILL.md"
+    manifest.write_text(
+        "---\nname: replay-skill\ndescription: Read the task reference.\n---\n"
+        "Read reference.txt with the terminal and use the returned value.\n"
+    )
+    (skill / "reference.txt").write_text("skill-reference-result-42\n")
+    (tmp_path / "agents").mkdir()
+    workspace_path = shlex.quote(str(tmp_path))
+    skills_path = shlex.quote(str(skill_root))
+    # Retain the read-only discovery commands from the traces, with paths
+    # remapped to the test workspace. Also verify the Skill's referenced asset.
+    discovery = (
+        f'ls -la {workspace_path} && echo "---" && ls {skills_path}'
+        if alias == "terminal"
+        else f'ls -la {skills_path} 2>/dev/null && find {skills_path} -name "SKILL.md" | head -50'
+    )
+    reasoning = (
+        '<｜DSML｜tool_calls>\n'
+        f'<｜DSML｜invoke name="{alias}">\n'
+        f'<｜DSML｜parameter name="{argument}" string="true">'
+        f'{discovery} && cat {shlex.quote(str(skill / "reference.txt"))}'
+        '</｜DSML｜parameter>\n'
+        '<｜DSML｜parameter name="description" string="true">Inspect task Skill</｜DSML｜parameter>\n'
+        '</｜DSML｜invoke>\n</｜DSML｜tool_calls>'
+    )
+    python_replay = argument in {"nested_python", "exam_flat_python"}
+    expected_result = "skill-reference-result-42"
+    requested_skills = ["replay-skill"]
+    if argument == "mars_instruction_only":
+        # The production package has three SKILL.md files and no extra assets.
+        skill_root = tmp_path / "mars-skills"
+        requested_skills = [
+            "custom-distance-metrics", "parallel-processing", "pareto-optimization",
+        ]
+        for name in requested_skills:
+            skill_dir = skill_root / name
+            skill_dir.mkdir(parents=True)
+            (skill_dir / "SKILL.md").write_text(
+                f"---\nname: {name}\ndescription: Mars fixture instructions.\n---\n"
+                f"Use the terminal to read the dataset. Fixture guidance for {name}.\n"
+            )
+        data_dir = tmp_path / "data"
+        data_dir.mkdir()
+        data_file = data_dir / "citsci_train.csv"
+        expected_result = "mars-csv-result-42"
+        data_file.write_text(f"file_rad,x,y\n{expected_result},1,2\n")
+        reasoning = (
+            '<｜DSML｜tool_calls><｜DSML｜invoke name="terminal">'
+            '<｜DSML｜parameter name="run_code" string="true">'
+            f'head -5 {shlex.quote(str(data_file))}'
+            '</｜DSML｜parameter></｜DSML｜invoke></｜DSML｜tool_calls>'
+        )
+    if python_replay:
+        # Preserve the nested listdir and flat os.walk forms from the two
+        # exam-block-sequencing traces with paths mapped to a local workspace.
+        data_dir = tmp_path / "data"
+        data_dir.mkdir()
+        expected_result = "exam-blocks-e2e.json"
+        (data_dir / expected_result).write_text("{}")
+        wrapper = '<｜DSML｜invoke name="terminal">\n' if argument == "nested_python" else ""
+        inspect_data = (
+            f'for root, dirs, files in os.walk({str(data_dir)!r}):\n    print(files)\n'
+            if argument == "exam_flat_python"
+            else f'print(os.listdir({str(data_dir)!r}))\n'
+        )
+        reasoning = (
+            '<｜DSML｜tool_calls>\n'
+            f'{wrapper}'
+            '<｜DSML｜invoke name="run_code">\n'
+            '<｜DSML｜parameter name="code" string="true">import os\n'
+            f'{inspect_data}'
+            f'print(os.listdir({str(tmp_path)!r}))</｜DSML｜parameter>\n'
+            '</｜DSML｜invoke>\n</｜DSML｜tool_calls>'
+        )
+    repair_reason = {
+        "r2r_invalid_list": "invalid_tool_arguments",
+        "wave_ambiguous": "malformed_tool_call_batch",
+        "wave_truncated": "incomplete_tool_arguments",
+    }.get(argument)
+    if argument == "r2r_invalid_list":
+        reasoning = (
+            '<｜DSML｜tool_calls><｜DSML｜invoke name="terminal">'
+            '<｜DSML｜parameter name="commands" string="false">'
+            f"['find {workspace_path} -name \n\"*.json\" | head -50']"
+            '</｜DSML｜parameter></｜DSML｜invoke></｜DSML｜tool_calls>'
+        )
+        expected_result = "r2r-model.json"
+        (tmp_path / expected_result).write_text("{}")
+        repair_code = f'find {workspace_path} -name "*.json"'
+    elif argument.startswith("wave_"):
+        # Keep the two batch boundaries from the gravitational-wave trace.
+        reasoning += (
+            reasoning if argument == "wave_ambiguous"
+            else '<｜DSML｜tool_calls><｜DSML｜invoke name="bash">'
+        )
+        repair_code = f'find {skills_path} -name SKILL.md'
+        expected_result = "replay-skill/SKILL.md"
+    requests = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+        def do_POST(self):
+            request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            requests.append(request)
+            index = len(requests)
+            finish = "stop"
+            if index == 1:
+                delta = {"reasoning_content": reasoning}
+                if python_replay or repair_reason:
+                    delta["content"] = "I will inspect the task data."
+            elif index == 2 and repair_reason:
+                delta = {"tool_calls": [{
+                    "index": 0, "id": "repaired-read", "type": "function",
+                    "function": {
+                        "name": "run_code",
+                        "arguments": json.dumps({"code": repair_code, "language": "shell"}),
+                    },
+                }]}
+                finish = "tool_calls"
+            else:
+                delta = {"content": "verified"}
+            chunks = [
+                {"index": 0, "delta": {"role": "assistant", **delta}, "finish_reason": None},
+                {"index": 0, "delta": {}, "finish_reason": finish},
+            ]
+            if request.get("stream"):
+                data = "".join(
+                    "data: " + json.dumps({
+                        "id": f"replay-{len(requests)}",
+                        "model": "fixture",
+                        "choices": [chunk],
+                    }) + "\n\n"
+                    for chunk in chunks
+                ) + "data: [DONE]\n\n"
+                content_type = "text/event-stream"
+            else:
+                data = json.dumps(payload(delta, finish))
+                content_type = "application/json"
+            self.send_response(200)
+            self.send_header("Content-Type", content_type)
+            self.end_headers()
+            self.wfile.write(data.encode())
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    root = Path(__file__).resolve().parents[1]
+    trajectory = tmp_path / "trajectory.json"
+    env = {
+        **os.environ,
+        "PYTHONPATH": os.pathsep.join(map(str, (root, root / "aworld-cli/src"))),
+        "LLM_MODEL_NAME": "fixture",
+        "LLM_BASE_URL": f"http://127.0.0.1:{server.server_port}/v1",
+        "LLM_API_KEY": "local-fixture-key",
+        "AWORLD_CONTROL_ROOT": str(tmp_path / "control"),
+        "AWORLD_DISABLE_AUTO_DOTENV": "1",
+        "AWORLD_TOOL_SURFACE_PROFILE": "one_shot",
+        "AWORLD_TOOL_SURFACE_MODE": "enforce",
+        "AWORLD_REQUIRE_STREAM_FINISH_REASON": "true",
+        "AWORLD_SUCCESS_FIRST": "1",
+        "STREAM": "1",
+    }
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "aworld_cli", "--no-banner", "run",
+             "--agent", "Aworld", "--agent-dir", str(tmp_path / "agents"),
+             "--task", "Use the enabled task Skill to read the reference.",
+             "--skill-path", str(skill_root),
+             *(value for name in requested_skills for value in ("--skill", name)),
+             "--non-interactive", "--env-file", os.devnull, "--max-runs", "1",
+             "--trajectory-output", str(trajectory), "--trajectory-format", "atif"],
+            cwd=tmp_path, env=env, capture_output=True, text=True, timeout=45,
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+    assert result.returncode == 0, result.stderr[-5000:]
+    assert len(requests) == (3 if repair_reason else 2)
+    assert requests[0]["stream"] is True
+    assert any(t["function"]["name"] == "run_code" for t in requests[0]["tools"])
+    if argument == "mars_instruction_only":
+        for name in requested_skills:
+            assert f"Fixture guidance for {name}" in str(requests[0]["messages"])
+    else:
+        assert "Read reference.txt with the terminal" in str(requests[0]["messages"])
+    if repair_reason:
+        retry = requests[1]
+        assert retry["tool_choice"] == "required"
+        assert retry["tools"] == requests[0]["tools"]
+        assert repair_reason in str(retry["messages"])
+        assert "current tool schema" in str(retry["messages"])
+        assert all(message["role"] != "tool" for message in retry["messages"])
+    messages = requests[-1]["messages"]
+    assistant = next(m for m in messages if m.get("tool_calls"))
+    tool_result = next(m for m in messages if m["role"] == "tool")
+    assert assistant["tool_calls"][0]["id"] == tool_result["tool_call_id"]
+    if python_replay:
+        function = assistant["tool_calls"][0]["function"]
+        assert function["name"] == "run_code"
+        assert json.loads(function["arguments"])["language"] == "python"
+    content = tool_result["content"]
+    text = content if isinstance(content, str) else "".join(part["text"] for part in content)
+    assert expected_result in text
+    trace = json.loads(trajectory.read_text())
+    assert trace["final_metrics"]["extra"]["tool_call_count"] == 1
 
 
 def test_cli_ctrl_c_during_http_request_exits_and_cleans_up():

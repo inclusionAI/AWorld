@@ -1159,6 +1159,22 @@ def build_atif_trajectory(
         aworld_projection["tool_action_journal"] = tool_journal_evidence
     if normalized_outcome:
         aworld_projection["run_outcome"] = normalized_outcome
+    from aworld_cli.run_outcome import normalize_skill_activation_evidence
+
+    skill_evidence_candidates: list[Any] = []
+    for raw_evidence in (
+        trajectory_payload.get("skill_activation_evidence"),
+        normalized_outcome.get("skill_activation_evidence"),
+    ):
+        if isinstance(raw_evidence, (list, tuple)):
+            skill_evidence_candidates.extend(raw_evidence[:64])
+    skill_activation_evidence = normalize_skill_activation_evidence(
+        skill_evidence_candidates
+    )
+    if skill_activation_evidence:
+        aworld_projection["skill_activation_evidence"] = [
+            dict(item) for item in skill_activation_evidence
+        ]
 
     return {
         "schema_version": "ATIF-v1.7",

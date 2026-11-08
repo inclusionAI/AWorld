@@ -3,6 +3,10 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from aworld.core.agent.skill import (
+    SkillPackageValidationError,
+    validate_skill_package,
+)
 from aworld.skills.execution_assets import build_execution_assets_config
 from aworld.skills.models import SkillContent, SkillDescriptor
 from aworld.skills.providers import SkillProvider, read_front_matter_lines
@@ -17,7 +21,11 @@ from aworld.utils.skill_loader import (
 class PluginSkillProvider(SkillProvider):
     def __init__(self, plugin: Any) -> None:
         self._plugin = plugin
-        self._plugin_root = Path(plugin.manifest.plugin_root).resolve()
+        self._plugin_root = Path(plugin.manifest.plugin_root).absolute()
+        if self._plugin_root.is_symlink() or not self._plugin_root.is_dir():
+            raise SkillPackageValidationError(
+                "plugin Skill root must be a real directory"
+            )
         self._skill_files: dict[str, Path] = {}
 
     def provider_id(self) -> str:
@@ -26,7 +34,24 @@ class PluginSkillProvider(SkillProvider):
     def _resolve_skill_path(self, entrypoint) -> Path | None:
         target = (entrypoint.target or "").strip()
         if target:
-            candidate = (self._plugin_root / target).resolve()
+            target_path = Path(target)
+            if target_path.is_absolute() or any(
+                part in {"", ".", ".."} for part in target_path.parts
+            ):
+                raise SkillPackageValidationError(
+                    "plugin Skill target escapes plugin root"
+                )
+            candidate = (self._plugin_root / target_path).absolute()
+            try:
+                candidate.relative_to(self._plugin_root)
+            except ValueError as exc:
+                raise SkillPackageValidationError(
+                    "plugin Skill target escapes plugin root"
+                ) from exc
+            if candidate.is_symlink():
+                raise SkillPackageValidationError(
+                    "plugin SKILL.md cannot be a symlink"
+                )
             if candidate.is_file():
                 return candidate
 
@@ -34,8 +59,12 @@ class PluginSkillProvider(SkillProvider):
             self._plugin_root / "skills" / entrypoint.entrypoint_id / "SKILL.md",
             self._plugin_root / entrypoint.entrypoint_id / "SKILL.md",
         ):
+            if candidate.is_symlink():
+                raise SkillPackageValidationError(
+                    "plugin SKILL.md cannot be a symlink"
+                )
             if candidate.is_file():
-                return candidate.resolve()
+                return candidate.absolute()
         return None
 
     def _load_front_matter(self, skill_file: Path) -> dict[str, Any]:
@@ -59,6 +88,21 @@ class PluginSkillProvider(SkillProvider):
             skill_id = f"{self.provider_id()}:{entrypoint.entrypoint_id}"
             self._skill_files[skill_id] = skill_file
             front_matter = self._load_front_matter(skill_file)
+            manifest_metadata = dict(entrypoint.metadata or {})
+            declared_entrypoint = (
+                front_matter.get("entrypoint")
+                or manifest_metadata.get("entrypoint")
+            )
+            nested_metadata = front_matter.get("metadata")
+            if not declared_entrypoint and isinstance(nested_metadata, dict):
+                declared_entrypoint = nested_metadata.get("entrypoint")
+            validate_skill_package(
+                skill_file.parent,
+                skill_file=skill_file,
+                declared_paths=(str(declared_entrypoint),)
+                if declared_entrypoint
+                else (),
+            )
             tool_list = front_matter.get("tool_list", {})
             if isinstance(tool_list, str):
                 tool_list = {}
@@ -75,7 +119,7 @@ class PluginSkillProvider(SkillProvider):
                     "install_options": aworld_meta["install"],
                 }
 
-            metadata = dict(entrypoint.metadata or {})
+            metadata = manifest_metadata
             metadata.setdefault("type", str(front_matter.get("type", "")))
             metadata.setdefault(
                 "active",

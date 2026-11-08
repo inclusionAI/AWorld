@@ -2,14 +2,16 @@
 import asyncio
 from hashlib import sha256
 import json
-from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 
-from aworld.cli.main import _host, parser
+from aworld.cli.main import _host, _result_output_projection, parser
 from aworld.cli.prompt import discover_skills, workspace_prompt
+from aworld.cli.trajectory import build_trajectory
 from aworld.core.agent.messages import AssistantMessage, ToolCall
+from aworld.core.session import RunError, RunResult, RunStatus, RunStopReason
 
 
 def skill(root, name, description='metadata', body='BODY_ONLY_WHEN_READ'):
@@ -37,6 +39,120 @@ def test_discovery_precedence_and_explicit_isolation(tmp_path):
     assert discover_skills(nested, disabled=True, home=home) == ()
     with pytest.raises(NotADirectoryError):
         discover_skills(nested, paths=[tmp_path / 'missing'])
+
+
+def test_minimal_cli_explicitly_selects_multiple_skills_in_requested_order(tmp_path):
+    pytest.importorskip('yaml')
+    skills = tmp_path / 'skills'
+    first = skill(skills, 'first-skill')
+    second = skill(skills, 'second-skill')
+    unused = skill(skills, 'unused-skill')
+    requests = []
+
+    class Model:
+        async def complete(self, request):
+            requests.append(request)
+            return AssistantMessage('done')
+
+    args = parser().parse_args([
+        '--demo', '--cwd', str(tmp_path), '--task', 'test',
+        '--skill-path', str(skills), '--skill', 'second-skill',
+        '--skill', 'first-skill',
+        '--trajectory-output', str(tmp_path / 'trajectory.json'),
+        '--result-output', str(tmp_path / 'result.json'),
+    ])
+    with patch('aworld.cli.main.DemoModel', Model):
+        assert asyncio.run(_host(args, 'run')) == 0
+
+    prompt = requests[0].system_prompt
+    assert prompt.index(str(second)) < prompt.index(str(first))
+    assert str(unused) not in prompt
+    trajectory = json.loads((tmp_path / 'trajectory.json').read_text())
+    result = json.loads((tmp_path / 'result.json').read_text())
+    assert trajectory['agent']['extra']['skills'] == [
+        {'name': 'second-skill', 'location': str(second)},
+        {'name': 'first-skill', 'location': str(first)},
+    ]
+    assert [
+        item['skill_name']
+        for item in trajectory['agent']['extra']['skill_activation_evidence']
+    ] == ['second-skill', 'first-skill']
+    assert all(
+        item['package_fingerprint'].startswith('sha256:')
+        for item in trajectory['agent']['extra']['skill_activation_evidence']
+    )
+    assert result['skill_activation_evidence'] == (
+        trajectory['agent']['extra']['skill_activation_evidence']
+    )
+
+
+def test_host_discovery_resolves_installed_skill_aliases(tmp_path):
+    pytest.importorskip("yaml")
+    project, home = tmp_path / "project", tmp_path / "home"
+    project.mkdir()
+    manifest = skill(home / "installed", "linked-skill")
+    alias_root = home / ".agents/skills"
+    alias_root.mkdir(parents=True)
+    (alias_root / "linked-skill").symlink_to(manifest.parent, target_is_directory=True)
+    discovered = discover_skills(project, home=home)
+    assert len(discovered) == 1
+    assert discovered[0].location == str(manifest.resolve())
+    assert discovered[0].package_fingerprint.startswith("sha256:")
+    with pytest.raises(ValueError, match="symlink"):
+        discover_skills(project, paths=[alias_root], home=home)
+
+
+def test_minimal_cli_rejects_unavailable_explicit_skill(tmp_path):
+    pytest.importorskip('yaml')
+    skills = tmp_path / 'skills'
+    skill(skills, 'available-skill')
+    args = parser().parse_args([
+        '--demo', '--cwd', str(tmp_path), '--task', 'test',
+        '--skill-path', str(skills), '--skill', 'missing-skill',
+    ])
+
+    with pytest.raises(ValueError, match='Requested skill is not available'):
+        asyncio.run(_host(args, 'run'))
+
+
+@pytest.mark.parametrize(
+    ('status', 'reason', 'error'),
+    [
+        (RunStatus.COMPLETED, RunStopReason.END_TURN, None),
+        (
+            RunStatus.FAILED,
+            RunStopReason.DEADLINE_EXCEEDED,
+            RunError('deadline', 'expired'),
+        ),
+        (RunStatus.CANCELLED, RunStopReason.CANCELLED, None),
+    ],
+)
+def test_minimal_atif_keeps_skill_attestation_for_every_terminal_status(
+    tmp_path, status, reason, error
+):
+    pytest.importorskip('yaml')
+    root = tmp_path / 'skills'
+    skill(root, 'task-skill')
+    selected = discover_skills(tmp_path, paths=[root])
+    result = RunResult('run', 'session', status, reason, None, error)
+
+    trajectory = build_trajectory(
+        (),
+        result=result,
+        agent=SimpleNamespace(skills=selected, tools=()),
+    )
+
+    evidence = trajectory['agent']['extra']['skill_activation_evidence']
+    result_projection = _result_output_projection(
+        result,
+        SimpleNamespace(skills=selected),
+    )
+    assert len(evidence) == 1
+    assert evidence[0]['skill_name'] == 'task-skill'
+    assert evidence[0]['package_fingerprint'].startswith('sha256:')
+    assert result_projection['skill_activation_evidence'] == evidence
+    assert result_projection['status'] == status
+    assert result_projection['stop_reason'] == reason
 
 
 def test_workspace_rules_bounded_and_scoped(tmp_path):

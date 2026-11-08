@@ -441,6 +441,73 @@ async def test_direct_acceptance_never_reopens_protocol_finalization() -> None:
 
 
 @pytest.mark.asyncio
+async def test_direct_acceptance_does_not_duplicate_active_reviewer_lease(
+    monkeypatch,
+) -> None:
+    from aworld.core.context.base import Context
+    from aworld.core.execution_protocol import ExecutionProtocolPolicy
+    from aworld.core.task import Task, TaskResponse
+    from aworld.runners import execution_protocol as protocol_module
+
+    context = Context(task_id="reviewer-lease-segment")
+    task = Task(
+        id="reviewer-lease-segment",
+        input="finish the requested work",
+        context=context,
+        timeout=600,
+    )
+    context.set_task(task)
+    protocol_module.configure_execution_protocol(
+        context,
+        "root-agent",
+        ExecutionProtocolPolicy(mode="guide"),
+    )
+    monkeypatch.setattr(
+        protocol_module,
+        "reviewer_value_lease_requires_continuation",
+        lambda _context, _agent_id: True,
+    )
+    executor = object.__new__(LocalAgentExecutor)
+    executor._session_mode = "direct"
+    executor._base_runtime = None
+    executor.swarm = SimpleNamespace(
+        communicate_agent=SimpleNamespace(id=lambda: "root-agent")
+    )
+    response = TaskResponse(
+        success=False,
+        answer="review validation remains",
+        semantic_status="incomplete",
+        recoverable=True,
+    )
+
+    continuation = await executor._direct_acceptance_continuation(
+        task=task,
+        response=response,
+        answer=response.answer,
+        event={
+            "task_id": task.id,
+            "semantic_status": "incomplete",
+            "recoverable": True,
+            "final_answer": response.answer,
+        },
+        origin_user_input="finish the requested work",
+        logical_task_state=new_goal_contract_state("finish the requested work"),
+        acceptance_state=None,
+    )
+
+    assert continuation is None
+    assert response.execution_protocol["acceptance_continuation_suppressed"] == (
+        "reviewer_lease_active"
+    )
+    assert (
+        protocol_module.project_execution_protocol_telemetry(
+            response.execution_protocol
+        )["acceptance_continuation_suppressed"]
+        == "reviewer_lease_active"
+    )
+
+
+@pytest.mark.asyncio
 async def test_media_empty_recovery_does_not_consume_implicit_acceptance_budget() -> None:
     from dataclasses import replace
 
@@ -1405,6 +1472,83 @@ async def test_direct_acceptance_stops_after_one_continuation_for_unverified_can
         project_execution_protocol_telemetry(response.execution_protocol)
         == response.execution_protocol
     )
+
+
+@pytest.mark.asyncio
+async def test_direct_acceptance_checkpoints_and_salvages_current_public_candidate(
+    monkeypatch,
+):
+    from aworld.core.context.base import Context
+    from aworld.core.execution_protocol import (
+        ExecutionProtocolPolicy,
+        ExecutionProtocolStore,
+    )
+    from aworld.core.task import Task, TaskResponse
+    from aworld.runners.execution_protocol import (
+        configure_execution_protocol,
+        load_execution_protocol_state,
+    )
+
+    context = Context(task_id="terminal-candidate-salvage")
+    task = Task(id="terminal-candidate-salvage", input="continue", context=context)
+    context.set_task(task)
+    policy = ExecutionProtocolPolicy(
+        mode="observe",
+        terminal_review_gate_enabled=True,
+        independent_acceptance_enabled=False,
+        max_repairs=None,
+    )
+    configure_execution_protocol(context, "root-agent", policy)
+    store = ExecutionProtocolStore(context, "root-agent", policy)
+    store.save(
+        replace(
+            store.load(),
+            candidate_present=True,
+            candidate_checkpoint_recorded=False,
+            public_deliverable_declared=True,
+            public_candidate_mutated=True,
+        )
+    )
+    monkeypatch.setattr(
+        "aworld.runners.execution_protocol.authenticated_declared_candidate_status",
+        lambda *_args, **_kwargs: {
+            "authenticated": True,
+            "reason": "current_complete_projection",
+            "candidate_checkpoint_recorded": False,
+        },
+    )
+    executor = object.__new__(LocalAgentExecutor)
+    executor._session_mode = "direct"
+    executor._base_runtime = None
+    executor.swarm = SimpleNamespace(
+        communicate_agent=SimpleNamespace(id=lambda: "root-agent")
+    )
+    state = new_goal_contract_state("work")
+    state["turn_count"] = 2
+    response = TaskResponse(
+        success=False,
+        answer="current public candidate is ready for caller evaluation",
+        semantic_status="incomplete",
+        recoverable=True,
+    )
+
+    continuation = await executor._direct_acceptance_continuation(
+        task=task,
+        response=response,
+        answer=response.answer,
+        event={"semantic_status": "incomplete", "recoverable": True},
+        origin_user_input="work",
+        logical_task_state=state,
+        acceptance_state=state,
+    )
+
+    assert continuation is None
+    assert response.success is True
+    assert response.semantic_status == "succeeded"
+    assert response.completion_reason == "implicit_acceptance_candidate_salvaged"
+    protocol = load_execution_protocol_state(context, "root-agent")
+    assert protocol.candidate_checkpoint_recorded is True
+    assert protocol.phase.value == "complete"
 
 
 @pytest.mark.asyncio

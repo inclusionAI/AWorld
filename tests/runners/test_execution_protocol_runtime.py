@@ -59,6 +59,7 @@ from aworld.runners.execution_protocol import (
     MutationGateRejectionReason,
     mutation_gate_interception,
     project_execution_protocol_telemetry,
+    record_advisory_review_result,
     record_candidate_final,
     record_acceptance_critic_decision,
     record_acceptance_probe_plan,
@@ -296,6 +297,27 @@ def test_authenticated_declared_candidate_requires_current_complete_projection(
     current = authenticated_declared_candidate_status(context, "agent")
     assert current["authenticated"] is True
     assert current["reason"] == "current_complete_projection"
+    assert current["candidate_checkpoint_recorded"] is True
+
+    store.save(
+        replace(
+            store.load(),
+            candidate_checkpoint_recorded=False,
+            public_candidate_mutated=True,
+        )
+    )
+    terminal_current = authenticated_declared_candidate_status(context, "agent")
+    assert terminal_current["authenticated"] is True
+    assert terminal_current["reason"] == "current_complete_projection"
+    assert terminal_current["candidate_checkpoint_recorded"] is False
+
+    store.save(
+        replace(
+            store.load(),
+            candidate_checkpoint_recorded=True,
+            public_candidate_mutated=False,
+        )
+    )
 
     layout.write_text('{"layout_pages":[{"page_number":1}]}', encoding="utf-8")
     stale = authenticated_declared_candidate_status(context, "agent")
@@ -469,6 +491,39 @@ def test_non_enforce_terminal_fallback_remains_compatible(tmp_path) -> None:
     assert transition.decision.action is ControllerAction.SUBMIT_CURRENT_RESULT
 
 
+def test_terminal_fallback_preserves_framework_stored_contractless_candidate() -> None:
+    context = _context("contractless-fallback")
+    policy = ExecutionProtocolPolicy(
+        mode=ProtocolMode.GUIDE,
+        terminal_review_gate_enabled=True,
+        independent_acceptance_enabled=False,
+    )
+    configure_execution_protocol(context, "agent", policy)
+    store = ExecutionProtocolStore(context, "agent", policy)
+    store.save(
+        replace(
+            store.load(),
+            phase=ProtocolPhase.REVIEW,
+            candidate_present=False,
+            candidate_checkpoint_recorded=False,
+            candidate_final_count=1,
+            finalization_entered=True,
+        )
+    )
+    store_candidate_fallback(
+        context,
+        "agent",
+        [ActionModel(agent_name="agent", policy_info="completed workspace task")],
+    )
+
+    transition = record_terminal_fallback_submission(context, "agent")
+
+    assert transition is not None
+    assert transition.decision.action is ControllerAction.SUBMIT_CURRENT_RESULT
+    assert transition.state.phase is ProtocolPhase.COMPLETE
+    assert transition.state.terminal_incomplete is False
+
+
 def _declare_long_horizon(context: Context, agent_id: str = "agent") -> None:
     transition = record_model_execution_profile(
         context,
@@ -576,6 +631,59 @@ def _activate_validate_repair_convergence(
     return candidate_fingerprint
 
 
+def _activate_advisory_validate_repair_convergence(
+    context: Context,
+    agent_id: str = "agent",
+) -> str:
+    """Reach post-candidate convergence with built-in advisory admission."""
+
+    from aworld.core.context.compiler import semantic_fingerprint
+
+    configure_execution_protocol(
+        context,
+        agent_id,
+        ExecutionProtocolPolicy(
+            mode=ProtocolMode.GUIDE,
+            hard_tool_admission_enabled=False,
+            model_decision_checkpoints_enabled=False,
+            post_candidate_read_only_threshold=1,
+            repetition_threshold=99,
+            low_information_gain_threshold=99,
+            no_goal_progress_threshold=99,
+            stagnation_event_threshold=99,
+        ),
+    )
+    _declare_long_horizon(context, agent_id)
+    _set_deadline_progress(context, 0.40)
+    candidate_fingerprint = semantic_fingerprint("advisory-diagnostic-candidate")
+    record_tool_protocol_event(
+        context,
+        agent_id,
+        _semantic_state(
+            current_agent_step=1,
+            candidate_present=True,
+            candidate_advanced=True,
+            delivery_progress_advanced=True,
+            public_candidate_mutated=True,
+            public_delivery_fingerprint=candidate_fingerprint,
+        ),
+    )
+    record_tool_protocol_event(
+        context,
+        agent_id,
+        _semantic_state(
+            current_agent_step=2,
+            candidate_present=True,
+            public_candidate_mutated=True,
+            public_delivery_fingerprint=candidate_fingerprint,
+        ),
+    )
+    state = load_execution_protocol_state(context, agent_id)
+    assert state.convergence_constraint_active is True
+    assert state.convergence_stage is ConvergenceStage.VALIDATE_REPAIR_OR_SUBMIT
+    return candidate_fingerprint
+
+
 def _record_failed_candidate_validation(
     context: Context,
     candidate_fingerprint: str,
@@ -611,6 +719,55 @@ def _record_failed_candidate_validation(
             observed_action_semantics=(failed_validation,),
         ),
     )
+
+
+def test_advisory_progress_gate_blocks_only_exhausted_read_only_exploration():
+    context = _context("advisory-evidence-progress-gate")
+    candidate_fingerprint = _activate_advisory_validate_repair_convergence(context)
+    for index in range(3):
+        record_tool_protocol_event(
+            context,
+            "agent",
+            _semantic_state(
+                current_agent_step=3 + index,
+                candidate_present=True,
+                public_candidate_mutated=True,
+                public_delivery_fingerprint=candidate_fingerprint,
+                read_only_observed=True,
+            ),
+        )
+
+    repeated_read = mutation_gate_interception(
+        context,
+        [
+            ActionModel(
+                tool_name="terminal",
+                action_name="run_code",
+                params={"code": "cat unchanged-report.json"},
+                tool_call_id="repeated-read",
+                agent_name="agent",
+            )
+        ],
+    )
+    assert repeated_read is not None
+    assert repeated_read["reason"] == "evidence_progress_required"
+    assert repeated_read["tool_call_ids"] == ["repeated-read"]
+    assert repeated_read["block_all"] is True
+
+    # Unknown or mutating work remains fail-open in advisory mode so a real
+    # long-running repair/build can continue to make candidate progress.
+    assert mutation_gate_interception(
+        context,
+        [
+            ActionModel(
+                tool_name="terminal",
+                action_name="run_code",
+                params={"code": "python repair_candidate.py"},
+                tool_call_id="candidate-repair",
+                agent_name="agent",
+            )
+        ],
+    ) is None
 
 
 def _activate_acceptance_repair_convergence(context: Context) -> str:
@@ -1096,11 +1253,12 @@ def test_scoped_state_and_bounded_telemetry_are_public_read_only_views() -> None
     assert state.scope.task_id == "telemetry"
     assert state.long_horizon_armed is False
     assert telemetry == {
-        "schema_version": "aworld.execution-protocol-telemetry/v2",
+        "schema_version": "aworld.execution-protocol-telemetry/v3",
         "mode": "guide",
         "phase": "execute",
         "armed": False,
         "legacy_activation_fields_ignored": False,
+        "model_decision_checkpoints_enabled": True,
         "event_count": 1,
         "tool_observation_count": 1,
         "stagnant_observations": 0,
@@ -1126,9 +1284,18 @@ def test_scoped_state_and_bounded_telemetry_are_public_read_only_views() -> None
         "replan_decision_unavailable_count": 0,
         "consecutive_unapplied_replans": 0,
         "suppressed_replan_boundaries": 0,
+        "inline_guidance_emitted_count": 0,
+        "inline_guidance_applied_count": 0,
+        "inline_guidance_unapplied_count": 0,
         "candidate_final_count": 0,
         "final_review_count": 0,
         "repair_count": 0,
+        "reviewer_admission_count": 0,
+        "reviewer_skip_count": 0,
+        "reviewer_claim_count": 0,
+        "reviewer_validation_attempt_count": 0,
+        "reviewer_repair_attempt_count": 0,
+        "reviewer_revalidation_attempt_count": 0,
         "finalization_entered": False,
         "mutation_gate_active": False,
         "mutation_gate_validation_window_open": False,
@@ -1147,7 +1314,7 @@ def test_scoped_state_and_bounded_telemetry_are_public_read_only_views() -> None
     }
 
 
-def test_telemetry_v2_is_explicit_and_new_reader_still_accepts_v1() -> None:
+def test_telemetry_v3_is_explicit_and_new_reader_accepts_prior_versions() -> None:
     legacy = {
         "schema_version": "aworld.execution-protocol-telemetry/v1",
         "mode": "guide",
@@ -1169,6 +1336,22 @@ def test_telemetry_v2_is_explicit_and_new_reader_still_accepts_v1() -> None:
         "schema_version": "aworld.execution-protocol-telemetry/v2",
     }
     assert project_execution_protocol_telemetry(current) == current
+
+    current_v3 = {
+        **current,
+        "schema_version": "aworld.execution-protocol-telemetry/v3",
+        "reviewer_lease_status": "validation_pending",
+        "reviewer_claim_count": 1,
+        "reviewer_usage_reported": False,
+        "reviewer_reason": "authoritative_task_unavailable",
+    }
+    assert project_execution_protocol_telemetry(current_v3) == current_v3
+
+    mislabeled_v2 = {
+        **current_v3,
+        "schema_version": "aworld.execution-protocol-telemetry/v2",
+    }
+    assert project_execution_protocol_telemetry(mislabeled_v2) is None
 
 
 def test_short_estimate_arms_only_after_strict_double_action_overrun() -> None:
@@ -1401,6 +1584,124 @@ def test_repeated_unapplied_continues_activate_one_convergence_phase() -> None:
     guidance = consume_execution_protocol_guidance(context, "agent")
     assert guidance is not None
     assert "an inspectable candidate exists" in guidance
+
+
+def test_inline_guidance_keeps_model_checkpoint_off_and_applies_on_candidate() -> None:
+    context = _context("inline-guidance-candidate")
+    configure_execution_protocol(
+        context,
+        "agent",
+        ExecutionProtocolPolicy(
+            mode=ProtocolMode.GUIDE,
+            model_decision_checkpoints_enabled=False,
+            activation_event_threshold=1,
+            model_activation_min_tool_actions=1,
+            repetition_threshold=1,
+            stagnation_event_threshold=1,
+            max_replans=1,
+        ),
+    )
+    _declare_long_horizon(context)
+
+    requested = record_tool_protocol_event(
+        context,
+        "agent",
+        _semantic_state(
+            repetition_count=1,
+            current_agent_step=1,
+            operation_hash="sha256:inline-request-operation",
+            result_hash="sha256:inline-request-result",
+        ),
+    )
+
+    assert requested.decision.action is ControllerAction.REQUEST_REPLAN
+    assert execution_protocol_model_decision_boundary(context, "agent") is None
+    guidance = consume_execution_protocol_guidance(context, "agent")
+    assert guidance is not None
+    assert "checkpoint" in guidance.lower()
+    before = build_execution_protocol_telemetry(context, "agent")
+    assert before["model_decision_checkpoints_enabled"] is False
+    assert before["inline_guidance_emitted_count"] == 1
+    assert before["replan_applied_count"] == 0
+
+    applied = record_tool_protocol_event(
+        context,
+        "agent",
+        _semantic_state(
+            current_agent_step=2,
+            candidate_present=True,
+            candidate_advanced=True,
+            delivery_progress_advanced=True,
+            workspace_mutated=True,
+            operation_hash="sha256:inline-candidate-operation",
+            result_hash="sha256:inline-candidate-result",
+        ),
+    )
+
+    assert applied is not None
+    state = load_execution_protocol_state(context, "agent")
+    assert state.decision_checkpoint_pending is False
+    assert state.replan_applied_count == 1
+    telemetry = build_execution_protocol_telemetry(context, "agent")
+    assert telemetry["inline_guidance_applied_count"] == 1
+    assert telemetry["inline_guidance_unapplied_count"] == 0
+    assert telemetry["inline_guidance_last_application"] == "delivery_progress"
+    assert telemetry["replan_decision_attempt_count"] == 0
+
+
+def test_inline_guidance_remains_visible_then_marks_bounded_stagnation_unapplied() -> None:
+    context = _context("inline-guidance-unapplied")
+    configure_execution_protocol(
+        context,
+        "agent",
+        ExecutionProtocolPolicy(
+            mode=ProtocolMode.GUIDE,
+            model_decision_checkpoints_enabled=False,
+            activation_event_threshold=1,
+            model_activation_min_tool_actions=1,
+            repetition_threshold=1,
+            stagnation_event_threshold=1,
+            max_replans=1,
+        ),
+    )
+    _declare_long_horizon(context)
+    record_tool_protocol_event(
+        context,
+        "agent",
+        _semantic_state(
+            repetition_count=1,
+            current_agent_step=1,
+            operation_hash="sha256:inline-unapplied-request",
+            result_hash="sha256:inline-unapplied-result",
+        ),
+    )
+    assert consume_execution_protocol_guidance(context, "agent") is not None
+
+    for step in (2, 3, 4, 5):
+        record_tool_protocol_event(
+            context,
+            "agent",
+            _semantic_state(
+                current_agent_step=step,
+                read_only_observed=True,
+                operation_hash=f"sha256:inline-read-operation-{step}",
+                result_hash=f"sha256:inline-read-result-{step}",
+            ),
+        )
+        if step < 5:
+            reminder = consume_execution_protocol_guidance(context, "agent")
+            assert reminder is not None
+            assert "checkpoint remains active" in reminder
+
+    state = load_execution_protocol_state(context, "agent")
+    assert state.decision_checkpoint_pending is False
+    assert state.replan_applied_count == 0
+    telemetry = build_execution_protocol_telemetry(context, "agent")
+    assert telemetry["inline_guidance_emitted_count"] == 1
+    assert telemetry["inline_guidance_applied_count"] == 0
+    assert telemetry["inline_guidance_unapplied_count"] == 1
+    assert telemetry["replan_decision_attempt_count"] == 0
+    assert telemetry["replan_decision_status"] == "fail_open_unacknowledged"
 
 
 def test_unapplied_replans_wait_until_caller_deadline_is_40_percent_consumed() -> None:
@@ -1783,6 +2084,84 @@ def test_deadline_guidance_moves_from_candidate_to_delivery_only() -> None:
     assert consume_execution_protocol_guidance(context, "agent") is None
 
 
+def test_advisory_delivery_only_finalizes_after_candidate_diagnostics() -> None:
+    context = _context("advisory-delivery-only-finalization")
+    candidate_fingerprint = _activate_advisory_validate_repair_convergence(
+        context
+    )
+    _set_deadline_progress(context, 0.79)
+
+    for step in (3, 4, 5):
+        record_tool_protocol_event(
+            context,
+            "agent",
+            _semantic_state(
+                current_agent_step=step,
+                candidate_present=True,
+                public_candidate_mutated=True,
+                public_delivery_fingerprint=candidate_fingerprint,
+                read_only_observed=True,
+            ),
+        )
+
+    gate = context.read_task_runtime_state(
+        "agent", "execution_protocol_mutation_gate"
+    )
+    assert gate["candidate_diagnostic_read_count"] == 3
+    assert gate["validation_window_open"] is False
+    guidance = consume_execution_protocol_guidance(context, "agent")
+    assert guidance is not None
+    assert "diagnostic allowance is exhausted" in guidance.lower()
+    assert "next provider turn Tool-free" in guidance
+    assert not execution_protocol_requires_tool_free_finalization(
+        context, "agent"
+    )
+
+    _set_deadline_progress(context, 0.80)
+    assert execution_protocol_requires_tool_free_finalization(context, "agent")
+    state = load_execution_protocol_state(context, "agent")
+    assert state.phase is ProtocolPhase.FINALIZE
+    assert state.history[-1].kind is EventKind.DELIVERY_ONLY_EXHAUSTED
+
+
+def test_advisory_delivery_only_preserves_evidence_backed_repair_window() -> None:
+    context = _context("advisory-delivery-only-repair")
+    candidate_fingerprint = _activate_advisory_validate_repair_convergence(
+        context
+    )
+    _record_failed_candidate_validation(
+        context,
+        candidate_fingerprint,
+        marker="delivery-only-repair",
+        step=3,
+    )
+    for step in (4, 5, 6):
+        record_tool_protocol_event(
+            context,
+            "agent",
+            _semantic_state(
+                current_agent_step=step,
+                candidate_present=True,
+                public_candidate_mutated=True,
+                public_delivery_fingerprint=candidate_fingerprint,
+                read_only_observed=True,
+            ),
+        )
+
+    gate = context.read_task_runtime_state(
+        "agent", "execution_protocol_mutation_gate"
+    )
+    assert gate["candidate_diagnostic_read_count"] == 3
+    assert gate["validation_window_open"] is True
+    _set_deadline_progress(context, 0.80)
+    assert not execution_protocol_requires_tool_free_finalization(
+        context, "agent"
+    )
+    assert load_execution_protocol_state(
+        context, "agent"
+    ).phase is ProtocolPhase.EXECUTE
+
+
 def test_40_percent_validate_guidance_never_requests_another_candidate() -> None:
     context = _context("validate-deadline-guidance")
     policy = ExecutionProtocolPolicy(mode=ProtocolMode.GUIDE)
@@ -2076,6 +2455,83 @@ def test_named_deliverable_gate_reopens_reads_after_candidate_changes(
     assert build_execution_protocol_telemetry(context, "agent")[
         "mutation_gate_blocked_read_only_call_count"
     ] == 0
+
+
+def test_partial_multi_file_candidate_keeps_delivery_gate_latched(tmp_path) -> None:
+    first = tmp_path / "first.json"
+    second = tmp_path / "second.json"
+    context = _context("partial-multi-file-delivery")
+    context.context_info["public_deliverable_contract"] = {
+        "schema_version": "aworld.public-deliverables/v1",
+        "authority": "public_task_advisory",
+        "source": "public_task_text",
+        "artifacts": [
+            {
+                "deliverable_id": f"public-output-{index}",
+                "path": str(path),
+                "display_path": path.name,
+                "kind": "file",
+                "authority": "public_task_advisory",
+            }
+            for index, path in enumerate((first, second), start=1)
+        ],
+    }
+    configure_execution_protocol(
+        context,
+        "agent",
+        ExecutionProtocolPolicy(
+            mode=ProtocolMode.GUIDE,
+            repetition_threshold=99,
+            low_information_gain_threshold=99,
+            no_goal_progress_threshold=99,
+            stagnation_event_threshold=99,
+        ),
+    )
+    _declare_long_horizon(context)
+    first.write_text("{}", encoding="utf-8")
+    record_tool_protocol_event(
+        context,
+        "agent",
+        _semantic_state(
+            consecutive_read_only_observations=8,
+            public_candidate_mutated=True,
+            candidate_present=True,
+        ),
+    )
+    read = ActionModel(
+        tool_name="terminal",
+        action_name="run_code",
+        params={"code": "cat source.json"},
+        tool_call_id="partial-contract-read",
+        agent_name="agent",
+    )
+
+    receipt = mutation_gate_interception(context, [read])
+
+    assert receipt is not None
+    assert receipt["kind"] == "candidate_mutation_required"
+    assert receipt["tool_call_ids"] == ["partial-contract-read"]
+
+    missing_write = ActionModel(
+        tool_name="terminal",
+        action_name="run_code",
+        params={"code": f"printf '{{}}' > {second}"},
+        tool_call_id="complete-partial-contract",
+        agent_name="agent",
+    )
+    assert mutation_gate_interception(context, [missing_write]) is None
+
+    second.write_text("{}", encoding="utf-8")
+    record_tool_protocol_event(
+        context,
+        "agent",
+        _semantic_state(
+            consecutive_read_only_observations=0,
+            public_candidate_mutated=True,
+            candidate_present=True,
+        ),
+    )
+    assert mutation_gate_interception(context, [read]) is None
 
 
 def test_present_unmutated_candidate_uses_existing_convergence_threshold(
@@ -6127,6 +6583,97 @@ def test_model_review_repair_mints_typed_source_and_diagnostic_window() -> None:
     assert admitted_gate["repair_authorization"]["source"] == (
         "model_review_repair"
     )
+
+
+def test_framework_advisory_uncertainty_opens_one_non_accepting_repair() -> None:
+    context = _context("framework-advisory-uncertain")
+    policy = ExecutionProtocolPolicy(
+        mode=ProtocolMode.GUIDE,
+        independent_acceptance_enabled=False,
+        advisory_uncertain_repair_enabled=True,
+        bounded_repair_submission_enabled=True,
+        max_final_reviews=1,
+        max_repairs=1,
+    )
+    configure_execution_protocol(context, "agent", policy)
+    store = ExecutionProtocolStore(context, "agent", policy)
+    store.save(replace(store.load(), long_horizon_armed=True))
+    review = record_candidate_final(
+        context,
+        "agent",
+        actions=[ActionModel(agent_name="agent", policy_info="candidate")],
+        review_boundary_available=True,
+    )
+    assert review is not None
+    assert review.decision.action is ControllerAction.REQUEST_FINAL_REVIEW
+
+    uncertain = record_advisory_review_result(
+        context,
+        "agent",
+        status="inconclusive",
+        decision="uncertain",
+        reason_code="ready_evidence_missing",
+    )
+
+    assert uncertain is not None
+    assert uncertain.decision.action is ControllerAction.REQUEST_REPAIR
+    assert uncertain.decision.reason is DecisionReason.REVIEW_UNCERTAIN
+    assert uncertain.state.phase is ProtocolPhase.REPAIR
+    assert uncertain.state.repair_count == 1
+    assert uncertain.state.acceptance_confirmed is False
+
+    submitted = record_candidate_final(
+        context,
+        "agent",
+        actions=[
+            ActionModel(agent_name="agent", policy_info="repaired candidate")
+        ],
+        review_boundary_available=True,
+    )
+    assert submitted is not None
+    assert submitted.decision.action is ControllerAction.SUBMIT_CURRENT_RESULT
+    assert submitted.decision.reason is DecisionReason.TERMINAL_FALLBACK_SUBMIT
+    assert submitted.state.acceptance_confirmed is False
+
+
+def test_framework_advisory_ready_waits_for_the_root_final_response() -> None:
+    context = _context("framework-advisory-ready")
+    policy = ExecutionProtocolPolicy(
+        mode=ProtocolMode.GUIDE,
+        independent_acceptance_enabled=False,
+        advisory_uncertain_repair_enabled=True,
+        max_final_reviews=1,
+    )
+    configure_execution_protocol(context, "agent", policy)
+    store = ExecutionProtocolStore(context, "agent", policy)
+    store.save(replace(store.load(), long_horizon_armed=True))
+    assert record_advisory_review_result(
+        context,
+        "agent",
+        status="completed",
+        decision="ready",
+    ) is None
+    record_candidate_final(
+        context,
+        "agent",
+        actions=[ActionModel(agent_name="agent", policy_info="candidate")],
+        review_boundary_available=True,
+    )
+
+    projected = record_advisory_review_result(
+        context,
+        "agent",
+        status="completed",
+        decision="ready",
+    )
+
+    assert projected is None
+    assert load_execution_protocol_state(context, "agent").review_pending is True
+    accepted = record_candidate_final(context, "agent")
+    assert accepted is not None
+    assert accepted.decision.action is ControllerAction.SUBMIT_CURRENT_RESULT
+    assert accepted.state.phase is ProtocolPhase.COMPLETE
+    assert accepted.state.acceptance_confirmed is True
 
 
 def test_stale_concurrent_model_review_cannot_mint_after_submission(

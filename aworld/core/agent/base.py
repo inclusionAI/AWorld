@@ -344,6 +344,14 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
             self.loop_step = 0
         circuit_receipt = self._observe_infrastructure_failure(message)
         if circuit_receipt is not None:
+            final_result = sync_exec(
+                self.async_finalize_at_infrastructure_failure,
+                message,
+                circuit_receipt,
+            )
+            if final_result is not None:
+                self.postprocess_terminate_loop(message)
+                return final_result
             return self._terminate_for_infrastructure_failure(
                 message, circuit_receipt
             )
@@ -444,6 +452,14 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
                 self.loop_step = 0
             circuit_receipt = self._observe_infrastructure_failure(message)
             if circuit_receipt is not None:
+                final_result = await self.async_finalize_at_infrastructure_failure(
+                    message,
+                    circuit_receipt,
+                    **kwargs,
+                )
+                if final_result is not None:
+                    self.postprocess_terminate_loop(message)
+                    return final_result
                 return self._terminate_for_infrastructure_failure(
                     message, circuit_receipt
                 )
@@ -893,6 +909,22 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
         policy can synthesize a user-facing result may override this hook, but
         must not start additional environment work from the boundary turn.
         """
+        return None
+
+    async def async_finalize_at_infrastructure_failure(
+        self,
+        message: Message,
+        receipt: Dict[str, Any],
+        **kwargs,
+    ) -> Message | None:
+        """Optionally preserve a result after a repeated infrastructure fault.
+
+        Generic agents keep the typed infrastructure-failure termination. An
+        agent capable of producing a tool-free final response may override the
+        hook so an already-created public candidate is not abandoned merely
+        because the execution channel stopped accepting new Tool work.
+        """
+
         return None
 
     async def _resolve_completion_at_loop_budget(

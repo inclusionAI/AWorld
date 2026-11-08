@@ -5,7 +5,12 @@ import json
 import pytest
 
 import aworld.agents.llm_agent as module
-from aworld.agents.llm_agent import LlmOutputParser
+from aworld.agents.llm_agent import (
+    LlmOutputParser,
+    ModelToolCallSurface,
+    ToolCallBatchParseError,
+    ToolCallParseIssueCode,
+)
 from aworld.core.context.execution_state import get_execution_state
 from aworld.core.context.generation_budget import GenerationBudgetPolicy
 from aworld.models.model_response import Function, ModelResponse, ToolCall
@@ -21,6 +26,369 @@ def silence_events(monkeypatch):
 
 def tool(arguments, call_id="call-1"):
     return ToolCall(id=call_id, function=Function(name="workspace__write", arguments=arguments))
+
+
+@pytest.mark.parametrize(
+    ("names", "choice", "finish", "terminal", "markup"),
+    [
+        ({"unrelated"}, None, "stop", True, "complete"),
+        ({"run_code"}, "none", "stop", True, "complete"),
+        ({"run_code", "unrelated"}, {"function": {"name": "unrelated"}}, "stop", True, "complete"),
+        ({"run_code"}, None, "length", True, "complete"),
+        ({"run_code"}, None, "stop", False, "complete"),
+        ({"run_code"}, None, "stop", True, "partial"),
+        ({"run_code"}, None, "stop", True, "extra_open"),
+        ({"run_code"}, None, "stop", True, "nested_open"),
+    ],
+)
+def test_reasoning_only_recovery_rejects_incomplete_or_unauthorized_batches(
+    names, choice, finish, terminal, markup,
+):
+    opening = '<｜DSML｜tool_calls><｜DSML｜invoke name="terminal">'
+    complete = (
+        opening
+        + '<｜DSML｜parameter name="cmd" string="true">pwd</｜DSML｜parameter>'
+        + '</｜DSML｜invoke></｜DSML｜tool_calls>'
+    )
+    reasoning = {
+        "complete": complete,
+        "partial": complete.removesuffix("</｜DSML｜tool_calls>"),
+        "extra_open": complete + opening,
+        "nested_open": complete.replace(
+            opening, opening + '<｜DSML｜invoke name="run_code"><｜DSML｜invoke name="run_code">'
+        ),
+    }[markup]
+    response = ModelResponse(
+        id="reasoning-batch",
+        model="fixture",
+        reasoning_content=reasoning,
+        finish_reason=finish,
+        message={"aworld_stream_terminal_observed": terminal},
+    )
+    agent = _agent(policy=GenerationBudgetPolicy())
+    surface = ModelToolCallSurface("Aworld", "test", 0, frozenset(names))
+    assert agent._recover_textual_response_tool_calls(
+        response, surface=surface, tool_choice=choice,
+    )
+    assert not response.tool_calls
+    assert "tool_calls" not in response.message
+
+
+def test_active_skill_usage_is_bound_to_final_model_messages() -> None:
+    agent = _agent(policy=GenerationBudgetPolicy(total_timeout_seconds=5))
+    agent.skill_configs = {
+        "spreadsheet-recovery": {
+            "active": True,
+            "skill_path": "/installed-agent/skills/spreadsheet-recovery/SKILL.md",
+            "usage": "Inspect formulas first, then preserve workbook formatting.",
+        },
+        "unrelated": {
+            "active": False,
+            "skill_path": "/installed-agent/skills/unrelated/SKILL.md",
+            "usage": "Must not be injected.",
+        },
+    }
+
+    projected = agent._inject_active_skill_instructions(
+        [{"role": "user", "content": "repair the workbook"}]
+    )
+
+    assert projected[0]["role"] == "system"
+    assert "<aworld_active_skill_instructions>" in projected[0]["content"]
+    assert "spreadsheet-recovery" in projected[0]["content"]
+    assert "Inspect formulas first" in projected[0]["content"]
+    assert "/installed-agent/skills/spreadsheet-recovery/SKILL.md" in (
+        projected[0]["content"]
+    )
+    assert "Must not be injected" not in projected[0]["content"]
+    assert projected[1] == {"role": "user", "content": "repair the workbook"}
+    assert agent._inject_active_skill_instructions(projected) == projected
+
+
+def test_mounted_task_skill_requires_real_tool_evidence_before_completion() -> None:
+    agent = _agent(policy=GenerationBudgetPolicy(total_timeout_seconds=5))
+    agent.skill_configs = {
+        "spreadsheet-recovery": {
+            "active": True,
+            "skill_path": (
+                "/installed-agent/aworld-authorized-skills/"
+                "spreadsheet-recovery/SKILL.md"
+            ),
+            "usage": "Repair and validate the workbook.",
+        }
+    }
+    context = _message("task-skill-evidence").context
+
+    feedback = agent._task_skill_tool_evidence_feedback_if_unsatisfied(context)
+
+    assert feedback is not None
+    assert "no Tool action has executed" in feedback
+
+
+def test_builtin_skill_does_not_force_task_skill_tool_evidence() -> None:
+    agent = _agent(policy=GenerationBudgetPolicy(total_timeout_seconds=5))
+    agent.skill_configs = {
+        "long-running-agent": {
+            "active": True,
+            "skill_path": "/opt/aworld/builtin/long-running-agent/SKILL.md",
+            "usage": "Continue until complete.",
+        }
+    }
+    context = _message("builtin-skill-evidence").context
+
+    assert agent._task_skill_tool_evidence_feedback_if_unsatisfied(context) is None
+
+
+@pytest.mark.asyncio
+async def test_textual_dsml_tool_call_is_recovered_against_live_surface():
+    response = ModelResponse(
+        id="dsml-terminal",
+        model="fake",
+        content=(
+            '<｜DSML｜tool_calls><｜DSML｜invoke name="terminal">'
+            '<｜DSML｜parameter name="command" string="true">'
+            "ls -la /workspace/"
+            "</｜DSML｜parameter>"
+            '<｜DSML｜parameter name="description" string="true">'
+            "Inspect workspace"
+            "</｜DSML｜parameter>"
+            "</｜DSML｜invoke></｜DSML｜tool_calls>"
+            "Work remains in progress."
+        ),
+    )
+    surface = ModelToolCallSurface(
+        agent_id="Aworld",
+        task_id="task-1",
+        task_epoch=0,
+        tool_names=frozenset({"terminal"}),
+    )
+
+    parsed = await LlmOutputParser().parse(
+        response,
+        agent_id="Aworld",
+        tool_call_surface=surface,
+    )
+
+    assert parsed.is_call_tool is True
+    assert len(parsed.actions) == 1
+    assert parsed.actions[0].tool_name == "terminal"
+    assert parsed.actions[0].params == {
+        "command": "ls -la /workspace/",
+        "description": "Inspect workspace",
+    }
+    assert parsed.actions[0].policy_info == "Work remains in progress."
+
+
+@pytest.mark.asyncio
+async def test_reasoning_dsml_false_string_mode_recovers_before_final_text():
+    response = ModelResponse(
+        id="dsml-reasoning-terminal",
+        model="fake",
+        reasoning_content=(
+            '<｜DSML｜tool_calls><｜DSML｜invoke name="terminal">'
+            '<｜DSML｜parameter name="commands" string="false">'
+            "find /installed-agent/aworld-authorized-skills -name SKILL.md"
+            "</｜DSML｜parameter>"
+            '<｜DSML｜parameter name="workdir" string="true">/root'
+            "</｜DSML｜parameter>"
+            "</｜DSML｜invoke></｜DSML｜tool_calls>"
+        ),
+        content="No tool access is available in this recovery turn.",
+    )
+    surface = ModelToolCallSurface(
+        agent_id="Aworld",
+        task_id="task-1",
+        task_epoch=0,
+        tool_names=frozenset({"terminal"}),
+    )
+
+    parsed = await LlmOutputParser().parse(
+        response,
+        agent_id="Aworld",
+        tool_call_surface=surface,
+    )
+
+    assert parsed.is_call_tool is True
+    assert parsed.actions[0].tool_name == "terminal"
+    assert parsed.actions[0].params == {
+        "commands": (
+            "find /installed-agent/aworld-authorized-skills -name SKILL.md"
+        ),
+        "workdir": "/root",
+    }
+    assert parsed.actions[0].policy_info == (
+        "No tool access is available in this recovery turn."
+    )
+
+
+@pytest.mark.asyncio
+async def test_textual_terminal_alias_normalizes_to_live_run_code_contract():
+    response = ModelResponse(
+        id="dsml-terminal-alias",
+        model="fake",
+        reasoning_content=(
+            '<｜DSML｜tool_calls><｜DSML｜invoke name="terminal">'
+            '<｜DSML｜parameter name="cmd" string="true">'
+            "ls -la /installed-agent/aworld-authorized-skills"
+            "</｜DSML｜parameter>"
+            '<｜DSML｜parameter name="timeout" string="false">20000'
+            "</｜DSML｜parameter>"
+            '<｜DSML｜parameter name="description" string="true">'
+            "Inspect active task skills"
+            "</｜DSML｜parameter>"
+            "</｜DSML｜invoke></｜DSML｜tool_calls>"
+        ),
+    )
+    surface = ModelToolCallSurface(
+        agent_id="Aworld",
+        task_id="task-1",
+        task_epoch=0,
+        tool_names=frozenset({"run_code"}),
+    )
+
+    parsed = await LlmOutputParser().parse(
+        response,
+        agent_id="Aworld",
+        tool_call_surface=surface,
+    )
+
+    assert parsed.is_call_tool is True
+    assert parsed.actions[0].tool_name == "run_code"
+    assert parsed.actions[0].params == {
+        "code": "ls -la /installed-agent/aworld-authorized-skills",
+        "timeout": 20.0,
+    }
+
+
+@pytest.mark.asyncio
+async def test_textual_nested_terminal_run_code_wrapper_is_recovered():
+    response = ModelResponse(
+        id="dsml-nested-terminal",
+        model="fake",
+        reasoning_content=(
+            '<｜DSML｜tool_calls><｜DSML｜invoke name="terminal">'
+            '<｜DSML｜invoke name="run_code">'
+            '<｜DSML｜parameter name="code" string="true">'
+            "find /root -maxdepth 2 -type f"
+            "</｜DSML｜parameter>"
+            # This is the exact provider shape observed in production: it opens
+            # a terminal wrapper and an inner run_code call, but emits only one
+            # invoke close. The chain is still singular and unambiguous.
+            "</｜DSML｜invoke></｜DSML｜tool_calls>"
+        ),
+    )
+    surface = ModelToolCallSurface(
+        agent_id="Aworld",
+        task_id="task-1",
+        task_epoch=0,
+        tool_names=frozenset({"run_code"}),
+    )
+
+    parsed = await LlmOutputParser().parse(
+        response,
+        agent_id="Aworld",
+        tool_call_surface=surface,
+    )
+
+    assert parsed.is_call_tool is True
+    assert parsed.actions[0].tool_name == "run_code"
+    assert parsed.actions[0].params == {
+        "code": "find /root -maxdepth 2 -type f"
+    }
+
+
+@pytest.mark.asyncio
+async def test_textual_terminal_commands_list_is_joined_without_evaluation():
+    response = ModelResponse(
+        id="dsml-terminal-commands",
+        model="fake",
+        content=(
+            '<｜DSML｜tool_calls><｜DSML｜invoke name="terminal">'
+            '<｜DSML｜parameter name="commands" string="false">'
+            "['pwd', 'find . -name SKILL.md']"
+            "</｜DSML｜parameter>"
+            '<｜DSML｜parameter name="workdir" string="true">/root'
+            "</｜DSML｜parameter>"
+            "</｜DSML｜invoke></｜DSML｜tool_calls>"
+        ),
+    )
+    surface = ModelToolCallSurface(
+        agent_id="Aworld",
+        task_id="task-1",
+        task_epoch=0,
+        tool_names=frozenset({"run_code"}),
+    )
+
+    parsed = await LlmOutputParser().parse(
+        response,
+        agent_id="Aworld",
+        tool_call_surface=surface,
+    )
+
+    assert parsed.is_call_tool is True
+    assert parsed.actions[0].params == {
+        "code": "pwd\nfind . -name SKILL.md",
+        "cwd": "/root",
+    }
+
+
+@pytest.mark.asyncio
+async def test_textual_dsml_uses_unique_live_surface_suffix_alias():
+    response = ModelResponse(
+        id="dsml-decision",
+        model="fake",
+        content=(
+            '<｜DSML｜tool_calls><｜DSML｜invoke name="execution_decision">'
+            '<｜DSML｜parameter name="payload" string="true">continue'
+            "</｜DSML｜parameter>"
+            "</｜DSML｜invoke></｜DSML｜tool_calls>"
+        ),
+    )
+    surface = ModelToolCallSurface(
+        agent_id="Aworld",
+        task_id="task-1",
+        task_epoch=0,
+        tool_names=frozenset({"aworld__execution_decision"}),
+    )
+
+    parsed = await LlmOutputParser().parse(
+        response,
+        agent_id="Aworld",
+        tool_call_surface=surface,
+    )
+
+    assert parsed.is_call_tool is True
+    assert parsed.actions[0].tool_name == "aworld"
+    assert parsed.actions[0].action_name == "execution_decision"
+    assert parsed.actions[0].params == {"payload": "continue"}
+
+
+@pytest.mark.asyncio
+async def test_textual_dsml_unknown_tool_is_a_typed_non_executable_error():
+    raw = (
+        '<｜DSML｜tool_calls><｜DSML｜invoke name="forbidden">'
+        '<｜DSML｜parameter name="command" string="true">id'
+        "</｜DSML｜parameter>"
+        "</｜DSML｜invoke></｜DSML｜tool_calls>"
+    )
+    response = ModelResponse(id="dsml-forbidden", model="fake", content=raw)
+    surface = ModelToolCallSurface(
+        agent_id="Aworld",
+        task_id="task-1",
+        task_epoch=0,
+        tool_names=frozenset({"terminal"}),
+    )
+
+    with pytest.raises(ToolCallBatchParseError) as raised:
+        await LlmOutputParser().parse(
+            response,
+            agent_id="Aworld",
+            tool_call_surface=surface,
+        )
+
+    assert raised.value.issues[0].code is (
+        ToolCallParseIssueCode.MALFORMED_TEXTUAL_TOOL_BATCH
+    )
 
 
 @pytest.mark.parametrize(
@@ -307,7 +675,8 @@ async def test_reasoning_only_recovery_retains_a_bounded_working_tail(monkeypatc
     assert "discarded-prefix" not in retained["content"]
     assert retained["content"].endswith("R" * 128)
     assert len(retained["content"]) < len(reasoning)
-    assert "Return one complete, minimal Tool call" in calls[1][-1]["content"]
+    assert "Return one complete native tool_calls entry" in calls[1][-1]["content"]
+    assert "current tool schema" in calls[1][-1]["content"]
     assert result.finish_reason == "tool_calls"
 
 
@@ -456,4 +825,111 @@ async def test_validation_repair_exhaustion_is_incomplete():
     message.context.context_info[agent._result_validation_retry_key(agent.id())] = 1
     await agent._retry_for_result_validation(validation_feedback="required artifact missing",
         observation=Observation(observer=agent.id(), content=""), info={}, message=message, kwargs={})
+    assert get_execution_state(message.context)["status"] == "incomplete"
+
+
+@pytest.mark.asyncio
+async def test_public_contract_advisory_exhaustion_submits_preserved_candidate():
+    from dataclasses import replace
+
+    from aworld.core.common import ActionModel
+    from aworld.core.execution_protocol import (
+        ExecutionProtocolPolicy,
+        ExecutionProtocolStore,
+        ProtocolMode,
+        ProtocolPhase,
+    )
+    from aworld.core.tool.base import Observation
+    from aworld.runners.execution_protocol import (
+        configure_execution_protocol,
+        store_candidate_fallback,
+    )
+    from aworld.core.context.compiler.frozen_json import canonical_json_hash
+
+    agent = _agent(policy=GenerationBudgetPolicy(total_timeout_seconds=5))
+    message = _message("public-contract-advisory")
+    protocol = ExecutionProtocolPolicy(
+        mode=ProtocolMode.GUIDE,
+        terminal_review_gate_enabled=True,
+        independent_acceptance_enabled=False,
+    )
+    configure_execution_protocol(message.context, agent.id(), protocol)
+    store = ExecutionProtocolStore(message.context, agent.id(), protocol)
+    store.save(
+        replace(
+            store.load(),
+            phase=ProtocolPhase.REVIEW,
+            candidate_present=False,
+            candidate_checkpoint_recorded=False,
+            candidate_final_count=1,
+            finalization_entered=True,
+        )
+    )
+    candidate = [
+        ActionModel(agent_name=agent.id(), policy_info="best current result")
+    ]
+    store_candidate_fallback(message.context, agent.id(), candidate)
+    feedback = "The public contract evidence ledger is not closed."
+    message.context.context_info[
+        f"public_contract_validation_feedback:{agent.id()}"
+    ] = canonical_json_hash({"feedback": feedback})
+    message.context.context_info[
+        f"public_contract_validation_retry_count:{agent.id()}"
+    ] = 1
+
+    result = await agent._retry_for_result_validation(
+        validation_feedback=feedback,
+        observation=Observation(observer=agent.id(), content=""),
+        info={},
+        message=message,
+        kwargs={},
+        candidate_actions=candidate,
+    )
+
+    assert result == candidate
+    assert get_execution_state(message.context)["status"] == "succeeded"
+    assert store.load().phase is ProtocolPhase.COMPLETE
+
+
+@pytest.mark.asyncio
+async def test_public_contract_cannot_bypass_explicit_completion_enforcement():
+    from aworld.core.common import ActionModel
+    from aworld.core.context.compiler import CompletionContract, CompletionMode
+    from aworld.core.context.compiler.frozen_json import canonical_json_hash
+    from aworld.core.tool.base import Observation
+
+    agent = _agent(policy=GenerationBudgetPolicy(total_timeout_seconds=5))
+    message = _message("enforced-public-contract")
+    message.context.configure_completion_contract(
+        CompletionContract(
+            required_artifacts=(),
+            immutable_inputs=(),
+            validation_commands=(),
+            max_evidence_age_seconds=None,
+            required_final_evidence=(),
+            max_repairs=1,
+        ),
+        mode=CompletionMode.ENFORCE,
+    )
+    message.context.context_info["completion_enforcement_explicit"] = True
+    feedback = "The public contract evidence ledger is not closed."
+    message.context.context_info[
+        f"public_contract_validation_feedback:{agent.id()}"
+    ] = canonical_json_hash({"feedback": feedback})
+    message.context.context_info[
+        f"public_contract_validation_retry_count:{agent.id()}"
+    ] = 1
+
+    result = await agent._retry_for_result_validation(
+        validation_feedback=feedback,
+        observation=Observation(observer=agent.id(), content=""),
+        info={},
+        message=message,
+        kwargs={},
+        candidate_actions=[
+            ActionModel(agent_name=agent.id(), policy_info="candidate")
+        ],
+    )
+
+    assert "not claiming success" in result[0].policy_info
     assert get_execution_state(message.context)["status"] == "incomplete"

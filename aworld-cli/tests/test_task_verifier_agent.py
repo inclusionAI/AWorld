@@ -15,9 +15,6 @@ from aworld.core.context.generation_budget import GenerationBudgetPolicy
 from aworld.models.model_response import Function, ModelResponse, ToolCall
 from aworld.models.reasoning_policy import ReasoningPhasePolicy
 from aworld_cli.builtin_agents.smllc.optional_agents import _common
-from aworld_cli.builtin_agents.smllc.optional_agents._common import (
-    FreshAnswerOnlyCollaborator,
-)
 from aworld_cli.builtin_agents.smllc.optional_agents.developer.developer import (
     build_developer_swarm,
 )
@@ -84,9 +81,9 @@ def test_verifier_inherits_model_generation_budget_and_shared_sandbox() -> None:
     assert verifier.conf.llm_config.llm_model_name == "test-model"
     assert verifier.conf.llm_config.llm_provider == "openai"
     assert verifier.conf.llm_config.max_model_len == 131072
-    assert verifier.conf.llm_config.params == {"max_completion_tokens": 1024}
+    assert verifier.conf.llm_config.params == {"max_completion_tokens": 1536}
     assert verifier.conf.llm_config.max_tokens is None
-    assert verifier.conf.max_input_tokens == 5120
+    assert verifier.conf.max_input_tokens == 16384
     assert verifier.conf.llm_config.params is not parent_config.llm_config.params
     assert (
         ReasoningPhasePolicy.from_value(
@@ -109,24 +106,25 @@ def test_verifier_inherits_model_generation_budget_and_shared_sandbox() -> None:
     assert verifier.enable_subagent is False
     assert verifier.subagent_context_mode == "fresh"
     assert verifier.subagent_merge_mode == "answer_only"
-    assert verifier.mcp_servers == ["filesystem"]
+    assert verifier.mcp_servers == []
     assert "hidden grader" in verifier.system_prompt
-    assert "Decision: `ready`, `repair`, or `uncertain`" in verifier.system_prompt
+    assert "`counterexample`" in verifier.system_prompt
     assert not any("CAST" in name for name in verifier.tool_names)
 
 
 @pytest.mark.asyncio
-async def test_verifier_forces_second_turn_report_only_and_never_calls_third_model(
+async def test_verifier_uses_one_report_only_turn_and_never_calls_second_model(
     monkeypatch,
 ) -> None:
     verifier = next(iter(build_verifier_swarm().agents.values()))
-    report_only_values = []
+    call_count = 0
 
     async def forbidden_generic_policy(*args, **kwargs):
         raise AssertionError("generic recovery loop must not run for verifier")
 
     async def fake_policy_once(observation, info=None, message=None, **kwargs):
-        report_only_values.append(verifier._bounded_review_report_only)
+        nonlocal call_count
+        call_count += 1
         return [ActionModel(agent_name=verifier.id(), policy_info="model result")]
 
     monkeypatch.setattr(Agent, "async_policy", forbidden_generic_policy)
@@ -134,30 +132,15 @@ async def test_verifier_forces_second_turn_report_only_and_never_calls_third_mod
 
     first = await verifier.async_policy(SimpleNamespace())
     second = await verifier.async_policy(SimpleNamespace())
-    third = await verifier.async_policy(SimpleNamespace())
 
     assert first[0].policy_info == "model result"
-    assert second[0].policy_info == "model result"
-    assert report_only_values == [False, True]
-    assert "Decision: `uncertain`" in third[0].policy_info
+    assert '"decision":"uncertain"' in second[0].policy_info
+    assert call_count == 1
 
 
 @pytest.mark.asyncio
-async def test_verifier_report_only_turn_hides_all_tools(monkeypatch) -> None:
+async def test_verifier_turn_exposes_no_tools(monkeypatch) -> None:
     verifier = next(iter(build_verifier_swarm().agents.values()))
-
-    async def fake_desc(self, context):
-        self.tools = [{"function": {"name": "filesystem__read_file"}}]
-        self.tool_mapping = {
-            "filesystem__read_file": "mcp__filesystem__read_file"
-        }
-
-    monkeypatch.setattr(
-        FreshAnswerOnlyCollaborator,
-        "async_desc_transform",
-        fake_desc,
-    )
-    verifier._bounded_review_report_only = True
 
     await verifier.async_desc_transform(SimpleNamespace())
 
@@ -179,7 +162,7 @@ def test_verifier_preserves_max_tokens_only_provider_contract() -> None:
         iter(build_verifier_swarm(agent_config=parent_config).agents.values())
     )
 
-    assert verifier.conf.llm_config.max_tokens == 1024
+    assert verifier.conf.llm_config.max_tokens == 1536
     assert "max_completion_tokens" not in verifier.conf.llm_config.params
 
 
@@ -206,7 +189,7 @@ def test_verifier_removes_extra_body_output_limit_overrides() -> None:
     )
 
     assert verifier.conf.llm_config.max_tokens is None
-    assert verifier.conf.llm_config.params["max_completion_tokens"] == 1024
+    assert verifier.conf.llm_config.params["max_completion_tokens"] == 1536
     assert "max_tokens" not in verifier.conf.llm_config.params
     assert verifier.conf.llm_config.params["extra_body"] == {
         "route_hint": "preserve-me"
@@ -265,9 +248,9 @@ def test_default_collaborators_inherit_root_execution_profile() -> None:
         assert collaborator.conf.llm_config.max_model_len == 131072
         if expected_name == "verifier":
             assert collaborator.conf.llm_config.params == {
-                "max_completion_tokens": 1024
+                "max_completion_tokens": 1536
             }
-            assert collaborator.conf.max_input_tokens == 5120
+            assert collaborator.conf.max_input_tokens == 16384
         else:
             assert collaborator.conf.llm_config.params == parent_config.llm_config.params
         assert (
@@ -288,7 +271,10 @@ def test_default_collaborators_inherit_root_execution_profile() -> None:
         assert collaborator.enable_subagent is False
         assert collaborator.subagent_context_mode == "fresh"
         assert collaborator.subagent_merge_mode == "answer_only"
-        assert collaborator.mcp_servers
+        if expected_name == "verifier":
+            assert collaborator.mcp_servers == []
+        else:
+            assert collaborator.mcp_servers
         assert "public task" in collaborator.system_prompt.lower()
         assert "hidden reward" in collaborator.system_prompt.lower()
 
@@ -424,14 +410,18 @@ def test_reviewer_schema_uses_fail_closed_filesystem_action_allowlist(
         asyncio.run(reviewer.async_desc_transform(None))
         schema_names = {schema["function"]["name"] for schema in reviewer.tools}
 
-        assert schema_names == {
-            "read_file",
-            "read_media_file",
-            "list_directory",
-            "list_allowed_directories",
-            "search_content",
-            "search_files",
-        }
+        assert schema_names == (
+            set()
+            if builder is build_verifier_swarm
+            else {
+                "read_file",
+                "read_media_file",
+                "list_directory",
+                "list_allowed_directories",
+                "search_content",
+                "search_files",
+            }
+        )
         assert "parse_file" not in reviewer.tool_mapping
         assert "future_workspace_mutation" not in reviewer.tool_mapping
 
@@ -507,22 +497,31 @@ async def test_reviewer_rejects_explicit_mcp_calls_outside_live_surface(
             ToolCallParseIssueCode.TOOL_NOT_IN_LIVE_SURFACE
         )
 
-    allowed = await LlmOutputParser().parse(
-        ModelResponse(
-            id="response-read",
-            model="schema-test",
-            tool_calls=[
-                ToolCall(
-                    id="call-read",
-                    function=Function(
-                        name="mcp__filesystem__read_file",
-                        arguments='{"path": "README.md"}',
-                    ),
-                )
-            ],
-        ),
-        agent_id=reviewer.id(),
-        agent=reviewer,
+    read_response = ModelResponse(
+        id="response-read",
+        model="schema-test",
+        tool_calls=[
+            ToolCall(
+                id="call-read",
+                function=Function(
+                    name="mcp__filesystem__read_file",
+                    arguments='{"path": "README.md"}',
+                ),
+            )
+        ],
     )
-    assert allowed.actions[0].tool_name == "mcp"
-    assert allowed.actions[0].action_name == "filesystem__read_file"
+    if builder is build_verifier_swarm:
+        with pytest.raises(ToolCallBatchParseError):
+            await LlmOutputParser().parse(
+                read_response,
+                agent_id=reviewer.id(),
+                agent=reviewer,
+            )
+    else:
+        allowed = await LlmOutputParser().parse(
+            read_response,
+            agent_id=reviewer.id(),
+            agent=reviewer,
+        )
+        assert allowed.actions[0].tool_name == "mcp"
+        assert allowed.actions[0].action_name == "filesystem__read_file"

@@ -2,6 +2,66 @@
 
 ## Unreleased
 
+### Structured Tool checkpoint recovery
+
+- Fail open immediately when a provider renders the internal execution
+  checkpoint as text instead of a structured Tool call, then expose the normal
+  task Tool catalog and require one bounded material action.
+- Preserve typed telemetry for this provider-compatibility boundary without
+  consuming the malformed-decision retry loop or treating control text as task
+  completion.
+- Recover exact textual DSML Tool batches only when every call resolves against
+  the current live Tool surface; reject unknown, ambiguous, duplicate, or
+  partially parsed markup without executing it.
+- Bind complete `usage` content for every active authorized Skill into a stable
+  final-request system section, independently of AMNI neuron projection, so
+  task execution never depends on first re-reading `SKILL.md` through a Tool.
+- Recover DSML emitted in reasoning streams, including provider string-mode
+  variants, while routing malformed textual batches into bounded Tool repair.
+
+### Bounded public deliverable enumeration
+
+- Expand one positive numeric brace range in a final filename segment into at
+  most sixteen stable public deliverables, while rejecting ambiguous ranges,
+  traversal, nested patterns, and input/reference paths.
+
+### Task skill authority and auditability
+
+- Preserve explicit task-skill selection order across Rich and minimal CLIs,
+  reject escaping or symlinked packages before the first model call, and emit
+  bounded package-fingerprint evidence in terminal results and trajectories.
+- Correct the model-visible Skill activation contract while keeping optional
+  Runtime capabilities and verifier-blind policy authoritative.
+
+### Complete public delivery contracts
+
+- Recognize explicit destination, typed-output, and bounded Markdown output
+  list forms without promoting inputs, examples, negated paths, or component
+  side effects into delivery obligations.
+- Keep multi-file delivery debt active until every named output has an
+  inspectable current candidate, while preserving single-file, answer-only,
+  and in-place task behavior.
+- Defer the bounded reviewer lease for partial multi-file candidates so review
+  cost is spent only when the public contract can be closed.
+
+### Reviewer value and delivery convergence
+
+- Made one authenticated GUIDE reviewer lease a bounded control turn, while
+  preserving manual OFF/OBSERVE compatibility and the short-task fast path.
+- Kept an admitted reviewer lease claimable across the model call that emits
+  it, recovered its schema from the Agent's authenticated Tool surface when a
+  sticky catalog omitted the dormant Tool, and constrained reviewer-bound
+  validation to one non-parallel carrier Tool call.
+- Prioritized semantic answer and completeness obligations over residual shape
+  checks, including obligations already covered by solver-authored self-checks.
+- Added kind-aware, candidate-wide counterexample guidance for finite sets,
+  behavioral boundaries, objectives, and independently recomputed metrics.
+- Added advisory 16/40-observation candidate checkpoints for long tasks with a
+  named public output, without revoking ordinary Tool access or converting
+  public-contract guidance into completion authority.
+- Expanded public objective extraction while excluding input-only format
+  descriptions; reviewer-only additions do not increase completion debt.
+
 ### FileX runtime synchronization
 
 - Synchronized the latest FileX document and media runtime into AWorld while

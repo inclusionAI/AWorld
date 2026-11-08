@@ -15,19 +15,18 @@ from aworld.sandbox import Sandbox
 from ...agents.sandbox_factory import create_agent_sandbox
 from .._common import (
     FreshAnswerOnlyCollaborator,
-    READ_ONLY_FILESYSTEM_ALLOWLIST,
     inherited_collaborator_config,
     public_collaborator_prompt,
 )
 
-_REVIEW_MAX_INPUT_TOKENS_PER_TURN = 5_120
-_REVIEW_MAX_OUTPUT_TOKENS_PER_TURN = 1_024
+_REVIEW_MAX_INPUT_TOKENS_PER_TURN = 16_384
+_REVIEW_MAX_OUTPUT_TOKENS_PER_TURN = 1_536
 
 
 class TaskVerifierAgent(FreshAnswerOnlyCollaborator):
-    """Fresh, answer-only collaborator with a read-only filesystem surface."""
+    """Fresh, answer-only collaborator over immutable framework evidence."""
 
-    mcp_tool_action_allowlist = READ_ONLY_FILESYSTEM_ALLOWLIST
+    mcp_tool_action_allowlist = {}
     reasoning_phase_override = "review"
     failed_request_diagnostics_enabled = False
 
@@ -38,7 +37,9 @@ class TaskVerifierAgent(FreshAnswerOnlyCollaborator):
                 policy_info=(
                     '{"decision":"uncertain","evidence":"the bounded verifier '
                     'could not produce a complete report","gaps":"no valid final '
-                    'report was produced in two model calls","recommended_next_action":'
+                    'report was produced in one model call","counterexample":"run '
+                    'one public boundary assertion not present in the solver evidence",'
+                    '"recommended_next_action":'
                     '"run one task-derived validation and preserve the current candidate"}'
                 ),
             )
@@ -47,15 +48,13 @@ class TaskVerifierAgent(FreshAnswerOnlyCollaborator):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._bounded_review_model_turns = 0
-        self._bounded_review_report_only = False
 
     async def async_desc_transform(self, context) -> None:
-        """Expose read tools only to the first bounded review model turn."""
+        """Fail closed to a Tool-free review surface on every request."""
 
         await super().async_desc_transform(context)
-        if self._bounded_review_report_only:
-            self.tools = []
-            self.tool_mapping = {}
+        self.tools = []
+        self.tool_mapping = {}
 
     async def async_policy(
         self,
@@ -64,11 +63,10 @@ class TaskVerifierAgent(FreshAnswerOnlyCollaborator):
         message=None,
         **kwargs,
     ):
-        """Use one inspection turn and one forced report turn, never a third."""
+        """Use exactly one report-only provider request."""
 
-        if self._bounded_review_model_turns >= 2:
+        if self._bounded_review_model_turns >= 1:
             return self._bounded_uncertain_action()
-        self._bounded_review_report_only = self._bounded_review_model_turns == 1
         try:
             # A verifier turn owns exactly one provider request.  Calling the
             # generic ``LLMAgent.async_policy`` here would enable its internal
@@ -82,7 +80,6 @@ class TaskVerifierAgent(FreshAnswerOnlyCollaborator):
             return self._bounded_uncertain_action()
         finally:
             self._bounded_review_model_turns += 1
-            self._bounded_review_report_only = False
 
 
 def _bounded_review_config(parent: AgentConfig | None) -> AgentConfig:
@@ -194,7 +191,7 @@ def build_verifier_swarm(
         system_prompt=public_collaborator_prompt(
             (Path(__file__).resolve().parent / "prompt.txt").read_text(encoding="utf-8")
         ),
-        mcp_servers=["filesystem"],
+        mcp_servers=[],
         sandbox=sandbox,
         tool_names=[],
         enable_subagent=False,

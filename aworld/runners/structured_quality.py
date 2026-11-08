@@ -192,7 +192,11 @@ def observe_structured_quality(
                 evidence_seen = True
                 reasons.add(reason[:128])
 
-    if not evidence_seen:
+    # A prose reason mentioning a missing table is not enough to establish
+    # that the public task actually requires one. Without a positive table
+    # count this detector produced irrelevant "0 of 0" repair loops for code
+    # and service tasks.
+    if not evidence_seen or required <= 0:
         return None
     if required > usable and not reasons:
         reasons.add("structured_table_coverage_incomplete")

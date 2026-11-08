@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
@@ -1204,11 +1205,25 @@ def test_agent_can_restore_legacy_guide_with_skill_specific_review(monkeypatch) 
     )
     agent.skill_configs = {"long-running-agent": {"active": True}}
 
-    assert agent._resolve_execution_protocol_policy().mode is ProtocolMode.GUIDE
-    assert agent._resolve_execution_protocol_policy().review_unarmed_candidates is True
+    policy = agent._resolve_execution_protocol_policy()
+    assert policy.mode is ProtocolMode.GUIDE
+    assert policy.hard_tool_admission_enabled is False
+    assert policy.model_decision_checkpoints_enabled is False
+    assert policy.advisory_uncertain_repair_enabled is True
+    assert policy.bounded_repair_submission_enabled is True
+    assert policy.max_replans == 1
+    assert policy.max_final_reviews == 1
+    assert policy.review_unarmed_candidates is True
     agent.skill_configs["long-running-agent"]["active"] = False
-    assert agent._resolve_execution_protocol_policy().mode is ProtocolMode.GUIDE
-    assert agent._resolve_execution_protocol_policy().review_unarmed_candidates is False
+    policy = agent._resolve_execution_protocol_policy()
+    assert policy.mode is ProtocolMode.GUIDE
+    assert policy.hard_tool_admission_enabled is False
+    assert policy.model_decision_checkpoints_enabled is False
+    assert policy.advisory_uncertain_repair_enabled is True
+    assert policy.bounded_repair_submission_enabled is True
+    assert policy.max_replans == 1
+    assert policy.max_final_reviews == 1
+    assert policy.review_unarmed_candidates is False
 
 
 def test_explicit_off_policy_remains_a_developer_rollback() -> None:
@@ -1226,7 +1241,7 @@ def test_explicit_off_policy_remains_a_developer_rollback() -> None:
     assert agent._resolve_execution_protocol_policy().mode is ProtocolMode.OFF
 
 
-def test_success_first_observes_execution_but_retains_terminal_control(
+def test_success_first_guides_only_after_typed_convergence_and_retains_terminal_control(
     monkeypatch,
 ) -> None:
     monkeypatch.delenv("AWORLD_SUCCESS_FIRST", raising=False)
@@ -1243,12 +1258,17 @@ def test_success_first_observes_execution_but_retains_terminal_control(
 
     policy = agent._resolve_execution_protocol_policy()
 
-    assert policy.mode is ProtocolMode.OBSERVE
+    assert policy.mode is ProtocolMode.GUIDE
+    assert policy.hard_tool_admission_enabled is False
+    assert policy.model_decision_checkpoints_enabled is False
+    assert policy.advisory_uncertain_repair_enabled is True
+    assert policy.bounded_repair_submission_enabled is True
+    assert policy.max_replans == 1
     assert policy.review_unarmed_candidates is False
     assert policy.terminal_review_gate_enabled is True
     assert policy.independent_acceptance_enabled is False
     assert policy.semantic_progress_enabled is True
-    assert policy.max_final_reviews == 2
+    assert policy.max_final_reviews == 1
     assert policy.max_repairs == 1
     assert policy.finalization_reserve_seconds == 60
     assert policy.candidate_decision_reserve_seconds == 240
@@ -1279,11 +1299,93 @@ def test_success_first_derives_bounded_terminal_reserves_from_task_budget(
 
     policy = agent._resolve_execution_protocol_policy(context)
 
-    assert policy.mode is ProtocolMode.OBSERVE
+    assert policy.mode is ProtocolMode.GUIDE
+    assert policy.hard_tool_admission_enabled is False
+    assert policy.max_replans == 1
     assert policy.terminal_review_gate_enabled is True
     assert policy.finalization_reserve_seconds == pytest.approx(180.0)
     assert policy.candidate_decision_reserve_seconds == pytest.approx(480.0)
     assert policy.final_review_timeout_seconds == pytest.approx(120.0)
+
+
+def test_public_task_contract_is_injected_as_advisory_evidence_ledger() -> None:
+    context = Context(task_id="public-contract-ledger")
+    context.origin_user_input = "build the public service"
+    context.context_info["public_task_contract"] = {
+        "schema_version": "aworld.public-task-contract/v1",
+        "authority": "public_task_advisory",
+        "source": "public_task_text",
+        "request_fingerprint": "sha256:"
+        + hashlib.sha256(b"build the public service").hexdigest(),
+        "completion_obligation_ids": ["public-obligation-1"],
+        "obligations": [
+            {
+                "obligation_id": "public-obligation-1",
+                "kind": "structured_field",
+                "subject": "value",
+                "expectation": {"required": True, "declared_type": "int"},
+                "source_excerpt": "SetValRequest includes value (int).",
+                "source_fingerprint": "sha256:" + "b" * 64,
+                "authority": "public_task_advisory",
+                "source": "public_task_text",
+            },
+            {
+                "obligation_id": "public-obligation-2",
+                "kind": "range_constraint",
+                "subject": "accuracy",
+                "expectation": {"operator": "at_least", "value": 0.95},
+                "source_excerpt": "Accuracy must be at least 0.95.",
+                "source_fingerprint": "sha256:" + "c" * 64,
+                "authority": "public_task_advisory",
+                "source": "public_task_text",
+            },
+        ],
+    }
+    agent = Agent(
+        name="Aworld",
+        conf=AgentConfig(
+            llm_provider="openai",
+            llm_model_name="offline",
+            llm_api_key="offline",
+        ),
+    )
+
+    projected = agent._process_messages(
+        [{"role": "user", "content": "build the public service"}],
+        context,
+    )
+
+    assert projected is not None
+    assert projected[0]["role"] == "system"
+    assert '"obligation_id":"public-obligation-1"' in projected[0]["content"]
+    assert '"subject":"value"' in projected[0]["content"]
+    assert '"obligation_id":"public-obligation-2"' not in projected[0]["content"]
+    assert '"subject":"accuracy"' not in projected[0]["content"]
+    assert "completion checklist" in projected[0]["content"]
+    assert "reviewer-only risk target" in projected[0]["content"]
+    assert "do not all need to be closed" in projected[0]["content"]
+    assert "hidden verifier material" in projected[0]["content"]
+
+
+def test_non_public_contract_authority_is_not_injected() -> None:
+    context = Context(task_id="non-public-contract-ledger")
+    context.context_info["public_task_contract"] = {
+        "schema_version": "aworld.public-task-contract/v1",
+        "authority": "verifier",
+        "source": "hidden_tests",
+        "obligations": [],
+    }
+    agent = Agent(
+        name="Aworld",
+        conf=AgentConfig(
+            llm_provider="openai",
+            llm_model_name="offline",
+            llm_api_key="offline",
+        ),
+    )
+    messages = [{"role": "user", "content": "finish the task"}]
+
+    assert agent._process_messages(messages, context) is messages
 
 
 def test_success_first_terminal_gate_has_an_exact_rollback(monkeypatch) -> None:
@@ -1309,7 +1411,9 @@ def test_success_first_terminal_gate_has_an_exact_rollback(monkeypatch) -> None:
 
     policy = agent._resolve_execution_protocol_policy(context)
 
-    assert policy.mode is ProtocolMode.OBSERVE
+    assert policy.mode is ProtocolMode.GUIDE
+    assert policy.hard_tool_admission_enabled is False
+    assert policy.max_replans == 1
     assert policy.terminal_review_gate_enabled is False
     assert policy.max_final_reviews is None
     assert policy.max_repairs is None
@@ -1466,7 +1570,9 @@ def test_agent_offers_required_initial_model_decision_before_real_tools() -> Non
         "verification_required",
         "workspace_mutation_required",
     }
-    plan = augmented[0]["function"]["parameters"]["properties"]["__aworld_plan_update"]
+    plan = augmented[0]["function"]["parameters"]["properties"][
+        "__aworld_plan_update"
+    ]
     assert plan["type"] == "object"
     assert "submit_current" in plan["properties"]["delivery_intent"]["enum"]
     assert set(plan["required"]) == {
@@ -1493,6 +1599,56 @@ def test_agent_offers_required_initial_model_decision_before_real_tools() -> Non
         plan["properties"]["next_action_arguments"]["description"].rsplit(": ", 1)[1]
     )
     assert contract_table["terminal__execute"] == '{"command":string!}'
+
+
+def test_success_first_short_task_defers_initial_decision_until_generic_arming(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("AWORLD_SUCCESS_FIRST", "true")
+    context = Context(task_id="success-first-short-fast-path")
+    context.set_task(Task(id="success-first-short-fast-path", timeout=600))
+    agent = Agent(
+        name="Aworld",
+        conf=AgentConfig(
+            llm_provider="openai",
+            llm_model_name="offline",
+            llm_api_key="offline",
+        ),
+    )
+    agent.skill_configs = {"long-running-agent": {"active": True}}
+    policy = agent._resolve_execution_protocol_policy(context)
+    configure_execution_protocol(context, agent.id(), policy)
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "terminal__execute",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"command": {"type": "string"}},
+                    "required": ["command"],
+                },
+            },
+        }
+    ]
+
+    augmented, offer = agent._with_long_horizon_execution_profile(tools, context)
+
+    assert augmented is tools
+    assert offer.profile_schema_offered is False
+    assert offer.decision_boundary is None
+
+    store = ExecutionProtocolStore(context, agent.id(), policy)
+    store.save(replace(store.load(), long_horizon_armed=True))
+
+    augmented, offer = agent._with_long_horizon_execution_profile(tools, context)
+
+    assert offer.profile_schema_offered is False
+    assert offer.decision_boundary is None
+    assert augmented[0]["function"]["name"] == "terminal__execute"
+    assert "__aworld_plan_update" not in augmented[0]["function"]["parameters"][
+        "properties"
+    ]
 
 
 def test_success_first_terminal_checkpoint_exposes_decision_tool() -> None:
@@ -2003,6 +2159,203 @@ def test_agent_strips_and_records_optional_public_probe_control() -> None:
     assert load_public_probe_receipts(context, agent.id()) == []
 
 
+def test_agent_binds_single_public_probe_when_provider_normalizes_tool_name() -> None:
+    context = Context(task_id="public-probe-normalized-carrier")
+    context.set_task(Task(id="public-probe-normalized-carrier", input="validate output"))
+    policy = ExecutionProtocolPolicy(mode=ProtocolMode.GUIDE)
+    agent = _agent(context, policy)
+    configure_execution_protocol(context, agent.id(), policy)
+    action = ActionModel(
+        tool_name="terminal",
+        action_name="run_code",
+        tool_call_id="normalized-probe-call",
+        params={
+            "code": "true",
+            "__aworld_public_probe": {
+                "hypothesis_id": "normalized-carrier",
+                "highest_risk_counterexample": "the public check still fails",
+                "probe_kind": "counterexample",
+            },
+        },
+    )
+    result = AgentResult(current_state=None, actions=[action], is_call_tool=True)
+    offer = llm_agent_module._LongHorizonControlOffer(
+        carrier_function_name="provider__run_code",
+        injected_parameters=frozenset({"__aworld_public_probe"}),
+    )
+
+    assert agent._consume_public_probe_controls(result, context, offer=offer) == 1
+    assert action.params == {"code": "true"}
+
+
+def test_public_probe_schema_binds_checks_to_public_obligation_ids() -> None:
+    request = "Create report.json with required field value and validate it."
+    context = Context(task_id="public-probe-obligation-schema")
+    context.set_task(
+        Task(id="public-probe-obligation-schema", input=request, timeout=600)
+    )
+    context.context_info["public_task_contract"] = {
+        "schema_version": "aworld.public-task-contract/v1",
+        "authority": "public_task_advisory",
+        "source": "public_task_text",
+        "request_fingerprint": "sha256:" + hashlib.sha256(request.encode()).hexdigest(),
+        "obligations": [
+            {
+                "obligation_id": "public-obligation-1",
+                "kind": "structured_field",
+                "subject": "value",
+                "expectation": {"required": True},
+                "source_excerpt": "required field value",
+                "source_fingerprint": "sha256:" + "a" * 64,
+                "authority": "public_task_advisory",
+                "source": "public_task_text",
+            }
+        ],
+    }
+    policy = ExecutionProtocolPolicy(mode=ProtocolMode.GUIDE)
+    agent = _agent(context, policy)
+    configure_execution_protocol(context, agent.id(), policy)
+    record_model_execution_profile(
+        context,
+        agent.id(),
+        {
+            "horizon": "short",
+            "confidence": 0.9,
+            "milestone_count": 1,
+            "expected_tool_actions": 1,
+            "verification_required": True,
+        },
+    )
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "terminal__execute",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"command": {"type": "string"}},
+                },
+            },
+        }
+    ]
+
+    augmented, _ = agent._with_long_horizon_execution_profile(tools, context)
+    probe = augmented[0]["function"]["parameters"]["properties"][
+        "__aworld_public_probe"
+    ]
+    assert "__aworld_public_probe" not in augmented[0]["function"][
+        "parameters"
+    ].get("required", [])
+    assert "obligation_ids" in probe["required"]
+    assert probe["properties"]["obligation_ids"]["items"]["enum"] == [
+        "public-obligation-1"
+    ]
+
+
+def test_reviewer_validation_requires_exact_public_probe_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request = "Create report.json whose value is at least 10."
+    context = Context(task_id="required-reviewer-probe")
+    context.set_task(Task(id="required-reviewer-probe", input=request, timeout=600))
+    context.context_info["public_task_contract"] = {
+        "schema_version": "aworld.public-task-contract/v1",
+        "authority": "public_task_advisory",
+        "source": "public_task_text",
+        "request_fingerprint": "sha256:" + hashlib.sha256(request.encode()).hexdigest(),
+        "obligations": [
+            {
+                "obligation_id": "public-obligation-1",
+                "kind": "numeric_threshold",
+                "subject": "value",
+                "expectation": {"minimum": 10},
+                "source_fingerprint": "sha256:" + "b" * 64,
+                "authority": "public_task_advisory",
+                "source": "public_task_text",
+            }
+        ],
+    }
+    policy = ExecutionProtocolPolicy(mode=ProtocolMode.GUIDE)
+    agent = _agent(context, policy)
+    configure_execution_protocol(context, agent.id(), policy)
+    _declare_long_horizon(context, agent.id())
+    binding = {
+        "hypothesis_id": "reviewer-value-validation",
+        "highest_risk_counterexample": "assert value 9 is rejected",
+        "probe_kind": "counterexample",
+        "obligation_ids": ["public-obligation-1"],
+    }
+    monkeypatch.setattr(
+        execution_protocol_module,
+        "reviewer_validation_probe_binding",
+        lambda _context, _agent_id: dict(binding),
+    )
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "terminal__run_code",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"code": {"type": "string"}},
+                    "required": ["code"],
+                },
+            },
+        }
+    ]
+
+    augmented, offer = agent._with_long_horizon_execution_profile(tools, context)
+    parameters = augmented[0]["function"]["parameters"]
+    assert "__aworld_public_probe" in parameters["required"]
+    probe = parameters["properties"]["__aworld_public_probe"]
+    assert probe["properties"]["highest_risk_counterexample"]["enum"] == [
+        binding["highest_risk_counterexample"]
+    ]
+    assert probe["properties"]["obligation_ids"]["items"]["enum"] == [
+        "public-obligation-1"
+    ]
+    action = ActionModel(
+        tool_name="terminal",
+        action_name="run_code",
+        tool_call_id="required-reviewer-probe-call",
+        params={"code": "assert_value.py", "__aworld_public_probe": dict(binding)},
+    )
+    result = AgentResult(current_state=None, actions=[action], is_call_tool=True)
+    assert agent._consume_public_probe_controls(result, context, offer=offer) == 1
+    assert action.params == {"code": "assert_value.py"}
+
+    provider_omitted_control = ActionModel(
+        tool_name="terminal",
+        action_name="run_code",
+        tool_call_id="required-reviewer-probe-compat-call",
+        params={"code": "assert_value_compat.py"},
+    )
+    provider_omitted_result = AgentResult(
+        current_state=None,
+        actions=[provider_omitted_control],
+        is_call_tool=True,
+    )
+    assert (
+        agent._consume_public_probe_controls(
+            provider_omitted_result,
+            context,
+            offer=offer,
+            reviewer_validation_turn=False,
+        )
+        == 0
+    )
+    assert (
+        agent._consume_public_probe_controls(
+            provider_omitted_result,
+            context,
+            offer=offer,
+            reviewer_validation_turn=True,
+        )
+        == 1
+    )
+    assert provider_omitted_control.params == {"code": "assert_value_compat.py"}
+
+
 def test_agent_consumes_explicit_decision_without_forwarding_internal_tool() -> None:
     context = Context(task_id="profile-consume")
     context.set_task(Task(id="profile-consume", timeout=600))
@@ -2102,6 +2455,37 @@ def test_malformed_initial_decision_retries_once_then_fails_open_unknown():
     assert telemetry["initial_decision_attempt_count"] == 2
     assert telemetry["initial_decision_unavailable_count"] == 0
     assert telemetry.get("model_horizon") is None
+
+
+def test_initial_fail_open_does_not_mask_later_stagnation_replan():
+    context = Context(task_id="initial-unavailable-then-replan")
+    context.set_task(Task(id="initial-unavailable-then-replan", timeout=600))
+    policy = ExecutionProtocolPolicy(
+        mode=ProtocolMode.GUIDE,
+        repetition_threshold=1,
+    )
+    agent = _agent(context, policy)
+    agent.skill_configs = {"long-running-agent": {"active": True}}
+    configure_execution_protocol(context, agent.id(), policy)
+
+    assert record_model_decision_unavailable(
+        context,
+        agent.id(),
+        boundary="initial",
+        reason="model_response_incomplete",
+    )
+    assert execution_protocol_model_decision_boundary(context, agent.id()) is None
+
+    transition = record_tool_protocol_event(
+        context,
+        agent.id(),
+        {"repetition_count": 1, "current_agent_step": 2},
+    )
+
+    assert transition is not None
+    assert transition.state.decision_checkpoint_pending is True
+    assert transition.state.replan_requested_count == 1
+    assert execution_protocol_model_decision_boundary(context, agent.id()) == "replan"
 
 
 def test_unacknowledged_replan_checkpoint_fails_open_without_claiming_applied():
@@ -3427,6 +3811,107 @@ async def test_malformed_decision_cannot_loop_past_one_retry() -> None:
     assert not any(isinstance(write["payload"], ActionResult) for write in memory_writes)
 
 
+@pytest.mark.asyncio
+async def test_textual_checkpoint_fails_open_to_required_ordinary_tool() -> None:
+    requests = []
+    request_tool_names = []
+    request_tool_choices = []
+    request_parallel_tool_calls = []
+
+    class TextualCheckpointAgent(Agent):
+        async def _add_message_to_memory(self, *args, **kwargs):
+            return None
+
+        async def build_llm_input(self, observation, info=None, message=None, **kwargs):
+            return [{"role": "user", "content": str(observation.content or "")}]
+
+        async def _filter_tools(self, context=None):
+            return [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "terminal__execute",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {"command": {"type": "string"}},
+                            "required": ["command"],
+                        },
+                    },
+                }
+            ]
+
+        async def invoke_model(self, messages=None, message=None, **kwargs):
+            requests.append(kwargs)
+            request_tool_names.append(
+                [
+                    tool["function"]["name"]
+                    for tool in (kwargs.get("prepared_tools") or ())
+                ]
+            )
+            request_tool_choices.append(kwargs.get("tool_choice"))
+            request_parallel_tool_calls.append(kwargs.get("parallel_tool_calls"))
+            if len(requests) == 1:
+                return ModelResponse(
+                    id="textual-checkpoint",
+                    model="offline",
+                    content="checkpoint rendered as unstructured text",
+                    finish_reason="stop",
+                    usage={"prompt_tokens": 1, "completion_tokens": 1},
+                )
+            return ModelResponse(
+                id="ordinary-tool",
+                model="offline",
+                content="",
+                tool_calls=[
+                    ToolCall(
+                        id="call-terminal",
+                        function=Function(
+                            name="terminal__execute",
+                            arguments='{"command":"pwd"}',
+                        ),
+                    )
+                ],
+                finish_reason="tool_calls",
+                usage={"prompt_tokens": 1, "completion_tokens": 1},
+            )
+
+    context = Context(task_id="textual-checkpoint-fail-open")
+    context.set_task(Task(id="textual-checkpoint-fail-open", timeout=600))
+    policy = ExecutionProtocolPolicy(mode=ProtocolMode.GUIDE)
+    agent = TextualCheckpointAgent(
+        name="Aworld",
+        conf=AgentConfig(
+            llm_provider="openai",
+            llm_model_name="offline",
+            llm_api_key="offline",
+        ),
+        execution_protocol_policy=policy,
+        max_loop_steps=0,
+    )
+    agent.skill_configs = {"long-running-agent": {"active": True}}
+    message = Message(category=Constants.AGENT, headers={"context": context})
+
+    result = await agent.async_policy(
+        Observation(content="create the requested artifact"),
+        message=message,
+    )
+
+    assert len(requests) >= 2
+    assert request_tool_names[0] == ["aworld__execution_decision"]
+    assert request_tool_names[1] == ["terminal__execute"]
+    assert request_tool_choices[1] == "required"
+    assert request_parallel_tool_calls[1] is False
+    assert result[0].tool_name == "terminal"
+    assert result[0].action_name == "execute"
+    assert result[0].params == {"command": "pwd"}
+    telemetry = build_execution_protocol_telemetry(context, agent.id())
+    assert telemetry["initial_decision_status"] == "fail_open_unknown"
+    assert telemetry["initial_decision_unavailable_count"] == 1
+    assert telemetry["initial_decision_fail_open_reason"] == (
+        "structured_tool_call_unavailable"
+    )
+
+
 @pytest.mark.parametrize(
     ("total,external,expected"),
     [
@@ -3610,7 +4095,8 @@ async def test_final_review_guidance_reaches_the_second_model_request() -> None:
     assert "framework probe receipt" not in guidance
     assert "accept requires" not in guidance
     assert "public self-check receipts" in guidance
-    assert '"probe_assessment":"unassessed"' in guidance
+    assert '"probe_assessment":"assertion_executed"' in guidance
+    assert '"validation_kind":"task-check:test-suite"' in guidance
     assert '"stale":true' in guidance
     execution_state = get_execution_state(context, agent.id())
     assert execution_state["status"] == "succeeded"
@@ -3818,6 +4304,9 @@ async def test_single_review_repair_returns_to_normal_tool_execution() -> None:
     repair_state = ExecutionProtocolStore(context, agent.id(), policy).load()
     assert repair_state.repair_count == 1
     assert final[0].policy_info == "final after bounded repair"
+    final_state = ExecutionProtocolStore(context, agent.id(), policy).load()
+    assert final_state.phase is ProtocolPhase.COMPLETE
+    assert final_state.terminal_incomplete is False
     assert calls == 3
     assert prepared_tools[-1] is not None
     review_control = "__aworld_review_decision"

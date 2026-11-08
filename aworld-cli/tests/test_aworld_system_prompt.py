@@ -15,6 +15,7 @@ from aworld_cli.builtin_agents.smllc.agents.aworld_agent import (
     resolve_aworld_builtin_subagents,
     resolve_aworld_artifact_observation_media_capability,
     resolve_aworld_generation_budget,
+    resolve_aworld_infrastructure_circuit_threshold,
     resolve_aworld_reasoning_configuration,
     resolve_aworld_max_completion_tokens,
     resolve_aworld_max_loop_steps,
@@ -433,6 +434,21 @@ def test_legacy_generation_budget_env_is_ignored_without_explicit_mode(
     assert resolve_aworld_generation_budget() is None
 
 
+def test_infrastructure_circuit_defaults_to_two_and_allows_explicit_disable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    name = "AWORLD_INFRASTRUCTURE_ERROR_CIRCUIT_BREAKER_THRESHOLD"
+    monkeypatch.delenv(name, raising=False)
+    assert resolve_aworld_infrastructure_circuit_threshold() == 2
+
+    monkeypatch.setenv(name, "0")
+    assert resolve_aworld_infrastructure_circuit_threshold() == 0
+
+    monkeypatch.setenv(name, "invalid")
+    with pytest.raises(ValueError, match="non-negative integer"):
+        resolve_aworld_infrastructure_circuit_threshold()
+
+
 def test_builtin_subagent_allowlist_is_explicit_and_ordered(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -486,6 +502,7 @@ def test_default_agent_is_strictly_single_main_agent(
     assert collaborators == {}
     assert root.name() == "Aworld"
     assert root.enable_subagent is False
+    assert root.infrastructure_error_circuit_breaker_threshold == 2
     assert root.mcp_servers == ["terminal"]
     assert "WORKBENCH" not in root.tool_names
     root_schema_names = {

@@ -1,5 +1,8 @@
 from pathlib import Path
 
+import pytest
+
+from aworld.core.agent.skill import SkillPackageValidationError
 from aworld.skills.compat_provider import build_compat_registry
 from aworld.skills.filesystem_provider import FilesystemSkillProvider
 from aworld.utils.skill_loader import collect_skill_docs
@@ -19,6 +22,22 @@ def test_filesystem_provider_lists_descriptor_without_usage(tmp_path: Path):
     assert descriptor.skill_id == "local:browser-use"
     assert descriptor.description == "Browser automation"
     assert not hasattr(descriptor, "usage")
+
+
+def test_filesystem_provider_rejects_symlinked_skill_package(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "SKILL.md").write_text(
+        "---\ndescription: Unsafe\n---\n",
+        encoding="utf-8",
+    )
+    skills = tmp_path / "skills"
+    skills.mkdir()
+    (skills / "unsafe").symlink_to(source, target_is_directory=True)
+
+    provider = FilesystemSkillProvider(provider_id="local", root=skills)
+    with pytest.raises(SkillPackageValidationError):
+        provider.list_descriptors()
 
 
 def test_filesystem_provider_exposes_default_enabled_policy(tmp_path: Path) -> None:

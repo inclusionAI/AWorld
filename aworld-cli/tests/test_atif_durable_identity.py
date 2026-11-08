@@ -21,6 +21,36 @@ from aworld_cli.main import (
 from aworld_cli.run_outcome import DirectRunOutcome, DirectRunStatus
 
 
+def test_atif_projects_content_free_skill_activation_evidence() -> None:
+    evidence = [
+        {
+            "skill_name": "spreadsheet-recovery",
+            "canonical_skill_file": "/skills/spreadsheet-recovery/SKILL.md",
+            "canonical_skill_root": "/skills/spreadsheet-recovery",
+            "package_fingerprint": "sha256:" + "b" * 64,
+            "source": "aworld_cli_skill_activation_resolver",
+            "agent_name": "Aworld",
+        }
+    ]
+
+    trajectory = build_atif_trajectory(
+        {
+            "trajectory": [],
+            "skill_activation_evidence": evidence,
+        },
+        prompt="Recover the spreadsheet",
+        agent_name="Aworld",
+        agent_version="dev",
+        run_outcome={
+            "semantic_status": "incomplete",
+            "process_exit_code": 0,
+            "skill_activation_evidence": evidence,
+        },
+    )
+
+    assert trajectory["extra"]["aworld"]["skill_activation_evidence"] == evidence
+
+
 def _provider_call(
     *,
     request_id: str,

@@ -245,6 +245,53 @@ def test_hidden_contract_is_framework_owned_and_binds_exact_public_targets(
     assert "forged" not in json.dumps(contract)
 
 
+def test_public_target_reference_enables_exact_provider_change_observation(
+    tmp_path: Path,
+) -> None:
+    context = _public_context(tmp_path)
+    servers = object.__new__(McpServers)
+    servers._env_content_param_mapping = {"docker__run_code": "env_content"}
+    servers.sandbox = SimpleNamespace(sandbox_id="sandbox", env_content={})
+    parameter = {
+        "code": (
+            "python3 - <<'PY'\n"
+            "from pathlib import Path\n"
+            "Path('result.json').write_text('{}')\n"
+            "PY"
+        )
+    }
+
+    servers._inject_env_content_parameter(
+        "docker__run_code",
+        parameter,
+        context,
+        tool_call_id="auto-public-target",
+    )
+
+    assert parameter["declared_write_paths"] == [str(tmp_path / "result.json")]
+    assert parameter["env_content"]["declared_public_write_contract"] == (
+        build_declared_public_write_contract(context)
+    )
+
+
+def test_unreferenced_public_target_is_not_implicitly_observed(tmp_path: Path) -> None:
+    context = _public_context(tmp_path)
+    servers = object.__new__(McpServers)
+    servers._env_content_param_mapping = {"docker__run_code": "env_content"}
+    servers.sandbox = SimpleNamespace(sandbox_id="sandbox", env_content={})
+    parameter = {"code": "python3 -c 'print(1)'"}
+
+    servers._inject_env_content_parameter(
+        "docker__run_code",
+        parameter,
+        context,
+        tool_call_id="unrelated-command",
+    )
+
+    assert "declared_write_paths" not in parameter
+    assert "declared_public_write_contract" not in parameter["env_content"]
+
+
 @pytest.mark.asyncio
 async def test_valid_opaque_declared_write_advances_candidate_once(
     tmp_path: Path,
@@ -740,6 +787,16 @@ async def test_docker_provider_omits_declared_receipt_without_quiescence_proof(
         )
 
     monkeypatch.setattr(server, "_container_declared_write_versions", versions)
+
+    async def states(paths, *, timeout):
+        del timeout
+        if not paths:
+            return None
+        return tuple(
+            hashlib.sha256(bridge.content).hexdigest() for _path in paths
+        )
+
+    monkeypatch.setattr(server, "_container_path_states", states)
     scope_values = (
         "docker-task",
         "0",
@@ -806,6 +863,7 @@ async def test_docker_provider_omits_declared_receipt_without_quiescence_proof(
     receipt = payload["metadata"]["terminal_execution_receipt"]
 
     assert receipt["effect"] == "unknown"
+    assert receipt["mutation_observed"] is True
     assert DECLARED_PUBLIC_WRITE_RECEIPTS_KEY not in receipt
 
 

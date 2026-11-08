@@ -1503,6 +1503,30 @@ def test_convergence_constraint_stops_future_replan_requests_and_advances_stage(
     )
 
 
+def test_delivery_only_exhaustion_enters_finalization_without_acceptance_claim():
+    state = replace(
+        _armed_state(),
+        convergence_constraint_active=True,
+        convergence_stage=ConvergenceStage.VALIDATE_REPAIR_OR_SUBMIT,
+        candidate_present=True,
+        public_candidate_mutated=True,
+    )
+
+    finalized = transition_execution_protocol(
+        state,
+        ExecutionProtocolEvent(kind=EventKind.DELIVERY_ONLY_EXHAUSTED),
+        ExecutionProtocolPolicy(mode="guide"),
+    )
+
+    assert finalized.decision.action is ControllerAction.ENTER_FINALIZATION
+    assert finalized.decision.reason is (
+        DecisionReason.DELIVERY_ONLY_DIAGNOSTIC_LIMIT
+    )
+    assert finalized.state.phase is ProtocolPhase.FINALIZE
+    assert finalized.state.finalization_entered is True
+    assert finalized.state.acceptance_confirmed is False
+
+
 def test_unprofiled_constraint_event_cannot_activate_a_gate():
     transition = transition_execution_protocol(
         _state(),
@@ -2601,6 +2625,50 @@ def test_uncertain_and_error_reviews_preserve_candidate_without_success():
         )
         assert transition.decision.action is ControllerAction.STOP_INCOMPLETE
         assert transition.decision.reason is reason
+
+
+def test_advisory_uncertainty_opens_one_bounded_repair_without_acceptance():
+    policy = ExecutionProtocolPolicy(
+        mode="guide",
+        independent_acceptance_enabled=False,
+        advisory_uncertain_repair_enabled=True,
+        bounded_repair_submission_enabled=True,
+        max_repairs=1,
+    )
+    pending = transition_execution_protocol(
+        _armed_state(),
+        ExecutionProtocolEvent(kind=EventKind.CANDIDATE_FINAL),
+        policy,
+    )
+
+    transition = transition_execution_protocol(
+        pending.state,
+        ExecutionProtocolEvent(
+            kind=EventKind.REVIEW_RESULT,
+            review_outcome=ReviewOutcome.UNCERTAIN,
+        ),
+        policy,
+    )
+
+    assert transition.decision.action is ControllerAction.REQUEST_REPAIR
+    assert transition.decision.reason is DecisionReason.REVIEW_UNCERTAIN
+    assert transition.state.phase is ProtocolPhase.REPAIR
+    assert transition.state.repair_count == 1
+    assert transition.state.acceptance_confirmed is False
+
+    submitted = transition_execution_protocol(
+        transition.state,
+        ExecutionProtocolEvent(
+            kind=EventKind.CANDIDATE_FINAL,
+            result_hash="sha256:repaired-candidate",
+        ),
+        policy,
+    )
+    assert submitted.decision.action is ControllerAction.SUBMIT_CURRENT_RESULT
+    assert submitted.decision.reason is DecisionReason.TERMINAL_FALLBACK_SUBMIT
+    assert submitted.state.phase is ProtocolPhase.COMPLETE
+    assert submitted.state.repair_count == 1
+    assert submitted.state.acceptance_confirmed is False
 
 
 def test_unsolicited_review_result_cannot_force_a_repair():

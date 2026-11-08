@@ -55,6 +55,7 @@ CAST_SEARCH = "CAST_SEARCH"
 AWORLD_MAX_LOOP_STEPS_HARD_LIMIT = 1024
 AWORLD_DEFAULT_MAX_COMPLETION_TOKENS = 16384
 AWORLD_MAX_COMPLETION_TOKENS_HARD_LIMIT = 64000
+AWORLD_DEFAULT_INFRASTRUCTURE_CIRCUIT_THRESHOLD = 2
 AWORLD_BUILTIN_SUBAGENT_NAMES = (
     "developer",
     "evaluator",
@@ -433,6 +434,27 @@ def resolve_aworld_generation_budget() -> Optional[GenerationBudgetPolicy]:
     )
 
 
+def resolve_aworld_infrastructure_circuit_threshold() -> int:
+    """Bound repeated typed Tool-infrastructure failures before finalization."""
+
+    raw = os.environ.get("AWORLD_INFRASTRUCTURE_ERROR_CIRCUIT_BREAKER_THRESHOLD")
+    if raw is None or not raw.strip():
+        return AWORLD_DEFAULT_INFRASTRUCTURE_CIRCUIT_THRESHOLD
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise ValueError(
+            "AWORLD_INFRASTRUCTURE_ERROR_CIRCUIT_BREAKER_THRESHOLD must be "
+            "a non-negative integer"
+        ) from exc
+    if value < 0:
+        raise ValueError(
+            "AWORLD_INFRASTRUCTURE_ERROR_CIRCUIT_BREAKER_THRESHOLD must be "
+            "a non-negative integer"
+        )
+    return value
+
+
 def resolve_aworld_builtin_subagents() -> tuple[str, ...]:
     """Resolve the task-text-independent collaborator capability set.
 
@@ -542,10 +564,23 @@ def render_aworld_system_prompt(
         )
     if ADVISORY_VERIFIER_TOOL in available_tool_set:
         role_guidance.append(
-            "   A lazy advisory verifier is available through "
-            f"`{ADVISORY_VERIFIER_TOOL}`. No verifier Agent exists until you "
-            "explicitly invoke `review_candidate`. Use it only when a fresh, "
+            "   A lazy advisory verifier may be exposed through "
+            f"`{ADVISORY_VERIFIER_TOOL}` only while AWorld presents an actionable "
+            "reviewer lease. No verifier Agent exists until you explicitly invoke "
+            "`review_candidate`. Use it only when both its Tool schema and lease "
+            "guidance are present and a fresh, "
             "read-only cross-check could materially change repair or submission. "
+            "Invoke it promptly after the first evidence-backed candidate and "
+            "before the delivery-only deadline checkpoint; do not spend the "
+            "review/repair reserve on more broad exploration. It is available at "
+            "most once per task; never retry an unavailable "
+            "or inconclusive result, and run one public task-derived validation "
+            "instead. When the result includes task_derived_validation_scope, "
+            "cover those public obligation IDs and execute the supplied "
+            "task_derived_counterexample in that one bounded validation. The "
+            "probe must be assertive, materially different from the checks in "
+            "evidence_summary, and fail nonzero when the counterexample is "
+            "observed; do not replace it with a narrower self-check. "
             "Its report is public self-check evidence, never canonical reward "
             "authority; you retain completion responsibility."
         )
@@ -845,6 +880,9 @@ def build_aworld_agent(include_skills: Optional[str] = None):
             resolve_aworld_artifact_observation_media_capability()
         ),
         skill_configs={},
+        infrastructure_error_circuit_breaker_threshold=(
+            resolve_aworld_infrastructure_circuit_threshold()
+        ),
         ext={"skill_resolver_inputs": resolver_inputs},
     )
 

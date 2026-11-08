@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+import hashlib
 import json
 from threading import Barrier, Event
 from types import SimpleNamespace
@@ -21,6 +22,8 @@ from aworld.core.task import Task
 from aworld.runners.execution_protocol import (
     configure_execution_protocol,
     load_public_probe_receipts,
+    public_contract_evidence_status,
+    record_public_contract_evidence,
     record_model_plan_update,
     record_public_probe_observations,
     record_public_probe_plan,
@@ -72,6 +75,48 @@ def _probe_value(**overrides):
     }
     value.update(overrides)
     return value
+
+
+def _install_public_contract(context: Context, output_path) -> None:
+    request = context.get_task().input
+    context.context_info["public_deliverable_contract"] = {
+        "schema_version": "aworld.public-deliverables/v1",
+        "authority": "public_task_advisory",
+        "source": "public_task_text",
+        "artifacts": [
+            {
+                "deliverable_id": "public-deliverable-1",
+                "path": str(output_path),
+                "display_path": "report.json",
+                "kind": "file",
+                "authority": "public_task_advisory",
+            }
+        ],
+    }
+    obligations = [
+        ("public-obligation-1", "deliverable_file", "report.json", {"path": str(output_path), "required": True}),
+        ("public-obligation-2", "structured_field", "value", {"required": True}),
+        ("public-obligation-3", "numeric_threshold", "value must be at least 10", {"statement": "value must be at least 10"}),
+    ]
+    context.context_info["public_task_contract"] = {
+        "schema_version": "aworld.public-task-contract/v1",
+        "authority": "public_task_advisory",
+        "source": "public_task_text",
+        "request_fingerprint": "sha256:" + hashlib.sha256(request.encode()).hexdigest(),
+        "obligations": [
+            {
+                "obligation_id": obligation_id,
+                "kind": kind,
+                "subject": subject,
+                "expectation": expectation,
+                "source_excerpt": subject,
+                "source_fingerprint": "sha256:" + hashlib.sha256(subject.encode()).hexdigest(),
+                "authority": "public_task_advisory",
+                "source": "public_task_text",
+            }
+            for obligation_id, kind, subject, expectation in obligations
+        ],
+    }
 
 
 def _select_candidate(
@@ -158,13 +203,44 @@ def test_public_probe_receipt_binds_request_candidate_action_and_observation():
     assert receipt["hypothesis_id"] == "report-parses"
     assert receipt["selected_candidate_id"] == "candidate-2"
     assert receipt["tool_execution_succeeded"] is True
-    assert receipt["probe_assessment"] == "unassessed"
+    assert receipt["probe_assessment"] == "assertion_executed"
+    assert receipt["validation_kind"] == "task-check:artifact-syntax"
     assert receipt["candidate_current"] is True
     assert receipt["request_current"] is True
     assert receipt["artifact_current"] is False
     assert receipt["stale"] is True
     assert "candidate response v1" not in str(receipt)
     assert "produce report.json" not in str(receipt)
+
+
+def test_public_probe_matches_provider_qualified_mcp_identity_after_dispatch():
+    context = _context()
+    action = ActionModel(
+        tool_name="terminal",
+        action_name="run_code",
+        tool_call_id="normalized-identity",
+        params={"code": "true"},
+    )
+    assert record_public_probe_plan(
+        context,
+        "agent",
+        tool_call_id="normalized-identity",
+        tool_identity="mcp:terminal__run_code",
+        arguments_projection=action.params,
+        value=_probe_value(),
+    )
+
+    assert record_public_probe_observations(
+        context,
+        "agent",
+        actions=[action],
+        result_projections=[
+            {"tool_call_id": "normalized-identity", "success": True}
+        ],
+    ) == 1
+    assert load_public_probe_receipts(context, "agent")[-1][
+        "tool_execution_succeeded"
+    ] is True
 
 
 def test_public_probe_receipt_becomes_stale_when_candidate_changes():
@@ -274,9 +350,322 @@ def test_public_probe_plan_is_strict_bounded_and_never_accepts_reward_claims():
         tool_call_id="call-9",
         tool_identity="terminal:execute",
         arguments_projection={"command": "true"},
-        value=_probe_value(highest_risk_counterexample="x" * 1025),
+        value=_probe_value(highest_risk_counterexample="x" * 2049),
     )
     assert load_public_probe_receipts(context, "agent") == []
+
+
+def test_public_contract_closes_only_with_candidate_bound_public_evidence(tmp_path):
+    context = _context()
+    output = tmp_path / "report.json"
+    _install_public_contract(context, output)
+    from aworld.runners.post_tool_progress import capture_public_deliverable_baseline
+
+    capture_public_deliverable_baseline(context, agent_id="agent")
+    output.write_text('{"value": 12}', encoding="utf-8")
+    record_semantic_tool_progress(
+        context,
+        tool_name="terminal",
+        agent_id="agent",
+        actions=[
+            ActionModel(
+                tool_name="terminal",
+                action_name="execute",
+                tool_call_id="write-report",
+                params={"command": "write report.json"},
+            )
+        ],
+        observation=Observation(
+            action_result=[
+                ActionResult(tool_call_id="write-report", content="ok", success=True)
+            ]
+        ),
+    )
+
+    status = public_contract_evidence_status(context, "agent")
+    assert status["covered"] == {
+        "public-obligation-1": "candidate_artifact",
+        "public-obligation-2": "candidate_structure",
+    }
+    assert status["unresolved_obligation_ids"] == ["public-obligation-3"]
+    assert status["closure_complete"] is False
+
+    action = ActionModel(
+        tool_name="terminal",
+        action_name="execute",
+        tool_call_id="threshold-probe",
+        params={"command": "python check_threshold.py"},
+    )
+    assert record_public_probe_plan(
+        context,
+        "agent",
+        tool_call_id="threshold-probe",
+        tool_identity="terminal:execute",
+        arguments_projection=action.params,
+        value=_probe_value(obligation_ids=["public-obligation-3"]),
+    )
+    assert record_public_probe_observations(
+        context,
+        "agent",
+        actions=[action],
+        result_projections=[{"tool_call_id": "threshold-probe", "success": True}],
+    ) == 1
+
+    closed = record_public_contract_evidence(context, "agent")
+    assert closed["closure_complete"] is True
+    assert closed["covered_count"] == 3
+    assert closed["closure_checkpoint_count"] == 1
+
+
+def test_successful_non_asserting_probe_does_not_close_semantic_obligation(
+    tmp_path,
+):
+    context = _context()
+    output = tmp_path / "report.json"
+    _install_public_contract(context, output)
+    output.write_text('{"value": 12}', encoding="utf-8")
+    action = ActionModel(
+        tool_name="terminal",
+        action_name="execute",
+        tool_call_id="non-asserting-probe",
+        params={"command": "echo looks-good"},
+    )
+    assert record_public_probe_plan(
+        context,
+        "agent",
+        tool_call_id="non-asserting-probe",
+        tool_identity="terminal:execute",
+        arguments_projection=action.params,
+        value=_probe_value(obligation_ids=["public-obligation-3"]),
+    )
+    assert record_public_probe_observations(
+        context,
+        "agent",
+        actions=[action],
+        result_projections=[
+            {"tool_call_id": "non-asserting-probe", "success": True}
+        ],
+    ) == 1
+
+    receipt = load_public_probe_receipts(context, "agent")[-1]
+    assert receipt["probe_assessment"] == "unassessed"
+    assert receipt["validation_kind"] is None
+    status = public_contract_evidence_status(context, "agent")
+    assert status["closure_complete"] is False
+    assert status["unresolved_obligation_ids"] == ["public-obligation-3"]
+
+
+def test_artifact_syntax_probe_does_not_close_numeric_obligation(tmp_path):
+    context = _context()
+    output = tmp_path / "report.json"
+    _install_public_contract(context, output)
+    output.write_text('{"value": 12}', encoding="utf-8")
+    action = ActionModel(
+        tool_name="terminal",
+        action_name="execute",
+        tool_call_id="syntax-only-probe",
+        params={"command": "python -m json.tool report.json"},
+    )
+    assert record_public_probe_plan(
+        context,
+        "agent",
+        tool_call_id="syntax-only-probe",
+        tool_identity="terminal:execute",
+        arguments_projection=action.params,
+        value=_probe_value(obligation_ids=["public-obligation-3"]),
+    )
+    assert record_public_probe_observations(
+        context,
+        "agent",
+        actions=[action],
+        result_projections=[
+            {"tool_call_id": "syntax-only-probe", "success": True}
+        ],
+    ) == 1
+
+    receipt = load_public_probe_receipts(context, "agent")[-1]
+    assert receipt["probe_assessment"] == "assertion_executed"
+    assert receipt["validation_kind"] == "task-check:artifact-syntax"
+    status = public_contract_evidence_status(context, "agent")
+    assert status["closure_complete"] is False
+    assert status["unresolved_obligation_ids"] == ["public-obligation-3"]
+
+
+def test_public_contract_survives_split_task_and_runtime_contexts(tmp_path):
+    runtime_context = _context()
+    task_context = _context()
+    task_context.event_manager = SimpleNamespace(context=runtime_context)
+    output = tmp_path / "report.json"
+    _install_public_contract(task_context, output)
+    output.write_text('{"value": 12}', encoding="utf-8")
+
+    status = public_contract_evidence_status(task_context, "agent")
+
+    assert status["obligation_count"] == 3
+    assert status["covered"] == {
+        "public-obligation-1": "candidate_artifact",
+        "public-obligation-2": "candidate_structure",
+    }
+    assert status["unresolved_obligation_ids"] == ["public-obligation-3"]
+
+
+def test_public_probe_rejects_unknown_obligation_ids(tmp_path):
+    context = _context()
+    _install_public_contract(context, tmp_path / "report.json")
+
+    assert not record_public_probe_plan(
+        context,
+        "agent",
+        tool_call_id="forged-obligation",
+        tool_identity="terminal:execute",
+        arguments_projection={"command": "true"},
+        value=_probe_value(obligation_ids=["hidden-verifier-obligation"]),
+    )
+
+
+def test_reviewer_scope_arms_one_task_derived_public_validation(tmp_path):
+    context = _context()
+    output = tmp_path / "report.json"
+    _install_public_contract(context, output)
+    output.write_text('{"value": 12}', encoding="utf-8")
+    review = ActionModel(
+        tool_name="AWORLD_ADVISORY_VERIFIER",
+        action_name="review_candidate",
+        tool_call_id="review-call",
+        params={"candidate_claim": "report is ready"},
+    )
+    review_payload = {
+        "schema_version": "aworld.advisory-review/v2",
+        "authority": "advisory_public_self_check",
+        "status": "inconclusive",
+        "decision": "uncertain",
+        "recommended_framework_action": "task_derived_validation_once",
+        "task_derived_validation_scope": [
+            {"obligation_id": "public-obligation-3"}
+        ],
+        "task_derived_counterexample": {
+            "schema_version": "aworld.task-derived-counterexample/v1",
+            "counterexample": "assert the public threshold at its exact boundary",
+            "obligation_ids": ["public-obligation-3"],
+            "requirements": ["execute an assertion"],
+        },
+    }
+    assert record_public_probe_observations(
+        context,
+        "agent",
+        actions=[review],
+        result_projections=[
+            {
+                "tool_call_id": "review-call",
+                "success": True,
+                "content": json.dumps(review_payload),
+            }
+        ],
+    ) == 0
+
+    validation = ActionModel(
+        tool_name="terminal",
+        action_name="execute",
+        tool_call_id="derived-validation",
+        params={"command": "python check_threshold.py"},
+    )
+    assert record_public_probe_observations(
+        context,
+        "agent",
+        actions=[validation],
+        result_projections=[
+            {"tool_call_id": "derived-validation", "success": True}
+        ],
+    ) == 1
+
+    receipts = load_public_probe_receipts(context, "agent")
+    assert receipts[-1]["obligation_ids"] == ["public-obligation-3"]
+    assert receipts[-1]["tool_execution_succeeded"] is True
+    assert receipts[-1]["highest_risk_counterexample"] == (
+        "assert the public threshold at its exact boundary"
+    )
+
+
+def test_reviewer_task_derived_validation_rejects_repeated_probe(tmp_path):
+    context = _context()
+    output = tmp_path / "report.json"
+    _install_public_contract(context, output)
+    output.write_text('{"value": 12}', encoding="utf-8")
+    repeated = ActionModel(
+        tool_name="terminal",
+        action_name="execute",
+        tool_call_id="original-validation",
+        params={"command": "python check_threshold.py"},
+    )
+    assert record_public_probe_plan(
+        context,
+        "agent",
+        tool_call_id=repeated.tool_call_id,
+        tool_identity="terminal:execute",
+        arguments_projection=repeated.params,
+        value=_probe_value(obligation_ids=["public-obligation-3"]),
+    )
+    assert record_public_probe_observations(
+        context,
+        "agent",
+        actions=[repeated],
+        result_projections=[
+            {"tool_call_id": repeated.tool_call_id, "success": True}
+        ],
+    ) == 1
+
+    review = ActionModel(
+        tool_name="AWORLD_ADVISORY_VERIFIER",
+        action_name="review_candidate",
+        tool_call_id="review-call",
+        params={"candidate_claim": "report is ready"},
+    )
+    payload = {
+        "schema_version": "aworld.advisory-review/v2",
+        "authority": "advisory_public_self_check",
+        "status": "inconclusive",
+        "decision": "uncertain",
+        "recommended_framework_action": "task_derived_validation_once",
+        "task_derived_validation_scope": [
+            {"obligation_id": "public-obligation-3"}
+        ],
+        "task_derived_counterexample": {
+            "schema_version": "aworld.task-derived-counterexample/v1",
+            "counterexample": "use a different boundary input",
+            "obligation_ids": ["public-obligation-3"],
+            "requirements": ["execute an assertion"],
+        },
+    }
+    assert record_public_probe_observations(
+        context,
+        "agent",
+        actions=[review],
+        result_projections=[
+            {
+                "tool_call_id": review.tool_call_id,
+                "success": True,
+                "content": json.dumps(payload),
+            }
+        ],
+    ) == 0
+
+    repeated_after_review = repeated.model_copy(
+        update={"tool_call_id": "derived-validation"}
+    )
+    assert record_public_probe_observations(
+        context,
+        "agent",
+        actions=[repeated_after_review],
+        result_projections=[
+            {
+                "tool_call_id": repeated_after_review.tool_call_id,
+                "success": True,
+            }
+        ],
+    ) == 1
+    assert load_public_probe_receipts(context, "agent")[-1][
+        "probe_assessment"
+    ] == "repeated_probe"
 
 
 def test_public_probe_rejects_action_tail_collision_beyond_bounded_projection():
@@ -346,7 +735,12 @@ def test_public_probe_receipt_is_projected_into_operational_evidence_ledger():
     assert state["public_probe_receipt_count"] == 1
     assert state["public_probe_receipts"][0]["hypothesis_id"] == "report-parses"
     assert state["public_probe_receipts"][0]["tool_execution_succeeded"] is True
-    assert state["public_probe_receipts"][0]["probe_assessment"] == "unassessed"
+    assert state["public_probe_receipts"][0]["probe_assessment"] == (
+        "assertion_executed"
+    )
+    assert state["public_probe_receipts"][0]["validation_kind"] == (
+        "task-check:artifact-syntax"
+    )
     assert state["public_probe_receipts"][0]["stale"] is False
 
 

@@ -64,6 +64,23 @@ def test_ignores_unbound_or_failed_quality_claims():
     )
 
 
+def test_reason_text_without_positive_table_count_does_not_open_debt():
+    observation = observe_structured_quality(
+        [
+            _result(
+                {
+                    "declared": 0,
+                    "usable": 0,
+                    "reason": "missing JSON cell grid",
+                }
+            )
+        ],
+        trusted_call_ids={"call-1"},
+    )
+
+    assert observation is None
+
+
 @pytest.mark.parametrize(
     ("payload", "expected_status"),
     (

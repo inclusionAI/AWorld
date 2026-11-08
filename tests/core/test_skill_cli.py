@@ -948,9 +948,11 @@ def test_run_top_level_command_prefers_task_response_trajectory(
 def test_direct_run_payload_omits_usage_if_any_iteration_is_incomplete() -> None:
     activation_evidence = {
         "skill_name": "agent-browser",
+        "canonical_skill_file": "/tmp/candidate/agent-browser/SKILL.md",
         "canonical_skill_root": "/tmp/candidate/agent-browser",
-        "package_fingerprint": "sha256:candidate",
+        "package_fingerprint": "sha256:" + "a" * 64,
         "source": "aworld_cli_skill_activation_resolver",
+        "agent_name": "Aworld",
     }
     summary = {
         # The executor-owned snapshot protects this evidence when a continuous

@@ -2,10 +2,12 @@
 # Copyright (c) 2025 inclusionAI.
 import time
 
+import ast
 import asyncio
 import contextvars
 import copy
 import inspect
+import hashlib
 import json
 import math
 import os
@@ -129,7 +131,7 @@ from aworld.models.llm import (
     bind_llm_context_call_id,
     get_llm_model,
 )
-from aworld.models.model_response import ModelResponse
+from aworld.models.model_response import Function, ModelResponse, ToolCall
 from aworld.models.prompt_cache import (
     resolve_provider_prompt_cache_key,
     supports_provider_native_prompt_cache,
@@ -190,6 +192,8 @@ SEMANTIC_PROGRESS_LEDGER_ENV = "AWORLD_SEMANTIC_PROGRESS_LEDGER"
 _PREPARED_TOOLS_UNSET = object()
 _ADAPTIVE_MEMORY_OCCURRENCE_KEY = "__aworld_internal_memory_occurrence_id"
 _ADAPTIVE_MEMORY_PROJECTION_LIMIT = 128
+_ACTIVE_SKILL_PROMPT_MARKER = "<aworld_active_skill_instructions>"
+_MAX_ACTIVE_SKILL_PROMPT_BYTES = 512 * 1024
 _DEFER_ADAPTIVE_MEMORY_PROJECTION = contextvars.ContextVar(
     "aworld_defer_adaptive_memory_projection",
     default=False,
@@ -295,6 +299,7 @@ _TERMINAL_MODEL_LATENCY_FLOOR_SECONDS = 20.0
 _TERMINAL_MODEL_LATENCY_CAP_SECONDS = 180.0
 _PUBLIC_DELIVERABLE_SCHEMA = "aworld.public-deliverables/v1"
 _PUBLIC_CAPABILITY_SCHEMA = "aworld.public-capabilities/v1"
+_PUBLIC_TASK_CONTRACT_SCHEMA = "aworld.public-task-contract/v1"
 _PUBLIC_DELIVERABLE_AUTHORITY = "public_task_advisory"
 _PUBLIC_DELIVERABLE_PROMPT_MARKER = "AWorld public deliverable milestones"
 
@@ -380,6 +385,7 @@ class ToolCallParseIssueCode(str, Enum):
     ARGUMENTS_NOT_OBJECT = "arguments_not_object"
     TOOL_NOT_IN_LIVE_SURFACE = "tool_not_in_live_surface"
     MEDIA_CAPABILITY_UNAVAILABLE = "media_capability_unavailable"
+    MALFORMED_TEXTUAL_TOOL_BATCH = "malformed_textual_tool_batch"
 
 
 @dataclass(frozen=True, slots=True)
@@ -426,6 +432,408 @@ class ToolCallBatchParseError(AWorldRuntimeException):
 
 
 class LlmOutputParser(ModelOutputParser[ModelResponse, AgentResult]):
+    _TERMINAL_TOOL_ALIASES = frozenset(
+        {
+            "bash",
+            "cmd",
+            "cmd_str",
+            "command",
+            "exec",
+            "executable",
+            "terminal",
+        }
+    )
+    _TERMINAL_COMMAND_ARGUMENTS = (
+        "code",
+        "command",
+        "cmd",
+        "commands",
+        "run_code",
+    )
+    _TERMINAL_IGNORED_ARGUMENTS = frozenset(
+        {"description", "explanation", "reason"}
+    )
+    _DSML_TOOL_CALLS = re.compile(
+        r"<｜DSML｜tool_calls>(?P<body>.*?)</｜DSML｜tool_calls>",
+        re.DOTALL,
+    )
+    _DSML_INVOKE = re.compile(
+        r'<｜DSML｜invoke\s+name="(?P<name>[^"\r\n]{1,256})">'
+        r"(?P<body>.*?)</｜DSML｜invoke>",
+        re.DOTALL,
+    )
+    _DSML_PARAMETER = re.compile(
+        r'<｜DSML｜parameter\s+name="(?P<name>[^"\r\n]{1,256})"'
+        r'\s+string="(?P<string_mode>[^"\r\n]{1,16})">'
+        r'(?P<value>.*?)</｜DSML｜parameter>',
+        re.DOTALL,
+    )
+    _DSML_INVOKE_OPEN = re.compile(
+        r'<｜DSML｜invoke\s+name="(?P<name>[^"\r\n]{1,256})">'
+    )
+    _DSML_INVOKE_CLOSE = re.compile(r"</｜DSML｜invoke>")
+    _DSML_TERMINAL_WRAPPER = re.compile(r'<｜DSML｜invoke\s+name="terminal">\s*')
+
+    @classmethod
+    def _terminal_execution_target(
+        cls,
+        tool_call_surface: ModelToolCallSurface | None,
+    ) -> str | None:
+        if not isinstance(tool_call_surface, ModelToolCallSurface):
+            return None
+        if "run_code" in tool_call_surface.tool_names:
+            return "run_code"
+        candidates = sorted(
+            name
+            for name in tool_call_surface.tool_names
+            if name.rsplit("__", 1)[-1] == "run_code"
+        )
+        return candidates[0] if len(candidates) == 1 else None
+
+    @classmethod
+    def _resolve_textual_tool_name(
+        cls,
+        raw_name: str,
+        *,
+        tool_call_surface: ModelToolCallSurface | None,
+    ) -> str | None:
+        name = raw_name.strip()
+        if not name:
+            return None
+        if not isinstance(tool_call_surface, ModelToolCallSurface):
+            return name
+        if tool_call_surface.rejection_code(name) is None:
+            return name
+        suffix_matches = sorted(
+            candidate
+            for candidate in tool_call_surface.tool_names
+            if candidate.rsplit("__", 1)[-1] == name
+        )
+        if len(suffix_matches) == 1:
+            return suffix_matches[0]
+        if name.casefold() in cls._TERMINAL_TOOL_ALIASES:
+            return cls._terminal_execution_target(tool_call_surface)
+        return None
+
+    @staticmethod
+    def _normalize_terminal_commands(value: str, *, allow_list: bool) -> str | None:
+        stripped = value.strip()
+        if not stripped:
+            return None
+        if allow_list and stripped.startswith("["):
+            parsed = None
+            for loader in (json.loads, ast.literal_eval):
+                try:
+                    parsed = loader(stripped)
+                    break
+                except (TypeError, ValueError, SyntaxError):
+                    continue
+            if isinstance(parsed, (list, tuple)) and parsed and all(
+                isinstance(item, str) and item.strip() for item in parsed
+            ):
+                return "\n".join(item.strip() for item in parsed)
+            return None
+        return value
+
+    @staticmethod
+    def _select_terminal_language(arguments: dict[str, Any]) -> None:
+        if "language" in arguments:
+            return
+        code = arguments["code"].strip()
+        try:
+            parsed = ast.parse(code)
+        except (SyntaxError, ValueError, RecursionError):
+            return
+        # Require positive Python evidence. Keep the Shell default for
+        # ambiguous snippets and ordinary Shell commands.
+        if (
+            parsed.body
+            and isinstance(parsed.body[0], (ast.Import, ast.ImportFrom))
+            and any(isinstance(node, ast.Call) for node in ast.walk(parsed))
+        ):
+            arguments.update(code=code, language="python")
+
+    @classmethod
+    def _normalize_textual_tool_values(
+        cls,
+        *,
+        resolved_name: str,
+        values: Mapping[str, str],
+    ) -> dict[str, Any] | None:
+        if resolved_name.rsplit("__", 1)[-1] != "run_code":
+            return dict(values)
+
+        command_keys = [
+            key for key in cls._TERMINAL_COMMAND_ARGUMENTS if key in values
+        ]
+        if len(command_keys) != 1:
+            return None
+        command_key = command_keys[0]
+        command = cls._normalize_terminal_commands(
+            values[command_key], allow_list=command_key == "commands",
+        )
+        if not command:
+            return None
+        normalized: dict[str, Any] = {"code": command}
+        allowed = set(cls._TERMINAL_COMMAND_ARGUMENTS)
+        allowed.update(
+            {
+                "cwd",
+                "declared_write_paths",
+                "env",
+                "language",
+                "output_format",
+                "timeout",
+                "workdir",
+            }
+        )
+        allowed.update(cls._TERMINAL_IGNORED_ARGUMENTS)
+        if any(key not in allowed for key in values):
+            return None
+
+        cwd_values = [values[key] for key in ("cwd", "workdir") if key in values]
+        if len(cwd_values) > 1 and len(set(cwd_values)) != 1:
+            return None
+        if cwd_values and cwd_values[0].strip():
+            normalized["cwd"] = cwd_values[0].strip()
+
+        if "timeout" in values:
+            try:
+                timeout = float(values["timeout"].strip())
+            except (TypeError, ValueError):
+                return None
+            if not math.isfinite(timeout) or timeout <= 0:
+                return None
+            # DeepSeek's textual terminal dialect commonly emits milliseconds,
+            # while AWorld's run_code contract is seconds with a 3600s ceiling.
+            if timeout > 3600 and timeout <= 3_600_000:
+                timeout /= 1000
+            if timeout > 3600:
+                return None
+            normalized["timeout"] = timeout
+
+        for key in ("language", "output_format"):
+            if key in values:
+                normalized[key] = values[key].strip()
+        if normalized.get("language", "shell") not in {"shell", "python"}:
+            return None
+        if normalized.get("output_format", "structured") not in {
+            "structured", "markdown", "json", "text",
+        }:
+            return None
+        for key in ("declared_write_paths", "env"):
+            if key not in values:
+                continue
+            try:
+                parsed_value = json.loads(values[key])
+            except (TypeError, ValueError):
+                return None
+            if key == "env" and (
+                not isinstance(parsed_value, dict)
+                or not all(isinstance(value, str) for value in parsed_value.values())
+            ):
+                return None
+            if key == "declared_write_paths" and (
+                not isinstance(parsed_value, list)
+                or not all(isinstance(path, str) for path in parsed_value)
+            ):
+                return None
+            normalized[key] = parsed_value
+        return normalized
+
+    @classmethod
+    def _recover_nested_terminal_dsml(
+        cls,
+        body: str,
+        *,
+        tool_call_surface: ModelToolCallSurface | None,
+    ) -> list[tuple[str, dict[str, Any]]] | None:
+        """Recover one unambiguous nested terminal wrapper emitted by DeepSeek."""
+
+        opens = list(cls._DSML_INVOKE_OPEN.finditer(body))
+        if len(opens) < 2:
+            return None
+        raw_names = [match.group("name").strip() for match in opens]
+        if any(
+            name.casefold() not in cls._TERMINAL_TOOL_ALIASES
+            and name.rsplit("__", 1)[-1] != "run_code"
+            for name in raw_names
+        ):
+            return None
+
+        parameters = list(cls._DSML_PARAMETER.finditer(body))
+        stripped = cls._DSML_PARAMETER.sub("", body)
+        stripped = cls._DSML_INVOKE_OPEN.sub("", stripped)
+        stripped = cls._DSML_INVOKE_CLOSE.sub("", stripped).strip()
+        values: dict[str, str] = {}
+        for parameter in parameters:
+            name = parameter.group("name").strip()
+            if not name or name in values:
+                return None
+            values[name] = parameter.group("value")
+        if stripped:
+            if values:
+                return None
+            values["code"] = stripped
+
+        resolved_name = cls._terminal_execution_target(tool_call_surface)
+        if resolved_name is None:
+            resolved_name = cls._resolve_textual_tool_name(
+                raw_names[-1], tool_call_surface=tool_call_surface
+            )
+        if resolved_name is None:
+            return None
+        normalized = cls._normalize_textual_tool_values(
+            resolved_name=resolved_name,
+            values=values,
+        )
+        if normalized is None:
+            return None
+        return [(resolved_name, normalized)]
+
+    @classmethod
+    def _recover_textual_dsml_tool_calls(
+        cls,
+        content: str,
+        *,
+        tool_call_surface: ModelToolCallSurface | None,
+        require_complete: bool = False,
+    ) -> tuple[list[ToolCall], str] | None:
+        """Recover one exact DSML batch only against the live Tool surface."""
+
+        matches = list(cls._DSML_TOOL_CALLS.finditer(content))
+        if len(matches) != 1:
+            return None
+        block = matches[0]
+        body = block.group("body").strip()
+        # This provider dialect omits only the service wrapper's closing tag.
+        # Require one complete inner run_code and parse its arguments normally.
+        terminal_wrapper = cls._DSML_TERMINAL_WRAPPER.match(body)
+        unwrap_terminal = False
+        if terminal_wrapper:
+            inner = body[terminal_wrapper.end():]
+            invoke = cls._DSML_INVOKE.fullmatch(inner)
+            if (
+                invoke
+                and invoke.group("name") == "run_code"
+                and len(cls._DSML_INVOKE_OPEN.findall(inner)) == 1
+                and len(cls._DSML_INVOKE_CLOSE.findall(inner)) == 1
+            ):
+                body = inner
+                unwrap_terminal = True
+                require_complete = True
+        invokes = list(cls._DSML_INVOKE.finditer(body))
+        if not invokes:
+            return None
+        remaining = (content[:block.start()] + content[block.end():]).strip()
+        if require_complete and (
+            len(cls._DSML_INVOKE_OPEN.findall(body)) != len(invokes)
+            or len(cls._DSML_INVOKE_CLOSE.findall(body)) != len(invokes)
+            or "<｜DSML｜" in remaining
+            or "</｜DSML｜" in remaining
+            or cls._DSML_INVOKE.sub("", body).strip()
+        ):
+            return None
+        nested_specs = None
+        if len(cls._DSML_INVOKE_OPEN.findall(body)) > len(invokes):
+            nested_specs = cls._recover_nested_terminal_dsml(
+                body,
+                tool_call_surface=tool_call_surface,
+            )
+            if nested_specs is None:
+                return None
+        cursor = 0
+        recovered_specs: list[tuple[str, dict[str, Any]]] = list(nested_specs or ())
+        if nested_specs is not None:
+            cursor = len(body)
+        for index, invoke in enumerate(invokes):
+            if nested_specs is not None:
+                break
+            if body[cursor : invoke.start()].strip():
+                nested = cls._recover_nested_terminal_dsml(
+                    body,
+                    tool_call_surface=tool_call_surface,
+                )
+                if nested is None:
+                    return None
+                recovered_specs = nested
+                cursor = len(body)
+                break
+            cursor = invoke.end()
+            raw_name = invoke.group("name").strip()
+            name = (
+                cls._terminal_execution_target(tool_call_surface)
+                if unwrap_terminal
+                else cls._resolve_textual_tool_name(
+                    raw_name, tool_call_surface=tool_call_surface,
+                )
+            )
+            if name is None:
+                return None
+
+            invoke_body = invoke.group("body")
+            parameters = list(cls._DSML_PARAMETER.finditer(invoke_body))
+            parameter_cursor = 0
+            values: dict[str, str] = {}
+            for parameter in parameters:
+                if invoke_body[parameter_cursor : parameter.start()].strip():
+                    return None
+                parameter_cursor = parameter.end()
+                parameter_name = parameter.group("name").strip()
+                if not parameter_name or parameter_name in values:
+                    return None
+                values[parameter_name] = parameter.group("value")
+                if require_complete and (
+                    "<｜DSML｜" in values[parameter_name]
+                    or "</｜DSML｜" in values[parameter_name]
+                ):
+                    return None
+            if invoke_body[parameter_cursor:].strip():
+                if require_complete:
+                    return None
+                nested = cls._recover_nested_terminal_dsml(
+                    body,
+                    tool_call_surface=tool_call_surface,
+                )
+                if nested is None:
+                    return None
+                recovered_specs = nested
+                cursor = len(body)
+                break
+            normalized_values = cls._normalize_textual_tool_values(
+                resolved_name=name,
+                values=values,
+            )
+            if normalized_values is None:
+                return None
+            recovered_specs.append((name, normalized_values))
+        if body[cursor:].strip():
+            nested = cls._recover_nested_terminal_dsml(
+                body,
+                tool_call_surface=tool_call_surface,
+            )
+            if nested is None:
+                return None
+            recovered_specs = nested
+
+        calls: list[ToolCall] = []
+        for index, (name, values) in enumerate(recovered_specs):
+            if name.rsplit("__", 1)[-1] == "run_code":
+                cls._select_terminal_language(values)
+            call_fingerprint = hashlib.sha256(
+                f"{block.group(0)}\0{index}".encode("utf-8")
+            ).hexdigest()[:24]
+            calls.append(
+                ToolCall(
+                    id=f"call_dsml_{call_fingerprint}",
+                    function=Function(
+                        name=name,
+                        arguments=json.dumps(values, ensure_ascii=False),
+                    ),
+                )
+            )
+        return calls, remaining
+
     async def parse(self, resp: ModelResponse, **kwargs) -> AgentResult:
         """Parse agent result based ModelResponse."""
 
@@ -441,20 +849,60 @@ class LlmOutputParser(ModelOutputParser[ModelResponse, AgentResult]):
         results = []
         is_call_tool = False
         content = "" if resp.content is None else resp.content
+        declared_tool_calls = list(resp.tool_calls or ())
+        if not declared_tool_calls:
+            textual_sources = [("content", content)]
+            if isinstance(resp.reasoning_content, str):
+                textual_sources.append(("reasoning", resp.reasoning_content))
+            textual_dsml_declared = False
+            for source_kind, source_text in textual_sources:
+                if not source_text:
+                    continue
+                textual_dsml_declared = bool(
+                    textual_dsml_declared
+                    or "<｜DSML｜tool_calls>" in source_text
+                )
+                recovered = self._recover_textual_dsml_tool_calls(
+                    source_text,
+                    tool_call_surface=kwargs.get("tool_call_surface"),
+                )
+                if recovered is None:
+                    continue
+                declared_tool_calls, remaining = recovered
+                if source_kind == "content":
+                    content = remaining
+                logger.info(
+                    f"🛠️ [Agent:{agent_id}] Recovered "
+                    f"{len(declared_tool_calls)} textual DSML tool call(s) "
+                    f"from {source_kind} against the live Tool surface"
+                )
+                break
+            if textual_dsml_declared and not declared_tool_calls:
+                raise ToolCallBatchParseError(
+                    [
+                        ToolCallParseIssue(
+                            call_index=0,
+                            call_id=None,
+                            code=(
+                                ToolCallParseIssueCode.MALFORMED_TEXTUAL_TOOL_BATCH
+                            ),
+                        )
+                    ]
+                )
 
         # Log parsing start
         logger.debug(
-            f"🔍 [Agent:{agent_id}] Starting to parse model response, has_tool_calls={bool(resp.tool_calls)}, content_length={len(content)}"
+            f"🔍 [Agent:{agent_id}] Starting to parse model response, has_tool_calls={bool(declared_tool_calls)}, content_length={len(content)}"
         )
 
-        if resp.tool_calls:
+        if declared_tool_calls:
             logger.info(
-                f"🛠️ [Agent:{agent_id}] Processing {len(resp.tool_calls)} tool call(s)"
+                f"🛠️ [Agent:{agent_id}] Processing {len(declared_tool_calls)} tool call(s)"
             )
             parsed_tool_calls = []
             parse_issues = []
             seen_call_ids = set()
-            for idx, tool_call in enumerate(resp.tool_calls):
+            for idx, tool_call in enumerate(declared_tool_calls):
                 call_id = getattr(tool_call, "id", None)
                 function = getattr(tool_call, "function", None)
                 if not isinstance(call_id, str) or not call_id.strip():
@@ -1023,18 +1471,24 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         success_first = _success_first_enabled()
         if success_first:
             # Benchmark callers already own a hard task deadline, per-call
-            # timeouts, and process-tree cleanup. Keep ordinary execution in
-            # observe mode, but retain one bounded terminal path so a finished
-            # candidate cannot spend the entire caller budget on further
-            # inspection without ever reaching review and finalization.
+            # timeouts, and process-tree cleanup. Keep public-task contracts
+            # and convergence telemetry advisory during the solve window. The
+            # terminal checkpoint remains independently enabled below, so the
+            # caller-owned persistence reserve is still protected without
+            # turning incomplete static Tool-effect analysis into denials.
             terminal_gate = _success_first_terminal_gate_enabled()
             policy = ExecutionProtocolPolicy(
-                mode=ProtocolMode.OBSERVE,
+                mode=ProtocolMode.GUIDE,
                 review_unarmed_candidates=False,
                 terminal_review_gate_enabled=terminal_gate,
+                hard_tool_admission_enabled=False,
+                model_decision_checkpoints_enabled=False,
+                advisory_uncertain_repair_enabled=True,
+                bounded_repair_submission_enabled=True,
                 independent_acceptance_enabled=False,
                 semantic_progress_enabled=True,
-                max_final_reviews=2 if terminal_gate else None,
+                max_replans=1,
+                max_final_reviews=1 if terminal_gate else None,
                 max_repairs=1 if terminal_gate else None,
                 finalization_reserve_seconds=60.0 if terminal_gate else 0.0,
                 candidate_decision_reserve_seconds=(
@@ -1054,6 +1508,10 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             )
             policy = ExecutionProtocolPolicy(
                 mode=ProtocolMode.GUIDE,
+                hard_tool_admission_enabled=False,
+                model_decision_checkpoints_enabled=False,
+                advisory_uncertain_repair_enabled=True,
+                bounded_repair_submission_enabled=True,
                 review_unarmed_candidates=(
                     review_unarmed_candidates if active else False
                 ),
@@ -1063,6 +1521,8 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 semantic_progress_enabled=_default_on_env(
                     SEMANTIC_PROGRESS_LEDGER_ENV
                 ),
+                max_replans=1,
+                max_final_reviews=1,
             )
         if context is None or (
             success_first and not policy.terminal_review_gate_enabled
@@ -1454,9 +1914,16 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             )
         return schema
 
-    @staticmethod
-    def _public_probe_schema() -> dict[str, Any]:
-        return {
+    def _public_probe_schema(
+        self,
+        context: Context,
+        *,
+        reviewer_binding: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        obligation_ids = [
+            row["obligation_id"] for row in self._public_task_obligations(context)
+        ]
+        schema = {
             "type": "object",
             "description": (
                 "Optional model-designed public self-check attached to the Tool "
@@ -1470,7 +1937,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 "hypothesis_id": {"type": "string", "maxLength": 128},
                 "highest_risk_counterexample": {
                     "type": "string",
-                    "maxLength": 1024,
+                    "maxLength": 2048,
                 },
                 "probe_kind": {
                     "type": "string",
@@ -1483,6 +1950,50 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 "probe_kind",
             ],
         }
+        if obligation_ids:
+            schema["properties"]["obligation_ids"] = {
+                "type": "array",
+                "description": (
+                    "Public obligation ids tested by this exact command. Include "
+                    "only ids from the framework-provided public contract ledger."
+                ),
+                "minItems": 1,
+                "maxItems": min(32, len(obligation_ids)),
+                "uniqueItems": True,
+                "items": {"type": "string", "enum": obligation_ids},
+            }
+            schema["required"].append("obligation_ids")
+        if reviewer_binding is not None:
+            schema["description"] = (
+                "Required reviewer-value validation metadata. Copy the exact "
+                "framework-provided values into the single Tool call that "
+                "executes the requested counterexample assertion. AWorld "
+                "removes this object before Tool execution."
+            )
+            for key in (
+                "hypothesis_id",
+                "highest_risk_counterexample",
+                "probe_kind",
+            ):
+                value = reviewer_binding.get(key)
+                if isinstance(value, str):
+                    schema["properties"][key]["enum"] = [value]
+            bound_ids = reviewer_binding.get("obligation_ids")
+            if isinstance(bound_ids, list) and bound_ids:
+                schema["properties"]["obligation_ids"] = {
+                    "type": "array",
+                    "description": (
+                        "Exact public obligation ids selected by the active "
+                        "reviewer-value lease."
+                    ),
+                    "minItems": len(bound_ids),
+                    "maxItems": len(bound_ids),
+                    "uniqueItems": True,
+                    "items": {"type": "string", "enum": list(bound_ids)},
+                }
+                if "obligation_ids" not in schema["required"]:
+                    schema["required"].append("obligation_ids")
+        return schema
 
     @staticmethod
     def _long_horizon_control_carrier(
@@ -1566,6 +2077,18 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         # checkpoint is control-plane owned and must be exposed even though the
         # earlier success-first execution phase deliberately remains OBSERVE.
         if policy.mode is not ProtocolMode.GUIDE and boundary is None:
+            return tools, empty_offer
+        if (
+            _success_first_enabled()
+            and self._explicit_execution_protocol_policy is None
+            and protocol_state is not None
+            and not protocol_state.long_horizon_armed
+        ):
+            # Success-first keeps genuinely short work on the historical fast
+            # path.  Public contracts are already visible in the stable task
+            # grounding prompt; they do not by themselves justify another
+            # planning model call or optional per-Tool planning fields. Generic
+            # Tool/stagnation/deadline evidence may arm inline guidance later.
             return tools, empty_offer
         if boundary == "initial" and not self._long_horizon_skill_active():
             contract = getattr(context, "context_info", {}).get(
@@ -1691,9 +2214,24 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         if carrier is None:
             return augmented, empty_offer
         carrier_index, carrier_name = carrier
-        properties = augmented[carrier_index]["function"]["parameters"]["properties"]
+        parameters = augmented[carrier_index]["function"]["parameters"]
+        properties = parameters["properties"]
         injected: set[str] = set()
-        properties[_PUBLIC_PROBE_PARAM] = self._public_probe_schema()
+        from aworld.runners.execution_protocol import (
+            reviewer_validation_probe_binding,
+        )
+
+        reviewer_binding = reviewer_validation_probe_binding(
+            context, self.id()
+        )
+        properties[_PUBLIC_PROBE_PARAM] = self._public_probe_schema(
+            context,
+            reviewer_binding=reviewer_binding,
+        )
+        if reviewer_binding is not None:
+            required = parameters.setdefault("required", [])
+            if _PUBLIC_PROBE_PARAM not in required:
+                required.append(_PUBLIC_PROBE_PARAM)
         injected.add(_PUBLIC_PROBE_PARAM)
         properties[_LONG_HORIZON_HYPOTHESIS_PARAM] = {
             "type": "string",
@@ -1716,6 +2254,43 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             ),
             injected_parameters=frozenset(injected),
         )
+
+    def _constrain_reviewer_validation_tool_catalog(
+        self,
+        tools: List[Dict[str, Any]] | None,
+        context: Context,
+        *,
+        offer: _LongHorizonControlOffer,
+    ) -> tuple[List[Dict[str, Any]] | None, bool]:
+        """Project one exact Tool for an active reviewer-bound validation.
+
+        The reviewer lease authorizes one validation transaction.  Leaving the
+        full ordinary catalog visible lets providers emit a parallel batch,
+        which the receipt ledger must classify as ambiguous even when one call
+        contains the intended assertion.  The selected carrier is already the
+        normal permission-filtered Tool and already contains the exact hidden
+        public-probe binding; this projection only makes that one-turn contract
+        executable and does not grant a new Tool capability.
+        """
+
+        if not tools or not offer.carrier_function_name:
+            return tools, False
+        from aworld.runners.execution_protocol import (
+            reviewer_validation_probe_binding,
+        )
+
+        if reviewer_validation_probe_binding(context, self.id()) is None:
+            return tools, False
+        selected = [
+            schema
+            for schema in tools
+            if isinstance(schema, dict)
+            and schema.get("function", {}).get("name")
+            == offer.carrier_function_name
+        ]
+        if len(selected) != 1:
+            return tools, False
+        return selected, True
 
     def _consume_long_horizon_execution_profile(
         self,
@@ -1764,6 +2339,26 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             record_tool_hypotheses(context, self.id(), hypotheses)
         if offer.decision_boundary is None:
             return "not_offered"
+        textual_checkpoint = bool(
+            not result.is_call_tool
+            and any(
+                isinstance(getattr(action, "policy_info", None), str)
+                and bool(action.policy_info.strip())
+                for action in (result.actions or ())
+            )
+        )
+        if textual_checkpoint:
+            from aworld.runners.execution_protocol import (
+                record_model_decision_unavailable,
+            )
+
+            record_model_decision_unavailable(
+                context,
+                self.id(),
+                boundary=offer.decision_boundary,
+                reason="structured_tool_call_unavailable",
+            )
+            return "fail_open_no_structured_tool"
         if (
             len(matched_actions) != 1
             or len(result.actions or ()) != 1
@@ -1817,22 +2412,71 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         context: Context,
         *,
         offer: _LongHorizonControlOffer,
+        reviewer_validation_turn: bool = False,
     ) -> int:
         """Strip and bind optional public self-check metadata before dispatch."""
-        from aworld.runners.execution_protocol import record_public_probe_plan
+        from aworld.runners.execution_protocol import (
+            record_public_probe_plan,
+            reviewer_validation_probe_binding,
+        )
 
         recorded = 0
-        for action in result.actions or ():
-            if (
-                _PUBLIC_PROBE_PARAM not in offer.injected_parameters
-                or not offer.matches(action)
-            ):
-                continue
+        if _PUBLIC_PROBE_PARAM not in offer.injected_parameters:
+            return recorded
+        controlled_actions = [
+            action
+            for action in result.actions or ()
+            if isinstance(getattr(action, "params", None), dict)
+            and _PUBLIC_PROBE_PARAM in action.params
+        ]
+        # Provider adapters do not all preserve the catalog's qualified Tool
+        # name on ActionModel.  The reserved parameter is injected into one
+        # carrier only, so a single occurrence is an unambiguous binding to
+        # the action that will actually execute.  Multiple occurrences are
+        # stripped but never admitted as evidence.
+        unambiguous_action = (
+            controlled_actions[0] if len(controlled_actions) == 1 else None
+        )
+        reviewer_binding = reviewer_validation_probe_binding(
+            context, self.id()
+        )
+        if (
+            not controlled_actions
+            and reviewer_validation_turn
+            and reviewer_binding is not None
+            and len(result.actions or ()) == 1
+        ):
+            # This turn exposes exactly one permission-filtered Tool, forces
+            # tool_choice, disables parallel calls, and binds an exact reviewer
+            # obligation/counterexample in its schema. Some compatible providers
+            # omit required extension properties while preserving that sole call.
+            # Retain the established binding only in this constrained turn;
+            # ordinary unbound calls still cannot inherit reviewer authority.
+            action = result.actions[0]
             params = getattr(action, "params", None)
-            if not isinstance(params, dict):
-                continue
+            if (
+                isinstance(params, dict)
+                and isinstance(action.tool_call_id, str)
+                and bool(action.tool_call_id)
+                and record_public_probe_plan(
+                    context,
+                    self.id(),
+                    tool_call_id=action.tool_call_id,
+                    tool_identity=(
+                        f"{action.tool_name or ''}:{action.action_name or ''}"
+                    ),
+                    arguments_projection=params,
+                    value=reviewer_binding,
+                )
+            ):
+                recorded += 1
+            return recorded
+        for action in controlled_actions:
+            params = getattr(action, "params", None)
             value = params.pop(_PUBLIC_PROBE_PARAM, None)
-            if value is None:
+            if value is None or action is not unambiguous_action:
+                continue
+            if reviewer_binding is not None and value != reviewer_binding:
                 continue
             if record_public_probe_plan(
                 context,
@@ -2185,6 +2829,88 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             "does not replace any content validator or canonical verifier."
         )
 
+    def _public_contract_closure_feedback_if_unsatisfied(
+        self, context: Context
+    ) -> str | None:
+        """Request bounded public evidence without imposing a task-specific oracle."""
+
+        obligations = self._public_task_obligations(context)
+        if not obligations:
+            return None
+        from aworld.runners.execution_protocol import record_public_contract_evidence
+
+        status = record_public_contract_evidence(context, self.id())
+        context.context_info[f"public_contract_evidence:{self.id()}"] = status
+        if status.get("closure_complete") is True:
+            return None
+        unresolved_ids = status.get("completion_unresolved_obligation_ids")
+        if unresolved_ids is None:
+            # Compatibility with public-contract evidence written before the
+            # completion/reviewer role split.
+            unresolved_ids = status.get("unresolved_obligation_ids")
+        if not isinstance(unresolved_ids, list) or not unresolved_ids:
+            return None
+        candidate_hash = str(status.get("candidate_hash") or "")
+        feedback_key = f"public_contract_feedback:{self.id()}"
+        previous = context.context_info.get(feedback_key)
+        previous = dict(previous) if isinstance(previous, dict) else {}
+        attempts = (
+            int(previous.get("attempts", 0) or 0)
+            if previous.get("candidate_hash") == candidate_hash
+            else 0
+        )
+        # Keep the closure episode bounded. Long-running tasks retain their
+        # progress-sensitive runway; an unresolved ledger never creates an
+        # unbounded final-response loop.
+        if attempts >= 1:
+            context.context_info[feedback_key] = {
+                "candidate_hash": candidate_hash,
+                "attempts": attempts,
+                "bounded_unresolved": True,
+                "unresolved_count": len(unresolved_ids),
+            }
+            return None
+        attempts += 1
+        context.context_info[feedback_key] = {
+            "candidate_hash": candidate_hash,
+            "attempts": attempts,
+            "bounded_unresolved": False,
+            "unresolved_count": len(unresolved_ids),
+        }
+        by_id = {row["obligation_id"]: row for row in obligations}
+        unresolved = [
+            {
+                "obligation_id": obligation_id,
+                "kind": by_id[obligation_id]["kind"],
+                "subject": by_id[obligation_id]["subject"],
+            }
+            for obligation_id in unresolved_ids[:8]
+            if obligation_id in by_id
+        ]
+        feedback = (
+            "The public contract evidence ledger is not closed for the current "
+            "candidate. Unresolved public obligations: "
+            + json.dumps(
+                unresolved,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            + ". Use one focused, reproducible check against the current "
+            "candidate that exits nonzero when its counterexample is observed; "
+            "printing a boolean alone is not an assertion. Attach the "
+            "framework-provided __aworld_public_probe metadata with the exact "
+            "obligation_ids it covers. If the check "
+            "fails, repair only from that public evidence. If it cannot be "
+            "verified from the public task and accessible environment, state "
+            "that uncertainty accurately. Do not inspect or infer hidden "
+            "verifier material."
+        )
+        context.context_info[
+            f"public_contract_validation_feedback:{self.id()}"
+        ] = canonical_json_hash({"feedback": feedback})
+        return feedback
+
     @staticmethod
     def _public_executable_hints(context: Context) -> tuple[str, ...]:
         value = context.context_info.get("public_capability_hints")
@@ -2210,6 +2936,106 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 return ()
             result.append(executable)
         return tuple(result)
+
+    def _public_task_obligations(self, context: Context) -> tuple[dict[str, Any], ...]:
+        """Return bounded obligations derived by the CLI from public text."""
+
+        value = context.context_info.get("public_task_contract")
+        if (
+            not isinstance(value, dict)
+            or value.get("schema_version") != _PUBLIC_TASK_CONTRACT_SCHEMA
+            or value.get("authority") != _PUBLIC_DELIVERABLE_AUTHORITY
+            or value.get("source") != "public_task_text"
+        ):
+            return ()
+        public_request = self._authoritative_request_from_context(context)
+        if (
+            not public_request
+            or value.get("request_fingerprint")
+            != "sha256:"
+            + hashlib.sha256(public_request.encode("utf-8")).hexdigest()
+        ):
+            return ()
+        rows = value.get("obligations")
+        if not isinstance(rows, list) or not rows or len(rows) > 32:
+            return ()
+        validated: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for row in rows:
+            if not isinstance(row, dict) or set(row) != {
+                "obligation_id",
+                "kind",
+                "subject",
+                "expectation",
+                "source_excerpt",
+                "source_fingerprint",
+                "authority",
+                "source",
+            }:
+                return ()
+            obligation_id = row.get("obligation_id")
+            if (
+                not isinstance(obligation_id, str)
+                or not obligation_id
+                or len(obligation_id) > 128
+                or obligation_id in seen
+                or row.get("authority") != _PUBLIC_DELIVERABLE_AUTHORITY
+                or row.get("source") != "public_task_text"
+                or not isinstance(row.get("kind"), str)
+                or not 0 < len(row["kind"]) <= 64
+                or not isinstance(row.get("subject"), str)
+                or not 0 < len(row["subject"]) <= 512
+                or not isinstance(row.get("source_excerpt"), str)
+                or not 0 < len(row["source_excerpt"]) <= 512
+                or not isinstance(row.get("source_fingerprint"), str)
+                or re.fullmatch(r"sha256:[0-9a-f]{64}", row["source_fingerprint"])
+                is None
+            ):
+                return ()
+            try:
+                json.dumps(
+                    row.get("expectation"),
+                    ensure_ascii=False,
+                    sort_keys=True,
+                )
+            except (TypeError, ValueError):
+                return ()
+            seen.add(obligation_id)
+            validated.append(
+                {
+                    "obligation_id": obligation_id,
+                    "kind": row["kind"],
+                    "subject": row["subject"],
+                    "expectation": row.get("expectation"),
+                    "source_fingerprint": row["source_fingerprint"],
+                }
+            )
+        return tuple(validated)
+
+    def _public_task_completion_obligation_ids(
+        self,
+        context: Context,
+        obligations: Sequence[Mapping[str, Any]],
+    ) -> frozenset[str]:
+        """Project completion debt while treating malformed role data safely."""
+
+        all_ids = frozenset(
+            row.get("obligation_id")
+            for row in obligations
+            if isinstance(row.get("obligation_id"), str)
+        )
+        value = context.context_info.get("public_task_contract")
+        if not isinstance(value, dict) or "completion_obligation_ids" not in value:
+            return all_ids
+        raw_ids = value.get("completion_obligation_ids")
+        if (
+            not isinstance(raw_ids, list)
+            or len(raw_ids) > len(all_ids)
+            or any(not isinstance(item, str) or item not in all_ids for item in raw_ids)
+            or len(set(raw_ids)) != len(raw_ids)
+        ):
+            return all_ids
+        return frozenset(raw_ids)
 
     def _record_llm_call_request(
         self,
@@ -4784,6 +5610,67 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             )
             return None
 
+    async def async_finalize_at_infrastructure_failure(
+        self,
+        message: Message,
+        receipt: Dict[str, Any],
+        **kwargs,
+    ) -> Message | None:
+        """Preserve current work with one Tool-free terminal response.
+
+        The circuit receipt proves only that the execution channel repeatedly
+        failed. It never claims task correctness; the caller-owned evaluator
+        still scores the best public candidate independently.
+        """
+
+        try:
+            await self.async_pre_run(message)
+            policy_result = await self.async_policy(
+                message.payload,
+                message=message,
+                _infrastructure_circuit_finalization=dict(receipt),
+                **kwargs,
+            )
+            if not any(
+                str(getattr(action, "policy_info", "") or "").strip()
+                for action in policy_result or []
+            ):
+                raise AWorldRuntimeException(
+                    "infrastructure circuit finalization returned no textual response"
+                )
+            final_result = await self.async_post_run(
+                policy_result, message.payload, message
+            )
+            message.context.context_info[
+                f"agent_infrastructure_circuit_finalized:{self.id()}"
+            ] = {**dict(receipt), "finalization_performed": True}
+            from aworld.core.context.execution_state import record_execution_state
+
+            record_execution_state(
+                message.context,
+                self.id(),
+                "succeeded",
+                "infrastructure_circuit_finalized",
+                recoverable=False,
+            )
+            return final_result
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            message.context.context_info[
+                f"agent_infrastructure_circuit_finalization_error:{self.id()}"
+            ] = {
+                **dict(receipt),
+                "error_type": type(exc).__name__,
+            }
+            logger.warning(
+                "Infrastructure circuit finalization failed for agent %s; "
+                "preserving typed infrastructure failure (error_type=%s)",
+                self.id(),
+                type(exc).__name__,
+            )
+            return None
+
     @staticmethod
     def _transient_model_failure_details(
         exc: BaseException,
@@ -5661,6 +6548,12 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         model_response_recovery_turn = False
         long_horizon_review_deadline = None
         loop_budget_finalization = bool(kwargs.get("_loop_budget_finalization", False))
+        infrastructure_circuit_finalization = bool(
+            kwargs.get("_infrastructure_circuit_finalization")
+        )
+        bounded_terminal_finalization = bool(
+            loop_budget_finalization or infrastructure_circuit_finalization
+        )
         from aworld.runners.execution_protocol import (
             clear_candidate_fallback,
             execution_protocol_policy,
@@ -5858,7 +6751,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 automatic_timeout = self._is_long_horizon_auto_generation_timeout(
                     exc, message.context
                 )
-                if not loop_budget_finalization and (
+                if not bounded_terminal_finalization and (
                     transient_details is not None or automatic_timeout
                 ):
                     recovery_reason = (
@@ -5951,7 +6844,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             )
             if (
                 recoverable_model_state is not None
-                and not loop_budget_finalization
+                and not bounded_terminal_finalization
                 and not isinstance(
                     result,
                     (
@@ -6339,6 +7232,98 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         self._finished = True
         return [ActionModel(agent_name=self.id(), policy_info=text)]
 
+    def _inject_active_skill_instructions(
+        self,
+        messages: Sequence[Mapping[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Bind active authorized Skill usage to the final model request."""
+
+        projected = [dict(message) for message in messages]
+        if any(
+            _ACTIVE_SKILL_PROMPT_MARKER in str(message.get("content") or "")
+            for message in projected
+        ):
+            return projected
+
+        sections: list[str] = []
+        for skill_name, raw_config in (self.skill_configs or {}).items():
+            if not isinstance(raw_config, Mapping) or not raw_config.get("active"):
+                continue
+            if str(raw_config.get("type") or "").strip().lower() == "agent":
+                continue
+            usage = raw_config.get("usage")
+            if not isinstance(usage, str) or not usage.strip():
+                logger.warning(
+                    "Active Skill has no injectable usage; skill_name=%s",
+                    str(skill_name)[:128],
+                )
+                continue
+            path = str(raw_config.get("skill_path") or "")
+            safe_usage = usage.replace("]]>", "]]]]><![CDATA[>")
+            sections.append(
+                "  <active_skill>\n"
+                f"    <skill_name>{json.dumps(str(skill_name), ensure_ascii=False)}</skill_name>\n"
+                f"    <skill_path>{json.dumps(path, ensure_ascii=False)}</skill_path>\n"
+                f"    <skill_usage><![CDATA[{safe_usage}]]></skill_usage>\n"
+                "  </active_skill>"
+            )
+        if not sections:
+            return projected
+        content = (
+            f"{_ACTIVE_SKILL_PROMPT_MARKER}\n"
+            "The framework has already loaded the complete instructions for "
+            "every active, authorized Skill below. Follow every relevant "
+            "active Skill before generic task execution. Do not spend a Tool "
+            "call re-reading these SKILL.md files; read only additional files "
+            "that their instructions explicitly reference.\n"
+            + "\n".join(sections)
+            + "\n</aworld_active_skill_instructions>"
+        )
+        if len(content.encode("utf-8")) > _MAX_ACTIVE_SKILL_PROMPT_BYTES:
+            raise AWorldRuntimeException(
+                "Active Skill instructions exceed the bounded prompt budget"
+            )
+        return [
+            {
+                "role": "system",
+                "content": content,
+                PROMPT_SECTION_NAME_HINT_KEY: "active_skill_instructions",
+                PROMPT_STABILITY_HINT_KEY: "stable",
+            },
+            *projected,
+        ]
+
+    def _task_skill_tool_evidence_feedback_if_unsatisfied(
+        self,
+        context: Context,
+    ) -> str | None:
+        """Require one real action when Runtime mounted task-specific Skills."""
+
+        active_task_skills = [
+            str(skill_name)
+            for skill_name, raw_config in (self.skill_configs or {}).items()
+            if isinstance(raw_config, Mapping)
+            and raw_config.get("active") is True
+            and str(raw_config.get("type") or "").strip().lower() != "agent"
+            and os.path.realpath(str(raw_config.get("skill_path") or "")).startswith(
+                "/installed-agent/aworld-authorized-skills/"
+            )
+        ]
+        if not active_task_skills:
+            return None
+        from aworld.runners.execution_protocol import load_execution_protocol_state
+
+        state = load_execution_protocol_state(context, self.id())
+        if state.tool_observation_count > 0:
+            return None
+        return (
+            "Runtime mounted and enabled task-specific Skills, but no Tool action "
+            "has executed yet. A SkillBench task cannot be completed from a "
+            "reasoning-only response. Continue with one concrete ordinary Tool "
+            "call that applies the active task Skill instructions to the actual "
+            "workspace; do not return a shell snippet as prose."
+        )
+
     async def _async_policy_once(
         self,
         observation: Observation,
@@ -6357,11 +7342,23 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         """
         logger.info(f"Agent{type(self)}#{self.id()}: async_policy start")
         loop_budget_finalization = bool(kwargs.pop("_loop_budget_finalization", False))
+        infrastructure_circuit_receipt = kwargs.pop(
+            "_infrastructure_circuit_finalization", None
+        )
+        infrastructure_circuit_finalization = isinstance(
+            infrastructure_circuit_receipt, dict
+        )
+        bounded_terminal_finalization = bool(
+            loop_budget_finalization or infrastructure_circuit_finalization
+        )
         transient_model_recovery_turn = bool(
             kwargs.pop("_transient_model_recovery_turn", False)
         )
         transient_model_recovery_reason = str(
             kwargs.pop("_transient_model_recovery_reason", "") or ""
+        )
+        force_ordinary_tool_turn = bool(
+            kwargs.pop("_force_ordinary_tool_turn", False)
         )
         # temporary state context
         self.context = message.context
@@ -6418,7 +7415,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         model_owned_review = model_owned_review_active(message.context, self.id())
 
         protocol_tool_free_finalization = (
-            not loop_budget_finalization
+            not bounded_terminal_finalization
             and pending_decision_boundary is None
             and (
                 execution_protocol_requires_tool_free_finalization(
@@ -6427,8 +7424,8 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 or self._pre_generation_caller_reserve_reached(message.context)
             )
         )
-        tool_free_finalization = (
-            loop_budget_finalization or protocol_tool_free_finalization
+        tool_free_finalization = bool(
+            bounded_terminal_finalization or protocol_tool_free_finalization
         )
         execution_control_offer = _LongHorizonControlOffer()
         if tool_free_finalization:
@@ -6471,6 +7468,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         raw_messages = await self.build_llm_input(
             observation, info, message=message, **kwargs
         )
+        raw_messages = self._inject_active_skill_instructions(raw_messages)
         from aworld.core.context.work_progress import (
             retain_work_progress,
             checkpoint_work_progress,
@@ -6516,6 +7514,37 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                         PROMPT_STABILITY_HINT_KEY: "dynamic",
                     }
                 )
+            if (
+                pending_decision_boundary is None
+                and not independent_acceptance_review
+                and not model_owned_review
+                and getattr(self, "lazy_verifier_factory", None) is not None
+            ):
+                from aworld.runners.execution_protocol import (
+                    reviewer_value_lease_guidance,
+                    reviewer_value_lease_requires_continuation,
+                )
+
+                reviewer_guidance = reviewer_value_lease_guidance(
+                    message.context, self.id()
+                )
+                if (
+                    reviewer_guidance
+                    and reviewer_value_lease_requires_continuation(
+                        message.context, self.id()
+                    )
+                ):
+                    raw_messages = list(raw_messages)
+                    raw_messages.append(
+                        {
+                            "role": "user",
+                            "content": reviewer_guidance,
+                            PROMPT_SECTION_NAME_HINT_KEY: (
+                                "reviewer_value_lease_guidance"
+                            ),
+                            PROMPT_STABILITY_HINT_KEY: "dynamic",
+                        }
+                    )
         if transient_model_recovery_turn and not tool_free_finalization:
             raw_messages = list(raw_messages)
             raw_messages.append(
@@ -6531,6 +7560,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                     ),
                 }
             )
+        reviewer_tool_overlay: list[dict[str, Any]] = []
         if loop_budget_finalization:
             raw_messages = list(raw_messages)
             raw_messages.append(
@@ -6544,6 +7574,34 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                         "This is a budget stop, not successful task completion. Report "
                         "verified outcomes and artifacts, state uncertainty instead "
                         "of inventing results, and do not request another tool call."
+                    ),
+                }
+            )
+            tools = None
+        elif infrastructure_circuit_finalization:
+            failure_codes = sorted(
+                {
+                    str(code)
+                    for code in (
+                        infrastructure_circuit_receipt.get("failure_codes") or ()
+                    )
+                    if isinstance(code, str) and code
+                }
+            )
+            failure_summary = ", ".join(failure_codes[:4]) or "unknown"
+            raw_messages = list(raw_messages)
+            raw_messages.append(
+                {
+                    "role": "user",
+                    "content": (
+                        "AWorld infrastructure circuit: the same typed execution "
+                        "failure repeated and the Tool channel is now closed "
+                        f"({failure_summary}). This is the single bounded "
+                        "Tool-free finalization turn. Preserve and submit the best "
+                        "current public candidate when one exists. Otherwise report "
+                        "the retained progress and blocker accurately. Do not claim "
+                        "unobserved validation, do not request another Tool call, "
+                        "and do not restart exploration."
                     ),
                 }
             )
@@ -6565,6 +7623,23 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             tools = None
         else:
             tools = await self._filter_tools(message.context)
+            lazy_verifier_factory = getattr(self, "lazy_verifier_factory", None)
+            partition_tool_surface = getattr(
+                lazy_verifier_factory, "partition_tool_surface", None
+            )
+            if callable(partition_tool_surface):
+                tools, reviewer_tool_overlay = partition_tool_surface(tools)
+                if not reviewer_tool_overlay:
+                    # A sticky/progressive task catalog may legitimately omit
+                    # the dormant reviewer from its ordinary projection.  Its
+                    # schema still belongs to this Agent's reconciled live Tool
+                    # surface; recover only that already-authorized schema so a
+                    # later claimable lease can project it as a control-plane
+                    # overlay. ``project_reviewer_tool_surface`` remains the
+                    # authority gate and fails closed in GUIDE without a lease.
+                    _ordinary, reviewer_tool_overlay = partition_tool_surface(
+                        getattr(self, "tools", None)
+                    )
             from aworld.runners.execution_protocol import (
                 constrain_candidate_convergence_tool_catalog,
             )
@@ -6590,6 +7665,38 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 )
             tools = self._with_model_review_control(tools, message.context)
             tools = self._with_acceptance_probe_control(tools, message.context)
+            tools, reviewer_validation_turn = (
+                self._constrain_reviewer_validation_tool_catalog(
+                    tools,
+                    message.context,
+                    offer=execution_control_offer,
+                )
+            )
+            if reviewer_validation_turn:
+                kwargs = self._model_response_action_projection_kwargs(
+                    dict(kwargs),
+                    max_output_tokens=1024,
+                    context=message.context,
+                )
+                kwargs["tool_choice"] = "required"
+                kwargs["parallel_tool_calls"] = False
+                kwargs["_long_horizon_decision_turn"] = True
+            if (
+                force_ordinary_tool_turn
+                and execution_control_offer.decision_boundary is None
+                and tools
+                and not independent_acceptance_review
+                and not model_owned_review
+            ):
+                kwargs = self._model_response_action_projection_kwargs(
+                    dict(kwargs),
+                    max_output_tokens=self._model_response_action_projection_output_cap(
+                        self._resolve_generation_budget_policy(message.context)
+                    ),
+                    context=message.context,
+                )
+                kwargs["tool_choice"] = "required"
+                kwargs["parallel_tool_calls"] = False
             if independent_acceptance_review:
                 from aworld.runners.execution_protocol import (
                     load_acceptance_critic_state,
@@ -6866,6 +7973,46 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                     "Task Tool Catalog tracking failed; "
                     f"error_type={type(exc).__name__}"
                 )
+        if (
+            not tool_free_finalization
+            and execution_control_offer.decision_boundary is None
+            and not independent_acceptance_review
+            and not model_owned_review
+            and reviewer_tool_overlay
+        ):
+            lazy_verifier_factory = getattr(self, "lazy_verifier_factory", None)
+            project_reviewer_tool_surface = getattr(
+                lazy_verifier_factory, "project_reviewer_tool_surface", None
+            )
+            if callable(project_reviewer_tool_surface):
+                projected = project_reviewer_tool_surface(
+                    message.context, reviewer_tool_overlay
+                )
+                if projected:
+                    reviewer_turn_mandatory = getattr(
+                        lazy_verifier_factory,
+                        "reviewer_tool_surface_is_mandatory",
+                        None,
+                    )
+                    if callable(reviewer_turn_mandatory) and reviewer_turn_mandatory(
+                        message.context
+                    ):
+                        # A GUIDE lease is already candidate-, request-, and
+                        # obligation-bound and can be claimed once.  Give it one
+                        # deterministic control turn instead of asking the model
+                        # to choose it from a large ordinary Tool catalog.  The
+                        # reviewer remains advisory; its output still requires
+                        # an independent root Tool assertion before repair.
+                        tools = list(projected)
+                        kwargs = self._model_response_action_projection_kwargs(
+                            dict(kwargs),
+                            max_output_tokens=1024,
+                            context=message.context,
+                        )
+                        kwargs["tool_choice"] = "required"
+                        kwargs["_long_horizon_decision_turn"] = True
+                    else:
+                        tools = [*(tools or ()), *projected]
         reasoning_phase = self._reasoning_phase_for_turn(
             decision_boundary=execution_control_offer.decision_boundary,
             independent_acceptance_review=independent_acceptance_review,
@@ -6924,6 +8071,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         critic_decision_handled = False
         critic_protocol_persistence_error = False
         review_repair_requested = False
+        malformed_tool_batch_repair = False
         from aworld.core.context.execution_state import (
             execution_resolution_observation,
         )
@@ -7179,7 +8327,10 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                             "tool call and continue from observed work. Issue codes: "
                             + ",".join(issue.code.value for issue in exc.issues)
                         )
-                        agent_result = AgentResult(actions=[], is_call_tool=False)
+                        agent_result = AgentResult(
+                            actions=[], current_state=None, is_call_tool=False
+                        )
+                        malformed_tool_batch_repair = True
                     incomplete_decision_state = (
                         self._recoverable_model_response_state(message.context)
                         if execution_control_offer.decision_boundary is not None
@@ -7253,6 +8404,17 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                                 "emit exactly one structured checkpoint decision and "
                                 "choose horizon=unknown when classification is uncertain."
                             )
+                        elif (
+                            execution_decision_outcome
+                            == "fail_open_no_structured_tool"
+                        ):
+                            execution_decision_feedback = (
+                                "The model provider did not return the internal "
+                                "checkpoint as a structured Tool call. AWorld failed "
+                                "that control-only checkpoint open. Resume with the "
+                                "ordinary task Tools now; one Tool call is required so "
+                                "material work cannot be mistaken for a final answer."
+                            )
                         else:
                             from aworld.runners.execution_protocol import (
                                 load_execution_protocol_state,
@@ -7296,6 +8458,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                                 agent_result,
                                 message.context,
                                 offer=execution_control_offer,
+                                reviewer_validation_turn=reviewer_validation_turn,
                             )
                     if independent_acceptance_review and agent_result.is_call_tool:
                         critic_probe_planned = self._consume_acceptance_probe_control(
@@ -7516,7 +8679,17 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                             clear_candidate_fallback(message.context, self.id())
                     if (
                         candidate_finished
-                        and not loop_budget_finalization
+                        and not validation_feedback
+                        and not response_incomplete
+                    ):
+                        validation_feedback = (
+                            self._task_skill_tool_evidence_feedback_if_unsatisfied(
+                                message.context
+                            )
+                        )
+                    if (
+                        candidate_finished
+                        and not bounded_terminal_finalization
                         and not critic_decision_handled
                         and not validation_feedback
                         and not response_incomplete
@@ -7527,6 +8700,8 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                             final_review_guidance,
                             load_execution_protocol_state,
                             record_candidate_final,
+                            reviewer_value_lease_guidance,
+                            reviewer_value_lease_requires_continuation,
                             store_candidate_fallback,
                         )
 
@@ -7540,17 +8715,31 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                             store_candidate_fallback(
                                 message.context, self.id(), agent_result.actions
                             )
-                        protocol_transition = record_candidate_final(
+                        lease_guidance = reviewer_value_lease_guidance(
                             message.context,
                             self.id(),
-                            actions=agent_result.actions,
-                            review_boundary_available=(
-                                self._candidate_review_boundary_available(
-                                    message.context,
-                                    tools=tools,
-                                )
-                            ),
+                            terminal=True,
                         )
+                        if (
+                            lease_guidance
+                            and reviewer_value_lease_requires_continuation(
+                                message.context, self.id()
+                            )
+                        ):
+                            protocol_transition = None
+                            long_horizon_review_feedback = lease_guidance
+                        else:
+                            protocol_transition = record_candidate_final(
+                                message.context,
+                                self.id(),
+                                actions=agent_result.actions,
+                                review_boundary_available=(
+                                    self._candidate_review_boundary_available(
+                                        message.context,
+                                        tools=tools,
+                                    )
+                                ),
+                            )
                         if (
                             protocol_transition is not None
                             and protocol_transition.decision.action
@@ -7570,6 +8759,40 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                                 reason="model_owned_review_accepted",
                                 observation=provider_resolution_observation,
                             )
+                        if (
+                            protocol_transition is not None
+                            and protocol_transition.decision.action
+                            is ControllerAction.STOP_INCOMPLETE
+                            and protocol_transition.decision.reason.value
+                            == "final_review_already_used"
+                        ):
+                            from aworld.runners.execution_protocol import (
+                                record_public_contract_evidence,
+                                record_terminal_fallback_submission,
+                            )
+
+                            # Advisory review is bounded to one attempt. A
+                            # second model-owned submission must not turn an
+                            # authenticated, preserved candidate into a task
+                            # failure merely because that advisory budget was
+                            # already consumed. Refresh public evidence for
+                            # telemetry, then take the controller's explicit
+                            # liveness fallback. This records delivery without
+                            # claiming review acceptance or verifier success.
+                            record_public_contract_evidence(
+                                message.context, self.id()
+                            )
+                            fallback_transition = (
+                                record_terminal_fallback_submission(
+                                    message.context, self.id()
+                                )
+                            )
+                            if (
+                                fallback_transition is not None
+                                and fallback_transition.decision.action
+                                is ControllerAction.SUBMIT_CURRENT_RESULT
+                            ):
+                                protocol_transition = fallback_transition
                         if (
                             protocol_transition is not None
                             and protocol_transition.decision.action
@@ -7637,14 +8860,15 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                                     "invalid_event",
                                 },
                             )
-                        long_horizon_review_feedback = final_review_guidance(
-                            protocol_transition,
-                            independent_acceptance_enabled=(
-                                execution_protocol_policy(
-                                    message.context, self.id()
-                                ).independent_acceptance_enabled
-                            ),
-                        )
+                        if long_horizon_review_feedback is None:
+                            long_horizon_review_feedback = final_review_guidance(
+                                protocol_transition,
+                                independent_acceptance_enabled=(
+                                    execution_protocol_policy(
+                                        message.context, self.id()
+                                    ).independent_acceptance_enabled
+                                ),
+                            )
                         if long_horizon_review_feedback:
                             from aworld.runners.execution_protocol import (
                                 load_public_probe_receipts,
@@ -7661,8 +8885,10 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                                             "receipt_id",
                                             "hypothesis_id",
                                             "probe_kind",
+                                            "obligation_ids",
                                             "selected_candidate_id",
                                             "tool_execution_succeeded",
+                                            "validation_kind",
                                             "probe_assessment",
                                             "stale",
                                         )
@@ -7712,40 +8938,70 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                         and not response_incomplete
                     ):
                         validation_feedback = (
+                            self._public_contract_closure_feedback_if_unsatisfied(
+                                message.context
+                            )
+                        )
+                    if (
+                        candidate_finished
+                        and not long_horizon_review_feedback
+                        and not validation_feedback
+                        and not response_incomplete
+                    ):
+                        validation_feedback = (
                             self._build_result_validation_feedback_from_context(
                                 context=message.context,
                                 final_response_text=llm_response.content or "",
                             )
                         )
                     if tool_free_finalization and validation_feedback:
-                        final_text = (llm_response.content or "").strip()
-                        final_text = (
-                            f"{final_text}\n\n"
-                            "The completion contract remains unsatisfied, so I "
-                            "cannot confirm that the task is complete."
-                        ).strip()
-                        llm_response.content = final_text
-                        if isinstance(llm_response.message, dict):
-                            llm_response.message = dict(llm_response.message)
-                            llm_response.message["content"] = final_text
-                            llm_response.message["aworld_incomplete_reason"] = (
-                                "delivery_validation_unsatisfied"
-                            )
-                            llm_response.message["aworld_recoverable"] = False
-                        agent_result = AgentResult(
-                            actions=[
-                                ActionModel(
-                                    agent_name=self.id(),
-                                    policy_info=final_text,
-                                )
-                            ],
-                            current_state=agent_result.current_state,
-                            is_call_tool=False,
+                        (
+                            public_contract_advisory,
+                            explicit_completion_enforcement,
+                        ) = self._public_contract_feedback_policy(
+                            message.context, validation_feedback
                         )
-                        message.context.context_info[
-                            f"agent_loop_budget_validation_blocked:{self.id()}"
-                        ] = True
-                        validation_feedback = None
+                        if (
+                            public_contract_advisory
+                            and not explicit_completion_enforcement
+                        ):
+                            message.context.context_info.pop(
+                                f"public_contract_validation_feedback:{self.id()}",
+                                None,
+                            )
+                            message.context.context_info[
+                                f"public_contract_advisory_tool_free_submit:{self.id()}"
+                            ] = True
+                            validation_feedback = None
+                        else:
+                            final_text = (llm_response.content or "").strip()
+                            final_text = (
+                                f"{final_text}\n\n"
+                                "The completion contract remains unsatisfied, so I "
+                                "cannot confirm that the task is complete."
+                            ).strip()
+                            llm_response.content = final_text
+                            if isinstance(llm_response.message, dict):
+                                llm_response.message = dict(llm_response.message)
+                                llm_response.message["content"] = final_text
+                                llm_response.message[
+                                    "aworld_incomplete_reason"
+                                ] = "delivery_validation_unsatisfied"
+                                llm_response.message["aworld_recoverable"] = False
+                            agent_result = AgentResult(
+                                actions=[
+                                    ActionModel(
+                                        agent_name=self.id(),
+                                        policy_info=final_text,
+                                    )
+                                ],
+                                current_state=agent_result.current_state,
+                                is_call_tool=False,
+                            )
+                            message.context.context_info[
+                                f"agent_loop_budget_validation_blocked:{self.id()}"
+                            ] = True
+                            validation_feedback = None
                     # skip summary on final round
                     if execution_control_offer.decision_boundary is None:
                         await self._add_message_to_memory(
@@ -7818,6 +9074,8 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                     "tool_choice",
                 }
             }
+            if execution_decision_outcome == "fail_open_no_structured_tool":
+                recursive_kwargs["_force_ordinary_tool_turn"] = True
             return _ExecutionDecisionContinuation(
                 observation=Observation(
                     observer=self.id(),
@@ -7866,13 +9124,30 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 self.id(),
                 validation_feedback,
             )
+            repair_kwargs = dict(continuation_request_kwargs)
+            from aworld.runners.execution_protocol import (
+                load_execution_protocol_state,
+            )
+
+            if (
+                malformed_tool_batch_repair
+                or load_execution_protocol_state(
+                    message.context, self.id()
+                ).tool_observation_count
+                == 0
+            ):
+                # A retry after a reasoning-only or malformed first action must
+                # remain an ordinary Tool turn. Requiring a native call also
+                # steers providers away from returning another fenced command.
+                repair_kwargs["_force_ordinary_tool_turn"] = True
             return await self._retry_for_result_validation(
                 validation_feedback=validation_feedback,
                 observation=observation,
                 info=info,
                 message=message,
-                kwargs=continuation_request_kwargs,
+                kwargs=repair_kwargs,
                 iterative=True,
+                candidate_actions=agent_result.actions,
             )
 
         message.context.context_info.pop(
@@ -8259,6 +9534,29 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
     def _result_validation_retry_key(agent_id: str) -> str:
         return f"result_validation_retry_count:{agent_id}"
 
+    def _public_contract_feedback_policy(
+        self,
+        context: Context,
+        validation_feedback: str,
+    ) -> tuple[bool, bool]:
+        """Classify advisory feedback and explicit caller enforcement."""
+
+        advisory_feedback_key = f"public_contract_validation_feedback:{self.id()}"
+        public_contract_advisory = (
+            context.context_info.get(advisory_feedback_key)
+            == canonical_json_hash({"feedback": validation_feedback})
+        )
+        contract = getattr(context, "completion_contract", None)
+        from aworld.core.context.compiler import CompletionMode
+
+        explicit_completion_enforcement = bool(
+            contract is not None
+            and getattr(context, "completion_mode", None) is CompletionMode.ENFORCE
+            and context.context_info.get("completion_enforcement_explicit", True)
+            is not False
+        )
+        return public_contract_advisory, explicit_completion_enforcement
+
     @staticmethod
     def _should_degrade_result_validation_retry_error(exc: Exception) -> bool:
         message = str(exc).lower()
@@ -8276,8 +9574,20 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         message: Message,
         kwargs: Dict[str, Any],
         iterative: bool = False,
+        candidate_actions: Sequence[ActionModel] | None = None,
     ) -> List[ActionModel]:
-        retry_key = self._result_validation_retry_key(self.id())
+        advisory_feedback_key = f"public_contract_validation_feedback:{self.id()}"
+        (
+            public_contract_advisory,
+            explicit_completion_enforcement,
+        ) = self._public_contract_feedback_policy(
+            message.context, validation_feedback
+        )
+        retry_key = (
+            f"public_contract_validation_retry_count:{self.id()}"
+            if public_contract_advisory
+            else self._result_validation_retry_key(self.id())
+        )
         retry_count = int(message.context.context_info.get(retry_key, 0) or 0)
         recovery_brief = validation_feedback
         authoritative_request = self._authoritative_request_from_context(
@@ -8293,12 +9603,56 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             )
 
         contract = getattr(message.context, "completion_contract", None)
-        maximum_repairs = contract.max_repairs if contract is not None else 1
+        maximum_repairs = (
+            1
+            if public_contract_advisory
+            else contract.max_repairs
+            if contract is not None
+            else 1
+        )
         if maximum_repairs is not None and retry_count >= maximum_repairs:
             from aworld.core.context.execution_state import (
                 record_execution_state,
                 checkpoint_execution_state,
             )
+
+            if public_contract_advisory and not explicit_completion_enforcement:
+                from aworld.runners.execution_protocol import (
+                    load_candidate_fallback,
+                    record_terminal_fallback_submission,
+                    store_candidate_fallback,
+                )
+
+                preserved_actions = list(candidate_actions or ())
+                if preserved_actions:
+                    store_candidate_fallback(
+                        message.context, self.id(), preserved_actions
+                    )
+                else:
+                    preserved_actions = list(
+                        load_candidate_fallback(message.context, self.id()) or ()
+                    )
+                transition = record_terminal_fallback_submission(
+                    message.context, self.id()
+                )
+                if (
+                    preserved_actions
+                    and transition is not None
+                    and transition.decision.action
+                    is ControllerAction.SUBMIT_CURRENT_RESULT
+                ):
+                    message.context.context_info.pop(retry_key, None)
+                    message.context.context_info.pop(advisory_feedback_key, None)
+                    record_execution_state(
+                        message.context,
+                        self.id(),
+                        "succeeded",
+                        "public_contract_advisory_unresolved_submit_current",
+                        recoverable=False,
+                    )
+                    await checkpoint_execution_state(message.context)
+                    self._finished = True
+                    return preserved_actions
 
             record_execution_state(
                 message.context,
@@ -8632,7 +9986,21 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             return messages
         artifacts = self._public_deliverable_artifacts(context)
         executables = self._public_executable_hints(context)
-        if not artifacts and not executables:
+        obligations = self._public_task_obligations(context)
+        completion_obligation_ids = self._public_task_completion_obligation_ids(
+            context, obligations
+        )
+        completion_obligations = tuple(
+            row
+            for row in obligations
+            if row.get("obligation_id") in completion_obligation_ids
+        )
+        reviewer_obligations = tuple(
+            row
+            for row in obligations
+            if row.get("obligation_id") not in completion_obligation_ids
+        )
+        if not artifacts and not executables and not obligations:
             return messages
         if artifacts:
             from aworld.runners.post_tool_progress import (
@@ -8653,7 +10021,11 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             "The public task text explicitly names the following output file(s):\n"
             f"{paths}\n"
             "Treat creation of these files as early, inspectable delivery "
-            "milestones. Verify that each exists before claiming completion. "
+            "milestones. After one bounded inspection of the inputs and required "
+            "shape, create the earliest honest valid-shape provisional candidate "
+            "and improve it in place; do not defer the first public candidate "
+            "until every uncertainty is resolved. Verify that each exists before "
+            "claiming completion. "
             if artifacts
             else ""
         )
@@ -8666,14 +10038,54 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             if executables
             else ""
         )
+        completion_guidance = (
+            "The public-task-only completion checklist contains these explicit "
+            "obligations:\n"
+            + "\n".join(
+                "- "
+                + json.dumps(
+                    row,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                for row in completion_obligations
+            )
+            + "\nBefore claiming completion, bind each applicable obligation "
+            "to a fresh Agent-visible observation or state the remaining "
+            "uncertainty. This checklist is not a "
+            "Tool-admission allowlist; do not treat mentioned inputs, examples, "
+            "or prohibited changes as output files. "
+            if completion_obligations
+            else ""
+        )
+        reviewer_guidance = (
+            "The same public ledger also contains "
+            f"{len(reviewer_obligations)} reviewer-only risk target(s) across "
+            + ", ".join(
+                sorted(
+                    {
+                        str(row.get("kind"))
+                        for row in reviewer_obligations
+                        if row.get("kind")
+                    }
+                )
+            )
+            + ". AWorld will surface one exact target when a reviewer lease is "
+            "offered. These are advisory risk targets and do not all "
+            "need to be closed before submitting the best current candidate. "
+            if reviewer_obligations
+            else ""
+        )
         guidance = {
             "role": "system",
             "content": (
                 f"{_PUBLIC_DELIVERABLE_PROMPT_MARKER}: "
                 f"{deliverable_guidance}{capability_guidance}"
+                f"{completion_guidance}{reviewer_guidance}"
                 "These hints are advisory task grounding only; they do not "
-                "validate file contents, authorize arbitrary commands, or replace "
-                "a canonical verifier."
+                "validate file contents, authorize arbitrary commands, expose "
+                "hidden verifier material, or replace a canonical verifier."
             ),
             PROMPT_SECTION_NAME_HINT_KEY: "public_deliverable_contract",
             PROMPT_STABILITY_HINT_KEY: "stable",
@@ -9698,6 +11110,76 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         finally:
             await self._close_generation_stream(resp_stream)
 
+    def _recover_textual_response_tool_calls(
+        self,
+        response: ModelResponse | None,
+        *,
+        surface: ModelToolCallSurface,
+        tool_choice: Any,
+    ) -> str | None:
+        """Promote one authorized text batch, or return a bounded retry reason."""
+        if (
+            not response
+            or response.error
+            or response.tool_calls
+        ):
+            return None
+        opening = "<｜DSML｜tool_calls>"
+        closing = "</｜DSML｜tool_calls>"
+        sources = [
+            (channel, value)
+            for channel, value in (
+                ("content", response.content),
+                ("reasoning", response.reasoning_content),
+            )
+            if isinstance(value, str) and ("<｜DSML｜" in value or "</｜DSML｜" in value)
+        ]
+        if not sources:
+            return None
+        if (
+            response.finish_reason not in {"stop", "tool_calls"}
+            or response.message.get("aworld_stream_terminal_observed") is False
+            or any(value.count(opening) > value.count(closing) for _, value in sources)
+        ):
+            return "incomplete_tool_arguments"
+        if len(sources) != 1 or sources[0][1].count(opening) != 1:
+            return "malformed_tool_call_batch"
+        if not surface.tool_names:
+            return "invalid_tool_arguments"
+        if isinstance(tool_choice, dict):
+            function = tool_choice.get("function")
+            required_name = function.get("name") if isinstance(function, dict) else None
+            if not isinstance(required_name, str) or required_name not in surface.tool_names:
+                return "invalid_tool_arguments"
+            surface = replace(surface, tool_names=frozenset({required_name}))
+        elif tool_choice not in (None, "auto", "required"):
+            return "invalid_tool_arguments"
+
+        channel, text = sources[0]
+        recovered = LlmOutputParser._recover_textual_dsml_tool_calls(
+            text, tool_call_surface=surface, require_complete=True
+        )
+        if recovered is None:
+            return "invalid_tool_arguments"
+        calls, remaining = recovered
+        if channel == "content":
+            response.content = remaining
+        # Use a turn-local identity, even if the model repeats the same command.
+        turn_id = uuid.uuid4().hex
+        for index, call in enumerate(calls):
+            call.id = f"call_dsml_{turn_id}_{index}"
+        response.tool_calls = calls
+        # The accepted assistant turn must precede its Tool results on replay.
+        response.message = {
+            **response.message,
+            "content": response.content,
+            "tool_calls": [call.to_dict() for call in calls],
+        }
+        logger.info(
+            f"Recovered {len(calls)} complete {channel}-channel Tool call(s)"
+        )
+        return None
+
     @staticmethod
     def _incomplete_model_response_reason(response: ModelResponse | None) -> str | None:
         if response is None:
@@ -10012,7 +11494,12 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         except GenerationBudgetExceeded as exc:
             self._record_generation_budget_exception(message.context, exc)
             raise
-        incomplete_reason = self._incomplete_model_response_reason(response)
+        textual_issue = self._recover_textual_response_tool_calls(
+            response,
+            surface=self._model_tool_call_surface(tools, message.context),
+            tool_choice=repair_kwargs.get("tool_choice"),
+        )
+        incomplete_reason = textual_issue or self._incomplete_model_response_reason(response)
         if incomplete_reason:
             content_chars, tool_call_count = self._generation_partial_counts(response)
             exhausted = GenerationBudgetExceeded(
@@ -10251,6 +11738,11 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                     parser_args = kwargs.get("response_parse_args")
                     if isinstance(parser_args, dict):
                         parser_args["tool_call_surface"] = tool_call_surface
+                    textual_issue = self._recover_textual_response_tool_calls(
+                        llm_response,
+                        surface=tool_call_surface,
+                        tool_choice=kwargs.get("tool_choice"),
+                    )
                     surface_rejection_codes = (
                         self._tool_surface_rejection_codes(
                             llm_response,
@@ -10278,8 +11770,8 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                     # A non-empty provider response is not necessarily a completed
                     # action. In particular length-stop batches must be discarded
                     # atomically even if an early call happens to be valid JSON.
-                    incomplete_reason = self._incomplete_model_response_reason(
-                        llm_response
+                    incomplete_reason = (
+                        textual_issue or self._incomplete_model_response_reason(llm_response)
                     )
                     if llm_response is None and (
                         artifact_media_projected
@@ -10349,9 +11841,15 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                                 recovery_context=recovery_context,
                                 limit=capsule_limit,
                             )
+                            retry_tools_available = bool(
+                                tools and kwargs.get("tool_choice") != "none"
+                            )
                             recovery_instruction = (
-                                "Return one complete, minimal Tool call that "
-                                "advances the task. If a concrete deliverable "
+                                "Return one complete native tool_calls entry using a "
+                                "tool name and JSON arguments from the current tool schema. "
+                                "Do not emit textual DSML or a code block as the call. "
+                                "For run_code, set language explicitly if using Python. "
+                                "Choose an action that advances the task. If a concrete deliverable "
                                 "and its core format are already known, create "
                                 "or update an inspectable candidate now."
                                 + self._staged_action_recovery_guidance(
@@ -10364,7 +11862,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                                         > 0
                                     ),
                                 )
-                                if tools
+                                if retry_tools_available
                                 else (
                                     "No Tools are available in this recovery "
                                     "turn. Return only the concise, accurate "
@@ -10386,7 +11884,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                                     ),
                                 }
                             )
-                            if tools:
+                            if retry_tools_available:
                                 # This retry is an action projection of reasoning
                                 # the model already performed, not another open-
                                 # ended planning turn. Requiring one declared Tool
@@ -10397,7 +11895,8 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                                 # enabled action-repair policy may apply its
                                 # configured output cap.
                                 kwargs = dict(kwargs)
-                                kwargs["tool_choice"] = "required"
+                                if not isinstance(kwargs.get("tool_choice"), dict):
+                                    kwargs["tool_choice"] = "required"
                                 kwargs = (
                                     self._model_response_action_projection_kwargs(
                                         kwargs,
@@ -11079,16 +12578,16 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         # get current active skills
         skills = await context.get_active_skills(namespace=self.id())
 
-        forced_skill_names = self._requested_skill_names_from_context(context)
-        if forced_skill_names and self._should_disable_tools_for_forced_skills(
-            forced_skill_names=forced_skill_names,
-            active_skills=skills,
-        ):
-            logger.info(
-                "Forced instruction-only skills active for agent %s; disabling runtime tool access",
-                self.id(),
-            )
-            return []
+        if self.conf.disable_tools_for_instruction_only_skills:
+            forced_skill_names = self._requested_skill_names_from_context(context)
+            if self._should_disable_tools_for_forced_skills(
+                forced_skill_names=forced_skill_names,
+                active_skills=skills,
+            ):
+                logger.info(
+                    f"Agent {self.id()} opted into tool-free instruction-only Skills"
+                )
+                return []
 
         selected = await skill_translate_tools(
             skills=skills,

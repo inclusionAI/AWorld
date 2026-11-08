@@ -20,14 +20,18 @@ from aworld.core.common import ActionModel
 from aworld.core.context.base import Context
 from aworld.core.context.compiler import (
     ArtifactRequirement,
+    ChildResult,
     ChildStatus,
+    ChildUsage,
     CompletionContract,
     DelegationSpec,
+    freeze_json,
 )
 from aworld.core.execution_protocol import (
     ExecutionProtocolPolicy,
     ExecutionProtocolStore,
     ProtocolPhase,
+    ReviewerDirectiveSource,
 )
 from aworld.core.tool.base import ToolFactory
 from aworld.core.task import Task
@@ -53,12 +57,8 @@ class _FakeVerifier:
     subagent_context_mode = "fresh"
     subagent_merge_mode = "answer_only"
     enable_subagent = False
-    mcp_servers = ["filesystem"]
-    mcp_tool_action_allowlist = {
-        "filesystem": frozenset(
-            {"read_file", "list_directory", "search_content"}
-        )
-    }
+    mcp_servers = []
+    mcp_tool_action_allowlist = {}
 
     def id(self):
         return "verifier-id"
@@ -136,6 +136,58 @@ def _candidate_gate(context, agent_id, candidate_fingerprint):
         "agent_id": agent_id,
         "candidate_fingerprint": candidate_fingerprint,
     }
+
+
+def _install_claimed_lease(
+    monkeypatch,
+    *,
+    obligation=None,
+    lease_id="sha256:" + "9" * 64,
+    captured=None,
+):
+    """Install a narrow runner boundary for Tool-level lease tests."""
+
+    from aworld.runners import execution_protocol as protocol_module
+
+    obligation = obligation or {
+        "obligation_id": "public-obligation-1",
+        "kind": "structured_field",
+        "subject": "value",
+        "expectation": {"required": True},
+        "source_fingerprint": "sha256:" + "8" * 64,
+    }
+    lease = SimpleNamespace(
+        obligation_id=obligation["obligation_id"],
+        obligation_source_fingerprint=obligation["source_fingerprint"],
+    )
+    calls = captured if captured is not None else {}
+    monkeypatch.setattr(
+        protocol_module,
+        "claimable_reviewer_value_lease",
+        lambda _context, _agent_id: lease,
+    )
+    monkeypatch.setattr(
+        protocol_module,
+        "claim_reviewer_value_lease_for_review",
+        lambda _context, _agent_id: lease,
+    )
+    monkeypatch.setattr(
+        protocol_module,
+        "reviewer_value_lease_id",
+        lambda _lease: lease_id,
+    )
+    monkeypatch.setattr(
+        protocol_module,
+        "reviewer_value_lease_obligation",
+        lambda _context, _agent_id, _lease: obligation,
+    )
+
+    def record(_context, _agent_id, **kwargs):
+        calls.setdefault("directives", []).append(kwargs)
+        return lease
+
+    monkeypatch.setattr(protocol_module, "record_reviewer_value_directive", record)
+    return calls
 
 
 def _production_context(root, public_task, *, current_agent_id=None, agents=None):
@@ -227,9 +279,122 @@ def test_default_root_tool_and_prompt_advertise_lazy_advisory_boundary(
     )
 
 
-@pytest.mark.asyncio
-async def test_solver_cannot_shrink_or_replace_authoritative_public_task() -> None:
+def test_reviewer_tool_surface_is_a_claimable_guide_overlay(monkeypatch) -> None:
+    from aworld.runners import execution_protocol as protocol_module
+
+    factory = _factory()
+    ordinary_schema = {
+        "type": "function",
+        "function": {"name": "terminal__run_code", "parameters": {}},
+    }
+    reviewer_schema = {
+        "type": "function",
+        "function": {
+            "name": f"{ADVISORY_VERIFIER_TOOL}__review_candidate",
+            "parameters": {},
+        },
+    }
+    ordinary, reviewer = factory.partition_tool_surface(
+        [ordinary_schema, reviewer_schema]
+    )
+    assert ordinary == [ordinary_schema]
+    assert reviewer == [reviewer_schema]
+
+    monkeypatch.setattr(
+        protocol_module,
+        "execution_protocol_policy",
+        lambda *_args: ExecutionProtocolPolicy(mode="guide"),
+    )
+    monkeypatch.setattr(
+        protocol_module,
+        "claimable_reviewer_value_lease",
+        lambda *_args: None,
+    )
+    assert factory.project_reviewer_tool_surface(object(), reviewer) == []
+    assert factory.reviewer_tool_surface_is_mandatory(object()) is False
+
+    monkeypatch.setattr(
+        protocol_module,
+        "claimable_reviewer_value_lease",
+        lambda *_args: object(),
+    )
+    assert factory.project_reviewer_tool_surface(object(), reviewer) == [
+        reviewer_schema
+    ]
+    assert factory.reviewer_tool_surface_is_mandatory(object()) is True
+
+    monkeypatch.setattr(
+        protocol_module,
+        "execution_protocol_policy",
+        lambda *_args: ExecutionProtocolPolicy(mode="observe"),
+    )
+    monkeypatch.setattr(
+        protocol_module,
+        "claimable_reviewer_value_lease",
+        lambda *_args: pytest.fail("compatibility mode does not require a lease"),
+    )
+    assert factory.project_reviewer_tool_surface(object(), reviewer) == [
+        reviewer_schema
+    ]
+    assert factory.reviewer_tool_surface_is_mandatory(object()) is False
+
+
+def test_reviewer_validation_projects_exactly_one_bound_carrier(monkeypatch) -> None:
+    from aworld.runners import execution_protocol as protocol_module
+
+    monkeypatch.setattr(
+        protocol_module,
+        "reviewer_validation_probe_binding",
+        lambda *_args: {
+            "hypothesis_id": "reviewer-value-validation",
+            "highest_risk_counterexample": "exercise the interrupt boundary",
+            "probe_kind": "counterexample",
+            "obligation_ids": ["public-obligation-1"],
+        },
+    )
+    agent = Agent(name="root", conf=AgentConfig(llm_config=ModelConfig()))
+    tools = [
+        {
+            "type": "function",
+            "function": {"name": "terminal__run_code", "parameters": {}},
+        },
+        {
+            "type": "function",
+            "function": {"name": "filesystem__read", "parameters": {}},
+        },
+    ]
+
+    projected, active = agent._constrain_reviewer_validation_tool_catalog(
+        tools,
+        _context(),
+        offer=SimpleNamespace(carrier_function_name="terminal__run_code"),
+    )
+
+    assert active is True
+    assert [item["function"]["name"] for item in projected] == [
+        "terminal__run_code"
+    ]
+
+
+def test_guided_reviewer_uses_progress_sensitive_sixty_second_budget() -> None:
     captured = {}
+    factory = _factory(captured=captured)
+
+    factory._construct_verifier(guided_review=True)
+
+    policy = captured["builder_kwargs"]["generation_budget_policy"]
+    assert policy.total_timeout_seconds == 60
+    assert policy.stream_idle_timeout_seconds == 30
+    assert policy.active_tool_free_timeout_seconds == 60
+    assert policy.action_repair_enabled is False
+
+
+@pytest.mark.asyncio
+async def test_solver_cannot_shrink_or_replace_authoritative_public_task(
+    monkeypatch,
+) -> None:
+    captured = {}
+    _install_claimed_lease(monkeypatch)
     factory = _factory(captured=captured)
     tool = AdvisoryVerifierTool(factory=factory)
     authoritative = (
@@ -245,7 +410,7 @@ async def test_solver_cannot_shrink_or_replace_authoritative_public_task() -> No
 
     observation, reward, *_ = await tool.do_step([action], context=context)
 
-    assert reward == 1.0
+    assert reward == 0.0
     assert json.loads(observation.content)["status"] == "completed"
     directive = captured["runner"]["directive"]
     assert authoritative in directive
@@ -275,6 +440,7 @@ async def test_production_message_context_resolves_exact_root_factory(
     monkeypatch,
 ) -> None:
     captured = {}
+    _install_claimed_lease(monkeypatch)
     root = Agent(
         name="root-a",
         conf=AgentConfig(
@@ -334,7 +500,7 @@ async def test_production_message_context_resolves_exact_root_factory(
         [action], message=message
     )
 
-    assert reward == 1.0
+    assert reward == 0.0
     assert json.loads(observation.content)["status"] == "completed"
     assert captured["runner"]["parent"] is root
     assert captured["runner"]["context"] is context
@@ -413,7 +579,10 @@ async def test_production_context_rejects_factory_bound_to_another_root() -> Non
 
 
 @pytest.mark.asyncio
-async def test_shared_tool_keeps_concurrent_message_contexts_isolated() -> None:
+async def test_shared_tool_keeps_concurrent_message_contexts_isolated(
+    monkeypatch,
+) -> None:
+    _install_claimed_lease(monkeypatch)
     captured_a, captured_b = {}, {}
     factory_a = _factory(captured=captured_a, parent_id="root-a")
     factory_b = _factory(captured=captured_b, parent_id="root-b")
@@ -442,7 +611,7 @@ async def test_shared_tool_keeps_concurrent_message_contexts_isolated() -> None:
         invoke("root-b", context_b, "Candidate B"),
     )
 
-    assert result_a[1] == result_b[1] == 1.0
+    assert result_a[1] == result_b[1] == 0.0
     assert captured_a["runner"]["parent"] is root_a
     assert captured_a["runner"]["context"] is context_a
     assert "Authoritative task A" in captured_a["runner"]["directive"]
@@ -511,7 +680,7 @@ async def test_explicit_review_lazily_constructs_fresh_read_only_verifier() -> N
     assert captured["runner"]["context"] is context
     assert captured["runner"]["verifier"].subagent_context_mode == "fresh"
     assert captured["runner"]["verifier"].subagent_merge_mode == "answer_only"
-    assert captured["runner"]["verifier"].mcp_servers == ["filesystem"]
+    assert captured["runner"]["verifier"].mcp_servers == []
     assert "/app/result.json" in captured["runner"]["directive"]
     assert result.status == "completed"
     assert result.decision == "repair"
@@ -566,9 +735,10 @@ async def test_default_runner_uses_private_manager_and_exact_caller_context(
     assert isinstance(delegation_spec, DelegationSpec)
     assert delegation_spec.objective == "public directive"
     assert delegation_spec.expected_output_schema["type"] == "string"
-    assert delegation_spec.token_budget == 16_384
-    assert delegation_spec.max_output_tokens == 2_048
-    assert delegation_spec.max_turns == 2
+    assert delegation_spec.token_budget == 32_768
+    assert delegation_spec.max_output_tokens == 1_536
+    assert delegation_spec.max_turns == 1
+    assert delegation_spec.allowed_tools == ()
     assert delegation_spec.may_use_parent_finalization_reserve is False
     assert delegation_spec.deadline is not None
     assert delegation_spec.deadline.tzinfo is not None
@@ -742,7 +912,10 @@ async def test_lazy_factory_fails_closed_if_verifier_gains_mutating_surface() ->
 
 
 @pytest.mark.asyncio
-async def test_tool_returns_advisory_repair_telemetry_without_reward_authority() -> None:
+async def test_tool_returns_advisory_repair_telemetry_without_reward_authority(
+    monkeypatch,
+) -> None:
+    directive_calls = _install_claimed_lease(monkeypatch)
     factory = _factory(
         report=(
             "- Decision: `repair`\n"
@@ -765,26 +938,34 @@ async def test_tool_returns_advisory_repair_telemetry_without_reward_authority()
     )
     payload = json.loads(observation.content)
 
-    assert reward == 1.0
+    assert reward == 0.0
     assert terminated is False
     assert truncated is False
-    assert payload == {
-        "schema_version": ADVISORY_REVIEW_SCHEMA_VERSION,
-        "status": "completed",
-        "decision": "repair",
-        "authority": "advisory_public_self_check",
-        "fresh_context": True,
-        "answer_only": True,
-        "read_only": True,
-        "conclusive": True,
-        "repair_recommended": True,
-        "report": (
-            "- Decision: `repair`\n"
-            "- Evidence: inspected the public deliverable\n"
-            "- Gaps: required field is absent\n"
-            "- Recommended next action: add the field"
-        ),
-    }
+    assert payload["schema_version"] == ADVISORY_REVIEW_SCHEMA_VERSION
+    assert payload["status"] == "completed"
+    assert payload["decision"] == "repair"
+    assert payload["conclusive"] is False
+    assert payload["repair_recommended"] is True
+    assert payload["recommended_framework_action"] == (
+        "task_derived_validation_once"
+    )
+    assert payload["usage_reported"] is False
+    assert isinstance(payload["review_elapsed_ms"], int)
+    assert payload["task_derived_validation_scope"] == [
+        {
+            "obligation_id": "public-obligation-1",
+            "kind": "structured_field",
+            "subject": "value",
+            "expectation": {"required": True},
+            "source_fingerprint": "sha256:" + "8" * 64,
+        }
+    ]
+    assert payload["task_derived_counterexample"]["lease_id"] == (
+        "sha256:" + "9" * 64
+    )
+    assert directive_calls["directives"][0]["source"] is (
+        ReviewerDirectiveSource.PUBLIC_CONTRACT_FALLBACK
+    )
     assert "canonical" not in payload["authority"]
     assert info["advisory_review"]["repair_recommended"] is True
     assert "report" not in info["advisory_review"]
@@ -834,8 +1015,20 @@ async def test_injected_sync_review_runner_has_absolute_deadline(monkeypatch) ->
     assert result.reason_code == "deadline_exceeded"
 
 
+def test_review_deadline_honors_protocol_timeout_cap() -> None:
+    context = _context("Review the current public candidate.")
+    before = datetime.now(timezone.utc)
+
+    deadline = LazyVerifierFactory._review_deadline(
+        context,
+        cap_seconds=30.0,
+    )
+
+    assert 0 < (deadline - before).total_seconds() <= 30.5
+
+
 @pytest.mark.asyncio
-async def test_duplicate_candidate_review_is_bounded_without_second_child() -> None:
+async def test_direct_factory_calls_do_not_own_duplicate_admission() -> None:
     captured = {}
     factory = _factory(captured=captured)
     request = AdvisoryReviewRequest(
@@ -848,14 +1041,272 @@ async def test_duplicate_candidate_review_is_bounded_without_second_child() -> N
     second = await factory.review(request, context=context)
 
     assert first.status == "completed"
-    assert second.status == "unavailable"
-    assert second.decision == "uncertain"
-    assert second.reason_code == "duplicate_candidate_review"
+    assert second.status == "completed"
+    assert captured["builder_loads"] == 2
+
+
+@pytest.mark.asyncio
+async def test_tool_without_lease_does_not_construct_reviewer(monkeypatch) -> None:
+    from aworld.runners import execution_protocol as protocol_module
+
+    captured = {}
+    factory = _factory(captured=captured)
+    monkeypatch.setattr(
+        protocol_module,
+        "claimable_reviewer_value_lease",
+        lambda _context, _agent_id: None,
+    )
+    monkeypatch.setattr(
+        protocol_module,
+        "claim_reviewer_value_lease_for_review",
+        lambda *_args: pytest.fail("a missing offer must not be claimed"),
+    )
+    monkeypatch.setattr(
+        protocol_module,
+        "execution_protocol_policy",
+        lambda *_args: ExecutionProtocolPolicy(
+            mode="guide",
+            terminal_review_gate_enabled=True,
+        ),
+    )
+
+    context = _context("Write result.json.")
+    observation, reward, *_ = await AdvisoryVerifierTool(factory=factory).do_step(
+        [
+            ActionModel(
+                tool_name=ADVISORY_VERIFIER_TOOL,
+                action_name="review_candidate",
+                params={"candidate_claim": "candidate"},
+            )
+        ],
+        context=context,
+    )
+
+    payload = json.loads(observation.content)
+    assert reward == 0.0
+    assert payload["reason_code"] == "reviewer_lease_not_offered"
+    assert factory.construction_count == 0
+    assert captured == {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ("off", "observe"))
+async def test_explicit_legacy_modes_keep_one_manual_review(
+    mode, monkeypatch
+) -> None:
+    from aworld.runners import execution_protocol as protocol_module
+
+    captured = {}
+    factory = _factory(captured=captured)
+    context = _context("Review result.json against the public task.")
+    monkeypatch.setattr(
+        protocol_module,
+        "execution_protocol_policy",
+        lambda *_args: ExecutionProtocolPolicy(mode=mode),
+    )
+    action = ActionModel(
+        tool_name=ADVISORY_VERIFIER_TOOL,
+        action_name="review_candidate",
+        params={"candidate_claim": "result.json is ready"},
+    )
+
+    first = await AdvisoryVerifierTool(factory=factory).do_step(
+        [action], context=context
+    )
+    second = await AdvisoryVerifierTool(factory=factory).do_step(
+        [action], context=context
+    )
+
+    assert first[1] == 1.0
+    assert json.loads(first[0].content)["status"] == "completed"
+    assert second[1] == 0.0
+    assert json.loads(second[0].content)["reason_code"] == (
+        "review_attempt_limit"
+    )
     assert captured["builder_loads"] == 1
 
 
 @pytest.mark.asyncio
-async def test_changed_candidate_fingerprint_allows_one_fresh_review() -> None:
+async def test_runner_claim_survives_factory_rebuild_and_prevents_retry(
+    monkeypatch,
+) -> None:
+    from aworld.runners import execution_protocol as protocol_module
+
+    obligation = {
+        "obligation_id": "public-obligation-1",
+        "kind": "structured_field",
+        "subject": "value",
+        "expectation": {"required": True},
+        "source_fingerprint": "sha256:" + "8" * 64,
+    }
+    lease = SimpleNamespace(
+        obligation_id=obligation["obligation_id"],
+        obligation_source_fingerprint=obligation["source_fingerprint"],
+    )
+    persistent = {"consumed": False}
+    monkeypatch.setattr(
+        protocol_module,
+        "claimable_reviewer_value_lease",
+        lambda _context, _agent_id: lease,
+    )
+
+    def claim(_context, _agent_id):
+        if persistent["consumed"]:
+            return None
+        persistent["consumed"] = True
+        return lease
+
+    monkeypatch.setattr(protocol_module, "claim_reviewer_value_lease_for_review", claim)
+    monkeypatch.setattr(
+        protocol_module,
+        "reviewer_value_lease_id",
+        lambda _lease: "sha256:" + "9" * 64,
+    )
+    monkeypatch.setattr(
+        protocol_module,
+        "reviewer_value_lease_obligation",
+        lambda _context, _agent_id, _lease: obligation,
+    )
+    monkeypatch.setattr(
+        protocol_module,
+        "record_reviewer_value_directive",
+        lambda *_args, **_kwargs: lease,
+    )
+    first_capture, second_capture = {}, {}
+    action = ActionModel(
+        tool_name=ADVISORY_VERIFIER_TOOL,
+        action_name="review_candidate",
+        params={"candidate_claim": "candidate"},
+    )
+
+    first = await AdvisoryVerifierTool(
+        factory=_factory(captured=first_capture)
+    ).do_step([action], context=_context("Write result.json."))
+    second_factory = _factory(captured=second_capture)
+    second = await AdvisoryVerifierTool(factory=second_factory).do_step(
+        [action], context=_context("Write result.json.")
+    )
+
+    assert json.loads(first[0].content)["task_derived_counterexample"]["lease_id"]
+    assert json.loads(second[0].content)["reason_code"] == (
+        "reviewer_lease_claim_rejected"
+    )
+    assert first_capture["builder_loads"] == 1
+    assert second_factory.construction_count == 0
+    assert second_capture == {}
+
+
+@pytest.mark.asyncio
+async def test_claimed_timeout_records_single_obligation_fallback(monkeypatch) -> None:
+    obligation = {
+        "obligation_id": "public-obligation-7",
+        "kind": "numeric_threshold",
+        "subject": "at least 95 percent",
+        "expectation": {"minimum": 95},
+        "source_fingerprint": "sha256:" + "7" * 64,
+    }
+    recorded = _install_claimed_lease(
+        monkeypatch,
+        obligation=obligation,
+        lease_id="sha256:" + "6" * 64,
+    )
+    factory = _factory(error=asyncio.TimeoutError())
+
+    observation, reward, *_ = await AdvisoryVerifierTool(factory=factory).do_step(
+        [
+            ActionModel(
+                tool_name=ADVISORY_VERIFIER_TOOL,
+                action_name="review_candidate",
+                params={"candidate_claim": "candidate"},
+            )
+        ],
+        context=_context("The result must reach at least 95 percent."),
+    )
+
+    payload = json.loads(observation.content)
+    assert reward == 0.0
+    assert payload["reason_code"] == "deadline_exceeded"
+    assert payload["recommended_framework_action"] == (
+        "task_derived_validation_once"
+    )
+    assert payload["task_derived_validation_scope"] == [obligation]
+    counterexample = payload["task_derived_counterexample"]
+    assert counterexample["lease_id"] == "sha256:" + "6" * 64
+    assert counterexample["obligation_ids"] == ["public-obligation-7"]
+    assert "public-obligation-7" in counterexample["counterexample"]
+    directive = recorded["directives"][0]
+    assert directive["source"] is ReviewerDirectiveSource.PUBLIC_CONTRACT_FALLBACK
+    assert isinstance(directive["review_elapsed_ms"], int)
+
+
+@pytest.mark.asyncio
+async def test_child_result_projects_only_reliable_reported_usage() -> None:
+    report = json.dumps(
+        {
+            "decision": "uncertain",
+            "evidence": "current artifact inspected",
+            "gaps": "one independent assertion remains",
+            "counterexample": "exercise the exact public boundary",
+            "recommended_next_action": "run the boundary assertion",
+        }
+    )
+    child = ChildResult(
+        status=ChildStatus.SUCCEEDED,
+        answer=freeze_json(report),
+        evidence=(),
+        artifacts=(),
+        context_delta=(),
+        usage=ChildUsage(input_tokens=101, output_tokens=17, turns=1),
+        schema_validated=True,
+    )
+    result = await _factory(report=child).review(
+        AdvisoryReviewRequest(candidate_claim="candidate"),
+        context=_context("Check the public boundary."),
+    )
+
+    assert result.reported_input_tokens == 101
+    assert result.reported_output_tokens == 17
+    assert result.to_payload()["usage_reported"] is True
+    assert result.counterexample_from_reviewer is True
+
+
+@pytest.mark.asyncio
+async def test_claimed_parsed_counterexample_records_reviewer_source(
+    monkeypatch,
+) -> None:
+    recorded = _install_claimed_lease(monkeypatch)
+    report = json.dumps(
+        {
+            "decision": "repair",
+            "evidence": "the selected field is missing",
+            "gaps": "the selected obligation is contradicted",
+            "counterexample": "parse the artifact and assert the value field exists",
+            "recommended_next_action": "repair the selected field",
+        }
+    )
+
+    observation, *_ = await AdvisoryVerifierTool(
+        factory=_factory(report=report)
+    ).do_step(
+        [
+            ActionModel(
+                tool_name=ADVISORY_VERIFIER_TOOL,
+                action_name="review_candidate",
+                params={"candidate_claim": "candidate"},
+            )
+        ],
+        context=_context("Write a result containing the value field."),
+    )
+
+    payload = json.loads(observation.content)
+    assert payload["task_derived_counterexample"]["counterexample"] == (
+        "parse the artifact and assert the value field exists"
+    )
+    assert recorded["directives"][0]["source"] is ReviewerDirectiveSource.REVIEWER
+
+
+@pytest.mark.asyncio
+async def test_direct_factory_candidate_changes_do_not_create_local_budget() -> None:
     captured = {}
     factory = _factory(captured=captured)
     request = AdvisoryReviewRequest(candidate_claim="The candidate is ready.")
@@ -968,6 +1419,10 @@ async def test_strict_json_review_envelope_is_parsed_without_regex_inference() -
                 "decision": "repair",
                 "evidence": "the current response omits the required field",
                 "gaps": "required field is absent",
+                "counterexample": (
+                    "parse an input where the required field is absent and "
+                    "assert failure"
+                ),
                 "recommended_next_action": "add the field and revalidate once",
             }
         )
@@ -981,7 +1436,64 @@ async def test_strict_json_review_envelope_is_parsed_without_regex_inference() -
     assert result.status == "completed"
     assert result.decision == "repair"
     assert result.reason_code is None
+    assert result.counterexample == (
+        "parse an input where the required field is absent and assert failure"
+    )
     assert json.loads(result.report)["decision"] == "repair"
+
+
+@pytest.mark.asyncio
+async def test_single_strict_json_object_is_accepted_under_bounded_wrapping() -> None:
+    report = (
+        "Review result follows:\n```json\n"
+        + json.dumps(
+            {
+                "decision": "repair",
+                "evidence": "the public field is absent",
+                "gaps": "one public obligation remains",
+                "recommended_next_action": "add the field and validate once",
+            }
+        )
+        + "\n```\nEnd of review."
+    )
+
+    result = await _factory(report=report).review(
+        AdvisoryReviewRequest(candidate_claim="Candidate may be ready."),
+        context=_context(),
+    )
+
+    assert result.status == "completed"
+    assert result.decision == "repair"
+    assert json.loads(result.report)["decision"] == "repair"
+
+
+@pytest.mark.asyncio
+async def test_multiple_strict_json_objects_remain_ambiguous() -> None:
+    ready = json.dumps(
+        {
+            "decision": "ready",
+            "evidence": "candidate exists",
+            "gaps": "none",
+            "recommended_next_action": "submit current result",
+        }
+    )
+    repair = json.dumps(
+        {
+            "decision": "repair",
+            "evidence": "field missing",
+            "gaps": "one field",
+            "recommended_next_action": "add the field",
+        }
+    )
+
+    result = await _factory(report=ready + "\n" + repair).review(
+        AdvisoryReviewRequest(candidate_claim="Candidate may be ready."),
+        context=_context(),
+    )
+
+    assert result.status == "inconclusive"
+    assert result.decision == "uncertain"
+    assert result.reason_code == "decision_ambiguous"
 
 
 @pytest.mark.asyncio
@@ -1018,6 +1530,7 @@ async def test_ready_requires_framework_owned_direct_evidence() -> None:
     assert result.to_payload()["recommended_framework_action"] == (
         "task_derived_validation_once"
     )
+    assert result.to_payload()["review_retry_allowed"] is False
 
 
 @pytest.mark.asyncio
@@ -1052,7 +1565,7 @@ async def test_review_does_not_start_inside_persistence_window() -> None:
 
 
 @pytest.mark.asyncio
-async def test_review_budget_allows_initial_plus_one_changed_candidate() -> None:
+async def test_direct_factory_review_budget_is_owned_by_runner() -> None:
     captured = {}
     factory = _factory(
         captured=captured,
@@ -1072,10 +1585,9 @@ async def test_review_budget_allows_initial_plus_one_changed_candidate() -> None
         AdvisoryReviewRequest(candidate_claim="candidate three"), context=_context()
     )
 
-    assert first.status == second.status == "completed"
-    assert third.status == "unavailable"
-    assert third.reason_code == "review_attempt_limit"
-    assert captured["builder_loads"] == 2
+    assert first.status == "completed"
+    assert second.status == third.status == "completed"
+    assert captured["builder_loads"] == 3
 
 
 @pytest.mark.asyncio
@@ -1123,7 +1635,10 @@ async def test_repeated_identical_decision_lines_are_not_ambiguous() -> None:
 
 
 @pytest.mark.asyncio
-async def test_explicit_uncertain_review_is_not_counted_as_success() -> None:
+async def test_explicit_uncertain_review_is_not_counted_as_success(
+    monkeypatch,
+) -> None:
+    _install_claimed_lease(monkeypatch)
     factory = _factory(
         report=(
             "- Decision: `uncertain`\n"
@@ -1146,6 +1661,63 @@ async def test_explicit_uncertain_review_is_not_counted_as_success() -> None:
     assert payload["status"] == "inconclusive"
     assert payload["conclusive"] is False
     assert payload["reason_code"] == "reviewer_uncertain"
+
+
+@pytest.mark.asyncio
+async def test_uncertain_review_projects_only_public_validation_scope(
+    monkeypatch,
+) -> None:
+    factory = _factory(
+        report=json.dumps(
+            {
+                "decision": "uncertain",
+                "evidence": "the artifact exists",
+                "gaps": "the public size threshold is not independently checked",
+                "recommended_next_action": "validate every listed obligation",
+            }
+        )
+    )
+    tool = AdvisoryVerifierTool(factory=factory)
+    context = _context(
+        "Write result.json. The resulting file must be at most 2500 bytes."
+    )
+    selected = next(
+        item
+        for item in lazy_verifier_module._derive_public_obligations(
+            context.origin_user_input
+        )
+        if item["kind"] == "range_constraint"
+    )
+    _install_claimed_lease(monkeypatch, obligation=selected)
+    action = ActionModel(
+        tool_name=ADVISORY_VERIFIER_TOOL,
+        action_name="review_candidate",
+        params={"candidate_claim": "result.json is ready."},
+    )
+
+    observation, reward, *_ = await tool.do_step([action], context=context)
+    payload = json.loads(observation.content)
+
+    assert reward == 0.0
+    scope = payload["task_derived_validation_scope"]
+    assert len(scope) == 1
+    assert scope[0]["kind"] == "range_constraint"
+    assert all(item["obligation_id"].startswith("public-obligation-") for item in scope)
+    assert all(item["source_fingerprint"].startswith("sha256:") for item in scope)
+    serialized = json.dumps(scope, sort_keys=True)
+    assert "verifier" not in serialized.lower()
+    assert "reward" not in serialized.lower()
+    counterexample = payload["task_derived_counterexample"]
+    assert counterexample["schema_version"] == (
+        "aworld.task-derived-counterexample/v1"
+    )
+    assert counterexample["obligation_ids"] == [
+        item["obligation_id"] for item in scope
+    ]
+    assert "exits nonzero" in " ".join(counterexample["requirements"])
+    assert "recompute the reported answer, objective, or metric" in " ".join(
+        counterexample["requirements"]
+    )
 
 
 @pytest.mark.asyncio
@@ -1215,6 +1787,330 @@ async def test_review_receives_authoritative_public_delivery_paths() -> None:
     assert "public-smoke-test" in directive
     assert "solver-claim" not in directive
     assert "old-task-check" not in directive
+
+
+@pytest.mark.asyncio
+async def test_in_progress_public_candidate_and_contract_can_be_reviewed_without_gate(
+    monkeypatch, tmp_path
+) -> None:
+    captured = {}
+    factory = _factory(
+        report=json.dumps(
+            {
+                "decision": "ready",
+                "evidence": "captured current declared JSON with the value field",
+                "gaps": "none",
+                "recommended_next_action": "submit current result",
+            }
+        ),
+        captured=captured,
+    )
+    declared = tmp_path / "result.json"
+    declared.write_text('{"value":42}', encoding="utf-8")
+    monkeypatch.setenv("ARTIFACT_DIRECTORY", str(tmp_path))
+    public_task = "Write result.json with the required value field."
+    context = _context(public_task)
+    context.task_id = "in-progress-public-candidate"
+    context.task_epoch = 2
+    context.context_info = {
+        "public_deliverable_contract": {
+            "schema_version": "aworld.public-deliverables/v1",
+            "authority": "public_task_advisory",
+            "source": "public_task_text",
+            "artifacts": [
+                {
+                    "kind": "file",
+                    "authority": "public_task_advisory",
+                    "path": str(declared),
+                    "display_path": "result.json",
+                }
+            ],
+        },
+        "public_task_contract": {
+            "schema_version": "aworld.public-task-contract/v1",
+            "authority": "public_task_advisory",
+            "source": "public_task_text",
+            "request_fingerprint": "sha256:"
+            + hashlib.sha256(public_task.encode()).hexdigest(),
+            "obligations": [
+                {
+                    "obligation_id": "public-obligation-1",
+                    "kind": "structured_field",
+                    "subject": "value",
+                    "expectation": {"required": True, "declared_type": "int"},
+                    "source_excerpt": "required value field",
+                    "source_fingerprint": "sha256:" + "b" * 64,
+                    "authority": "public_task_advisory",
+                    "source": "public_task_text",
+                }
+            ],
+        },
+    }
+
+    result = await factory.review(
+        AdvisoryReviewRequest(candidate_claim="Result is complete."),
+        context=context,
+    )
+
+    assert result.status == "completed"
+    assert result.decision == "ready"
+    directive = captured["runner"]["directive"]
+    assert '"authentication":"current_public_capture"' in directive
+    assert '\\"value\\":42' in directive
+    assert "Public task contract ledger" in directive
+    assert '"obligation_id":"public-obligation-1"' in directive
+    assert "hidden" not in directive.lower()
+
+
+@pytest.mark.asyncio
+async def test_review_reads_public_contracts_from_task_owner_context(
+    monkeypatch, tmp_path
+) -> None:
+    captured = {}
+    factory = _factory(
+        report=json.dumps(
+            {
+                "decision": "ready",
+                "evidence": "captured the owner-bound public artifact",
+                "gaps": "none",
+                "recommended_next_action": "submit current result",
+            }
+        ),
+        captured=captured,
+    )
+    declared = tmp_path / "run.py"
+    declared.write_text("async def run_tasks(tasks, max_concurrent):\n    return None\n")
+    monkeypatch.setenv("ARTIFACT_DIRECTORY", str(tmp_path))
+    public_task = "Write run.py with async run_tasks(tasks, max_concurrent)."
+    request_fingerprint = "sha256:" + hashlib.sha256(
+        public_task.encode()
+    ).hexdigest()
+    owner = SimpleNamespace(
+        context_info={
+            "public_deliverable_contract": {
+                "schema_version": "aworld.public-deliverables/v1",
+                "authority": "public_task_advisory",
+                "source": "public_task_text",
+                "artifacts": [
+                    {
+                        "kind": "file",
+                        "authority": "public_task_advisory",
+                        "path": str(declared),
+                        "display_path": "run.py",
+                    }
+                ],
+            },
+            "public_task_contract": {
+                "schema_version": "aworld.public-task-contract/v1",
+                "authority": "public_task_advisory",
+                "source": "public_task_text",
+                "request_fingerprint": request_fingerprint,
+                "obligations": [
+                    {
+                        "obligation_id": "public-obligation-1",
+                        "kind": "structured_field",
+                        "subject": "run_tasks",
+                        "expectation": {"required": True},
+                        "source_fingerprint": "sha256:" + "c" * 64,
+                        "authority": "public_task_advisory",
+                        "source": "public_task_text",
+                    }
+                ],
+            },
+        }
+    )
+    transport = _context(public_task)
+    transport.task_id = "transport-owner-contract"
+    transport.task_epoch = 1
+    transport.context_info = {}
+    transport.event_manager = SimpleNamespace(context=owner)
+
+    result = await factory.review(
+        AdvisoryReviewRequest(candidate_claim="run.py is ready."),
+        context=transport,
+    )
+
+    assert result.status == "completed"
+    assert result.decision == "ready"
+    directive = captured["runner"]["directive"]
+    assert '"authentication":"current_public_capture"' in directive
+    assert "async def run_tasks" in directive
+    assert '"obligation_id":"public-obligation-1"' in directive
+
+
+@pytest.mark.asyncio
+async def test_review_rederives_public_contract_when_transport_projection_is_missing(
+    monkeypatch, tmp_path
+) -> None:
+    captured = {}
+    factory = _factory(
+        report=json.dumps(
+            {
+                "decision": "ready",
+                "evidence": "captured the declared public file",
+                "gaps": "none",
+                "recommended_next_action": "submit current result",
+            }
+        ),
+        captured=captured,
+    )
+    declared = tmp_path / "result.json"
+    declared.write_text('{"status":"ready"}', encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("ARTIFACT_DIRECTORY", str(tmp_path))
+    public_task = f"Write a file called `{declared}` containing the result."
+    context = _context(public_task)
+    context.task_id = "transport-contract-rederivation"
+    context.task_epoch = 1
+    context.context_info = {}
+
+    result = await factory.review(
+        AdvisoryReviewRequest(candidate_claim="The result file is ready."),
+        context=context,
+    )
+
+    assert result.status == "completed"
+    assert result.decision == "ready"
+    directive = captured["runner"]["directive"]
+    assert '"authentication":"current_public_capture"' in directive
+    assert str(declared) in directive
+    assert '"kind":"deliverable_file"' in directive
+
+
+@pytest.mark.asyncio
+async def test_executable_obligation_requires_public_validation_receipt_for_ready(
+    monkeypatch, tmp_path
+) -> None:
+    factory = _factory(
+        report=json.dumps(
+            {
+                "decision": "ready",
+                "evidence": "the function source was captured",
+                "gaps": "none",
+                "recommended_next_action": "submit current result",
+            }
+        )
+    )
+    declared = tmp_path / "run.py"
+    declared.write_text("async def run_tasks(tasks, max_concurrent):\n    return None\n")
+    monkeypatch.setenv("ARTIFACT_DIRECTORY", str(tmp_path))
+    public_task = "Write run.py with async run_tasks(tasks, max_concurrent)."
+    context = _context(public_task)
+    context.task_id = "behavior-needs-validation"
+    context.task_epoch = 1
+    context.context_info = {
+        "public_deliverable_contract": {
+            "schema_version": "aworld.public-deliverables/v1",
+            "authority": "public_task_advisory",
+            "source": "public_task_text",
+            "artifacts": [
+                {
+                    "kind": "file",
+                    "authority": "public_task_advisory",
+                    "path": str(declared),
+                    "display_path": "run.py",
+                }
+            ],
+        },
+        "public_task_contract": {
+            "schema_version": "aworld.public-task-contract/v1",
+            "authority": "public_task_advisory",
+            "source": "public_task_text",
+            "request_fingerprint": "sha256:"
+            + hashlib.sha256(public_task.encode()).hexdigest(),
+            "obligations": [
+                {
+                    "obligation_id": "public-obligation-1",
+                    "kind": "function_signature",
+                    "subject": "run_tasks",
+                    "expectation": {
+                        "signature": "async run_tasks(tasks, max_concurrent)"
+                    },
+                    "source_fingerprint": "sha256:" + "d" * 64,
+                    "authority": "public_task_advisory",
+                    "source": "public_task_text",
+                }
+            ],
+        },
+    }
+
+    result = await factory.review(
+        AdvisoryReviewRequest(candidate_claim="run.py is ready."),
+        context=context,
+    )
+
+    assert result.status == "inconclusive"
+    assert result.decision == "uncertain"
+    assert result.reason_code == "ready_evidence_missing"
+    assert result.to_payload()["recommended_framework_action"] == (
+        "task_derived_validation_once"
+    )
+
+
+@pytest.mark.asyncio
+async def test_public_contract_with_wrong_request_fingerprint_is_not_projected(
+    monkeypatch, tmp_path
+) -> None:
+    captured = {}
+    factory = _factory(
+        report=json.dumps(
+            {
+                "decision": "repair",
+                "evidence": "public candidate inspected",
+                "gaps": "needs validation",
+                "recommended_next_action": "run one public check",
+            }
+        ),
+        captured=captured,
+    )
+    declared = tmp_path / "result.json"
+    declared.write_text("{}", encoding="utf-8")
+    monkeypatch.setenv("ARTIFACT_DIRECTORY", str(tmp_path))
+    context = _context("Write result.json.")
+    context.task_id = "wrong-ledger-fingerprint"
+    context.task_epoch = 1
+    context.context_info = {
+        "public_deliverable_contract": {
+            "schema_version": "aworld.public-deliverables/v1",
+            "authority": "public_task_advisory",
+            "source": "public_task_text",
+            "artifacts": [
+                {
+                    "kind": "file",
+                    "authority": "public_task_advisory",
+                    "path": str(declared),
+                    "display_path": "result.json",
+                }
+            ],
+        },
+        "public_task_contract": {
+            "schema_version": "aworld.public-task-contract/v1",
+            "authority": "public_task_advisory",
+            "source": "public_task_text",
+            "request_fingerprint": "sha256:" + "f" * 64,
+            "obligations": [
+                {
+                    "obligation_id": "must-not-project",
+                    "kind": "structured_field",
+                    "subject": "hidden_field",
+                    "expectation": {"required": True},
+                    "source_excerpt": "untrusted",
+                    "source_fingerprint": "sha256:" + "e" * 64,
+                    "authority": "public_task_advisory",
+                    "source": "public_task_text",
+                }
+            ],
+        },
+    }
+
+    await factory.review(
+        AdvisoryReviewRequest(candidate_claim="Result needs review."),
+        context=context,
+    )
+
+    directive = captured["runner"]["directive"]
+    assert "must-not-project" not in directive
+    assert "hidden_field" not in directive
 
 
 @pytest.mark.asyncio
@@ -1293,6 +2189,23 @@ def test_review_snapshot_is_bounded_and_does_not_follow_symlinks(
 
     assert snapshot["items"][0]["status"] == "unavailable"
     assert "sensitive-marker" not in json.dumps(snapshot)
+
+
+def test_direct_public_capture_does_not_follow_symlinks(monkeypatch, tmp_path) -> None:
+    secret = tmp_path / "secret.txt"
+    secret.write_text("private-marker", encoding="utf-8")
+    link = tmp_path / "result.txt"
+    link.symlink_to(secret)
+    monkeypatch.setenv("ARTIFACT_DIRECTORY", str(tmp_path))
+
+    status = lazy_verifier_module._direct_public_snapshot_authentication_status(
+        None,
+        authoritative_deliverables=(str(link),),
+    )
+
+    assert status["authenticated"] is False
+    assert status["reason"] == "public_candidate_unavailable"
+    assert status["artifact_hashes"] == {}
 
 
 def test_review_snapshot_truncates_declared_text_with_fixed_budget(
@@ -1537,7 +2450,7 @@ async def test_long_bounded_report_parses_decision_before_public_truncation() ->
 
 
 @pytest.mark.asyncio
-async def test_review_rejects_non_hex_candidate_fingerprint() -> None:
+async def test_malformed_candidate_fingerprint_cannot_mint_ready() -> None:
     captured = {}
     factory = _factory(captured=captured)
     context = _context("Write result.json in the workspace.")
@@ -1570,9 +2483,11 @@ async def test_review_rejects_non_hex_candidate_fingerprint() -> None:
         context=context,
     )
 
-    assert result.status == "unavailable"
-    assert result.reason_code == "candidate_checkpoint_unavailable"
-    assert "runner" not in captured
+    assert result.status == "inconclusive"
+    assert result.decision == "uncertain"
+    assert result.reason_code == "ready_evidence_missing"
+    assert "runner" in captured
+    assert "must-not-project" not in captured["runner"]["directive"]
 
 
 @pytest.mark.parametrize(

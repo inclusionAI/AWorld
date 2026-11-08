@@ -209,7 +209,7 @@ class CliRuntime(BaseCliRuntime):
         self._self_evolve_config = self_evolve_config
         self.runtime_skill_paths = tuple(
             dict.fromkeys(
-                str(Path(item).expanduser().resolve())
+                str(Path(item).expanduser().absolute())
                 for item in skill_paths or ()
                 if str(item).strip()
             )

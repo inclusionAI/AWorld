@@ -278,6 +278,24 @@ PY
     ]
 
 
+def test_docker_observes_referenced_public_targets_for_opaque_commands(
+    monkeypatch,
+) -> None:
+    server = _docker_server(monkeypatch)
+
+    assert server._container_observation_paths(
+        None,
+        (
+            {"path": "/workspace/result.json"},
+            {"path": "/workspace/report.txt"},
+        ),
+    ) == ["/workspace/result.json", "/workspace/report.txt"]
+    assert server._container_observation_paths(
+        ["/workspace/result.json", "/workspace/helper.tmp"],
+        ({"path": "/workspace/result.json"},),
+    ) == ["/workspace/result.json", "/workspace/helper.tmp"]
+
+
 @pytest.mark.parametrize(
     ("command", "expected"),
     [

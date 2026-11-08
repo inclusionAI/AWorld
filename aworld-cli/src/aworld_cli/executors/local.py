@@ -212,7 +212,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
         self._hooks = self._load_hooks()
         self.runtime_skill_paths = tuple(
             dict.fromkeys(
-                str(Path(item).expanduser().resolve())
+                str(Path(item).expanduser().absolute())
                 for item in runtime_skill_paths or ()
                 if str(item).strip()
             )
@@ -797,7 +797,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
         from aworld_cli.core.skill_state_manager import SkillStateManager
 
         runtime_plugin_roots = tuple(
-            Path(item).resolve()
+            Path(item).expanduser().absolute()
             for item in plugin_manager.get_runtime_plugin_roots()
         )
         requested = self._extract_requested_skill_names(task_input)
@@ -851,7 +851,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
             )
 
             plugin_roots = tuple(
-                Path(item).resolve()
+                Path(item).expanduser().absolute()
                 for item in resolver_inputs.get("plugin_roots", [])
             )
             skill_package_roots = self._skill_package_roots_for_agent(
@@ -1490,6 +1490,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
             build_execution_protocol_telemetry,
             execution_protocol_policy,
             load_execution_protocol_state,
+            reviewer_value_lease_requires_continuation,
         )
         from aworld.core.execution_protocol import ProtocolMode
 
@@ -1564,8 +1565,20 @@ class LocalAgentExecutor(BaseAgentExecutor):
         protocol_converging = bool(
             protocol_state.convergence_constraint_active
         )
+        if reviewer_value_lease_requires_continuation(task.context, root_id):
+            current_telemetry["acceptance_continuation_suppressed"] = (
+                "reviewer_lease_active"
+            )
+            self.last_execution_protocol = current_telemetry
+            if response is not None:
+                response.execution_protocol = current_telemetry
+            return None
         if policy.mode is ProtocolMode.GUIDE and (
-            protocol_finalized or protocol_converging
+            protocol_finalized
+            or (
+                protocol_converging
+                and policy.hard_tool_admission_enabled
+            )
         ):
             # The execution protocol already owns the remaining work for this
             # task scope. Starting another implicit goal segment would create
@@ -1695,6 +1708,8 @@ class LocalAgentExecutor(BaseAgentExecutor):
         async def salvage_authenticated_candidate(*, completion_reason: str) -> bool:
             from aworld.runners.execution_protocol import (
                 authenticated_declared_candidate_status,
+                load_execution_protocol_state,
+                record_candidate_final,
                 record_validated_terminal_fallback_submission,
             )
 
@@ -1706,6 +1721,23 @@ class LocalAgentExecutor(BaseAgentExecutor):
                     "reason"
                 )
                 return False
+            if not load_execution_protocol_state(
+                task.context, root_id
+            ).candidate_checkpoint_recorded:
+                checkpoint = record_candidate_final(
+                    task.context,
+                    root_id,
+                    actions=None,
+                    review_boundary_available=False,
+                )
+                if (
+                    checkpoint is None
+                    or not checkpoint.state.candidate_checkpoint_recorded
+                ):
+                    telemetry["acceptance_candidate_authentication"] = (
+                        "terminal_transition_rejected"
+                    )
+                    return False
             transition = await record_validated_terminal_fallback_submission(
                 task.context, root_id
             )
@@ -1915,6 +1947,10 @@ class LocalAgentExecutor(BaseAgentExecutor):
                 if isinstance(raw_skill_activation_evidence, (list, tuple))
                 else ()
             )
+            # Resolution happens before task execution. Preserve its bounded
+            # attestation immediately so an incomplete or failed task cannot
+            # erase the skills that were actually activated for this run.
+            self.last_skill_activation_evidence = task_skill_activation_evidence
             try:
                 from aworld_cli.core.session_store import CliSessionStore
 
@@ -3013,9 +3049,6 @@ class LocalAgentExecutor(BaseAgentExecutor):
                     )
                 if direct_continuation is not None:
                     return direct_continuation
-                self.last_skill_activation_evidence = (
-                    task_skill_activation_evidence
-                )
                 return answer
                 
             except Exception as err:
@@ -3031,10 +3064,13 @@ class LocalAgentExecutor(BaseAgentExecutor):
                     # Don't let hook errors mask the original error
                     if self.console:
                         self.console.print(f"[yellow]⚠️ Hook error: {hook_err}[/yellow]")
+                failure_code = str(
+                    getattr(err, "failure_code", "execution_error")
+                )
                 self.last_task_response = TaskResponse(
                     success=False, answer="", status="failed",
-                    failure_origin="infrastructure", failure_code="execution_error",
-                    semantic_status="incomplete", completion_reason=type(err).__name__,
+                    failure_origin="infrastructure", failure_code=failure_code,
+                    semantic_status="incomplete", completion_reason=failure_code,
                     recoverable=True,
                 )
                 task_error_results = await self._run_plugin_task_hook(

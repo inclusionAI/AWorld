@@ -186,16 +186,27 @@ collapsed into one status:
 3. optional caller-supplied completion evidence;
 4. independent evaluation or reward.
 
-By default, success-first execution leaves ordinary planning and tool strategy to
-the model. When a candidate reaches the terminal boundary, AWorld retains a
-bounded model-owned checkpoint, review, and repair path. That path shares the
-original task budget and fails open to the best current candidate when review is
-unavailable; it never turns an internal review into an external verifier pass.
+By default, success-first execution leaves short-task planning and Tool strategy
+to the model. Generic long-horizon signals activate bounded Harness-level
+advisory convergence without task-name routing: first produce an inspectable
+public candidate, then validate, repair from public evidence, or submit.
+Built-in policies request at most one inline replan and keep ordinary Tools
+fail-open; hard static Tool admission and decision-only model checkpoints
+require an explicit developer policy. A replan is applied only after observable
+implementation, candidate, validation, or delivery progress. When a candidate
+reaches the terminal boundary, AWorld retains a single-review and one-repair
+path. That path shares the original task budget, projects unresolved public
+obligations into one task-derived validation scope, and may submit a materially
+changed repaired candidate without claiming internal acceptance. It never
+turns an internal review into an external verifier pass.
 
 The generic completion contract is opt-in. Callers select `observe` or `enforce`
-and provide explicit artifact paths or validation commands. Task wording may
-produce advisory deliverable hints, but it cannot silently create requirements
-or executable validation commands.
+and provide explicit artifact paths or validation commands. Separately, public
+task wording may produce a bounded advisory contract ledger for Agent planning
+and fresh-context review. That ledger cannot create executable validation
+commands, hidden-verifier authority, or external reward. Static snapshots prove
+only current bytes; executable obligations require current public validation
+evidence, and the reviewer derives counterexamples only from the public task.
 
 For the detailed contracts, see [Execution completion and recoverable
 progress](Completion%20and%20Progress.md), [Model-owned task

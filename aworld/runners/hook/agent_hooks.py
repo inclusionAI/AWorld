@@ -74,6 +74,20 @@ _MUTATION_GATE_REASON_GUIDANCE = {
 }
 
 
+def _is_single_advisory_review(actions: list) -> bool:
+    """Keep the framework's read-only reviewer outside candidate admission."""
+
+    if len(actions) != 1:
+        return False
+    action = actions[0]
+    tool_name = str(getattr(action, "tool_name", "") or "").casefold()
+    action_name = str(getattr(action, "action_name", "") or "").casefold()
+    return (
+        "advisory_verifier" in tool_name
+        and action_name == "review_candidate"
+    )
+
+
 def _mutation_gate_reason_guidance(receipt: dict) -> tuple[tuple[str, ...], str]:
     """Project only finite rejection codes into deterministic model guidance."""
 
@@ -147,6 +161,11 @@ class MutationGatePreToolHook(PreToolCallHook):
         from aworld.core.tool_action_journal import tool_action_request_fingerprint
 
         actions = message.payload if isinstance(message.payload, list) else []
+        # This framework-owned capability is already fresh-context, read-only,
+        # and bounded to one attempt. Candidate Tool admission must neither
+        # block it nor count it as delivery stagnation.
+        if _is_single_advisory_review(actions):
+            return None
         gate_receipt = terminal_reserve_tool_interception(context, actions)
         if gate_receipt is None:
             gate_receipt = mutation_gate_interception(context, actions)

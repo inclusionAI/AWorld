@@ -22,7 +22,7 @@ from aworld.core.context.generation_budget import (
 )
 from aworld.core.context.session import Session
 from aworld.core.event.base import Constants, Message
-from aworld.core.exceptions import AWorldTransientModelError
+from aworld.core.exceptions import AWorldRuntimeException, AWorldTransientModelError
 from aworld.core.execution_protocol import ExecutionProtocolStore
 from aworld.core.task import Task
 from aworld.models.model_response import Function, ModelResponse, ToolCall
@@ -30,6 +30,7 @@ from aworld.models.reasoning_policy import OPENAI_REASONING_CAPABILITY
 from aworld.runners.execution_protocol import (
     build_execution_protocol_telemetry,
     configure_execution_protocol,
+    consume_execution_protocol_guidance,
     record_model_decision_attempt_failure,
     record_model_execution_profile,
     record_pre_generation_delivery_decision,
@@ -367,6 +368,8 @@ def test_terminal_decision_generation_budget_is_absolute_and_reserve_bounded(
     context = agent.context
     context.get_task().timeout = 600
     protocol = agent._resolve_execution_protocol_policy(context)
+    protocol = replace(protocol, model_decision_checkpoints_enabled=True)
+    agent._explicit_execution_protocol_policy = protocol
     configure_execution_protocol(context, agent.id(), protocol)
     store = ExecutionProtocolStore(context, agent.id(), protocol)
     store.save(
@@ -413,6 +416,8 @@ def test_terminal_decision_budget_preserves_stricter_explicit_caller_caps(
     context = agent.context
     context.get_task().timeout = 600
     protocol = agent._resolve_execution_protocol_policy(context)
+    protocol = replace(protocol, model_decision_checkpoints_enabled=True)
+    agent._explicit_execution_protocol_policy = protocol
     configure_execution_protocol(context, agent.id(), protocol)
     monkeypatch.setattr(context.get_task(), "remaining_seconds", lambda: 150.0)
     assert record_pre_generation_delivery_decision(
@@ -450,6 +455,8 @@ def test_terminal_checkpoint_episode_deadline_does_not_reset_between_attempts(
     context = agent.context
     context.get_task().timeout = 600
     protocol = agent._resolve_execution_protocol_policy(context)
+    protocol = replace(protocol, model_decision_checkpoints_enabled=True)
+    agent._explicit_execution_protocol_policy = protocol
     configure_execution_protocol(context, agent.id(), protocol)
     monkeypatch.setattr(context.get_task(), "remaining_seconds", lambda: 150.0)
     assert record_pre_generation_delivery_decision(
@@ -561,6 +568,8 @@ async def test_expired_terminal_checkpoint_fails_open_before_prompt_preparation(
     context._session = Session(session_id="expired-terminal-checkpoint-s")
     context.get_task().timeout = 600
     protocol = agent._resolve_execution_protocol_policy(context)
+    protocol = replace(protocol, model_decision_checkpoints_enabled=True)
+    agent._explicit_execution_protocol_policy = protocol
     configure_execution_protocol(context, agent.id(), protocol)
     monkeypatch.setattr(context.get_task(), "remaining_seconds", lambda: 150.0)
     assert record_pre_generation_delivery_decision(
@@ -614,7 +623,7 @@ async def test_expired_terminal_checkpoint_fails_open_before_prompt_preparation(
 
 
 @pytest.mark.parametrize("armed", [False, True])
-def test_public_delivery_reserve_requests_typed_model_decision_only_when_armed(
+def test_public_delivery_reserve_emits_inline_guidance_only_when_armed(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
     armed: bool,
@@ -668,10 +677,13 @@ def test_public_delivery_reserve_requests_typed_model_decision_only_when_armed(
     if armed:
         assert transition is not None
         assert transition.decision.reason.value == "candidate_decision_reserve"
-        assert execution_protocol_model_decision_boundary(context, agent.id()) == "replan"
+        assert execution_protocol_model_decision_boundary(context, agent.id()) is None
+        guidance = consume_execution_protocol_guidance(context, agent.id())
+        assert guidance is not None
+        assert "candidate-decision reserve" in guidance
     else:
         assert transition is None
-        assert execution_protocol_model_decision_boundary(context, agent.id()) == "initial"
+        assert execution_protocol_model_decision_boundary(context, agent.id()) is None
 
     output.write_text("{}")
     if not armed:
@@ -714,6 +726,47 @@ def test_public_deliverable_feedback_rejects_whole_file_placeholder(
     assert observation["rejection_reason"] == "placeholder"
 
     output.write_text("flag{resolved}", encoding="utf-8")
+    assert agent._public_deliverable_feedback_if_unsatisfied(context) is None
+
+
+def test_brace_expanded_public_deliverables_report_only_missing_member(
+    tmp_path,
+) -> None:
+    from aworld_cli.core.runtime_completion import configure_runtime_completion
+
+    agent = _long_running_generation_agent(armed=False)
+    context = agent.context
+    output_dir = tmp_path / "redacted"
+    output_dir.mkdir()
+    request = (
+        "Save the anonymized outputs as `"
+        + str(output_dir / "paper{1-3}.pdf")
+        + "`."
+    )
+    assert configure_runtime_completion(
+        context,
+        request=request,
+        workspace_path=tmp_path,
+    ) is None
+    (output_dir / "paper1.pdf").write_bytes(b"paper one")
+    (output_dir / "paper3.pdf").write_bytes(b"paper three")
+
+    feedback = agent._public_deliverable_feedback_if_unsatisfied(context)
+
+    assert feedback is not None
+    assert "paper2.pdf" in feedback
+    assert "paper1.pdf" not in feedback
+    assert "paper3.pdf" not in feedback
+    observations = context.context_info["public_deliverable_observations"][
+        "artifacts"
+    ]
+    assert [item["candidate_eligible"] for item in observations] == [
+        True,
+        False,
+        True,
+    ]
+
+    (output_dir / "paper2.pdf").write_bytes(b"paper two")
     assert agent._public_deliverable_feedback_if_unsatisfied(context) is None
 
 
@@ -939,7 +992,77 @@ async def test_exhausted_transient_provider_retries_resume_with_normal_tools(
 
 
 @pytest.mark.asyncio
-async def test_unarmed_replan_transport_failure_resumes_with_normal_tools(
+async def test_infrastructure_circuit_finalization_is_tool_free_and_bounded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent = _long_running_generation_agent(armed=True)
+    agent._llm = object()
+    agent.context._session = Session(session_id="infrastructure-finalization-s")
+    agent.context.set_task(
+        Task(
+            id="infrastructure-finalization",
+            name="infrastructure-finalization",
+            input="preserve the current public candidate",
+            timeout=600,
+        )
+    )
+    provider_calls: list[dict] = []
+
+    async def provider(*args, **kwargs):
+        provider_calls.append(kwargs)
+        return ModelResponse(
+            id="infrastructure-final",
+            model="fake-model",
+            content="Preserved the current candidate for caller evaluation.",
+            message={
+                "role": "assistant",
+                "content": "Preserved the current candidate for caller evaluation.",
+            },
+        )
+
+    async def no_memory(*args, **kwargs):
+        return None
+
+    async def no_output(*args, **kwargs):
+        return None
+
+    async def simple_input(observation, info=None, message=None, **kwargs):
+        return [{"role": "user", "content": str(observation.content or "")}]
+
+    monkeypatch.setattr(llm_agent_module, "acall_llm_model", provider)
+    monkeypatch.setattr(agent, "build_llm_input", simple_input)
+    monkeypatch.setattr(agent, "_add_message_to_memory", no_memory)
+    monkeypatch.setattr(agent, "send_agent_response_output", no_output)
+    message = Message(
+        category=Constants.AGENT,
+        payload=Observation(content="controller failure repeated"),
+        receiver=agent.id(),
+        headers={"context": agent.context},
+    )
+
+    actions = await agent.async_policy(
+        message.payload,
+        message=message,
+        stream=False,
+        _infrastructure_circuit_finalization={
+            "failure_codes": ["controller_write_barrier_timeout"],
+            "consecutive_count": 2,
+        },
+    )
+
+    assert len(provider_calls) == 1
+    assert not provider_calls[0].get("tools")
+    assert any(
+        "infrastructure circuit" in str(item.get("content", "")).lower()
+        for item in provider_calls[0]["messages"]
+    )
+    assert len(actions) == 1
+    assert actions[0].tool_name is None
+    assert "Preserved the current candidate" in actions[0].policy_info
+
+
+@pytest.mark.asyncio
+async def test_inline_replan_uses_normal_provider_retry_semantics(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class ProviderStatusError(Exception):
@@ -1028,29 +1151,26 @@ async def test_unarmed_replan_transport_failure_resumes_with_normal_tools(
         headers={"context": agent.context},
     )
 
-    actions = await agent.async_policy(
-        message.payload,
-        message=message,
-        stream=False,
-    )
+    with pytest.raises(AWorldRuntimeException, match="transient model provider"):
+        await agent.async_policy(
+            message.payload,
+            message=message,
+            stream=False,
+        )
 
-    assert len(provider_calls) == 4
+    assert len(provider_calls) == 3
     assert all(
-        call["tools"][0]["function"]["name"] == "aworld__execution_decision"
-        for call in provider_calls[:3]
+        call["tools"][0]["function"]["name"] == "workspace__write"
+        for call in provider_calls
     )
-    assert provider_calls[-1]["tools"][0]["function"]["name"] == "workspace__write"
-    assert actions[0].tool_name == "workspace"
-    assert actions[0].action_name == "write"
     state = ExecutionProtocolStore(agent.context, agent.id(), policy).load()
-    assert state.decision_checkpoint_pending is False
+    assert state.decision_checkpoint_pending is True
     assert state.replan_requested_count == 1
     assert state.replan_applied_count == 0
     protocol = build_execution_protocol_telemetry(agent.context, agent.id())
-    assert protocol["replan_decision_status"] == "fail_open_unacknowledged"
     assert protocol["replan_decision_attempt_count"] == 0
-    assert protocol["replan_decision_unavailable_count"] == 1
-    assert protocol["replan_decision_fail_open_reason"] == "provider_unavailable"
+    assert protocol["replan_decision_unavailable_count"] == 0
+    assert protocol["inline_guidance_emitted_count"] == 1
 
 
 @pytest.mark.asyncio

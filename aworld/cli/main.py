@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 import sys
 import stat
+import time
 from typing import Mapping
 from uuid import uuid4
 
@@ -20,7 +21,16 @@ from aworld.core.agent import Agent
 from aworld.core.agent.messages import AssistantMessage, ToolCall, ToolResultMessage
 from aworld.core.context import BudgetPolicy, Context, ContextBudget
 from aworld.core.sandbox import LocalSandbox
-from aworld.core.session import InMemorySessionStore, RunOptions, RunStatus, create_session, load_session
+from aworld.core.session import (
+    InMemorySessionStore,
+    RunError,
+    RunOptions,
+    RunResult,
+    RunStatus,
+    RunStopReason,
+    create_session,
+    load_session,
+)
 from aworld.core.tool import ToolRegistry, default_tools, session_tools
 
 
@@ -91,6 +101,12 @@ def parser():
     skill_args = value.add_mutually_exclusive_group()
     skill_args.add_argument("--skill-path", action="append", default=[], help="Explicit Skill roots, replacing auto-discovery (requires aworld[skills])")
     skill_args.add_argument("--no-skills", action="store_true", help="Disable Skill discovery")
+    value.add_argument(
+        "--skill",
+        action="append",
+        default=[],
+        help="Explicitly select a discovered Skill by name; may be repeated",
+    )
     value.add_argument("--work-root", type=Path, help="Session notes root (default: cwd/.aworld/sessions)")
     value.add_argument("--network-policy", choices=["allowed", "disabled", "unknown"], default=os.getenv("AWORLD_NETWORK_POLICY", "unknown"))
     value.add_argument("--system-prompt", default=None, help="Replace the default base prompt; workspace, Skill and runtime context still apply")
@@ -118,12 +134,99 @@ def parser():
     return value
 
 
+_EVIDENCE_CHECKPOINT_INTERVAL_SECONDS = 30.0
+_MAX_EXPLICIT_SKILLS = 64
+
+
+async def _write_live_evidence_checkpoint(session, run, args, agent, events):
+    """Persist valid bounded evidence before a supervisor can end the process.
+
+    The terminal result and ATIF are still written by ``_execute`` after the
+    kernel finishes.  This checkpoint is an explicitly unsuccessful fallback:
+    if the outer process deadline wins a race with kernel cancellation, Harbor
+    can classify the interruption and run the canonical verifier instead of
+    reporting missing evidence as an infrastructure failure.
+    """
+
+    from aworld.cli.trajectory import build_trajectory, write_json
+
+    checkpoint = RunResult(
+        run.id,
+        run.session_id,
+        RunStatus.FAILED,
+        RunStopReason.DEADLINE_EXCEEDED,
+        None,
+        RunError(
+            "execution_interrupted",
+            "AWorld minimal run did not reach terminal evidence persistence",
+        ),
+    )
+    if args.result_output:
+        write_json(
+            args.result_output,
+            _result_output_projection(checkpoint, agent),
+            default=_serialize,
+        )
+    if args.trajectory_output:
+        history = await session.history()
+        write_json(
+            args.trajectory_output,
+            build_trajectory(
+                history,
+                events=tuple(events),
+                result=checkpoint,
+                agent=agent,
+                model_name="demo" if args.demo else args.model,
+            ),
+        )
+
+
 async def _execute(session, input, args, agent):
     run = await session.submit(input, options=RunOptions(timeout_seconds=args.timeout))
+    observed_events = []
+    checkpoint_error_reported = False
+    last_checkpoint = 0.0
+
+    async def checkpoint():
+        nonlocal checkpoint_error_reported, last_checkpoint
+        try:
+            await _write_live_evidence_checkpoint(
+                session, run, args, agent, observed_events
+            )
+            last_checkpoint = time.monotonic()
+        except Exception as exc:
+            if not checkpoint_error_reported:
+                print(
+                    "AWORLD_MINIMAL_CHECKPOINT="
+                    + _json(
+                        {
+                            "status": "failed",
+                            "error_type": type(exc).__name__,
+                        }
+                    ),
+                    file=sys.stderr,
+                    flush=True,
+                )
+                checkpoint_error_reported = True
+
+    if args.trajectory_output or args.result_output:
+        await checkpoint()
     try:
-        if args.events:
+        if args.events or args.trajectory_output or args.result_output:
             async for event in run.events():
-                print(_json(event), file=sys.stderr, flush=True)
+                observed_events.append(event)
+                if args.events:
+                    print(_json(event), file=sys.stderr, flush=True)
+                now = time.monotonic()
+                if (
+                    (args.trajectory_output or args.result_output)
+                    and (
+                        event.type in {"model.started", "tool.started"}
+                        or now - last_checkpoint
+                        >= _EVIDENCE_CHECKPOINT_INTERVAL_SECONDS
+                    )
+                ):
+                    await checkpoint()
         result = await run.result()
     except asyncio.CancelledError:
         await run.cancel()
@@ -134,7 +237,11 @@ async def _execute(session, input, args, agent):
         if args.trajectory_output or args.result_output:
             from aworld.cli.trajectory import build_trajectory, write_json
             if args.result_output:
-                write_json(args.result_output, result, default=_serialize)
+                write_json(
+                    args.result_output,
+                    _result_output_projection(result, agent),
+                    default=_serialize,
+                )
             if args.trajectory_output:
                 history = await session.history()
                 events = []
@@ -150,6 +257,18 @@ async def _execute(session, input, args, agent):
     else:
         print(f"{result.status.value}: {result.error.message if result.error else result.stop_reason.value}", file=sys.stderr)
     return 0 if result.status == RunStatus.COMPLETED else 1
+
+
+def _result_output_projection(result, agent):
+    """Add optional Skill attestation without changing RunResult fields."""
+
+    from aworld.cli.trajectory import minimal_skill_activation_evidence
+
+    payload = _serialize(result)
+    evidence = minimal_skill_activation_evidence(agent)
+    if evidence:
+        payload["skill_activation_evidence"] = evidence
+    return payload
 
 
 async def _host(args, command):
@@ -180,6 +299,25 @@ async def _host(args, command):
     skills = discover_skills(
         args.cwd, paths=args.skill_path, disabled=args.no_skills or args.no_tools
     )
+    if args.skill:
+        if args.no_skills or args.no_tools:
+            raise ValueError("--skill cannot be combined with disabled skills or tools")
+        requested_skills = tuple(
+            dict.fromkeys(name.strip() for name in args.skill if name.strip())
+        )
+        if len(requested_skills) > _MAX_EXPLICIT_SKILLS:
+            raise ValueError(
+                f"At most {_MAX_EXPLICIT_SKILLS} skills may be requested"
+            )
+        skills_by_name = {skill.name: skill for skill in skills}
+        missing = [name for name in requested_skills if name not in skills_by_name]
+        if missing:
+            raise ValueError(
+                "Requested skill is not available: " + ", ".join(missing)
+            )
+        skills = tuple(
+            skills_by_name[name] for name in requested_skills
+        )
     workspace, sources = workspace_prompt(args.cwd)
     system_prompt = "\n\n".join(part for part in (BASE_PROMPT if args.system_prompt is None else args.system_prompt, workspace) if part)
     sources = [{"kind": "base", "version": PROMPT_VERSION, "custom": args.system_prompt is not None}, *sources,

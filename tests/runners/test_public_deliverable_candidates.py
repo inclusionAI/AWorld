@@ -242,6 +242,7 @@ def test_protocol_status_treats_placeholder_as_missing_candidate(tmp_path) -> No
 
     assert status == {
         "public_deliverable_declared": True,
+        "declared_public_deliverable_count": 1,
         "missing_public_deliverable_count": 1,
         "candidate_present": False,
     }

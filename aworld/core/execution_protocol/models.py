@@ -277,6 +277,7 @@ class EventKind(str, Enum):
     REPLAN_UNACKNOWLEDGED = "replan_unacknowledged"
     TERMINAL_CHECKPOINT_UNAVAILABLE = "terminal_checkpoint_unavailable"
     CONVERGENCE_EXHAUSTED = "convergence_exhausted"
+    DELIVERY_ONLY_EXHAUSTED = "delivery_only_exhausted"
     CANDIDATE_FINAL = "candidate_final"
     REVIEW_RESULT = "review_result"
     TERMINAL_FALLBACK_SUBMIT = "terminal_fallback_submit"
@@ -332,6 +333,7 @@ class DecisionReason(str, Enum):
     FINALIZATION_RESERVE = "finalization_reserve"
     TERMINAL_CHECKPOINT_UNAVAILABLE = "terminal_checkpoint_unavailable"
     CONVERGENCE_REJECTION_LIMIT = "convergence_rejection_limit"
+    DELIVERY_ONLY_DIAGNOSTIC_LIMIT = "delivery_only_diagnostic_limit"
     FINAL_REVIEW_REQUIRED = "final_review_required"
     FINAL_REVIEW_ALREADY_USED = "final_review_already_used"
     SHORT_TASK_BYPASS = "short_task_bypass"
@@ -822,6 +824,27 @@ class ExecutionProtocolPolicy:
     # existing finalization/review/repair state machine once a terminal boundary
     # has been reached.
     terminal_review_gate_enabled: bool = False
+    # Static Tool-effect analysis is useful telemetry but is not reliable
+    # enough for AWorld's built-in runtime defaults. Directly constructed GUIDE
+    # policies retain the legacy enforced behavior for explicit callers and
+    # compatibility tests; LLMAgent's built-in policies opt out explicitly.
+    hard_tool_admission_enabled: bool = True
+    # Dedicated model-only planning checkpoints remain available to explicit
+    # callers, but the built-in reward-oriented policy keeps ordinary solver
+    # Tools available and delivers convergence guidance in the next normal
+    # turn.  This avoids paying for a schema-only model response before the
+    # model can perform task work.
+    model_decision_checkpoints_enabled: bool = True
+    # A framework-owned public-task reviewer may return uncertainty without
+    # claiming acceptance. Built-in reward-oriented policies can spend one
+    # bounded repair/validation opportunity on that signal; explicit callers
+    # retain the historical stop-incomplete behavior unless they opt in.
+    advisory_uncertain_repair_enabled: bool = False
+    # After the one bounded review-triggered repair, a materially changed
+    # candidate/evidence basis may be submitted without spending a second
+    # reviewer call. Acceptance remains unconfirmed and the external caller
+    # retains canonical verification authority.
+    bounded_repair_submission_enabled: bool = False
     independent_acceptance_enabled: bool = True
     semantic_progress_enabled: bool = True
     history_limit: int = 32
@@ -864,6 +887,10 @@ class ExecutionProtocolPolicy:
         for name in (
             "review_unarmed_candidates",
             "terminal_review_gate_enabled",
+            "hard_tool_admission_enabled",
+            "model_decision_checkpoints_enabled",
+            "advisory_uncertain_repair_enabled",
+            "bounded_repair_submission_enabled",
             "independent_acceptance_enabled",
             "semantic_progress_enabled",
         ):
@@ -948,6 +975,16 @@ class ExecutionProtocolPolicy:
             "mode": self.mode.value,
             "review_unarmed_candidates": self.review_unarmed_candidates,
             "terminal_review_gate_enabled": self.terminal_review_gate_enabled,
+            "hard_tool_admission_enabled": self.hard_tool_admission_enabled,
+            "model_decision_checkpoints_enabled": (
+                self.model_decision_checkpoints_enabled
+            ),
+            "advisory_uncertain_repair_enabled": (
+                self.advisory_uncertain_repair_enabled
+            ),
+            "bounded_repair_submission_enabled": (
+                self.bounded_repair_submission_enabled
+            ),
             "independent_acceptance_enabled": self.independent_acceptance_enabled,
             "semantic_progress_enabled": self.semantic_progress_enabled,
             "history_limit": self.history_limit,
@@ -991,6 +1028,18 @@ class ExecutionProtocolPolicy:
             review_unarmed_candidates=value.get("review_unarmed_candidates", False),
             terminal_review_gate_enabled=value.get(
                 "terminal_review_gate_enabled", False
+            ),
+            hard_tool_admission_enabled=value.get(
+                "hard_tool_admission_enabled", True
+            ),
+            model_decision_checkpoints_enabled=value.get(
+                "model_decision_checkpoints_enabled", True
+            ),
+            advisory_uncertain_repair_enabled=value.get(
+                "advisory_uncertain_repair_enabled", False
+            ),
+            bounded_repair_submission_enabled=value.get(
+                "bounded_repair_submission_enabled", False
             ),
             independent_acceptance_enabled=value.get(
                 "independent_acceptance_enabled", True

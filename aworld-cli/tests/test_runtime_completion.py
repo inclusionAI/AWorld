@@ -10,11 +10,13 @@ from aworld_cli.core.runtime_completion import (
     configure_runtime_completion,
     infer_public_deliverable_hints,
     infer_public_executable_hints,
+    infer_public_obligation_hints,
     resolve_completion_max_repairs,
     resolve_completion_mode,
 )
 
 from aworld.core.context.base import Context
+from aworld.core.context.session import Session
 from aworld.core.context.compiler import CompletionMode, CompletionStatus
 
 
@@ -139,6 +141,134 @@ def test_explicit_public_output_filename_becomes_advisory_deliverable(
     assert hints[0].authority == "public_task_advisory"
 
 
+def test_named_output_file_is_joined_to_explicit_output_directory(
+    tmp_path: Path,
+) -> None:
+    hints = infer_public_deliverable_hints(
+        "Format the answer in a JSON file called `answers.json` in `/root` folder.",
+        workspace_path=tmp_path,
+    )
+
+    assert [(item.path, item.display_path) for item in hints] == [
+        ("/root/answers.json", "/root/answers.json")
+    ]
+
+
+def test_bounded_numeric_brace_output_expands_to_stable_deliverables(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    request = (
+        "Anonymize the papers and save the final outputs as "
+        "`/root/redacted/paper{1-3}.pdf`."
+    )
+    hints = infer_public_deliverable_hints(request, workspace_path=tmp_path)
+
+    assert [item.deliverable_id for item in hints] == [
+        "public-output-1",
+        "public-output-2",
+        "public-output-3",
+    ]
+    assert [item.path for item in hints] == [
+        "/root/redacted/paper1.pdf",
+        "/root/redacted/paper2.pdf",
+        "/root/redacted/paper3.pdf",
+    ]
+    assert [item.display_path for item in hints] == [
+        "/root/redacted/paper1.pdf",
+        "/root/redacted/paper2.pdf",
+        "/root/redacted/paper3.pdf",
+    ]
+    assert infer_public_deliverable_hints(
+        request,
+        workspace_path=tmp_path,
+    ) == hints
+    assert infer_public_deliverable_hints(
+        "Save the redacted outputs to /root/redacted/paper{1-3}.pdf",
+        workspace_path=tmp_path,
+    ) == hints
+
+    monkeypatch.delenv("AWORLD_COMPLETION_MODE", raising=False)
+    context = Context(
+        task_id="brace-public-contract",
+        session=Session(session_id="brace-session"),
+        workspace_path=str(tmp_path),
+    )
+    context.agent_info.current_agent_id = "agent"
+    assert configure_runtime_completion(
+        context,
+        request=request,
+        workspace_path=tmp_path,
+    ) is None
+    artifacts = context.context_info["public_deliverable_contract"]["artifacts"]
+    assert [item["deliverable_id"] for item in artifacts] == [
+        "public-output-1",
+        "public-output-2",
+        "public-output-3",
+    ]
+    obligations = context.context_info["public_task_contract"]["obligations"]
+    assert [item["kind"] for item in obligations[:3]] == [
+        "deliverable_file",
+        "deliverable_file",
+        "deliverable_file",
+    ]
+    from aworld.sandbox.declared_write import build_declared_public_write_contract
+    from aworld_cli.builtin_agents.smllc.agents.lazy_verifier import (
+        _authoritative_delivery_paths,
+    )
+
+    declared = build_declared_public_write_contract(context)
+    assert declared is not None
+    assert [item["deliverable_id"] for item in declared["targets"]] == [
+        "public-output-1",
+        "public-output-2",
+        "public-output-3",
+    ]
+    assert _authoritative_delivery_paths(
+        context,
+        authoritative_obligations=obligations,
+    ) == (
+        "/root/redacted/paper1.pdf",
+        "/root/redacted/paper2.pdf",
+        "/root/redacted/paper3.pdf",
+    )
+
+
+@pytest.mark.parametrize(
+    "pattern",
+    (
+        "/root/redacted/paper{3-1}.pdf",
+        "/root/redacted/paper{-1-3}.pdf",
+        "/root/redacted/paper{0-3}.pdf",
+        "/root/redacted/paper{01-3}.pdf",
+        "/root/redacted/paper{{1-3}}.pdf",
+        "/root/redacted/paper{1-2}{3-4}.pdf",
+        "/root/redacted/paper{1,2}.pdf",
+        "/root/redacted/{1-3}/paper.pdf",
+        "/root/redacted/../paper{1-3}.pdf",
+        "/root/redacted/paper{1-17}.pdf",
+        "/root/redacted/paper{1-9999999999}.pdf",
+    ),
+)
+def test_bounded_numeric_brace_output_rejects_unsafe_or_over_limit_patterns(
+    pattern: str,
+    tmp_path: Path,
+) -> None:
+    assert infer_public_deliverable_hints(
+        f"Save the final output to `{pattern}`.",
+        workspace_path=tmp_path,
+    ) == ()
+
+
+def test_bounded_numeric_brace_input_or_reference_is_not_a_deliverable(
+    tmp_path: Path,
+) -> None:
+    assert infer_public_deliverable_hints(
+        "Read the input files `/root/source/paper{1-3}.pdf` for background.",
+        workspace_path=tmp_path,
+    ) == ()
+
+
 @pytest.mark.parametrize(
     ("request_text", "expected_display_path"),
     (
@@ -175,6 +305,198 @@ def test_common_imperative_output_forms_become_advisory_deliverables(
     )
 
     assert [item.display_path for item in hints] == [expected_display_path]
+
+
+@pytest.mark.parametrize(
+    ("request_text", "expected_display_paths"),
+    (
+        (
+            "Each operating range must be respected in the final schedule "
+            "written to `/root/report.json`.",
+            ["/root/report.json"],
+        ),
+        (
+            "You should output a CSV file to `/root/output/flood_results.csv`.",
+            ["/root/output/flood_results.csv"],
+        ),
+        (
+            "Please save the harmonized data to the dir: "
+            "`/root/ckd_lab_data_harmonized.csv`.",
+            ["/root/ckd_lab_data_harmonized.csv"],
+        ),
+        (
+            "## Output\nWrite your solution to:\n- `/output/scenario_3.json`",
+            ["/output/scenario_3.json"],
+        ),
+        (
+            "Given `/app/script.txt`, output a validated JSON graph "
+            "`/app/dialogue.json` and visualization `/app/dialogue.dot`.",
+            ["/app/dialogue.json", "/app/dialogue.dot"],
+        ),
+    ),
+)
+def test_output_action_clauses_capture_exact_public_paths(
+    request_text: str,
+    expected_display_paths: list[str],
+    tmp_path: Path,
+) -> None:
+    hints = infer_public_deliverable_hints(request_text, workspace_path=tmp_path)
+
+    assert [item.display_path for item in hints] == expected_display_paths
+
+
+def test_explicit_output_directory_wins_over_bare_contextual_basename(
+    tmp_path: Path,
+) -> None:
+    hints = infer_public_deliverable_hints(
+        "For `layout.json`, report the room geometry.\n"
+        "Write these files to `output/`:\n- `layout.json`\n- `changes.json`",
+        workspace_path=tmp_path,
+    )
+
+    assert [(item.path, item.display_path) for item in hints] == [
+        (str(tmp_path / "output" / "layout.json"), "layout.json"),
+        (str(tmp_path / "output" / "changes.json"), "changes.json"),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("request_text", "expected_display_paths"),
+    (
+        (
+            "Create a report using inputs alpha.csv, beta.csv, gamma.csv, "
+            "delta.csv, epsilon.csv and save it to report.md.",
+            ["report.md"],
+        ),
+        (
+            "Create a summary with the sentence 'release is version 1.2' and "
+            "save it to report.md.",
+            ["report.md"],
+        ),
+        (
+            "Create an API that returns config.json at /config; save "
+            "implementation in app.py.",
+            [],
+        ),
+        ("Create report.md. Do not create secret.json.", ["report.md"]),
+        ("Create report.md; do not modify source.csv.", ["report.md"]),
+        (
+            "Create report.md, excluding source.csv and template.json.",
+            ["report.md"],
+        ),
+    ),
+)
+def test_output_parsing_does_not_promote_inputs_examples_or_exclusions(
+    request_text: str,
+    expected_display_paths: list[str],
+    tmp_path: Path,
+) -> None:
+    hints = infer_public_deliverable_hints(request_text, workspace_path=tmp_path)
+
+    assert [item.display_path for item in hints] == expected_display_paths
+
+
+def test_distinct_output_directories_may_share_a_basename(tmp_path: Path) -> None:
+    hints = infer_public_deliverable_hints(
+        "Write output file to `/root/a/result.json` and submit final output "
+        "at `/root/a/nested/result.json`.",
+        workspace_path=tmp_path,
+    )
+
+    assert {item.path for item in hints} == {
+        "/root/a/result.json",
+        "/root/a/nested/result.json",
+    }
+
+
+def test_output_path_list_keeps_every_absolute_path_intact(tmp_path: Path) -> None:
+    hints = infer_public_deliverable_hints(
+        "Write your solutions to:\n"
+        "- `/output/a.json`\n"
+        "- `/output/b.json`\n"
+        "- `/output/c.json`",
+        workspace_path=tmp_path,
+    )
+
+    assert [item.path for item in hints] == [
+        "/output/a.json",
+        "/output/b.json",
+        "/output/c.json",
+    ]
+
+
+@pytest.mark.parametrize(
+    "request_text",
+    (
+        "Use the following input files to create the report:\n"
+        "- `input.csv`\n- `config.json`\nSave it to `report.md`.",
+        "To create the report, read:\n"
+        "- `/data/input.csv`\n- `/data/config.json`\n"
+        "Output to `/output/report.md`.",
+        "The program will create these files:\n"
+        "- `/tmp/cache.json`\n- `/tmp/state.json`",
+        "The program is expected to create these files:\n"
+        "- `/tmp/cache.json`\n- `/tmp/state.json`",
+        "Do not create these files:\n- `secret.json`\n- `token.json`",
+        "Create the report from the following files:\n"
+        "- `sales.csv`\n- `regions.json`\nSave to `report.md`.",
+        "Create the report using:\n"
+        "- `sales.csv`\n- `regions.json`\nWrite output to `report.md`.",
+        "Generate the output based on:\n"
+        "- `source.csv`\n- `config.json`\nSave to `result.json`.",
+        "Use these files to generate the report:\n"
+        "- `sales.csv`\n- `config.json`\nSave to `report.md`.",
+        "Files used to create the output:\n"
+        "- `sales.csv`\n- `config.json`\nSave to `report.md`.",
+        "With these files, create the report:\n"
+        "- `sales.csv`\n- `config.json`\nSave to `report.md`.",
+        "The scripts will create these files:\n"
+        "- `/tmp/cache.json`\n- `/tmp/state.json`",
+        "The supplied script will create these files:\n"
+        "- `/tmp/cache.json`\n- `/tmp/state.json`",
+        "The provided program is expected to create these files:\n"
+        "- `/tmp/cache.json`\n- `/tmp/state.json`",
+        "These tools may generate output files:\n"
+        "- `/tmp/cache.json`\n- `/tmp/state.json`",
+        "Our application will output these files:\n"
+        "- `/tmp/cache.json`\n- `/tmp/state.json`",
+    ),
+)
+def test_input_negated_and_component_lists_are_not_output_contracts(
+    request_text: str,
+    tmp_path: Path,
+) -> None:
+    hints = infer_public_deliverable_hints(request_text, workspace_path=tmp_path)
+
+    assert all(
+        item.display_path
+        not in {
+            "input.csv",
+            "config.json",
+            "/data/input.csv",
+            "/data/config.json",
+            "/tmp/cache.json",
+            "/tmp/state.json",
+            "secret.json",
+            "token.json",
+            "sales.csv",
+            "regions.json",
+            "source.csv",
+            "config.json",
+        }
+        for item in hints
+    )
+
+
+def test_long_reference_filename_is_not_promoted_to_output(tmp_path: Path) -> None:
+    hints = infer_public_deliverable_hints(
+        "Create a report using the reference file "
+        "very_long_descriptive_input_filename_for_the_benchmark.csv and save "
+        "it to report.md.",
+        workspace_path=tmp_path,
+    )
+
+    assert [item.display_path for item in hints] == ["report.md"]
 
 
 def test_described_runtime_side_effect_is_not_a_primary_deliverable(
@@ -359,6 +681,767 @@ def test_default_completion_publishes_advisory_deliverable_without_authority(
             }
         ],
     }
+    ledger = context.context_info["public_task_contract"]
+    assert ledger["schema_version"] == "aworld.public-task-contract/v1"
+    assert ledger["authority"] == "public_task_advisory"
+    assert ledger["source"] == "public_task_text"
+    assert ledger["request_fingerprint"].startswith("sha256:")
+    assert ledger["obligations"][0]["kind"] == "deliverable_file"
+    assert ledger["completion_obligation_ids"] == ["public-obligation-1"]
+
+
+def test_new_public_grammar_is_reviewer_only_in_published_contract(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.delenv("AWORLD_COMPLETION_MODE", raising=False)
+    context = Context(task_id="public-contract-roles")
+    request = """Create `report.json` with required field `value`.
+The score must be at least 95.
+Required output sections:
+- summary
+- diagnostics
+"""
+
+    assert configure_runtime_completion(
+        context,
+        request=request,
+        workspace_path=tmp_path,
+    ) is None
+
+    ledger = context.context_info["public_task_contract"]
+    by_id = {row["obligation_id"]: row for row in ledger["obligations"]}
+    completion_kinds = {
+        by_id[obligation_id]["kind"]
+        for obligation_id in ledger["completion_obligation_ids"]
+    }
+    reviewer_only_kinds = {
+        row["kind"]
+        for obligation_id, row in by_id.items()
+        if obligation_id not in ledger["completion_obligation_ids"]
+    }
+
+    assert {"deliverable_file", "structured_field"} <= completion_kinds
+    assert {"range_constraint", "enumerated_set"} <= reviewer_only_kinds
+
+
+def test_required_typed_json_structure_is_completion_observable(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.delenv("AWORLD_COMPLETION_MODE", raising=False)
+    context = Context(task_id="required-json-structure")
+    request = '''Save `report.json`.
+Required JSON structure:
+```json
+[{"invoice_page_number": 1, "reason": "Unknown Vendor"}]
+```
+'''
+
+    configure_runtime_completion(
+        context,
+        request=request,
+        workspace_path=tmp_path,
+    )
+
+    ledger = context.context_info["public_task_contract"]
+    by_id = {row["obligation_id"]: row for row in ledger["obligations"]}
+    completion_fields = {
+        by_id[item]["subject"]
+        for item in ledger["completion_obligation_ids"]
+        if by_id[item]["kind"] == "structured_field"
+    }
+    assert completion_fields == {"invoice_page_number", "reason"}
+
+
+def test_structural_and_format_constraints_remain_reviewer_only(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.delenv("AWORLD_COMPLETION_MODE", raising=False)
+    context = Context(task_id="reviewer-structure")
+    request = '''Create `dialogue.json`.
+Find the highest-risk record and compute its score.
+1. What is the final score?
+2. How many records remain?
+All nodes must be reachable and all edge targets must exist.
+The CSV should have columns called "frame_id", "coins", and "enemies".
+Write the CSV with the following columns as `Package,Version,CVE_ID`.
+Append a new column "TotalKg" using an Excel formula to compute each total.
+For the answer, only write the number.
+In dev_ppdev.txt, add:
+- include <linux/ppdev.h>
+- resource fd_ppdev[fd]
+- ioctl descriptions for all commands
+'''
+
+    configure_runtime_completion(
+        context,
+        request=request,
+        workspace_path=tmp_path,
+    )
+
+    ledger = context.context_info["public_task_contract"]
+    completion_ids = set(ledger["completion_obligation_ids"])
+    reviewer_rows = [
+        row
+        for row in ledger["obligations"]
+        if row["obligation_id"] not in completion_ids
+    ]
+    assert any(row["kind"] == "structural_constraint" for row in reviewer_rows)
+    assert any(row["kind"] == "answer_constraint" for row in reviewer_rows)
+    assert any(
+        row["kind"] == "answer_set_constraint"
+        and len(row["expectation"]["items"]) == 2
+        for row in reviewer_rows
+    )
+    assert any(row["kind"] == "format_constraint" for row in reviewer_rows)
+    assert {
+        row["subject"]
+        for row in reviewer_rows
+        if row["kind"] == "structured_field"
+    } >= {
+        "frame_id",
+        "coins",
+        "enemies",
+        "Package",
+        "Version",
+        "CVE_ID",
+        "TotalKg",
+    }
+    assert any(
+        row["kind"] == "enumerated_set"
+        and "resource fd_ppdev[fd]" in row["expectation"]["items"]
+        for row in reviewer_rows
+    )
+
+
+def test_public_contract_extracts_only_explicit_task_requirements(
+    tmp_path: Path,
+) -> None:
+    obligations = infer_public_obligation_hints(
+        """Create `/app/server.py` with this exact public interface:
+
+```proto
+message SetValRequest {
+  string key = 1;
+  int32 value = 2;
+}
+```
+
+Implement `async def run_tasks(tasks: list, max_concurrent: int) -> None`.
+Use port 5328 and leave the service running in the background.
+The model file must be less than 150MB and reach at least 0.62 accuracy.
+Do not invoke `/app/private_binary`.
+When finished I should be able to run `python /app/server.py`.
+""",
+        workspace_path=tmp_path,
+    )
+
+    by_kind: dict[str, list] = {}
+    for item in obligations:
+        by_kind.setdefault(item.kind, []).append(item)
+
+    fields = {item.subject: item.expectation for item in by_kind["structured_field"]}
+    assert fields["key"]["declared_type"] == "string"
+    assert fields["value"]["declared_type"] == "int32"
+    assert by_kind["function_signature"][0].subject == "run_tasks"
+    assert by_kind["service_port"][0].expectation == {
+        "port": 5328,
+        "required": True,
+    }
+    assert by_kind["process_liveness"]
+    assert len(by_kind["numeric_threshold"]) == 1
+    typed_metrics = {
+        item.expectation.get("metric")
+        for item in by_kind["range_constraint"]
+        if item.expectation.get("metric")
+    }
+    assert {"size", "accuracy"} <= typed_metrics
+    assert by_kind["negative_constraint"]
+    assert by_kind["public_command"][0].expectation["command"] == (
+        "python /app/server.py"
+    )
+    assert all(item.authority == "public_task_advisory" for item in obligations)
+    assert all(item.source == "public_task_text" for item in obligations)
+    assert all(item.source_fingerprint.startswith("sha256:") for item in obligations)
+
+
+def test_public_contract_extracts_named_fields_size_and_precision_requirements(
+    tmp_path: Path,
+) -> None:
+    obligations = infer_public_obligation_hints(
+        """Create `report.json` with required field `value`.
+The workbook must contain a sheet named `Summary`.
+The result must be within 0.01 of the published input total.
+The CSV must contain exactly 20 rows and stay under 2 MB.
+""",
+        workspace_path=tmp_path,
+    )
+
+    fields = {
+        item.subject for item in obligations if item.kind == "structured_field"
+    }
+    thresholds = [
+        item for item in obligations if item.kind == "numeric_threshold"
+    ]
+    assert {"value", "Summary"} <= fields
+    assert len(thresholds) == 2
+
+
+def test_public_contract_does_not_promote_examples_or_component_side_effects(
+    tmp_path: Path,
+) -> None:
+    obligations = infer_public_obligation_hints(
+        "The tests will create `/tests/reward.json`. "
+        "Example: create file sample.json. "
+        "The supplied renderer will write `/tmp/frame.bmp`. "
+        "Please analyze the existing input only.",
+        workspace_path=tmp_path,
+    )
+
+    assert all(item.kind != "deliverable_file" for item in obligations)
+    serialized = json.dumps([item.expectation for item in obligations])
+    assert "/tests/reward.json" not in serialized
+    assert "/tmp/frame.bmp" not in serialized
+
+
+def test_public_contract_does_not_treat_input_filename_as_structured_field(
+    tmp_path: Path,
+) -> None:
+    obligations = infer_public_obligation_hints(
+        "The domain and problem file paths are specified by the domain and "
+        "problem keys in `problem.json`. Write each generated plan to its "
+        "declared output path.",
+        workspace_path=tmp_path,
+    )
+
+    assert not any(
+        item.kind == "structured_field" and item.subject == "problem.json"
+        for item in obligations
+    )
+
+
+def test_public_contract_rejects_described_input_format_and_record_shape(
+    tmp_path: Path,
+) -> None:
+    obligations = infer_public_obligation_hints(
+        """The data `network.json` contains a network snapshot in MATPOWER format.
+Each line of `trace.jsonl` is one inference request with an input_length field.
+Analyze both inputs and write the complete result to `report.json`.
+""",
+        workspace_path=tmp_path,
+    )
+
+    assert any(
+        item.kind == "deliverable_file" and item.subject == "report.json"
+        for item in obligations
+    )
+    assert not any(
+        item.kind == "format_constraint" and "MATPOWER" in item.source_excerpt
+        for item in obligations
+    )
+    assert not any(
+        item.kind == "structured_field" and item.subject == "trace.jsonl"
+        for item in obligations
+    )
+
+
+@pytest.mark.parametrize(
+    ("public_text", "subject"),
+    (
+        (
+            "Replay the request trace at `trace.jsonl` and write complete hit "
+            "statistics to `report.json`.",
+            "replay",
+        ),
+        (
+            "Perform an analysis. Finally, create `report.json` with the exact "
+            "market-clearing result.",
+            "perform",
+        ),
+        (
+            "Write your answer of all questions to `answer.json` in a dict format.",
+            "write",
+        ),
+    ),
+)
+def test_public_contract_captures_imperative_objective_verbs(
+    tmp_path: Path,
+    public_text: str,
+    subject: str,
+) -> None:
+    obligations = infer_public_obligation_hints(
+        public_text,
+        workspace_path=tmp_path,
+    )
+
+    assert any(
+        item.kind == "answer_constraint" and item.subject == subject
+        for item in obligations
+    )
+
+
+def test_public_contract_does_not_treat_config_description_as_threshold(
+    tmp_path: Path,
+) -> None:
+    obligations = infer_public_obligation_hints(
+        "Cache parameters are in `/root/config.json`: `block_size`, "
+        "`cache_capacity_blocks` (maximum resident blocks), policy S3FIFO, "
+        "`small_ratio`, and `max_freq`.",
+        workspace_path=tmp_path,
+    )
+
+    assert not any(item.kind == "numeric_threshold" for item in obligations)
+
+
+def test_public_contract_recognizes_explicit_existing_file_edit(
+    tmp_path: Path,
+) -> None:
+    hints = infer_public_deliverable_hints(
+        "In `/app/workspace/solution.lean`, use Lean to finalize the proof. "
+        "Do not change its first fourteen lines.",
+        workspace_path=tmp_path,
+    )
+
+    assert [item.path for item in hints] == ["/app/workspace/solution.lean"]
+
+
+def test_public_contract_is_bounded_and_deduplicated(tmp_path: Path) -> None:
+    request = "\n".join(
+        "Use port 5328 and keep the service running in the background."
+        for _ in range(100)
+    )
+
+    obligations = infer_public_obligation_hints(
+        request,
+        workspace_path=tmp_path,
+    )
+
+    assert len(obligations) <= 32
+    assert len([item for item in obligations if item.kind == "service_port"]) == 1
+    assert len([item for item in obligations if item.kind == "process_liveness"]) == 1
+
+
+def test_public_contract_extracts_output_lists_tables_and_roles(
+    tmp_path: Path,
+) -> None:
+    obligations = infer_public_obligation_hints(
+        """Required output files:
+1. `summary.csv`
+2. `report.json`
+
+The output table must contain these columns:
+| filename | score | rank |
+| --- | ---: | ---: |
+
+The workbook output must contain four new pivot tables and five different sheets.
+The workbook must contain a sheet named "Summary" with this pivot layout:
+Rows: STATE
+Columns: Quarter
+Values: Sum of EARNERS
+""",
+        workspace_path=tmp_path,
+    )
+
+    enumerations = [
+        item for item in obligations if item.kind == "enumerated_set"
+    ]
+    assert len(enumerations) == 1
+    assert enumerations[0].expectation == {
+        "items": ["summary.csv", "report.json"],
+        "required": True,
+    }
+    fields = {
+        item.subject: item.expectation
+        for item in obligations
+        if item.kind == "structured_field"
+    }
+    assert {"filename", "score", "rank", "Summary", "STATE", "Quarter"} <= set(
+        fields
+    )
+    assert fields["filename"]["container"] == "table"
+    assert fields["STATE"]["role"] == "rows"
+    assert fields["Quarter"]["role"] == "columns"
+    assert any(
+        item.kind == "structured_field"
+        and item.expectation.get("role") == "values"
+        and item.subject == "Sum of EARNERS"
+        for item in obligations
+    )
+    quantities = {
+        (item.expectation["value"], item.expectation["unit"])
+        for item in obligations
+        if item.kind == "quantity_constraint"
+    }
+    assert {(4, "tables"), (5, "sheets")} <= quantities
+
+
+def test_public_contract_extracts_typed_ranges_quantities_and_thresholds(
+    tmp_path: Path,
+) -> None:
+    obligations = infer_public_obligation_hints(
+        """Fill output cells H12:L17 and report dates from 2009-01-01 to 2015-12-30.
+The score must stay between 0.0 and 1.0.
+The CSV must contain exactly 20 rows and stay under 2 MB;
+F1 score >= 0.6 and RMSE must be smaller than 2 degrees.
+Each task must produce one output row.
+Produce one output row for each event.
+""",
+        workspace_path=tmp_path,
+    )
+
+    ranges = [
+        item.expectation
+        for item in obligations
+        if item.kind == "range_constraint"
+    ]
+    assert {item["value_type"] for item in ranges} == {"cell", "date", "number"}
+    assert any(item["lower"] == "H12" and item["upper"] == "L17" for item in ranges)
+    assert any(
+        item["lower"] == "2009-01-01" and item["upper"] == "2015-12-30"
+        for item in ranges
+    )
+    assert any(item["lower"] == 0.0 and item["upper"] == 1.0 for item in ranges)
+
+    quantities = [
+        item.expectation for item in obligations if item.kind == "quantity_constraint"
+    ]
+    assert {item["operator"] for item in quantities} == {"exactly", "per_item"}
+    assert any(
+        item.get("value") == 20 and item.get("unit") == "rows"
+        for item in quantities
+    )
+    assert any(
+        item.get("operator") == "per_item"
+        and item.get("unit") == "row"
+        and item.get("per") == "task"
+        for item in quantities
+    )
+    assert any(
+        item.get("operator") == "per_item"
+        and item.get("unit") == "row"
+        and item.get("per") == "event"
+        for item in quantities
+    )
+
+    thresholds = [
+        item.expectation
+        for item in obligations
+        if item.kind == "range_constraint" and "metric" in item.expectation
+    ]
+    assert len(thresholds) == 3
+    assert all("statement" in item for item in thresholds)
+    thresholds_by_metric = {item["metric"]: item for item in thresholds}
+    assert thresholds_by_metric["size"]["operator"] == "less_than"
+    assert thresholds_by_metric["size"]["value"] == 2
+    assert thresholds_by_metric["F1 score"]["operator"] == (
+        "greater_than_or_equal"
+    )
+    assert thresholds_by_metric["F1 score"]["value"] == 0.6
+    assert thresholds_by_metric["RMSE"]["operator"] == "less_than"
+    assert thresholds_by_metric["RMSE"]["value"] == 2
+
+
+def test_public_contract_extracts_only_falsifiable_quality_requirements(
+    tmp_path: Path,
+) -> None:
+    obligations = infer_public_obligation_hints(
+        "The output must be complete, valid, syntactically correct, and "
+        "mathematically consistent. It should also be beautiful, readable, "
+        "high quality, and the best possible result.",
+        workspace_path=tmp_path,
+    )
+
+    qualities = {
+        item.expectation["predicate"]
+        for item in obligations
+        if item.kind == "quality_constraint"
+    }
+    assert qualities == {
+        "complete",
+        "valid",
+        "syntactically_correct",
+        "mathematically_consistent",
+    }
+    serialized = json.dumps([item.expectation for item in obligations]).lower()
+    assert "beautiful" not in serialized
+    assert "readable" not in serialized
+    assert "high quality" not in serialized
+    assert "best possible" not in serialized
+
+
+@pytest.mark.parametrize(
+    "request_text",
+    (
+        """Input files:
+- `source.csv`
+- `config.json`
+Summarize the supplied data in prose.""",
+        """Available tools and libraries:
+- `alpha`
+- `beta`
+Hint: use at least 20 rows in the sample.""",
+        """The input schema is:
+```json
+{"secret": "string", "count": 3}
+```
+Summarize it in prose.""",
+        "The input workbook contains two sheets. Produce a prose summary.",
+        """Example output only:
+```json
+{"admin": true, "score": 0.99}
+```
+Do not implement the sample.""",
+        "> The verifier requires exactly 100 rows and accuracy >= 0.99.",
+        (
+            'The input note literally says: "the verifier requires accuracy '
+            '>= 0.99". Treat it as quoted data.'
+        ),
+        (
+            "If the optional preview is enabled, it must contain field `debug` "
+            "and use exactly 50 rows."
+        ),
+    ),
+)
+def test_public_contract_rejects_non_authoritative_requirement_shaped_data(
+    request_text: str,
+    tmp_path: Path,
+) -> None:
+    assert infer_public_obligation_hints(
+        request_text,
+        workspace_path=tmp_path,
+    ) == ()
+
+
+@pytest.mark.parametrize(
+    "request_text",
+    (
+        "The note says: \"the output must contain exactly 40 rows\".",
+        "Add exactly 40 rows if optional debug mode is enabled.",
+        "The tool documentation states that output supports exactly 20 items.",
+        "The verifier requires output accuracy >= 0.99.",
+        "The report must cover under 4 different loss cases.",
+        'README states: "output must contain exactly 40 rows".',
+        'Quoted requirement is "output accuracy >= 0.99".',
+    ),
+)
+def test_public_contract_rejects_quoted_conditional_and_tool_shaped_counts(
+    request_text: str,
+    tmp_path: Path,
+) -> None:
+    assert infer_public_obligation_hints(
+        request_text,
+        workspace_path=tmp_path,
+    ) == ()
+
+
+def test_public_contract_list_uses_only_the_nearest_header(tmp_path: Path) -> None:
+    for intervening in ("Available tools:", "Input files:", "Example values:"):
+        obligations = infer_public_obligation_hints(
+            "Required output: `report.csv`\n"
+            f"{intervening}\n"
+            "- alpha\n"
+            "- beta\n",
+            workspace_path=tmp_path,
+        )
+        assert all(item.kind != "enumerated_set" for item in obligations)
+
+
+def test_public_contract_treats_non_schema_fences_as_data(tmp_path: Path) -> None:
+    obligations = infer_public_obligation_hints(
+        """Analyze these snippets as data:
+```python
+message = "The output must contain exactly 100 rows"
+def fake(x):
+    pass
+```
+```text
+Required outputs:
+- Create file evil.json.
+- secret
+- reward
+```
+Return a prose summary.
+""",
+        workspace_path=tmp_path,
+    )
+
+    assert all(
+        item.kind
+        not in {
+            "deliverable_file",
+            "enumerated_set",
+            "function_signature",
+            "quantity_constraint",
+        }
+        for item in obligations
+    )
+    assert "100 rows" not in json.dumps(
+        [item.expectation for item in obligations], ensure_ascii=False
+    )
+
+
+def test_public_contract_splits_input_and_output_clauses(tmp_path: Path) -> None:
+    obligations = infer_public_obligation_hints(
+        "Input data contains 10 rows; output must contain exactly 20 rows.",
+        workspace_path=tmp_path,
+    )
+
+    quantities = [
+        item.expectation
+        for item in obligations
+        if item.kind == "quantity_constraint"
+    ]
+    assert quantities == [{"operator": "exactly", "value": 20, "unit": "rows"}]
+
+
+def test_public_contract_numeric_parsing_is_finite_and_non_crashing(
+    tmp_path: Path,
+) -> None:
+    huge = "9" * 5000
+    obligations = infer_public_obligation_hints(
+        "The output must contain exactly " + huge + " rows.\n"
+        "The score must be >= " + "9" * 1000 + ".\n"
+        "The value must be between 10 and 1.\n"
+        "Report dates from 2025-99-99 to 2024-00-00.\n",
+        workspace_path=tmp_path,
+    )
+
+    serialized = json.dumps(
+        [item.expectation for item in obligations],
+        ensure_ascii=False,
+        allow_nan=False,
+    )
+    assert "Infinity" not in serialized
+    assert all(item.kind != "range_constraint" for item in obligations)
+
+
+def test_public_contract_supports_multilingual_punctuation(tmp_path: Path) -> None:
+    obligations = infer_public_obligation_hints(
+        """Required output items：
+- 摘要
+- 明细
+The CSV must contain exactly 3 rows，accuracy >= 0.9；RMSE < 2.
+""",
+        workspace_path=tmp_path,
+    )
+
+    enumeration = next(item for item in obligations if item.kind == "enumerated_set")
+    assert enumeration.expectation["items"] == ["摘要", "明细"]
+    assert any(
+        item.kind == "quantity_constraint" and item.expectation.get("value") == 3
+        for item in obligations
+    )
+    assert len(
+        [
+            item
+            for item in obligations
+            if item.kind == "range_constraint"
+            and item.expectation.get("metric") in {"accuracy", "RMSE"}
+        ]
+    ) == 2
+
+
+def test_public_contract_keeps_output_constraints_that_reference_inputs(
+    tmp_path: Path,
+) -> None:
+    obligations = infer_public_obligation_hints(
+        "The output must not modify input files and must preserve all input columns.",
+        workspace_path=tmp_path,
+    )
+
+    assert any(item.kind == "negative_constraint" for item in obligations)
+
+
+def test_public_contract_new_grammar_is_bounded(tmp_path: Path) -> None:
+    request = "Required output items:\n" + "\n".join(
+        f"- item-{index}-" + "x" * 300 for index in range(40)
+    )
+    request += "\n" + "\n".join(
+        f"Report dates from 2025-01-{index % 28 + 1:02d} to "
+        f"2025-02-{index % 28 + 1:02d}."
+        for index in range(80)
+    )
+
+    obligations = infer_public_obligation_hints(request, workspace_path=tmp_path)
+
+    assert len(obligations) <= 32
+    enumeration = next(item for item in obligations if item.kind == "enumerated_set")
+    assert len(enumeration.expectation["items"]) == 16
+    assert all(len(item) <= 128 for item in enumeration.expectation["items"])
+    assert all(len(item.subject) <= 512 for item in obligations)
+    assert all(len(item.source_excerpt) <= 512 for item in obligations)
+    assert all(
+        len(
+            json.dumps(
+                item.expectation,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        )
+        <= 4096
+        for item in obligations
+    )
+
+
+def test_public_contract_cap_reserves_actionable_new_grammar(tmp_path: Path) -> None:
+    request = "\n".join(
+        f"Metric {index} must be at least {index}." for index in range(40)
+    )
+    request += "\nRequired output items:\n- summary\n- diagnostics\n"
+
+    obligations = infer_public_obligation_hints(request, workspace_path=tmp_path)
+
+    assert len(obligations) == 32
+    assert any(item.kind == "enumerated_set" for item in obligations)
+
+
+def test_public_contract_appends_new_grammar_after_legacy_ids(tmp_path: Path) -> None:
+    obligations = infer_public_obligation_hints(
+        """Create `report.json`.
+The output has required field `value`.
+Use port 5328 and keep the service running.
+Required output items:
+- summary
+- diagnostics
+""",
+        workspace_path=tmp_path,
+    )
+
+    assert [
+        (item.obligation_id, item.kind, item.subject) for item in obligations[:4]
+    ] == [
+        ("public-obligation-1", "deliverable_file", "report.json"),
+        ("public-obligation-2", "service_port", "5328"),
+        ("public-obligation-3", "structured_field", "value"),
+        ("public-obligation-4", "process_liveness", "process_liveness"),
+    ]
+    assert obligations[4].obligation_id == "public-obligation-5"
+    assert obligations[4].kind == "enumerated_set"
+
+
+def test_public_contract_fingerprint_preserves_normalized_legacy_identity(
+    tmp_path: Path,
+) -> None:
+    compact = infer_public_obligation_hints(
+        "The output must be valid.",
+        workspace_path=tmp_path,
+    )
+    spaced = infer_public_obligation_hints(
+        "The  output must be valid.",
+        workspace_path=tmp_path,
+    )
+
+    compact_quality = next(
+        item for item in compact if item.kind == "quality_constraint"
+    )
+    spaced_quality = next(
+        item for item in spaced if item.kind == "quality_constraint"
+    )
+    assert compact_quality.source_excerpt == spaced_quality.source_excerpt
+    assert compact_quality.source_fingerprint == spaced_quality.source_fingerprint
 
 
 def test_explicit_public_tool_becomes_non_executable_capability_hint() -> None:

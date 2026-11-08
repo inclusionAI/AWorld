@@ -417,7 +417,10 @@ def transition_execution_protocol(
             _decision(ControllerAction.CONTINUE, DecisionReason.OBSERVATION_RECORDED),
         )
 
-    if event.kind is EventKind.CONVERGENCE_EXHAUSTED:
+    if event.kind in {
+        EventKind.CONVERGENCE_EXHAUSTED,
+        EventKind.DELIVERY_ONLY_EXHAUSTED,
+    }:
         if (
             state.phase not in {ProtocolPhase.EXECUTE, ProtocolPhase.REPAIR}
             or not state.convergence_constraint_active
@@ -451,7 +454,14 @@ def transition_execution_protocol(
         )
         return ProtocolTransition(
             next_state,
-            _decision(action, DecisionReason.CONVERGENCE_REJECTION_LIMIT),
+            _decision(
+                action,
+                (
+                    DecisionReason.DELIVERY_ONLY_DIAGNOSTIC_LIMIT
+                    if event.kind is EventKind.DELIVERY_ONLY_EXHAUSTED
+                    else DecisionReason.CONVERGENCE_REJECTION_LIMIT
+                ),
+            ),
         )
 
     if event.kind in {EventKind.TOOL_OBSERVATION, EventKind.DELIVERY_STATUS}:
@@ -994,6 +1004,31 @@ def transition_execution_protocol(
                 ),
             )
         if (
+            state.phase is ProtocolPhase.REPAIR
+            and event.result_hash is not None
+            and event.result_hash != previous_review_basis
+            and policy.bounded_repair_submission_enabled
+            and not policy.independent_acceptance_enabled
+        ):
+            # The public reviewer already consumed the one configured review.
+            # A changed candidate/evidence basis proves that the bounded repair
+            # turn did work, but does not prove correctness. Submit it to the
+            # caller-owned canonical verifier without manufacturing acceptance.
+            next_state = replace(
+                next_state,
+                phase=ProtocolPhase.COMPLETE,
+                review_pending=False,
+                terminal_incomplete=False,
+                acceptance_confirmed=False,
+            )
+            return ProtocolTransition(
+                next_state,
+                _decision(
+                    ControllerAction.SUBMIT_CURRENT_RESULT,
+                    DecisionReason.TERMINAL_FALLBACK_SUBMIT,
+                ),
+            )
+        if (
             event.review_boundary_available is False
             and not policy.independent_acceptance_enabled
         ):
@@ -1114,8 +1149,15 @@ def transition_execution_protocol(
         # claims that review accepted the candidate: acceptance_confirmed
         # remains false and the reason is explicit in telemetry/history.
         candidate_available = bool(
-            next_state.candidate_present is True
-            and next_state.candidate_checkpoint_recorded
+            (
+                next_state.candidate_present is True
+                and next_state.candidate_checkpoint_recorded
+            )
+            or (
+                next_state.candidate_final_count > 0
+                and isinstance(event.result_hash, str)
+                and bool(event.result_hash)
+            )
         )
         fallback_enabled = bool(
             not policy.independent_acceptance_enabled
@@ -1176,7 +1218,10 @@ def transition_execution_protocol(
             )
         next_state = replace(next_state, review_pending=False)
         if event.review_outcome is ReviewOutcome.REPAIR or (
-            policy.independent_acceptance_enabled
+            (
+                policy.independent_acceptance_enabled
+                or policy.advisory_uncertain_repair_enabled
+            )
             and event.review_outcome
             in {
                 ReviewOutcome.UNCERTAIN,

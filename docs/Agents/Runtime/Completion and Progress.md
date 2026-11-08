@@ -28,12 +28,44 @@ state is `budget_exhausted` under `agent_execution_state`, with task/epoch
 identity, reason, and recoverability. The task handler projects that incomplete
 state into TaskResponse without fabricating success.
 
-The bundled Agent also enables success-first terminal control. Normal tool use
-runs in protocol `observe` mode. Once a candidate reaches the terminal boundary,
-the runtime reserves a bounded decision/finalization window and may request a
-model-owned review plus at most one repair. The review shares the original task
-budget, cannot mint verifier authority, and preserves the best current candidate
-when the review fails, times out, or cannot establish a concrete repair.
+The bundled Agent also enables success-first terminal control. Short work stays
+on the historical fail-open path. Generic Tool/stagnation/deadline evidence may
+produce one bounded inline replan guidance and an advisory convergence stage:
+produce a declared candidate, then validate, repair from public evidence, or
+submit. The built-in policy keeps ordinary Tools available in that same solver
+turn and counts the replan as applied only after framework-observed successful
+implementation, candidate update, validation, or delivery. Dedicated
+decision-only model checkpoints remain an explicit compatibility option.
+Built-in policies do not use static Tool-effect analysis to deny ordinary
+sandbox work; an explicit developer policy is required to enable that legacy
+hard admission mode. Once a candidate reaches the terminal boundary, the
+runtime reserves a bounded finalization window and may request one model-owned
+review plus at most one repair. The review shares the original task budget,
+cannot mint external verifier authority, cannot be blocked by candidate Tool
+admission, and is never retried after an unavailable or inconclusive result.
+
+An explicit caller may retain the legacy model-owned execution-profile and
+decision boundary. For the built-in inline path, a newer ordinary stagnation or
+delivery-debt checkpoint is emitted directly as guidance and never depends on
+an initial profile response.
+
+## Public task contract ledger
+
+CLI task setup derives a bounded `aworld.public-task-contract/v1` ledger only
+from the authoritative public task text. Conservative extractors recognize
+explicit deliverable files, structured field names, function/import signatures,
+service ports, public commands, numeric thresholds, prohibitions, and process
+liveness clauses. Every row carries a public-source excerpt fingerprint. The
+ledger is advisory task grounding: it helps the Agent keep a final evidence
+checklist and request evidence, but it is not a completion contract, Tool-write
+allowlist, or verifier result. Mentioned inputs, examples, and prohibited
+changes do not become output files.
+
+The ledger never reads Dataset verifier files, reward, post-run verifier output,
+historical expected answers, or solver-generated requirements. Its request hash
+must match the current caller-owned task before either the Agent or the fresh
+reviewer will consume it. Ambiguous requirements are deliberately omitted and
+remain the model's responsibility.
 
 ## Explicit verification
 
@@ -98,3 +130,22 @@ segment's same evidence can pause for intervention instead of cycling forever.
 These checks cannot establish arbitrary domain correctness. Tasks without a
 structured completion contract still require independent evaluation; a successful
 agent run is not a benchmark reward claim.
+
+The lazy fresh-context reviewer uses the same public boundary. It receives the
+public task, a request-hash-matched ledger, public declared paths, bounded
+read-only snapshots of current declared files, and framework-owned public check
+receipts. It does not receive hidden verifier content or reward. A solver claim
+alone cannot produce `ready`; missing evidence, lifecycle failures, timeouts,
+multiple decisions, and malformed output remain `uncertain`. Transport Context
+copies resolve public contracts through their framework-owned task Context, not
+through solver text. Current file bytes can support static artifact review, but
+an executable obligation such as a function, import, command, service, or live
+process still requires a fresh public validation receipt before `ready` is
+promoted. The reviewer must challenge interacting public constraints with a
+task-derived counterexample and recommend a runnable public probe when that
+evidence is absent. An inconclusive or unavailable result exposes a bounded
+`task_derived_validation_scope` containing only typed obligations from the
+public ledger. It opens at most one validation/repair opportunity and never
+counts as acceptance. If that turn materially changes the candidate or durable
+validation basis, the result may be submitted to the caller-owned canonical
+verifier without a second reviewer call; internal acceptance remains false.
