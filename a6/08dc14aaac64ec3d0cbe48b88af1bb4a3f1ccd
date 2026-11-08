@@ -1,0 +1,182 @@
+aworld/cli/prompt.py
+  s_9e030844e031dc::t_c6f3f1a62d2731 57-64
+tests/core/session/test_cli_prompt.py
+  s_9e030844e031dc::t_c6f3f1a62d2731 5,10,12,14,44-155
+  s_9e030844e031dc::t_9c9b0fee9033be 156-157
+CHANGELOG.md
+  s_9e030844e031dc::t_fac6e2941e691f 5-64
+aworld-cli/src/aworld_cli/atif.py
+  s_9e030844e031dc::t_43e071ee8255a8 1162-1177
+aworld-cli/src/aworld_cli/builtin_agents/smllc/agents/aworld_agent.py
+  s_9e030844e031dc::t_9c410e177c990c 58,437-457,567-571,573-583,883-885
+aworld-cli/src/aworld_cli/builtin_agents/smllc/agents/lazy_verifier.py
+  s_9e030844e031dc::t_882540738258c0 16,53,60-66,72-74,78-79,81-82,84-88,91-112,116,119-122,125-127,135,141-155,157,159,165,170,175-190,198,203,213-217,320,352-373,375-378,381-383,386-388,410-434,445-447,456,462-477,481,485-680,718,732-810,816,818-845,849,873-874,876-877,884-924,926,928-932,954,956-969,976-982,1014,1028-1054,1068-1070,1073-1083,1093-1097,1105-1109,1111-1112,1120-1124,1126-1138,1147-1157,1168-1174,1181-1187,1207,1283-1287,1291-1296,1358-1361,1441-1445,1470-1632,1635-1672,1675,1678-1684,1845-1865,1939-1964,1967,1974-1985,2010-2199,2474-2475,2491,2493-2497
+aworld-cli/src/aworld_cli/builtin_agents/smllc/optional_agents/verifier/builder.py
+  s_9e030844e031dc::t_9d01e3073b0206 22-23,27,29,40-42,53,56-57,66,68,194
+aworld-cli/src/aworld_cli/builtin_agents/smllc/optional_agents/verifier/prompt.txt
+  s_9e030844e031dc::t_22b719066f92cf 3,5,14
+aworld-cli/src/aworld_cli/core/runtime_completion.py
+  s_9e030844e031dc::t_0fec97dc37c9a1 18-19,39,42-47,52-69,80,101-125,129-131,135-169,176-184,188-190,197-421,444-1650,1710-1713,1733-1740,1767-1817,1843-1921,1934-1935,1938-1953,1959-1989,1994-2003,2005-2018,2020,2025-2083,2092,2094-2104,2124-2125,2198-2212
+aworld-cli/src/aworld_cli/core/runtime_skill_registry.py
+  s_9e030844e031dc::t_9fc73c941a1550 57-64,66-71,98
+aworld-cli/src/aworld_cli/core/skill_activation_resolver.py
+  s_9e030844e031dc::t_0b77760c845f03 9,26-30,75-79,106-107,341-351,357-359,366-369,379-382
+aworld-cli/src/aworld_cli/executors/local.py
+  s_9e030844e031dc::t_b709e77927c45b 215,800,854,1493,1568-1575,1577-1581,1711-1712,1724-1740,1950-1953,3067-3069,3072-3073
+aworld-cli/src/aworld_cli/main.py
+  s_9e030844e031dc::t_b0296c5c96df18 412-422,2403,2405-2427,2687,2732,2743,2756
+aworld-cli/src/aworld_cli/run_outcome.py
+  s_9e030844e031dc::t_864bfe6078d6a2 20-30,158-221,427,474,490-494,554,589-592
+aworld-cli/src/aworld_cli/runtime/cli.py
+  s_9e030844e031dc::t_7c52fbb5377e2e 212
+aworld-cli/tests/test_atif_durable_identity.py
+  s_9e030844e031dc::t_0acaa39422d685 24-53
+aworld-cli/tests/test_aworld_system_prompt.py
+  s_9e030844e031dc::t_7823c2e311be4c 18,437-451,505
+aworld-cli/tests/test_lazy_advisory_verifier.py
+  s_9e030844e031dc::t_b3ab6049640aa5 23,25,28,34,60-61,141-192,282-391,393-395,397,413,443,503,582-585,614,683,738-741,915-918,941,944-968,1018-1029,1031,1044-1125,1130-1309,1422-1425,1439-1466,1470-1498,1533,1568,1588-1590,1638-1641,1666-1722,1792-2115,2194-2210,2453,2486-2490
+aworld-cli/tests/test_run_outcome_semantic_invariants.py
+  s_9e030844e031dc::t_4c3d0a8d3da5b7 6,40-105
+aworld-cli/tests/test_runtime_completion.py
+  s_9e030844e031dc::t_bff078781cc5aa 13,19,144-271,310-501,684-1444
+aworld-cli/tests/test_task_verifier_agent.py
+  s_9e030844e031dc::t_f8eaa068d814c6 84,86,109,111,116,120,126-127,137-138,142,165,192,251,253,274-277,413-424,500-511,513-527
+aworld-cli/tests/test_version.py
+  s_9e030844e031dc::t_3dd5825a31d531 29,34,43
+aworld-skills/long-running-agent/SKILL.md
+  s_9e030844e031dc::t_64c9e03a5d59ee 33-38,200-207,212-224,228,232,235,241-242
+aworld-skills/long-running-agent/references/checkpoints-and-review.md
+  s_9e030844e031dc::t_60744c2bac9437 65-78,84,89-107,111-112,116-119
+aworld/agents/llm_agent.py
+  s_9e030844e031dc::t_d3c5753a69609d 5,10,134,195-196,302,388,435-836,852-891,895,898,900,905,1474-1478,1481,1484-1487,1490-1491,1511-1514,1524-1525,1917-1926,1940,1953-1996,2081-2092,2217-2218,2220-2234,2258-2294,2342-2361,2415,2418-2421,2424-2456,2458-2470,2472-2474,2477-2479,2832-2913,2940-3039,5613-5673,6551-6556,6754,6847,7235-7326,7345-7353,7360-7362,7418,7427-7428,7471,7517-7547,7563,7581-7608,7626-7642,7668-7699,7976-8015,8074,8330-8333,8407-8417,8461,8682-8692,8703-8704,8718,8721,8723-8742,8762-8795,8863-8871,8888,8891,8939-8949,8958-8962,8964-9004,9077-9078,9127-9142,9148,9150,9537-9559,9577,9579-9590,9606-9612,9619-9656,9989-10003,10024-10028,10041-10079,10085,10087-10088,11113-11182,11497-11502,11741-11745,11773-11774,11844-11846,11848-11852,11865,11887,11898-11899,12581-12590
+aworld/cli/main.py
+  s_9e030844e031dc::t_abf62dec5f938e 15,24-33,104-109,137-183,186-213,215,217-229,240-244,262-273,302-320
+aworld/cli/trajectory.py
+  s_9e030844e031dc::t_8c6235d7402b7a 12-28,113,118
+aworld/config/conf.py
+  s_9e030844e031dc::t_d72ea7cbec183b 662-664
+aworld/core/agent/base.py
+  s_9e030844e031dc::t_88d48f40559c17 347-354,455-462,914-929
+aworld/core/agent/skill.py
+  s_9e030844e031dc::t_be1c57459467ef 3-6,13-125,133,144-147,165-169,181-196,203-223
+aworld/core/context/amni/prompt/neurons/skill_neuron.py
+  s_9e030844e031dc::t_d49bfc8b79fb38 1,11,14-15,18-19,26-28,38-61,82,87-88,107-114,116-120,122
+aworld/core/execution_protocol/__init__.py
+  s_9e030844e031dc::t_60a30701be41b5 46-61,95-99,101-102,104-110
+aworld/core/execution_protocol/controller.py
+  s_9e030844e031dc::t_d56e63da708a9f 420-423,457-464,1006-1030,1152-1160,1221-1224
+aworld/core/execution_protocol/models.py
+  s_9e030844e031dc::t_5d12f1b3058deb 280,336,827-847,890-893,978-987,1032-1043
+aworld/core/execution_protocol/reviewer_lease.py
+  s_9e030844e031dc::t_a80ab8add2262b 1-712
+aworld/runners/execution_protocol.py
+  s_9e030844e031dc::t_855fd9565aa55c 10,45-49,54-62,86-87,92-95,111-114,124-126,868,876,890,899,1153-1154,1156-1159,1161-1286,1288-1292,1294-1472,1474-1478,1480-1494,1497,1506-1527,1529,1532-1533,1535-1545,1547-1585,1589-1593,1597-1610,1613-1619,1621-1635,1637-1641,1643-1646,1648-1665,1668-2547,2566-2669,2681-2919,2924-2925,2930-2950,2956-2961,2972-3002,3010,3019-3025,3036-3231,3243-3267,4237-4240,4244-4247,4289-4291,4301,4330,4337,4379,4394-4446,4466-4470,4510-4528,4560-4570,4573-4595,4601-4609,4654-4660,4673,4702-4704,4763-4774,4796-4931,5189-5207,5340-5373,5509-5514,5770-5887,5937-5939,5956-5958,5980-5982,6087,6089-6103,6108,6114-6119,7025-7222,7316-7322,7402-7405,7680-7681,7697-7709,7856,8218-8220,8329-8350,8360-8361,8455-8524,8549-8550,8556-8559,8562-8590,8598-8602,8693-8698,8700-8707,8739-8756,8852-8939,8969-8974,8976-8979,9260-9264,9311,9313,9337-9357,9362-9368,9434,9438-9439,9466-9481,9487
+aworld/runners/hook/agent_hooks.py
+  s_9e030844e031dc::t_87ba53988388d8 77-90,164-168
+aworld/runners/post_tool_progress.py
+  s_9e030844e031dc::t_89d87ccfa889f5 942-947,2141,2144,2523
+aworld/runners/structured_quality.py
+  s_9e030844e031dc::t_d0582a9414b6e9 195-199
+aworld/sandbox/run/mcp_servers.py
+  s_9e030844e031dc::t_e799d12cffda82 83-165,2448-2454
+aworld/sandbox/tool_observation.py
+  s_9e030844e031dc::t_1a2f284add55cf 305-377,540-544,625-629,640-649,2271-2276
+aworld/sandbox/tool_servers/docker/src/server.py
+  s_9e030844e031dc::t_4eab5d456ceb8e 724-736,1794-1795,1854,1916
+aworld/skills/compat_provider.py
+  s_9e030844e031dc::t_328cea0e04b90f 6,11-19,21-25
+aworld/skills/filesystem_provider.py
+  s_9e030844e031dc::t_e9f1af2968a793 8-11,24-30,33,41,44-53,58-63,65-70,93-103
+aworld/skills/package_fingerprint.py
+  s_9e030844e031dc::t_135afcfbc625fd 5-9,23-26
+aworld/skills/plugin_provider.py
+  s_9e030844e031dc::t_9e4aab2efad62c 6-9,24-28,37-54,62-65,67,91-105,122
+aworld/version_gen.py
+  s_9e030844e031dc::t_fb14dc08e39dc2 8
+"docs/Agents/Runtime/Completion and Progress.md"
+  s_9e030844e031dc::t_6b8def8751629f 31-68,133-151
+docs/Agents/Runtime/Overview.md
+  s_9e030844e031dc::t_a36f25e9ba344c 189-201,204-209
+packaging/runtime/README.md
+  s_9e030844e031dc::t_1900c9dbfe6fa2 1-29
+packaging/runtime/aworld-cli.pyproject.toml
+  s_9e030844e031dc::t_4c87f68577cc87 1-41
+scripts/build_runtime_compatibility_wheels.py
+  s_9e030844e031dc::t_33ad65419f460f 1-201
+tests/core/agent/test_agent_loop_budget.py
+  s_9e030844e031dc::t_741d1c20975c1d 19-31,98-127
+tests/core/agent/test_generation_action_budget.py
+  s_9e030844e031dc::t_bac56d26daa655 25,33,371-372,419-420,458-459,571-572,626,680-683,686,732-772,995-1065,1154-1159,1161,1163-1164,1167,1172-1173
+tests/core/agent/test_long_horizon_execution.py
+  s_9e030844e031dc::t_6715fc9d93b794 4,1208-1216,1218-1226,1244,1261-1266,1271,1302-1304,1311-1390,1414-1416,1573-1575,1604-1653,2162-2358,2460-2490,3814-3914,4098-4099,4307-4309
+tests/core/agent/test_truthful_completion.py
+  s_9e030844e031dc::t_4140680c7a1148 8-13,31-393,678-679,829-935
+tests/core/context/amni/prompt/neurons/test_skill_neuron.py
+  s_9e030844e031dc::t_03bc3a47406f33 2,45-117
+tests/core/execution_protocol/test_controller.py
+  s_9e030844e031dc::t_e3163178430f95 1506-1529,2630-2673
+tests/core/execution_protocol/test_models.py
+  s_9e030844e031dc::t_abf5753183038b 366-368,405-408,431-434,452-454,461-463
+tests/core/execution_protocol/test_reviewer_value_lease.py
+  s_9e030844e031dc::t_07a0b2b3e8786c 1-442
+tests/core/session/test_cli.py
+  s_9e030844e031dc::t_f7c63876ad9928 3,11,13,30-64
+tests/core/session/test_skills.py
+  s_9e030844e031dc::t_1273efa3123123 12,47-49,53,59-102
+tests/core/test_direct_run_failures.py
+  s_9e030844e031dc::t_96d475d5cd8891 13-31
+tests/core/test_forced_skill_runtime.py
+  s_9e030844e031dc::t_93a4f311850fb2 9-10,20,32,45,70
+tests/core/test_skill_activation_resolver.py
+  s_9e030844e031dc::t_0d61793ddda287 183-299
+tests/core/test_skill_cli.py
+  s_9e030844e031dc::t_e9363edc5918c9 951,953,955
+tests/core/test_skill_runtime_resolution.py
+  s_9e030844e031dc::t_441959e88a53cf 17,283-404
+tests/packaging/test_runtime_compatibility_versions.py
+  s_9e030844e031dc::t_48051fbe55c1af 1-135
+tests/plugins/test_goal_lifecycle_budget.py
+  s_9e030844e031dc::t_499b73d5920b45 443-509,1477-1553
+tests/runners/test_execution_protocol_runtime.py
+  s_9e030844e031dc::t_c35eca7e641e3b 62,300-320,494-526,634-686,724-772,1256,1261,1287-1289,1293-1298,1317,1340-1355,1589-1706,2087-2164,2460-2536,6588-6678
+tests/runners/test_post_tool_progress_watchdog.py
+  s_9e030844e031dc::t_91e21a96f9834f 415-445
+tests/runners/test_public_deliverable_candidates.py
+  s_9e030844e031dc::t_c05eb1ec031747 245
+tests/runners/test_public_probe_ledger.py
+  s_9e030844e031dc::t_465e58b9b0f22b 4,25-26,80-121,206-207,216-245,353,358-670,738-743
+tests/runners/test_reviewer_value_lease_runtime.py
+  s_9e030844e031dc::t_239f35dcb9e960 1-1216
+tests/runners/test_structured_quality.py
+  s_9e030844e031dc::t_29ea9e1e840bb9 67-83
+tests/sandbox/test_declared_write_receipts.py
+  s_9e030844e031dc::t_f21b3de20e4c1f 248-294,790-799,866
+tests/sandbox/test_docker_tool_output_policy.py
+  s_9e030844e031dc::t_2ab075f9678436 281-298
+tests/sandbox/test_tool_observation.py
+  s_9e030844e031dc::t_0855512d840c79 1476-1550
+tests/skills/test_builtin_long_running_agent.py
+  s_9e030844e031dc::t_275732abce4b81 73-81
+tests/skills/test_filesystem_skill_provider.py
+  s_9e030844e031dc::t_a41ca5d0f28835 3-5,27-42
+tests/skills/test_plugin_skill_provider.py
+  s_9e030844e031dc::t_2d9669c8d8e0a1 4-6,46-105
+tests/test_chat_completions.py
+  s_9e030844e031dc::t_cc05469f4d32c0 10,252-478
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "a608dc14aaac64ec3d0cbe48b88af1bb4a3f1ccd",
+  "prompts": {},
+  "sessions": {
+    "s_9e030844e031dc": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a191c3-38b4-7152-83c4-1c77366abf46",
+        "model": "gpt-6.1-sol"
+      },
+      "human_author": "wuman.wyf <wuman.wyf@antgroup.com>"
+    }
+  }
+}
