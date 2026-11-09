@@ -50,6 +50,8 @@ class SkillResolverRequest:
     # requested.  The replay parent still verifies the exact package
     # fingerprint from activation evidence before accepting the result.
     isolated_candidate_sources: tuple[str, ...] = ()
+    # Host-installed sources retain aliases; explicit runtime roots are checked strictly.
+    strict_compatibility_sources: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -114,7 +116,9 @@ class SkillActivationResolver:
             seen_provider_ids.add(provider_id)
 
         for source in request.compatibility_sources:
-            provider = build_compat_provider(source)
+            provider = build_compat_provider(
+                source, strict_paths=source in request.strict_compatibility_sources
+            )
             provider_id = provider.provider_id()
             if provider_id in seen_provider_ids:
                 continue

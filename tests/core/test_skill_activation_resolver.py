@@ -292,6 +292,7 @@ def test_resolver_rejects_compat_root_beneath_symlinked_parent(
                 plugin_roots=(),
                 runtime_scope="workspace",
                 compatibility_sources=(str(linked_parent / "skills"),),
+                strict_compatibility_sources=(str(linked_parent / "skills"),),
                 requested_skill_names=("task-skill",),
             )
         )

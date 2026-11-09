@@ -256,6 +256,7 @@ def test_real_cli_http_model_reads_a_local_file(tmp_path):
         ("run_code", "exam_flat_python"), ("terminal", "r2r_invalid_list"),
         ("bash", "wave_ambiguous"), ("bash", "wave_truncated"),
         ("terminal", "mars_instruction_only"),
+        ("terminal", "installed_symlink"),
     ],
 )
 def test_rich_cli_executes_reasoning_only_skillbench_tool_call(tmp_path, alias, argument):
@@ -281,10 +282,11 @@ def test_rich_cli_executes_reasoning_only_skillbench_tool_call(tmp_path, alias, 
         if alias == "terminal"
         else f'ls -la {skills_path} 2>/dev/null && find {skills_path} -name "SKILL.md" | head -50'
     )
+    parameter = "cmd" if argument == "installed_symlink" else argument
     reasoning = (
         '<｜DSML｜tool_calls>\n'
         f'<｜DSML｜invoke name="{alias}">\n'
-        f'<｜DSML｜parameter name="{argument}" string="true">'
+        f'<｜DSML｜parameter name="{parameter}" string="true">'
         f'{discovery} && cat {shlex.quote(str(skill / "reference.txt"))}'
         '</｜DSML｜parameter>\n'
         '<｜DSML｜parameter name="description" string="true">Inspect task Skill</｜DSML｜parameter>\n'
@@ -429,12 +431,16 @@ def test_rich_cli_executes_reasoning_only_skillbench_tool_call(tmp_path, alias, 
         "AWORLD_SUCCESS_FIRST": "1",
         "STREAM": "1",
     }
+    if argument == "installed_symlink":
+        installed = tmp_path / "control" / "skills"
+        installed.mkdir(parents=True)
+        (installed / "replay-skill").symlink_to(skill, target_is_directory=True)
     try:
         result = subprocess.run(
             [sys.executable, "-m", "aworld_cli", "--no-banner", "run",
              "--agent", "Aworld", "--agent-dir", str(tmp_path / "agents"),
              "--task", "Use the enabled task Skill to read the reference.",
-             "--skill-path", str(skill_root),
+             *([] if argument == "installed_symlink" else ["--skill-path", str(skill_root)]),
              *(value for name in requested_skills for value in ("--skill", name)),
              "--non-interactive", "--env-file", os.devnull, "--max-runs", "1",
              "--trajectory-output", str(trajectory), "--trajectory-format", "atif"],

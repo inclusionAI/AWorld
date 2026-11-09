@@ -878,6 +878,14 @@ class LocalAgentExecutor(BaseAgentExecutor):
                 compatibility_sources=(
                     () if skills_disabled else compatibility_sources
                 ),
+                strict_compatibility_sources=(
+                    ()
+                    if skills_disabled
+                    else tuple(dict.fromkeys([
+                        *resolver_inputs.get("strict_compatibility_sources", []),
+                        *runtime_skill_paths,
+                    ]))
+                ),
                 compatibility_skill_patterns=tuple(
                     str(item)
                     for item in resolver_inputs.get("compatibility_skill_patterns", [])

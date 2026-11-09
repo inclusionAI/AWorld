@@ -2394,6 +2394,10 @@ class AWorldCLI:
                 str(item)
                 for item in resolver_inputs.get("compatibility_sources", [])
             ),
+            strict_compatibility_sources=tuple(
+                str(item)
+                for item in resolver_inputs.get("strict_compatibility_sources", [])
+            ),
             compatibility_skill_patterns=tuple(
                 str(item)
                 for item in resolver_inputs.get("compatibility_skill_patterns", [])

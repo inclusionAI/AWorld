@@ -62,6 +62,9 @@ def test_runtime_marks_only_explicit_self_evolve_candidate_paths() -> None:
         ordinary_path,
     ]
     assert resolver_inputs["isolated_candidate_sources"] == [candidate_path]
+    assert resolver_inputs["strict_compatibility_sources"] == [
+        candidate_path, ordinary_path,
+    ]
 
 
 @pytest.mark.asyncio
@@ -167,6 +170,9 @@ async def test_local_executor_resolves_skills_from_task_input(
         str(tmp_path / "candidate-skills"),
     )
     assert captured["request"].isolated_candidate_sources == (
+        str(tmp_path / "candidate-skills"),
+    )
+    assert captured["request"].strict_compatibility_sources == (
         str(tmp_path / "candidate-skills"),
     )
     assert captured["request"].plugin_roots == (

@@ -25,5 +25,9 @@ def build_compat_provider(
     )
 
 
-def build_compat_registry(root_path, cache_dir=None) -> SkillRegistry:
-    return SkillRegistry([build_compat_provider(root_path, cache_dir=cache_dir)])
+def build_compat_registry(
+    root_path, cache_dir=None, *, strict_paths: bool = False
+) -> SkillRegistry:
+    return SkillRegistry([
+        build_compat_provider(root_path, cache_dir=cache_dir, strict_paths=strict_paths)
+    ])

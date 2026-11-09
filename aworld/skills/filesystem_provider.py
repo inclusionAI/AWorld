@@ -29,7 +29,7 @@ class FilesystemSkillProvider(SkillProvider):
         strict_paths: bool = True,
     ) -> None:
         self._provider_id = provider_id
-        self._root = Path(root)
+        self._root = Path(root) if strict_paths else Path(root).resolve()
         self._strict_paths = strict_paths
         self._skill_files: dict[str, Path] = {}
 
@@ -38,36 +38,40 @@ class FilesystemSkillProvider(SkillProvider):
 
     def _iter_skill_files(self):
         seen: set[Path] = set()
+        visited_directories: set[Path] = set()
         if self._root.is_symlink() or not self._root.is_dir():
             return
 
         for current_root, directories, filenames in os.walk(
-            self._root, followlinks=False
+            self._root, followlinks=not self._strict_paths
         ):
-            for directory in tuple(directories):
-                if (Path(current_root) / directory).is_symlink():
-                    if self._strict_paths:
+            canonical_directory = Path(current_root).resolve()
+            if canonical_directory in visited_directories:
+                directories.clear()
+                continue
+            visited_directories.add(canonical_directory)
+            if self._strict_paths:
+                for directory in directories:
+                    if (Path(current_root) / directory).is_symlink():
                         raise SkillPackageValidationError(
                             "skill directory cannot be a symlink"
                         )
-                    directories.remove(directory)
             for candidate_name in ("skill.md", "SKILL.md"):
                 if candidate_name not in filenames:
                     continue
                 skill_file = Path(current_root) / candidate_name
-                if skill_file.is_symlink():
-                    if self._strict_paths:
-                        raise SkillPackageValidationError(
-                            "SKILL.md cannot be a symlink"
-                        )
-                    continue
-                resolved = skill_file.resolve()
-                try:
-                    resolved.relative_to(self._root.absolute())
-                except ValueError as exc:
+                if self._strict_paths and skill_file.is_symlink():
                     raise SkillPackageValidationError(
-                        "SKILL.md escapes explicit skill root"
-                    ) from exc
+                        "SKILL.md cannot be a symlink"
+                    )
+                resolved = skill_file.resolve()
+                if self._strict_paths:
+                    try:
+                        resolved.relative_to(self._root.absolute())
+                    except ValueError as exc:
+                        raise SkillPackageValidationError(
+                            "SKILL.md escapes explicit skill root"
+                        ) from exc
                 if resolved in seen or not resolved.is_file():
                     continue
                 if is_self_evolve_draft_path(resolved):

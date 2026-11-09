@@ -119,6 +119,10 @@ def _apply_runtime_skill_paths_to_swarm(
             if skill_path not in sources:
                 sources.append(skill_path)
         resolver_inputs["compatibility_sources"] = sources
+        resolver_inputs["strict_compatibility_sources"] = list(dict.fromkeys([
+            *resolver_inputs.get("strict_compatibility_sources", []),
+            *skill_paths,
+        ]))
         isolated_sources = [
             str(item)
             for item in resolver_inputs.get("isolated_candidate_sources", [])

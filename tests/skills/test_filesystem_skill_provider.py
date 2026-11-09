@@ -40,6 +40,31 @@ def test_filesystem_provider_rejects_symlinked_skill_package(tmp_path: Path) -> 
         provider.list_descriptors()
 
 
+def test_legacy_provider_follows_skill_aliases_and_stops_cycles(tmp_path: Path) -> None:
+    package = tmp_path / "installed" / "linked-skill"
+    package.mkdir(parents=True)
+    (package / "SKILL.md").write_text(
+        "---\nname: linked-skill\ndescription: Installed skill\n---\nRead notes.md.\n",
+        encoding="utf-8",
+    )
+    (package / "notes.md").write_text("installed asset\n", encoding="utf-8")
+    skills = tmp_path / "skills"
+    skills.mkdir()
+    (skills / "first").symlink_to(package, target_is_directory=True)
+    (skills / "second").symlink_to(package, target_is_directory=True)
+    (skills / "loop").symlink_to(skills, target_is_directory=True)
+    (skills / "missing").symlink_to(tmp_path / "missing", target_is_directory=True)
+    root_alias = tmp_path / "root-alias"
+    root_alias.symlink_to(skills, target_is_directory=True)
+
+    registry = build_compat_registry(root_alias)
+    descriptors = registry.list_descriptors()
+    assert len(descriptors) == 1
+    descriptor = descriptors[0]
+    assert descriptor.skill_file == str(package / "SKILL.md")
+    assert registry.load_content(descriptor.skill_id).usage == "Read notes.md."
+
+
 def test_filesystem_provider_exposes_default_enabled_policy(tmp_path: Path) -> None:
     skill_dir = tmp_path / "skills" / "specialized"
     skill_dir.mkdir(parents=True)
