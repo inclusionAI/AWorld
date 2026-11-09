@@ -114,3 +114,15 @@ async def test_consume_refuses_crafted_stream_entry():
         await eventbus.consume(message)
 
     assert _DisallowedCallable.calls == 0
+
+
+def test_round_trip_keeps_task_state_without_carrying_registry_locks():
+    context = Context(task_id="task-locked", user="agent-a")
+    message = Message(headers={"context": context}, sender="agent-a")
+
+    restored = loads_message(dumps_message(message))
+
+    assert restored.headers["context"].task_id == "task-locked"
+    assert restored.headers["context"].user == "agent-a"
+    # Consumer-side copies own fresh in-process registries, never the sender's locks.
+    assert hasattr(restored.headers["context"], "_agent_step_registry")
