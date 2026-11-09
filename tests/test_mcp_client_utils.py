@@ -1,9 +1,11 @@
 import asyncio
 import json
 from pathlib import Path
+from typing import Literal
 
 import pytest
-from mcp.types import CallToolResult, TextContent
+from mcp.types import CallToolResult, TextContent, Tool
+from pydantic import BaseModel
 
 from aworld.mcp_client import utils
 
@@ -460,6 +462,120 @@ async def test_reuse_call_reconnects_before_retrying_explicitly_safe_tool(
     assert failed.cleanup_calls == 1
     assert recovered.calls == 1
     assert server_instances["catalog"] is recovered
+
+
+class Address(BaseModel):
+    city: str
+    zip_code: str
+
+
+class SetUnitArguments(BaseModel):
+    unit: Literal["celsius", "fahrenheit"]
+    address: Address
+    limit: int | None = None
+
+
+def _set_unit_input_schema():
+    return SetUnitArguments.model_json_schema()
+
+
+class _FakeToolListServer:
+    def __init__(self, name, tools):
+        self.name = name
+        self._tools = tools
+
+    async def list_tools(self):
+        return self._tools
+
+
+class _FakeFunctionToolServer:
+    def __init__(self, tools):
+        self._tools = tools
+
+    def list_tools(self):
+        return self._tools
+
+
+def _assert_full_input_schema_preserved(parameters, schema):
+    assert parameters == schema
+    assert parameters is not schema
+    assert parameters["properties"]["unit"]["enum"] == ["celsius", "fahrenheit"]
+    assert parameters["properties"]["address"] == {"$ref": "#/$defs/Address"}
+    assert parameters["$defs"]["Address"]["properties"]["zip_code"]["type"] == "string"
+    assert parameters["properties"]["limit"]["anyOf"] == [
+        {"type": "integer"},
+        {"type": "null"},
+    ]
+    assert parameters["properties"]["limit"]["default"] is None
+    assert parameters["properties"]["address"] is not schema["properties"]["address"]
+
+
+@pytest.mark.asyncio
+async def test_run_preserves_enum_ref_defs_anyof_and_nested_properties():
+    schema = _set_unit_input_schema()
+    server = _FakeToolListServer(
+        "demo",
+        [Tool(name="set_unit", description="Set unit", inputSchema=schema)],
+    )
+
+    tools = await utils.run([server])
+
+    _assert_full_input_schema_preserved(
+        tools[0]["function"]["parameters"],
+        schema,
+    )
+
+
+def test_get_function_tool_preserves_enum_ref_defs_anyof_and_nested_properties(
+    monkeypatch,
+):
+    schema = _set_unit_input_schema()
+    monkeypatch.setattr(
+        utils,
+        "get_function_tools",
+        lambda name: _FakeFunctionToolServer(
+            [Tool(name="set_unit", description="Set unit", inputSchema=schema)]
+        ),
+    )
+
+    tools = utils.get_function_tool("demo")
+
+    _assert_full_input_schema_preserved(
+        tools[0]["function"]["parameters"],
+        schema,
+    )
+
+
+@pytest.mark.asyncio
+async def test_run_normalizes_legacy_str_type_names_recursively():
+    schema = {
+        "type": "object",
+        "properties": {
+            "query": {"type": "str", "description": "Search query"},
+            "tags": {"type": "array", "items": {"type": "str"}},
+            "matrix": {
+                "type": "array",
+                "items": {"type": "array", "items": {"type": "str"}},
+            },
+        },
+        "required": ["query"],
+    }
+    server = _FakeToolListServer(
+        "demo",
+        [Tool(name="search", description="Search", inputSchema=schema)],
+    )
+
+    tools = await utils.run([server])
+
+    parameters = tools[0]["function"]["parameters"]
+    assert parameters["properties"]["query"] == {
+        "type": "string",
+        "description": "Search query",
+    }
+    assert parameters["properties"]["tags"]["items"]["type"] == "string"
+    assert parameters["properties"]["matrix"]["items"]["items"]["type"] == "string"
+    assert parameters["required"] == ["query"]
+    assert schema["properties"]["query"]["type"] == "str"
 
 
 def test_stdio_server_environment_inherits_replay_evidence_bindings(monkeypatch):
