@@ -52,7 +52,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     && uv pip install --python /opt/aworld/.venv/bin/python \
         -e '/opt/aworld[llm,skills]' \
         -e /opt/aworld/aworld-cli \
-    && ln -sfn /opt/aworld/aworld-skills/filex /skills/filex
+    && cp -a /opt/aworld/aworld-skills/filex /skills/filex
 
 ENV PATH=/opt/aworld/.venv/bin:/root/.local/bin:/opt/filex/.venv/bin:${PATH}
 ENV FILEX_WORKSPACE_ROOT=/root/workspace
