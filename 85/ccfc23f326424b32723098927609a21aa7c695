@@ -1,0 +1,44 @@
+aworld-cli/src/aworld_cli/core/skill_activation_resolver.py
+  s_9e030844e031dc::t_0557d12ae7aa2d 53
+  s_9e030844e031dc::t_860a7cd94f033b 54,119-121
+aworld-cli/src/aworld_cli/runtime/cli.py
+  s_9e030844e031dc::t_860a7cd94f033b 122-125
+aworld-cli/src/aworld_cli/executors/local.py
+  s_9e030844e031dc::t_860a7cd94f033b 881,885-888
+  s_9e030844e031dc::t_0557d12ae7aa2d 882-884
+aworld/skills/compat_provider.py
+  s_9e030844e031dc::t_0fc7ab7267cb47 28-33
+tests/core/test_skill_runtime_resolution.py
+  s_9e030844e031dc::t_b7530b160c59ad 65-67,175
+  s_9e030844e031dc::t_6bf6b9d5981d16 176-177
+tests/core/session/test_cli_prompt.py
+  s_9e030844e031dc::t_eb95e57450a1e5 89-104
+aworld/skills/filesystem_provider.py
+  s_9e030844e031dc::t_860a7cd94f033b 32,41,46,48-55,63,65-74
+tests/core/test_skill_activation_resolver.py
+  s_9e030844e031dc::t_b7530b160c59ad 295
+tests/skills/test_filesystem_skill_provider.py
+  s_9e030844e031dc::t_b7530b160c59ad 43-67
+aworld-cli/src/aworld_cli/console.py
+  s_9e030844e031dc::t_860a7cd94f033b 2397-2400
+aworld/cli/prompt.py
+  s_9e030844e031dc::t_eb95e57450a1e5 57-64
+tests/test_chat_completions.py
+  s_9e030844e031dc::t_b7530b160c59ad 259,285,289,434-437,443
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "85ccfc23f326424b32723098927609a21aa7c695",
+  "prompts": {},
+  "sessions": {
+    "s_9e030844e031dc": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a191c3-38b4-7152-83c4-1c77366abf46",
+        "model": "gpt-6.1-sol"
+      },
+      "human_author": "wuman.wyf <wuman.wyf@antgroup.com>"
+    }
+  }
+}
