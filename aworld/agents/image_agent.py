@@ -384,7 +384,14 @@ class ImageAgent(LLMAgent):
             return [ActionModel(agent_name=self.id(), policy_info=error_msg)]
         
         # Resolve image parameters (observation.info overrides instance defaults)
-        size: str = obs_info.pop("size", self.default_size)
+        size = obs_info.pop("size", None)
+        if size is None and ("aspect_ratio" in obs_info or "area" in obs_info):
+            provider = self.llm.provider
+            if isinstance(provider, ImageProvider):
+                config = self._resolve_provider_runtime_config(provider, has_input_images=False)
+                if config["model_name"] in ImageProvider.H3_MODELS:
+                    size = "auto"
+        size = size or self.default_size
         output_format: str = obs_info.pop("output_format", self.default_output_format)
         response_format: str = obs_info.pop("response_format", self.default_response_format)
         negative_prompt: Optional[str] = obs_info.pop("negative_prompt", self.default_negative_prompt)
