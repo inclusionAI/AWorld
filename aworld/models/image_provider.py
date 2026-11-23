@@ -50,6 +50,11 @@ class ImageProvider(LLMProviderBase):
     
     This provider interfaces with image generation APIs to generate images from text prompts.
     
+    For MiniMax H3, use the image backend with TEXT_TO_IMAGE_MODEL_NAME set
+    to MiniMax-H3-Image or MiniMax-H3-Image-Highspeed. Set TEXT_TO_IMAGE_API_KEY
+    and TEXT_TO_IMAGE_BASE_URL to the key and host for the same region
+    (https://api.minimax.io or https://api.minimax.cn).
+
     Attributes:
         DEFAULT_SIZE: Default image size (1024x1024)
         DEFAULT_RESPONSE_FORMAT: Default response format (b64_json)
@@ -63,6 +68,7 @@ class ImageProvider(LLMProviderBase):
     DEFAULT_RESPONSE_FORMAT = "b64_json"
     DEFAULT_OUTPUT_FORMAT = "png"
     DEFAULT_MODEL = "Qwen-Image"
+    H3_MODELS = ("MiniMax-H3-Image", "MiniMax-H3-Image-Highspeed")
     
     SUPPORTED_SIZES = ["1024x1024", "1024x768", "768x1024", "512x512"]
     SUPPORTED_RESPONSE_FORMATS = ["b64_json", "url"]
@@ -74,6 +80,9 @@ class ImageProvider(LLMProviderBase):
 
     def _resolved_model_name(self) -> str:
         return (self.model_name or self.DEFAULT_MODEL).strip() or self.DEFAULT_MODEL
+
+    def _is_h3(self) -> bool:
+        return self._resolved_model_name() in self.H3_MODELS
 
     @staticmethod
     def _normalize_size(size: Optional[str]) -> Optional[str]:
@@ -294,10 +303,30 @@ class ImageProvider(LLMProviderBase):
     ) -> tuple[str, Dict[str, Any], str, str]:
         images = self._coerce_image_inputs(**extra_kwargs)
 
-        size = size or self.DEFAULT_SIZE
         response_format = response_format or self.DEFAULT_RESPONSE_FORMAT
         output_format = output_format or self.DEFAULT_OUTPUT_FORMAT
 
+        if self._is_h3():
+            if "aspect_ratio" in extra_kwargs or "area" in extra_kwargs:
+                if size and size != "auto":
+                    raise ValueError("Use size='auto' with aspect_ratio or area")
+                size = "auto"
+            if images:
+                raise ValueError("MiniMax H3 accepts text prompts only")
+            if extra_kwargs.get("stream"):
+                raise ValueError("ImageProvider requires a non-streaming image response")
+            # ImageAgent also passes routing fields such as image_urls on text requests.
+            fields = ("n", "aspect_ratio", "area", "disable_prompt_enhanced")
+            options = {key: extra_kwargs[key] for key in fields if key in extra_kwargs}
+            if "aigc_watermark" in extra_kwargs:
+                if self.base_url != "https://api.minimax.cn":
+                    raise ValueError("aigc_watermark requires the MiniMax CN endpoint")
+                options["aigc_watermark"] = extra_kwargs["aigc_watermark"]
+            if negative_prompt or seed is not None or user:
+                raise ValueError("MiniMax H3 does not accept negative_prompt, seed or user")
+            extra_kwargs = options
+
+        size = size or self.DEFAULT_SIZE
         if images:
             payload = self._build_edit_form_payload(
                 prompt=prompt,
@@ -342,17 +371,22 @@ class ImageProvider(LLMProviderBase):
                 "environment variable or pass api_key to the constructor."
             )
         
-        base_url = self.base_url or os.getenv("IMAGE_BASE_URL", "https://antchat.alipay.com")
-        
+        base_url = self.base_url or os.getenv("IMAGE_BASE_URL")
+        timeout = self.kwargs.get("timeout", 120)
+        max_retries = self.kwargs.get("max_retries", 3)
+        if self._is_h3():
+            base_url = base_url or "https://api.minimax.io"
+            timeout = max(timeout or 0, 600)
+            # LLMHTTPHandler counts attempts. Repeating generation can charge twice.
+            max_retries = 1
         self.api_key = api_key
-        self.base_url = base_url.rstrip("/")
-        
+        self.base_url = (base_url or "https://antchat.alipay.com").rstrip("/")
         return LLMHTTPHandler(
             base_url=self.base_url,
             api_key=api_key,
             model_name=self.model_name or self.DEFAULT_MODEL,
-            timeout=self.kwargs.get("timeout", 120),
-            max_retries=self.kwargs.get("max_retries", 3),
+            timeout=timeout,
+            max_retries=max_retries,
         )
     
     def _init_async_provider(self) -> LLMHTTPHandler:
@@ -370,7 +404,7 @@ class ImageProvider(LLMProviderBase):
         Returns:
             list: List of supported model names
         """
-        return [cls.DEFAULT_MODEL, "image"]
+        return [cls.DEFAULT_MODEL, "image", *cls.H3_MODELS]
     
     def generate_image(
         self,
@@ -415,12 +449,11 @@ class ImageProvider(LLMProviderBase):
             raise ValueError("Prompt parameter is required and cannot be empty")
         
         # Set default values
-        size = size or self.DEFAULT_SIZE
         response_format = response_format or self.DEFAULT_RESPONSE_FORMAT
         output_format = output_format or self.DEFAULT_OUTPUT_FORMAT
         
         # Validate parameters
-        if size not in self.SUPPORTED_SIZES:
+        if size and size not in self.SUPPORTED_SIZES and not self._is_h3():
             logger.warning(
                 f"Size '{size}' may not be supported. "
                 f"Supported sizes: {', '.join(self.SUPPORTED_SIZES)}"
@@ -452,7 +485,7 @@ class ImageProvider(LLMProviderBase):
         
         logger.info(
             f"[ImageProvider] Generating image: "
-            f"prompt_length={len(prompt)}, size={size}, "
+            f"prompt_length={len(prompt)}, size={payload.get('size')}, "
             f"response_format={response_format}, output_format={output_format}"
         )
         
@@ -472,7 +505,7 @@ class ImageProvider(LLMProviderBase):
             )
             
         except Exception as e:
-            error_msg = f"Qwen Image generation failed: {e}"
+            error_msg = f"{self._resolved_model_name()} generation failed: {e}"
             logger.error(f"{error_msg}\n{traceback.format_exc()}")
             raise LLMResponseError(error_msg, "image", None)
     
@@ -519,7 +552,6 @@ class ImageProvider(LLMProviderBase):
             raise ValueError("Prompt parameter is required and cannot be empty")
         
         # Set default values
-        size = size or self.DEFAULT_SIZE
         response_format = response_format or self.DEFAULT_RESPONSE_FORMAT
         output_format = output_format or self.DEFAULT_OUTPUT_FORMAT
         
@@ -550,7 +582,7 @@ class ImageProvider(LLMProviderBase):
         
         logger.info(
             f"[ImageProvider] Generating image (async): "
-            f"prompt_length={len(prompt)}, size={size}, "
+            f"prompt_length={len(prompt)}, size={payload.get('size')}, "
             f"response_format={response_format}, output_format={output_format}"
         )
         
@@ -570,7 +602,7 @@ class ImageProvider(LLMProviderBase):
             )
             
         except Exception as e:
-            error_msg = f"Qwen Image generation failed (async): {e}"
+            error_msg = f"{self._resolved_model_name()} generation failed (async): {e}"
             logger.error(f"{error_msg}\n{traceback.format_exc()}")
             raise LLMResponseError(error_msg, "image", None)
     
@@ -602,7 +634,7 @@ class ImageProvider(LLMProviderBase):
                 f"[ImageProvider] API error: code={error_code}, message={error_msg}"
             )
             raise LLMResponseError(
-                f"Qwen Image API error (code {error_code}): {error_msg}",
+                f"{self._resolved_model_name()} API error (code {error_code}): {error_msg}",
                 "image",
                 response_data
             )
@@ -632,6 +664,17 @@ class ImageProvider(LLMProviderBase):
             )
         
         image_data = data_list[0]
+        if self._is_h3():
+            # The agent returns one image. A successful batch may start with an error.
+            image_data = next(
+                (item for item in data_list if not item.get("error")
+                 and (item.get("b64_json") or item.get("url"))),
+                None,
+            )
+            if image_data is None:
+                error = data_list[0].get("error") or {}
+                raise LLMResponseError(error.get("message", "No image data in response"),
+                                       self._resolved_model_name(), response_data)
         
         # Check if response contains base64 data or URL
         b64_data = image_data.get("b64_json")
